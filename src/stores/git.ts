@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { translate } from "../i18n";
 import { aiOneshot } from "../lib/aiOneshot";
+import { parseReview, REVIEW_PROMPT, type Review } from "../lib/aiReview";
 import { useWorkspace } from "./workspace";
 
 export interface GitFile {
@@ -98,6 +99,11 @@ interface GitState {
   resetTo: (sha: string, mode: ResetMode) => Promise<void>;
   setCommitMessage: (message: string) => void;
   generateCommitMessage: () => Promise<void>;
+  /** A second opinion on what is about to be committed. */
+  reviewing: boolean;
+  review: Review | null;
+  reviewChanges: () => Promise<void>;
+  dismissReview: () => void;
   clear: () => void;
 }
 
@@ -152,6 +158,8 @@ export const useGit = create<GitState>((set, get) => ({
   commitMessage: "",
   amend: false,
   generating: false,
+  reviewing: false,
+  review: null,
 
   setAmend: (amend) => {
     set({ amend });
@@ -370,6 +378,33 @@ export const useGit = create<GitState>((set, get) => ({
   resetTo: async (sha, mode) => {
     const root = useWorkspace.getState().rootPath;
     if (root) await runOp(set, () => invoke("git_reset_to", { root, sha, mode }));
+  },
+
+  reviewChanges: async () => {
+    const root = useWorkspace.getState().rootPath;
+    if (!root || get().reviewing) return;
+    set({ reviewing: true, lastError: null, review: null });
+    try {
+      // Staged changes are what a commit will contain; with nothing staged,
+      // the worktree is what the user is about to stage anyway.
+      let diff = await invoke<string>("git_staged_diff", { root });
+      if (!diff.trim()) diff = await invoke<string>("git_worktree_diff", { root });
+      if (!diff.trim()) {
+        set({ lastError: translate("git.clean") });
+        return;
+      }
+      const clipped =
+        diff.length > DIFF_PROMPT_LIMIT ? `${diff.slice(0, DIFF_PROMPT_LIMIT)}\n[diff truncated]` : diff;
+      set({ review: parseReview(await aiOneshot(REVIEW_PROMPT + clipped, root)) });
+    } catch (err: unknown) {
+      set({ lastError: String(err) });
+    } finally {
+      set({ reviewing: false });
+    }
+  },
+
+  dismissReview: () => {
+    set({ review: null });
   },
 
   setCommitMessage: (message) => {

@@ -19,11 +19,13 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  ShieldCheck,
   Sparkles,
   Tag,
   Trash2,
   TriangleAlert,
   Undo2,
+  X,
 } from "lucide-react";
 import { useT } from "../i18n";
 import { useAi } from "../stores/ai";
@@ -55,6 +57,71 @@ type GitDialog =
   | { kind: "revert"; sha: string; short: string }
   | { kind: "cherryPick"; sha: string; short: string }
   | { kind: "reset"; sha: string; short: string; mode: ResetMode };
+
+/**
+ * What the AI thinks of the changes, shown above the commit box.
+ *
+ * It is an opinion, not a gate: nothing is blocked, the panel can be dismissed,
+ * and each finding jumps to the file it is about. Findings the AI could not
+ * place on a line still appear, because "this file needs tests" is useful even
+ * without a line number.
+ */
+function ReviewPanel() {
+  const review = useGit((s) => s.review);
+  const dismissReview = useGit((s) => s.dismissReview);
+  const rootPath = useWorkspace((s) => s.rootPath);
+  const openFile = useWorkspace((s) => s.openFile);
+  const t = useT();
+  if (!review) return null;
+
+  const issues = review.findings.filter((finding) => finding.severity === "issue");
+
+  return (
+    <div className="rounded-lg border border-line bg-elevated/60 px-2 py-1.5">
+      <div className="flex items-center gap-1.5 text-[11px]">
+        <Sparkles size={11} className="shrink-0 text-accent" />
+        <span className="flex-1 font-medium">
+          {review.findings.length === 0
+            ? t("git.reviewClean")
+            : t("git.reviewSummary", {
+                issues: String(issues.length),
+                total: String(review.findings.length),
+              })}
+        </span>
+        <button onClick={dismissReview} className="rounded p-0.5 text-muted hover:text-fg">
+          <X size={11} />
+        </button>
+      </div>
+
+      {review.findings.length === 0 && review.text && review.text !== "[]" && (
+        <p className="mt-1 text-[11px] whitespace-pre-wrap text-muted">{review.text}</p>
+      )}
+
+      <div className="mt-1 flex max-h-40 flex-col gap-0.5 overflow-y-auto">
+        {review.findings.map((finding, index) => (
+          <button
+            key={index}
+            onClick={() => {
+              if (rootPath && finding.file) void openFile(`${rootPath}/${finding.file}`);
+            }}
+            className="flex items-start gap-1.5 rounded px-1 py-0.5 text-left text-[11px] hover:bg-elevated"
+          >
+            <span className={finding.severity === "issue" ? "text-danger" : "text-muted"}>
+              {finding.severity === "issue" ? "!" : "\u00b7"}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="text-muted">
+                {finding.file}
+                {finding.line > 0 && `:${String(finding.line)}`}
+              </span>{" "}
+              {finding.message}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /** Status letter with VS Code-ish coloring. */
 function StatusLetter({ file, staged }: { file: GitFile; staged: boolean }) {
@@ -522,6 +589,7 @@ export function GitPanel() {
         </div>
 
         <div className="flex flex-col gap-1.5">
+          <ReviewPanel />
           <div className="relative">
             <textarea
               value={git.commitMessage}
@@ -550,6 +618,17 @@ export function GitPanel() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            {canUseAi && (
+              <button
+                onClick={() => void git.reviewChanges()}
+                disabled={git.reviewing || git.busy}
+                title={t("git.reviewHint")}
+                className="flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-muted hover:border-accent hover:text-fg disabled:opacity-50"
+              >
+                {git.reviewing ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
+                {t("git.review")}
+              </button>
+            )}
             <button
               onClick={() => void git.commit()}
               disabled={

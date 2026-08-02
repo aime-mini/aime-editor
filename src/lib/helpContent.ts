@@ -165,6 +165,13 @@ const EN: HelpTopic[] = [
     keywords: "commit stage diff push pull branch source control version init",
   },
   {
+    id: "git-review",
+    section: "Git",
+    title: "A second opinion before you commit",
+    body: "Review, next to the commit button, sends what you are about to commit to the AI and lists what it noticed: problems marked with a red !, smaller notes with a dot, each one clickable to open the file it is about. It is an opinion and never a gate - nothing is blocked, and dismissing it costs one click. With nothing staged it reviews your working changes instead, since that is what you are about to stage.",
+    keywords: "review ai second opinion before commit findings issues suggestions",
+  },
+  {
     id: "git-branches",
     section: "Git",
     title: "Branches, remotes and tags",
@@ -405,6 +412,13 @@ const VI: HelpTopic[] = [
     title: "Panel Git",
     body: "Tab Git ở sidebar (hoặc bấm tên branch trên status bar) hiển thị thay đổi: stage/bỏ stage từng file hoặc tất cả, hủy thay đổi, commit (Ctrl+Enter trong ô nội dung), push và pull. Bấm vào file để xem diff so với HEAD; khu Lịch sử (gập/mở, cuộn riêng, nút Tải thêm) liệt kê commit - bấm vào để xem trọn patch. File thay đổi có chữ trạng thái trong cây file, dòng thay đổi có vạch màu ở lề editor. Thông minh mặc định: commit khi chưa stage gì sẽ tự stage toàn bộ, push lần đầu của nhánh mới tự thiết lập upstream. Hoạt động hoàn toàn không cần AI; có AI thì nút lấp lánh tự viết nội dung commit từ diff (đã stage hoặc chưa).",
     keywords: "commit stage diff push pull nhánh branch quản lý phiên bản init",
+  },
+  {
+    id: "git-review",
+    section: "Git",
+    title: "Nhờ AI soát lại trước khi commit",
+    body: "Nút 'Soát lại' cạnh nút commit gửi đúng phần anh sắp commit cho AI và liệt kê những gì nó thấy: chỗ có vấn đề đánh dấu ! đỏ, nhận xét nhỏ đánh dấu chấm, bấm vào là mở đúng file đó. Đây là ý kiến chứ không phải cửa chặn - không chặn commit, và bấm X là tắt. Chưa stage gì thì nó soát luôn thay đổi trong thư mục làm việc, vì đó chính là thứ anh sắp stage.",
+    keywords: "review soát lại ai trước commit nhận xét vấn đề",
   },
   {
     id: "git-branches",
