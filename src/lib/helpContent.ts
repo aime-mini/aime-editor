@@ -133,7 +133,7 @@ const EN: HelpTopic[] = [
     id: "mcp",
     section: "AI",
     title: "MCP servers (the AI's plugins)",
-    body: "The plug button in the AI panel header (or 'MCP servers' in the command palette) manages the Model Context Protocol servers of the selected CLI - issue trackers, docs, databases the AI can then use as tools. Paste a URL to add an HTTP server, or a command such as npx -y server-github for a stdio one, with KEY=VALUE environment variables one per line. Aime drives the CLI's own mcp commands, so servers stay where the CLI expects them and its health checks and OAuth keep working; the key button on a row signs in to that server in a terminal.",
+    body: "The plug button in the AI panel header (or 'MCP servers' in the command palette) manages the Model Context Protocol servers of the selected CLI - issue trackers, docs, databases the AI can then use as tools. Browse & search opens a curated list grouped by what they do - issue boards, design tools, docs, cloud platforms, local tools - and a search box over the official MCP registry, so anything published there is one click away. Picking an entry fills the form (including the environment variables it requires) instead of adding it behind your back; you can also paste a URL or a command such as npx -y server-github yourself. Aime drives the CLI's own mcp commands, so servers stay where the CLI expects them and its health checks and OAuth keep working - note that Claude Code stores them per project while Codex stores them globally; the key button on a row signs in to that server in a terminal.",
     keywords: "mcp plugin tools server add remove connector github notion",
   },
   {
@@ -354,7 +354,7 @@ const VI: HelpTopic[] = [
     id: "mcp",
     section: "AI",
     title: "MCP server (plugin cho AI)",
-    body: "Nút phích cắm trên header panel AI (hoặc 'MCP server' trong command palette) quản lý các MCP server của CLI đang chọn - issue tracker, tài liệu, database… để AI dùng như tool. Dán URL để thêm server HTTP, hoặc gõ lệnh kiểu npx -y server-github để thêm server stdio, biến môi trường mỗi dòng một KEY=VALUE. Aime gọi đúng lệnh mcp của CLI nên server nằm đúng chỗ CLI mong đợi, health check và OAuth của nó vẫn chạy; nút chìa khóa trên mỗi dòng mở terminal để đăng nhập server đó.",
+    body: "Nút phích cắm trên header panel AI (hoặc 'MCP server' trong command palette) quản lý các MCP server của CLI đang chọn - issue tracker, tài liệu, database… để AI dùng như tool. Nút 'Duyệt & tìm server' mở danh mục có sẵn chia theo nhóm - issue board, thiết kế, tài liệu, cloud, tool chạy máy - kèm ô tìm kiếm trên registry MCP chính thức, nên server nào đã publish ở đó đều thêm được bằng một cú bấm. Chọn một mục sẽ điền sẵn vào form (kể cả biến môi trường nó cần) chứ không tự thêm sau lưng bạn; anh vẫn có thể tự dán URL hoặc gõ lệnh kiểu npx -y server-github. Aime gọi đúng lệnh mcp của CLI nên server nằm đúng chỗ CLI mong đợi, health check và OAuth của nó vẫn chạy - lưu ý Claude Code lưu theo dự án còn Codex lưu global; nút chìa khóa trên mỗi dòng mở terminal để đăng nhập server đó.",
     keywords: "mcp plugin tool server thêm xoá connector github notion",
   },
   {

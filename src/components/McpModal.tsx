@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { KeyRound, Loader2, Plug, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { KeyRound, Loader2, Plug, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { useT } from "../i18n";
+import { MCP_CATALOG, MCP_GROUP_LABELS, resolveTarget, type McpCatalogGroup } from "../lib/mcpCatalog";
+import { searchMcpServers, type McpSearchResult } from "../lib/mcpRegistry";
 import { capabilitiesOf } from "../lib/providers";
 import { useAi } from "../stores/ai";
 import { runInTerminal } from "../stores/terminals";
@@ -15,6 +17,8 @@ interface McpServer {
 }
 
 const EMPTY_FORM = { name: "", target: "", env: "" };
+/** Long enough that typing a package name does not fire a request per keystroke. */
+const SEARCH_DEBOUNCE_MS = 350;
 
 /**
  * MCP servers of the selected AI CLI (ARCHITECTURE.md §7). Aime drives the
@@ -31,6 +35,10 @@ export function McpModal({ onClose }: { onClose: () => void }) {
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [adding, setAdding] = useState(false);
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [found, setFound] = useState<McpSearchResult[] | null>(null);
+  const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const t = useT();
 
@@ -66,6 +74,36 @@ export function McpModal({ onClose }: { onClose: () => void }) {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [onClose]);
+
+  useEffect(() => {
+    // Clearing results is an event, handled where the query changes; this
+    // effect only ever starts a search.
+    const needle = query.trim();
+    if (!catalogOpen || needle.length < 2) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setSearching(true);
+      searchMcpServers(needle, controller.signal)
+        .then(setFound)
+        .catch((err: unknown) => {
+          if (!controller.signal.aborted) setError(String(err));
+        })
+        .finally(() => {
+          setSearching(false);
+        });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [query, catalogOpen]);
+
+  /** Picking anything only fills the form - nothing is configured behind the user's back. */
+  const fillForm = (name: string, target: string, requiredEnv: string[] = []) => {
+    setForm({ name, target, env: requiredEnv.map((variable) => `${variable}=`).join("\n") });
+    setCatalogOpen(false);
+    setQuery("");
+  };
 
   const add = async () => {
     const name = form.name.trim();
@@ -212,6 +250,74 @@ export function McpModal({ onClose }: { onClose: () => void }) {
           ))}
         </div>
 
+        {catalogOpen && (
+          <div className="flex max-h-64 flex-col border-t border-line">
+            <input
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                // Below two characters there is nothing to show but the catalog.
+                if (e.target.value.trim().length < 2) setFound(null);
+              }}
+              placeholder={t("mcp.searchPlaceholder")}
+              className="border-b border-line bg-transparent px-4 py-2 text-[12px] outline-none placeholder:text-muted"
+            />
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-2">
+              {found === null ? (
+                <>
+                  {(Object.keys(MCP_GROUP_LABELS) as McpCatalogGroup[]).map((group) => (
+                    <div key={group} className="mb-2">
+                      <p className="mb-1 text-[10px] font-semibold tracking-wider text-muted uppercase">
+                        {t(MCP_GROUP_LABELS[group])}
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {MCP_CATALOG.filter((entry) => entry.group === group).map((entry) => (
+                          <button
+                            key={entry.name}
+                            onClick={() => {
+                              fillForm(entry.name, resolveTarget(entry, rootPath));
+                            }}
+                            title={`${t(entry.hint)}${entry.needsKey ? ` - ${t("mcp.needsKey")}` : ""}`}
+                            className="rounded-md border border-line px-2 py-1 text-[11.5px] text-muted hover:border-accent hover:text-fg"
+                          >
+                            {entry.label}
+                            {entry.needsKey && <span className="ml-1 text-warn">*</span>}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  <p className="text-[10px] text-muted">{t("mcp.catalogFooter")}</p>
+                </>
+              ) : (
+                <>
+                  {searching && <p className="py-2 text-[11px] text-muted">{t("mcp.searching")}</p>}
+                  {!searching && found.length === 0 && (
+                    <p className="py-2 text-[11px] text-muted">{t("mcp.searchEmpty")}</p>
+                  )}
+                  {found.map((result) => (
+                    <button
+                      key={result.fullName}
+                      onClick={() => {
+                        fillForm(result.name, result.target, result.requiredEnv);
+                      }}
+                      className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-elevated"
+                    >
+                      <span className="text-[12px]">
+                        {result.name}
+                        <span className="ml-1.5 text-[10px] text-muted">{result.fullName}</span>
+                        {result.requiredEnv.length > 0 && <span className="ml-1 text-warn">*</span>}
+                      </span>
+                      <span className="truncate text-[11px] text-muted">{result.description}</span>
+                      <span className="truncate font-mono text-[10px] text-muted">{result.target}</span>
+                    </button>
+                  ))}
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-col gap-2 border-t border-line px-4 py-3">
           <div className="flex gap-2">
             <input
@@ -241,6 +347,16 @@ export function McpModal({ onClose }: { onClose: () => void }) {
             className="resize-none rounded-md border border-line bg-elevated px-2 py-1 font-mono text-[12px] outline-none focus:border-accent"
           />
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                setCatalogOpen((open) => !open);
+                setFound(null);
+                setQuery("");
+              }}
+              className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-xs text-muted hover:border-accent hover:text-fg"
+            >
+              <Search size={12} /> {t("mcp.browseCatalog")}
+            </button>
             <span className="flex-1 text-[10px] text-muted">{t("mcp.footer")}</span>
             <button
               onClick={() => void add()}
