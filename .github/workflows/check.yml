@@ -87,8 +87,15 @@ jobs:
           echo "the dev server never came up" >&2
           exit 1
         shell: bash
+      # The runner image sets EDGEWEBDRIVER, but the workflow `env` context
+      # only holds what the workflow itself declared - so it has to be read
+      # inside a step and handed on through GITHUB_ENV.
+      - name: Locate the Edge driver
+        run: |
+          $driver = Join-Path $env:EDGEWEBDRIVER 'msedgedriver.exe'
+          if (-not (Test-Path $driver)) { Write-Error "no Edge driver at $driver"; exit 1 }
+          "AIME_EDGE_DRIVER=$driver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & $driver --version
+        shell: pwsh
       - name: Run the end-to-end suite
         run: npm run test:e2e
-        env:
-          # Windows runners expose the Edge driver's folder here.
-          AIME_EDGE_DRIVER: ${{ env.EDGEWEBDRIVER }}\msedgedriver.exe

@@ -22,6 +22,15 @@ const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "aime-e2e-"));
 fs.writeFileSync(path.join(workspace, "hello.ts"), 'export const greeting = "hello";\n');
 fs.writeFileSync(path.join(workspace, "notes.md"), "# Notes\n\nsecond file\n");
 
+/** cargo installs it here; the extension matters when spawning on Windows. */
+function tauriDriverPath() {
+  const candidates = [
+    path.join(os.homedir(), ".cargo", "bin", "tauri-driver.exe"),
+    path.join(os.homedir(), ".cargo", "bin", "tauri-driver"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? "tauri-driver";
+}
+
 let tauriDriver;
 
 exports.config = {
@@ -40,10 +49,10 @@ exports.config = {
   mochaOpts: { ui: "bdd", timeout: 90_000 },
 
   onPrepare: () => {
-    tauriDriver = spawn(path.join(os.homedir(), ".cargo", "bin", "tauri-driver"), [
-      "--native-driver",
-      nativeDriver,
-    ]);
+    if (!fs.existsSync(nativeDriver)) {
+      throw new Error(`no Edge driver at ${nativeDriver} - see e2e/README.md`);
+    }
+    tauriDriver = spawn(tauriDriverPath(), ["--native-driver", nativeDriver]);
     tauriDriver.stderr.on("data", (chunk) => {
       process.stderr.write(`[tauri-driver] ${chunk}`);
     });
