@@ -111,6 +111,7 @@ export const en = {
     "{command} is not installed - completions and diagnostics are off for this file. Install it with: {install}",
   "lsp.failed": "Language server stopped: {reason}. Reopen the file to try again.",
 
+  "mcp.backToList": "Back to my servers",
   "mcp.browseCatalog": "Browse & search servers",
   "mcp.searchPlaceholder": "Search the MCP registry (e.g. figma, postgres, slack)…",
   "mcp.searching": "Searching…",

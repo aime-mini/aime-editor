@@ -13,8 +13,10 @@ const { strict: assert } = require("node:assert");
 const { workspace } = require("../wdio.conf.cjs");
 
 /** Waits for text to appear anywhere in the window. */
+/** CSS can upper-case what it renders, so matching ignores case. */
 async function waitForText(text, message) {
-  await browser.waitUntil(async () => (await $("body").getText()).includes(text), {
+  const needle = text.toLowerCase();
+  await browser.waitUntil(async () => (await $("body").getText()).toLowerCase().includes(needle), {
     timeout: 30_000,
     timeoutMsg: message ?? `never saw "${text}"`,
   });

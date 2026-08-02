@@ -111,6 +111,7 @@ export const vi: Record<TranslationKey, string> = {
   "lsp.missing": "Chưa cài {command} - file này không có gợi ý và báo lỗi. Cài bằng: {install}",
   "lsp.failed": "Language server đã dừng: {reason}. Mở lại file để thử lại.",
 
+  "mcp.backToList": "Về danh sách của tôi",
   "mcp.browseCatalog": "Duyệt & tìm server",
   "mcp.searchPlaceholder": "Tìm trong registry MCP (vd figma, postgres, slack)…",
   "mcp.searching": "Đang tìm…",
