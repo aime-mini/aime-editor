@@ -5,7 +5,7 @@ import { useI18n, useT } from "../i18n";
 import { capabilitiesOf, effortsOf } from "../lib/providers";
 import { PERMISSION_ORDER, type Permission } from "../lib/types";
 import { useAi } from "../stores/ai";
-import { useSettings } from "../stores/settings";
+import { INLINE_AI_MODES, useSettings } from "../stores/settings";
 import { useTheme } from "../stores/theme";
 import { useWorkspace } from "../stores/workspace";
 
@@ -228,6 +228,18 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                 </option>
               ))}
             </select>
+          </Row>
+          <Row label={t("settings.inlineAi")} hint={t(`settings.inlineAi.${settings.inlineAi}`)}>
+            <Choice
+              options={INLINE_AI_MODES.map((mode) => ({
+                value: mode,
+                label: t(`settings.inlineAi.${mode}.short`),
+              }))}
+              value={settings.inlineAi}
+              onChange={(inlineAi) => {
+                settings.update({ inlineAi });
+              }}
+            />
           </Row>
           <Row label={t("settings.permission")} hint={t(`ai.permission.${permission}`)}>
             <button

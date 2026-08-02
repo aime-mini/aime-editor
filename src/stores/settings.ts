@@ -7,12 +7,23 @@ import { create } from "zustand";
  * squinting at the screen or fighting a long line. Options that only exist to
  * look configurable are how a settings page becomes unusable.
  */
+/** When Aime asks the AI for ghost text at the cursor. */
+export type InlineAiMode = "off" | "manual" | "auto";
+
+export const INLINE_AI_MODES: InlineAiMode[] = ["off", "manual", "auto"];
+
 export interface EditorSettings {
   fontSize: number;
   wordWrap: boolean;
   minimap: boolean;
   /** Lines the editor keeps visible above and below the cursor. */
   tabSize: number;
+  /**
+   * Manual by default: each suggestion spawns a CLI and costs a moment and a
+   * fraction of a cent, so asking on every pause is the user's decision to
+   * make, not Aime's to assume.
+   */
+  inlineAi: InlineAiMode;
 }
 
 const STORAGE_KEY = "aime.settings";
@@ -22,6 +33,7 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   wordWrap: false,
   minimap: false,
   tabSize: 2,
+  inlineAi: "manual",
 };
 
 /** Bounds that keep the editor readable whatever is in storage. */
@@ -41,6 +53,9 @@ export function sanitize(stored: unknown): EditorSettings {
     wordWrap: typeof raw.wordWrap === "boolean" ? raw.wordWrap : DEFAULT_SETTINGS.wordWrap,
     minimap: typeof raw.minimap === "boolean" ? raw.minimap : DEFAULT_SETTINGS.minimap,
     tabSize: clamp(Number(raw.tabSize), TAB_SIZE_RANGE, DEFAULT_SETTINGS.tabSize),
+    inlineAi: INLINE_AI_MODES.includes(raw.inlineAi as InlineAiMode)
+      ? (raw.inlineAi as InlineAiMode)
+      : DEFAULT_SETTINGS.inlineAi,
   };
 }
 

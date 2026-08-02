@@ -2,10 +2,11 @@
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
 import { Lightbulb, TriangleAlert, X } from "lucide-react";
-import { Range as MonacoRange, type editor as MonacoEditor } from "monaco-editor";
+import { KeyCode, KeyMod, Range as MonacoRange, type editor as MonacoEditor } from "monaco-editor";
 import "../lib/monaco";
-import { useT } from "../i18n";
+import { translate, useT } from "../i18n";
 import { AI_ACTIONS, buildPrompt, labelOf } from "../lib/aiActions";
+import { registerInlineAi } from "../lib/aiInline";
 import { languageOf } from "../lib/languages";
 import { useAi } from "../stores/ai";
 import { useLayout } from "../stores/layout";
@@ -128,6 +129,18 @@ function EditorTabs() {
  * because "explain this file" is a question people ask just as often.
  */
 function registerAiActions(editor: MonacoEditor.IStandaloneCodeEditor) {
+  editor.addAction({
+    id: "aime.ai.suggest",
+    label: translate("ai.suggestHere"),
+    // Ctrl+Alt+Space: Ctrl+Space is taken by the language server's completions,
+    // and the two answer different questions.
+    keybindings: [KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.Space],
+    contextMenuGroupId: "aime-ai",
+    contextMenuOrder: -1,
+    run: (instance) => {
+      instance.trigger("aime", "editor.action.inlineSuggest.trigger", {});
+    },
+  });
   for (const action of AI_ACTIONS) {
     editor.addAction({
       id: `aime.ai.${action.id}`,
@@ -387,6 +400,7 @@ function BlameView({ relativePath }: { relativePath: string }) {
 
 export function EditorPane() {
   const editorOptions = useEditorOptions();
+  const inlineAi = useSettings((s) => s.inlineAi);
   const {
     openFilePath,
     diffPath,
@@ -544,6 +558,7 @@ export function EditorPane() {
           }}
           onMount={(editor) => {
             editorRef.current = editor;
+            registerInlineAi();
             registerAiActions(editor);
             decorationsRef.current = editor.createDecorationsCollection();
             blameDecoRef.current = editor.createDecorationsCollection();
@@ -552,7 +567,7 @@ export function EditorPane() {
             });
           }}
           theme={monacoThemeOf(theme)}
-          options={editorOptions}
+          options={{ ...editorOptions, inlineSuggest: { enabled: inlineAi !== "off" } }}
         />
       </div>
     </div>

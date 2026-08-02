@@ -71,6 +71,12 @@ function stripFence(text: string): string {
  */
 function dropEchoedPrefix(completion: string, prefix: string): string {
   const currentLine = prefix.slice(prefix.lastIndexOf("\n") + 1);
+  // On an indent-only line the echo is the indentation itself: models answer a
+  // Python body with its four spaces already on the first line, which would
+  // land at eight. Later lines keep their own indentation, as they must.
+  if (currentLine.trim() === "") {
+    return completion.startsWith(currentLine) ? completion.slice(currentLine.length) : completion;
+  }
   // Also without the trailing spaces: an answer is trimmed before it gets here,
   // so an echo of `const total = ` arrives as `const total =`.
   for (const line of [currentLine, currentLine.trimEnd()]) {

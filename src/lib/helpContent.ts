@@ -242,6 +242,13 @@ const EN: HelpTopic[] = [
     keywords: "settings preferences options font size word wrap theme language ctrl+,",
   },
   {
+    id: "inline-ai",
+    section: "AI",
+    title: "Suggestions at the cursor",
+    body: "Ctrl+Alt+Space asks your AI CLI to finish the line or the block you are on; the answer appears as grey ghost text, Tab accepts it, Esc dismisses it. It reads the code around the cursor, so it suggests something that fits the file rather than something generic. The chip in the status bar shows what it is doing and switches the mode with a click: On ask (the default), Auto - which suggests after a pause in typing - or Off. Auto is not the default on purpose: every suggestion starts your CLI as a process, which measured about seven seconds and roughly a cent per suggestion here, and asking on every pause spends both without being asked. Repeating the shortcut in the same spot is free - the answer is cached. This is separate from the language server's completions on Ctrl+Space, which are instant, local and free; the two answer different questions.",
+    keywords: "ghost text inline completion suggestion ctrl+alt+space autocomplete ai copilot",
+  },
+  {
     id: "ai-actions",
     section: "AI",
     title: "Ask about the code you are looking at",
@@ -503,6 +510,13 @@ const VI: HelpTopic[] = [
     title: "Cài đặt",
     body: "Ctrl+, nút bánh răng trên status bar, hoặc 'Cài đặt' trong palette mở một trang gom hết mọi thứ chỉnh được: theme, ngôn ngữ, cỡ chữ, xuống dòng tự động, độ thụt dòng, dùng AI CLI và model nào, AI được phép làm gì. Các công tắc đó vẫn nằm sẵn ở nơi anh dùng chúng - chip khiên trong panel AI, theme ở status bar - vì chỗ nhanh nhất để đổi là ngay chỗ anh nhận ra cần đổi. Thay đổi có hiệu lực ngay.",
     keywords: "cài đặt tuỳ chọn cỡ chữ xuống dòng theme ngôn ngữ ctrl+,",
+  },
+  {
+    id: "inline-ai",
+    section: "AI",
+    title: "Gợi ý ngay tại con trỏ",
+    body: "Ctrl+Alt+Space bảo AI CLI của anh viết nốt dòng hoặc khối đang đứng; kết quả hiện dạng chữ xám mờ, Tab để nhận, Esc để bỏ. Nó đọc code quanh con trỏ nên gợi ý hợp với file chứ không chung chung. Chip trên status bar cho thấy nó đang làm gì và bấm một cái là đổi chế độ: Khi gọi (mặc định), Tự động - gợi ý sau khi anh ngừng gõ - hoặc Tắt. Không để Tự động làm mặc định là có chủ ý: mỗi gợi ý chạy CLI như một tiến trình riêng, đo thực tế ở đây khoảng bảy giây và cỡ một xu Mỹ mỗi lần, nên tự gợi ý mỗi lần ngừng gõ là tiêu cả thời gian lẫn tiền mà chưa hỏi anh. Bấm lại phím tắt ở đúng chỗ cũ thì miễn phí - câu trả lời đã được nhớ. Cái này khác với completion của language server ở Ctrl+Space: cái kia tức thì, chạy máy anh và miễn phí; hai bên trả lời hai câu hỏi khác nhau.",
+    keywords: "gợi ý mờ ghost text inline completion ctrl+alt+space tự động hoàn thành ai copilot",
   },
   {
     id: "ai-actions",

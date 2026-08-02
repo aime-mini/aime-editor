@@ -52,6 +52,17 @@ describe("cleanCompletion", () => {
     expect(cleanCompletion("getName(user) {", at("function get"))).toBe("Name(user) {");
   });
 
+  // Measured against the real CLI: a Python body comes back with its own
+  // indentation, which would double the four spaces already before the cursor.
+  it("drops indentation the model repeated on an indent-only line", () => {
+    const body = "    return slug\n    # done";
+    expect(cleanCompletion(body, at("def f():\n    "))).toBe("return slug\n    # done");
+  });
+
+  it("keeps a body that is not indented like the cursor line", () => {
+    expect(cleanCompletion("return slug", at("def f():\n    "))).toBe("return slug");
+  });
+
   it("does not treat an earlier line's repetition as an echo", () => {
     expect(cleanCompletion("value + 1", at("const value = 1;\n"))).toBe("value + 1");
   });

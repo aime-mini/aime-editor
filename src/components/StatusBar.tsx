@@ -18,6 +18,7 @@ import {
   PanelLeft,
   Play,
   Settings2,
+  Sparkles,
   SquareTerminal,
   Sun,
 } from "lucide-react";
@@ -30,6 +31,8 @@ import { useGit } from "../stores/git";
 import { useLayout } from "../stores/layout";
 import { useLsp } from "../stores/lsp";
 import { useTasks, type TaskKind } from "../stores/tasks";
+import { useInlineAi } from "../stores/inlineAi";
+import { INLINE_AI_MODES, useSettings } from "../stores/settings";
 import { useTheme } from "../stores/theme";
 import { useWorkspace } from "../stores/workspace";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -40,6 +43,41 @@ const TASK_ICONS: Record<TaskKind, typeof Play> = {
   test: FlaskConical,
   publish: PackageCheck,
 };
+
+/**
+ * Ghost-text state, and the switch for it.
+ *
+ * The mode belongs here because this is where the user finds out it exists:
+ * a suggestion that takes two seconds needs to say it is coming, and a
+ * provider that is signed out needs to say that instead of showing nothing.
+ */
+function InlineAiChip() {
+  const mode = useSettings((s) => s.inlineAi);
+  const update = useSettings((s) => s.update);
+  const state = useInlineAi((s) => s.state);
+  const t = useT();
+
+  const next = INLINE_AI_MODES[(INLINE_AI_MODES.indexOf(mode) + 1) % INLINE_AI_MODES.length] ?? "manual";
+  const tone =
+    state.kind === "failed" ? "text-danger" : state.kind === "thinking" ? "text-accent" : "text-muted";
+
+  return (
+    <button
+      onClick={() => {
+        update({ inlineAi: next });
+      }}
+      title={
+        state.kind === "failed"
+          ? t("ai.inline.failed", { reason: state.reason })
+          : `${t(`settings.inlineAi.${mode}`)} - ${t("ai.inline.switch", { mode: t(`settings.inlineAi.${next}.short`) })}`
+      }
+      className={`flex items-center gap-1 rounded px-1 hover:bg-elevated hover:text-fg ${tone}`}
+    >
+      {state.kind === "thinking" ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+      {t(`settings.inlineAi.${mode}.short`)}
+    </button>
+  );
+}
 
 export function StatusBar() {
   const rootPath = useWorkspace((s) => s.rootPath);
@@ -169,6 +207,7 @@ export function StatusBar() {
             {t("status.session")}: {sessionId.slice(0, 8)}
           </span>
         )}
+        <InlineAiChip />
         {lsp && lsp.kind !== "unsupported" && openLanguage && (
           <button
             onClick={() => {
