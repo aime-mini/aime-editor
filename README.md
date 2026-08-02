@@ -30,12 +30,12 @@ editor layer** on top of them:
 
 ## Tech stack
 
-| Layer | Technology |
-|---|---|
-| Shell | Tauri 2 (Rust) |
-| UI | React 19 + TypeScript + Tailwind CSS 4 |
+| Layer  | Technology                              |
+| ------ | --------------------------------------- |
+| Shell  | Tauri 2 (Rust)                          |
+| UI     | React 19 + TypeScript + Tailwind CSS 4  |
 | Editor | Monaco (bundled locally, fully offline) |
-| State | zustand |
+| State  | zustand                                 |
 
 Every AI CLI is reached through an adapter that normalizes its output into one event set, so the UI
 never knows which CLI answers: `src-tauri/src/providers/adapter.rs` is the whole contract.
@@ -71,6 +71,19 @@ draft release; publishing it is a human decision. The same job signs
 `latest.json`, which the app checks once per launch - a new version appears as
 a bar at the top of the window, and nothing downloads until the user says so.
 
-Signing needs two repository secrets: `TAURI_SIGNING_PRIVATE_KEY` and
+Two channels, told apart by the tag:
+
+| Tag             | Published as                              | Who sees it                           |
+| --------------- | ----------------------------------------- | ------------------------------------- |
+| `v0.2.0`        | a normal release                          | everyone                              |
+| `v0.2.0-beta.1` | a pre-release under the moving `beta` tag | only installs set to Beta in Settings |
+
+Update signing needs two repository secrets: `TAURI_SIGNING_PRIVATE_KEY` and
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Keep a backup of the private key: without
 it, no future build can update an existing install.
+
+Signing the installers themselves is separate, optional, and costs money -
+an Authenticode certificate on Windows, a Developer ID on macOS. The workflow
+passes `WINDOWS_CERTIFICATE`, `APPLE_CERTIFICATE` and friends through when they
+exist; without them the installers still work, the operating system just warns
+before the first run.
