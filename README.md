@@ -55,6 +55,7 @@ npm run tauri build    # package installers
 npm run check          # prettier + eslint (strict) + tsc - must pass before committing
 npm test               # frontend unit tests (vitest)
 cd src-tauri && cargo test   # Rust unit tests
+npm run test:e2e             # drives the real window (see e2e/README.md)
 ```
 
 Code standards are enforced by a pre-commit hook (prettier, eslint, rustfmt). Enable it once after cloning:

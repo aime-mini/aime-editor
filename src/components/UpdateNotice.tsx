@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { check, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import type { Update } from "@tauri-apps/plugin-updater";
 import { Download, Loader2, X } from "lucide-react";
 import { useT } from "../i18n";
 
@@ -19,19 +18,27 @@ export function UpdateNotice() {
   const [dismissed, setDismissed] = useState(false);
   const t = useT();
 
+  // Loaded on demand rather than imported at the top: an updater that cannot
+  // load - no network, an old build, a stale dev server - must cost the user
+  // an update check, never the whole editor.
   useEffect(() => {
-    let stale = false;
-    check()
-      .then((found) => {
-        // check() answers null when there is nothing newer.
-        if (!stale && found) setUpdate(found);
-      })
-      .catch((err: unknown) => {
-        // No network, no release yet, running from source: all normal.
+    // A mutable holder rather than a plain flag: the effect body runs after an
+    // await, so the value must be read at that later moment, not captured.
+    const cancelled = { value: false };
+    void (async () => {
+      try {
+        const { check } = await import("@tauri-apps/plugin-updater");
+        // The plugin types check() as always returning an Update while it
+        // actually answers null when there is nothing newer, so the result is
+        // taken as unknown and narrowed here rather than trusted.
+        const found: unknown = await check();
+        if (!cancelled.value && found) setUpdate(found as Update);
+      } catch (err: unknown) {
         console.warn("update check skipped:", err);
-      });
+      }
+    })();
     return () => {
-      stale = true;
+      cancelled.value = true;
     };
   }, []);
 
@@ -42,6 +49,7 @@ export function UpdateNotice() {
     try {
       await update.downloadAndInstall();
       setPhase("ready");
+      const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
     } catch (err: unknown) {
       console.error("update failed:", err);

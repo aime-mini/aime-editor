@@ -74,7 +74,9 @@ function PickerChip({
   onChange: (value: string) => void;
 }) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  const current = options.find((o) => o.value === value) ?? options[0];
+  // Options can be empty for a moment while they load from the backend; a
+  // picker with nothing in it is a picker, not a crash.
+  const current = options.find((o) => o.value === value) ?? options.at(0) ?? { value, label: value };
 
   return (
     <>
@@ -277,10 +279,11 @@ export function AiPanel() {
   const capabilities = capabilitiesOf(providerId);
   // Built-in providers keep their capability table; a configured one is named
   // by its own config, so the picker shows whatever the user called it.
-  const providerOptions: ProviderOption[] = providers.map((provider) => ({
-    value: provider.id,
-    label: provider.displayName,
-  }));
+  const providerOptions: ProviderOption[] =
+    providers.length > 0
+      ? providers.map((provider) => ({ value: provider.id, label: provider.displayName }))
+      : // Until the backend answers, the chip still names the provider in use.
+        [{ value: providerId, label: capabilities.displayName }];
 
   const formatWhen = (ts: number) =>
     new Date(ts).toLocaleString(undefined, {
