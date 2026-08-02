@@ -2,6 +2,7 @@ mod cli;
 mod fs_cmds;
 mod fs_watch;
 mod git;
+mod lsp;
 mod mcp;
 mod memory;
 mod providers;
@@ -21,6 +22,7 @@ pub fn run() {
         .manage(fs_watch::WatcherState::default())
         .manage(cli::InitialFolder::from_args())
         .manage(terminal::TerminalState::default())
+        .manage(lsp::LspState::default())
         .setup(|app| {
             // The main window is configured hidden; size it to the real
             // monitor work area, maximize and show (see fit_and_maximize).
@@ -33,6 +35,7 @@ pub fn run() {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 fs_watch::drop_watcher_for(window);
                 terminal::kill_for_window(window);
+                lsp::stop_for_window(window);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -87,6 +90,10 @@ pub fn run() {
             mcp::mcp_add,
             mcp::mcp_remove,
             mcp::mcp_login_command,
+            lsp::lsp_availability,
+            lsp::lsp_start,
+            lsp::lsp_send,
+            lsp::lsp_stop,
             window_cmds::open_new_window,
         ])
         .run(tauri::generate_context!())
