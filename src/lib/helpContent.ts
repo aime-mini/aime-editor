@@ -62,8 +62,8 @@ const EN: HelpTopic[] = [
     id: "editor",
     section: "Editor",
     title: "Editing & saving",
-    body: "Ctrl+S saves the open file. The dot next to the file path marks unsaved changes; undoing back to the saved state clears it.",
-    keywords: "save dirty modified undo ctrl+z monaco",
+    body: "Every file you open gets its own tab, and unsaved text stays put when you switch between them - a half-written thought survives going to another file and back. A dot on the tab marks unsaved changes, the x or a middle-click closes it, Ctrl+W closes the current one. Ctrl+S saves; undoing back to the saved state clears the dot.",
+    keywords: "save dirty modified undo ctrl+z monaco tab tabs multiple files close switch",
   },
   {
     id: "lsp",

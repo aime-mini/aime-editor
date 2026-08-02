@@ -437,6 +437,14 @@ export default function App() {
       } else if (e.code === "Backquote") {
         e.preventDefault();
         toggleTerminal();
+      } else if (key === "w") {
+        // Closes the current editor tab, not the window - the editor meaning
+        // of Ctrl+W is the one a user has in their fingers here.
+        const { openFilePath, closeTab } = useWorkspace.getState();
+        if (openFilePath) {
+          e.preventDefault();
+          closeTab(openFilePath);
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown);

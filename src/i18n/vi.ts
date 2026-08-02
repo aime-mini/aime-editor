@@ -16,6 +16,7 @@ export const vi: Record<TranslationKey, string> = {
   "welcome.noRecent": "Chưa có gì - mở một thư mục để bắt đầu.",
 
   "editor.pickFile": "Chọn một file để mở",
+  "editor.closeTab": "Đóng tab",
   "editor.unsavedHint": "Chưa lưu (Ctrl+S)",
 
   "ai.newSession": "Phiên mới",

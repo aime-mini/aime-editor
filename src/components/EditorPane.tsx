@@ -11,6 +11,66 @@ import { monacoThemeOf, useTheme } from "../stores/theme";
 import { useWorkspace } from "../stores/workspace";
 import { ConflictView } from "./ConflictView";
 
+/** Tab label: the file name, which is what the user recognizes. */
+function fileNameOf(path: string): string {
+  return path.split(/[\\/]/).pop() ?? path;
+}
+
+/** One tab per open file: name, unsaved dot, close on hover or middle-click. */
+function EditorTabs() {
+  const { openTabs, openFilePath, buffers, dirty, activateTab, closeTab } = useWorkspace();
+  const t = useT();
+  if (openTabs.length === 0) return null;
+
+  const isDirty = (path: string) =>
+    path === openFilePath
+      ? dirty
+      : (() => {
+          const buffer = buffers[path];
+          return buffer ? buffer.content !== buffer.savedContent : false;
+        })();
+
+  return (
+    <div className="flex items-stretch gap-0.5 overflow-x-auto border-b border-line bg-panel px-1 pt-1">
+      {openTabs.map((path) => {
+        const active = path === openFilePath;
+        return (
+          <div
+            key={path}
+            onClick={() => {
+              activateTab(path);
+            }}
+            onAuxClick={(e) => {
+              // Middle-click closes, the way every editor does it.
+              if (e.button === 1) {
+                e.preventDefault();
+                closeTab(path);
+              }
+            }}
+            title={path}
+            className={`group flex max-w-52 shrink-0 items-center gap-1.5 rounded-t px-2 py-1 text-[11.5px] ${
+              active ? "bg-elevated text-fg" : "cursor-pointer text-muted hover:bg-elevated/50"
+            }`}
+          >
+            <span className="truncate">{fileNameOf(path)}</span>
+            {isDirty(path) && <span className="size-1.5 shrink-0 rounded-full bg-accent" />}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                closeTab(path);
+              }}
+              title={t("editor.closeTab")}
+              className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-panel hover:text-danger"
+            >
+              <X size={10} />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 const EDITOR_OPTIONS = {
   fontFamily: "JetBrains Mono, Consolas, monospace",
   fontSize: 13,
@@ -377,6 +437,7 @@ export function EditorPane() {
           {t("editor.conflictBanner")} — {t("git.resolve")}
         </button>
       )}
+      <EditorTabs />
       <div className="min-h-0 flex-1">
         <Editor
           path={openFilePath}

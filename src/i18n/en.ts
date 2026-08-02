@@ -14,6 +14,7 @@ export const en = {
   "welcome.noRecent": "Nothing yet - open a folder to get started.",
 
   "editor.pickFile": "Select a file to open",
+  "editor.closeTab": "Close tab",
   "editor.unsavedHint": "Unsaved (Ctrl+S)",
 
   "ai.newSession": "New session",
