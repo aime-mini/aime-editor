@@ -11,6 +11,7 @@ mod providers;
 mod session;
 mod tasks;
 mod terminal;
+mod updates;
 mod window_cmds;
 
 use tauri::Manager;
@@ -59,6 +60,8 @@ pub fn run() {
             environment::unattended_setup_targets,
             fs_cmds::list_dir,
             fs_cmds::list_files,
+            updates::update_check,
+            updates::update_install,
             fs_cmds::read_file,
             fs_cmds::write_file,
             fs_cmds::create_dir,

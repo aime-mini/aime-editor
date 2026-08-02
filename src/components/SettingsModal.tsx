@@ -5,7 +5,7 @@ import { useI18n, useT } from "../i18n";
 import { capabilitiesOf, effortsOf } from "../lib/providers";
 import { PERMISSION_ORDER, type Permission } from "../lib/types";
 import { useAi } from "../stores/ai";
-import { INLINE_AI_MODES, useSettings } from "../stores/settings";
+import { INLINE_AI_MODES, UPDATE_CHANNELS, useSettings } from "../stores/settings";
 import { useTheme } from "../stores/theme";
 import { useWorkspace } from "../stores/workspace";
 
@@ -257,6 +257,18 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
           <p className={section}>
             <Settings2 size={12} /> {t("settings.advanced")}
           </p>
+          <Row label={t("settings.updateChannel")} hint={t(`settings.channel.${settings.updateChannel}`)}>
+            <Choice
+              options={UPDATE_CHANNELS.map((channel) => ({
+                value: channel,
+                label: t(`settings.channel.${channel}.short`),
+              }))}
+              value={settings.updateChannel}
+              onChange={(updateChannel) => {
+                settings.update({ updateChannel });
+              }}
+            />
+          </Row>
           <Row label={t("settings.providersFile")} hint={t("settings.providersFileHint")}>
             <button
               onClick={() => {

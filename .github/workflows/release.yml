@@ -7,12 +7,27 @@
 # Required repository secrets:
 #   TAURI_SIGNING_PRIVATE_KEY           the updater private key (keep a backup!)
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password, empty string if none
+#
+# Optional, and only worth adding once the certificates exist. Without them the
+# installers still work; the operating system just warns before the first run:
+#   WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD   Authenticode .pfx, base64
+#   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD       Developer ID .p12, base64
+#   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID  for notarizing
+#
+# Two channels, distinguished by the tag:
+#   v1.2.3        -> a normal release, and the manifest every install reads
+#   v1.2.3-beta.1 -> a pre-release published under the moving `beta` tag, which
+#                    only installs set to the beta channel ever look at
 name: release
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+
+env:
+  # A tag like v0.2.0-beta.1 is a pre-release; v0.2.0 is not.
+  IS_BETA: ${{ contains(github.ref_name, '-beta') }}
 
 jobs:
   build:
@@ -60,12 +75,25 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Code signing by the operating systems' own schemes. Absent secrets
+          # mean unsigned installers, which is a warning on first run, not a
+          # failure - so a release never waits on a certificate purchase.
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          tagName: ${{ github.ref_name }}
+          # A beta lands on the moving `beta` tag, so the stable channel's
+          # "latest release" never becomes a pre-release by accident.
+          tagName: ${{ env.IS_BETA == 'true' && 'beta' || github.ref_name }}
           releaseName: "Aime ${{ github.ref_name }}"
           releaseBody: "See the assets below to download and install."
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ env.IS_BETA == 'true' }}
           # The updater reads this file from the latest release.
           includeUpdaterJson: true
           args: ${{ matrix.args }}

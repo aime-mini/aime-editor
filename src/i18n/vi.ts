@@ -108,6 +108,11 @@ export const vi: Record<TranslationKey, string> = {
   "ai.starter.findBugs": "Tìm bug trong dự án",
   "ai.starter.findBugs.prompt":
     "Tìm bug thật trong dự án này - sai logic, lỗi không xử lý, race condition. Mỗi lỗi nói rõ nằm ở đâu và dữ liệu nào kích hoạt nó. Bỏ qua chuyện style.",
+  "settings.updateChannel": "Cập nhật",
+  "settings.channel.stable": "Chỉ bản phát hành chính thức, khi nó sẵn sàng.",
+  "settings.channel.stable.short": "Ổn định",
+  "settings.channel.beta": "Nhận cả bản thử nghiệm: mới hơn, và tương ứng là ít được kiểm chứng hơn.",
+  "settings.channel.beta.short": "Thử nghiệm",
   "ai.usage.title": "Sử dụng trong phiên",
   "ai.usage.input": "Token đầu vào",
   "ai.usage.output": "Token đầu ra",

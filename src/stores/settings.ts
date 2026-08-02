@@ -12,6 +12,11 @@ export type InlineAiMode = "off" | "manual" | "auto";
 
 export const INLINE_AI_MODES: InlineAiMode[] = ["off", "manual", "auto"];
 
+/** Which releases this install is offered. */
+export type UpdateChannel = "stable" | "beta";
+
+export const UPDATE_CHANNELS: UpdateChannel[] = ["stable", "beta"];
+
 export interface EditorSettings {
   fontSize: number;
   wordWrap: boolean;
@@ -24,6 +29,8 @@ export interface EditorSettings {
    * make, not Aime's to assume.
    */
   inlineAi: InlineAiMode;
+  /** Stable by default: a pre-release is a favour the user opts into. */
+  updateChannel: UpdateChannel;
 }
 
 const STORAGE_KEY = "aime.settings";
@@ -34,6 +41,7 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   minimap: false,
   tabSize: 2,
   inlineAi: "manual",
+  updateChannel: "stable",
 };
 
 /** Bounds that keep the editor readable whatever is in storage. */
@@ -56,6 +64,9 @@ export function sanitize(stored: unknown): EditorSettings {
     inlineAi: INLINE_AI_MODES.includes(raw.inlineAi as InlineAiMode)
       ? (raw.inlineAi as InlineAiMode)
       : DEFAULT_SETTINGS.inlineAi,
+    updateChannel: UPDATE_CHANNELS.includes(raw.updateChannel as UpdateChannel)
+      ? (raw.updateChannel as UpdateChannel)
+      : DEFAULT_SETTINGS.updateChannel,
   };
 }
 

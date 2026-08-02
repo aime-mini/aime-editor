@@ -235,6 +235,13 @@ const EN: HelpTopic[] = [
     keywords: "fix error failure build failed exit code ai repair",
   },
   {
+    id: "updates",
+    section: "UI & shortcuts",
+    title: "Updates and channels",
+    body: "Aime checks once per launch, never again in that session, and downloads nothing until you press Install - an editor that interrupts while you are typing has misjudged its own importance. Settings has two channels: Stable, which is released versions only, and Beta, which also offers pre-releases - newer, and correspondingly less proven. Every build is signed with the project's own key and the signature is checked before anything is installed, whichever channel it came from.",
+    keywords: "update upgrade version beta channel stable install signature",
+  },
+  {
     id: "settings",
     section: "UI & shortcuts",
     title: "Settings",
@@ -510,6 +517,13 @@ const VI: HelpTopic[] = [
     title: "Nhờ AI sửa khi task lỗi",
     body: "Khi task kết thúc với mã lỗi khác 0, một thanh đỏ hiện phía trên terminal. Nút 'Nhờ AI sửa' gửi lệnh, mã lỗi và output đã bắt được sang panel AI, yêu cầu AI tìm nguyên nhân, sửa rồi chạy lại task để xác nhận. Không dùng AI thì thanh đó chỉ là thông báo lỗi, bấm X để bỏ qua.",
     keywords: "sửa lỗi build fail exit code ai khắc phục",
+  },
+  {
+    id: "updates",
+    section: "Giao diện & phím tắt",
+    title: "Cập nhật và kênh phát hành",
+    body: "Aime kiểm tra đúng một lần mỗi lần mở, không hỏi lại trong phiên đó, và không tải gì cho tới khi anh bấm Cài - một editor cắt ngang lúc anh đang gõ là tự cho mình quan trọng quá mức. Trong Cài đặt có hai kênh: Ổn định chỉ nhận bản phát hành chính thức, còn Thử nghiệm nhận thêm bản beta - mới hơn và tương ứng là ít được kiểm chứng hơn. Mọi bản build đều được ký bằng khoá riêng của dự án và chữ ký được kiểm trước khi cài, kênh nào cũng vậy.",
+    keywords: "cập nhật phiên bản beta kênh ổn định cài chữ ký",
   },
   {
     id: "settings",

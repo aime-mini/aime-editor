@@ -107,6 +107,11 @@ export const en = {
   "ai.starter.findBugs": "Find bugs in this project",
   "ai.starter.findBugs.prompt":
     "Look for real bugs in this project - wrong logic, unhandled failures, race conditions. For each one, say where it is and what input triggers it. Skip style opinions.",
+  "settings.updateChannel": "Updates",
+  "settings.channel.stable": "Only released versions, when they are ready.",
+  "settings.channel.stable.short": "Stable",
+  "settings.channel.beta": "Pre-releases too: newer, and correspondingly less proven.",
+  "settings.channel.beta.short": "Beta",
   "ai.usage.title": "Session usage",
   "ai.usage.input": "Input tokens",
   "ai.usage.output": "Output tokens",
