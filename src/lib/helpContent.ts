@@ -20,8 +20,8 @@ const EN: HelpTopic[] = [
     id: "open-project",
     section: "Getting started",
     title: "Open a project",
-    body: "On the welcome screen: Open Folder picks any folder, Recent reopens the last 8 workspaces, New Project creates a folder and opens it in one step.",
-    keywords: "workspace recent folder start",
+    body: "On the welcome screen: Open Folder picks any folder, Recent reopens the last 8 workspaces, New Project creates a folder and opens it in one step, and Clone Repository takes a git URL, asks where to put it, and opens the clone - no terminal needed.",
+    keywords: "workspace recent folder start clone git url github",
   },
   {
     id: "cli",
@@ -142,6 +142,20 @@ const EN: HelpTopic[] = [
     title: "Git panel",
     body: "The Git tab in the sidebar (or the branch name in the status bar) shows your changes: stage/unstage per file or all at once, discard changes, commit (Ctrl+Enter in the message box), push and pull. Click a file to see its diff against HEAD; the History section (collapsible, own scroll, Load more) lists commits - click one to view its full patch. Changed files get letters in the file tree and changed lines get colored marks in the editor gutter. Smart by default: committing with nothing staged stages everything first, and the first push of a new branch sets its upstream automatically. Works entirely without AI; with AI, the sparkle button writes the commit message from the staged (or unstaged) diff.",
     keywords: "commit stage diff push pull branch source control version init",
+  },
+  {
+    id: "git-branches",
+    section: "Git",
+    title: "Branches, remotes and tags",
+    body: "Click the branch name to switch branches, create one, rename the current one, merge another into it, or delete one - deleting a branch that still holds unmerged commits asks a second time before losing that work. The ... button next to Refresh manages remotes (add one, or repoint an existing one at a new URL) and tags (create lightweight or annotated, delete, push them all). The download arrow fetches remote branches without touching your files.",
+    keywords: "branch rename delete merge remote origin url tag fetch prune",
+  },
+  {
+    id: "git-history-ops",
+    section: "Git",
+    title: "Undoing and moving commits",
+    body: "Right-click a commit in History: copy its id, revert it (a new commit undoes it - the safe choice for work already pushed), cherry-pick it onto the current branch, or move the branch back to it. Reset comes in three flavours the dialog spells out: keep the changes staged, keep them in your files unstaged, or discard them entirely - the last one says plainly that it cannot be undone.",
+    keywords: "revert undo cherry-pick reset soft mixed hard rollback commit id sha",
   },
   {
     id: "git-conflicts",
@@ -349,6 +363,20 @@ const VI: HelpTopic[] = [
     title: "Panel Git",
     body: "Tab Git ở sidebar (hoặc bấm tên branch trên status bar) hiển thị thay đổi: stage/bỏ stage từng file hoặc tất cả, hủy thay đổi, commit (Ctrl+Enter trong ô nội dung), push và pull. Bấm vào file để xem diff so với HEAD; khu Lịch sử (gập/mở, cuộn riêng, nút Tải thêm) liệt kê commit - bấm vào để xem trọn patch. File thay đổi có chữ trạng thái trong cây file, dòng thay đổi có vạch màu ở lề editor. Thông minh mặc định: commit khi chưa stage gì sẽ tự stage toàn bộ, push lần đầu của nhánh mới tự thiết lập upstream. Hoạt động hoàn toàn không cần AI; có AI thì nút lấp lánh tự viết nội dung commit từ diff (đã stage hoặc chưa).",
     keywords: "commit stage diff push pull nhánh branch quản lý phiên bản init",
+  },
+  {
+    id: "git-branches",
+    section: "Git",
+    title: "Nhánh, remote và tag",
+    body: "Bấm tên nhánh để chuyển nhánh, tạo nhánh, đổi tên nhánh hiện tại, merge nhánh khác vào, hoặc xoá nhánh - xoá nhánh còn commit chưa merge thì hỏi lại lần nữa trước khi mất phần việc đó. Nút ... cạnh Refresh quản lý remote (thêm mới, hoặc trỏ remote cũ sang URL khác) và tag (tạo tag thường hoặc annotated, xoá, push toàn bộ). Mũi tên tải xuống là fetch - cập nhật nhánh từ remote mà không đụng file của bạn.",
+    keywords: "nhánh đổi tên xoá merge remote origin url tag fetch",
+  },
+  {
+    id: "git-history-ops",
+    section: "Git",
+    title: "Hoàn tác và di chuyển commit",
+    body: "Chuột phải vào một commit trong Lịch sử: chép mã commit, revert nó (tạo commit mới đảo ngược - cách an toàn cho việc đã push), cherry-pick sang nhánh hiện tại, hoặc chuyển nhánh về đúng commit đó. Reset có 3 kiểu và hộp thoại nói rõ từng kiểu: giữ thay đổi ở vùng stage, giữ trong file nhưng chưa stage, hoặc bỏ sạch - kiểu cuối ghi thẳng là không hoàn tác được.",
+    keywords: "revert hoàn tác cherry-pick reset soft mixed hard commit sha",
   },
   {
     id: "git-conflicts",

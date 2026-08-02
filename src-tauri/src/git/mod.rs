@@ -358,6 +358,147 @@ pub async fn git_create_branch(root: String, name: String) -> Result<String, Str
     run_git(&root, &["checkout", "-b", &name]).await
 }
 
+#[tauri::command]
+pub async fn git_rename_branch(root: String, from: String, to: String) -> Result<String, String> {
+    run_git(&root, &["branch", "-m", &from, &to]).await
+}
+
+/// Deletes a branch. Plain delete refuses to drop unmerged work — the UI turns
+/// that refusal into an explicit "delete anyway", so losing commits is always
+/// a decision the user made, never a side effect.
+#[tauri::command]
+pub async fn git_delete_branch(root: String, name: String, force: bool) -> Result<String, String> {
+    let flag = if force { "-D" } else { "-d" };
+    run_git(&root, &["branch", flag, &name]).await
+}
+
+/// Merges a branch into the current one. A merge that stops on conflicts is a
+/// normal outcome: the conflicted files then appear in the panel's conflict
+/// section, where the resolver handles them.
+#[tauri::command]
+pub async fn git_merge_branch(root: String, name: String) -> Result<String, String> {
+    run_git(&root, &["merge", "--no-edit", &name]).await
+}
+
+/// A remote and where it points. Aime shows these so a user never has to open
+/// a terminal to find out which server a project talks to.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct GitRemote {
+    pub name: String,
+    pub url: String,
+}
+
+/// `git remote -v` lists fetch and push lines per remote; they are almost
+/// always the same URL, so one entry per remote is what the UI wants.
+fn parse_remotes(text: &str) -> Vec<GitRemote> {
+    let mut remotes: Vec<GitRemote> = Vec::new();
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(name), Some(url)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if remotes.iter().any(|remote| remote.name == name) {
+            continue;
+        }
+        remotes.push(GitRemote {
+            name: name.to_string(),
+            url: url.to_string(),
+        });
+    }
+    remotes
+}
+
+#[tauri::command]
+pub async fn git_remotes(root: String) -> Result<Vec<GitRemote>, String> {
+    Ok(parse_remotes(&run_git(&root, &["remote", "-v"]).await?))
+}
+
+/// Adds a remote, or repoints an existing one — the user thinks "this project
+/// lives here now", not "add versus set-url".
+#[tauri::command]
+pub async fn git_set_remote(root: String, name: String, url: String) -> Result<String, String> {
+    let exists = run_git(&root, &["remote", "-v"])
+        .await
+        .map(|text| parse_remotes(&text).iter().any(|remote| remote.name == name))
+        .unwrap_or(false);
+    let action = if exists { "set-url" } else { "add" };
+    run_git(&root, &["remote", action, &name, &url]).await
+}
+
+/// Refreshes remote branches without touching the working tree; `--prune`
+/// drops references to branches deleted on the server.
+#[tauri::command]
+pub async fn git_fetch(root: String) -> Result<String, String> {
+    run_git(&root, &["fetch", "--all", "--prune"]).await
+}
+
+#[tauri::command]
+pub async fn git_clone(url: String, parent: String, folder: String) -> Result<String, String> {
+    run_git(&parent, &["clone", &url, &folder]).await?;
+    Ok(std::path::Path::new(&parent)
+        .join(&folder)
+        .to_string_lossy()
+        .to_string())
+}
+
+#[tauri::command]
+pub async fn git_tags(root: String) -> Result<Vec<String>, String> {
+    let text = run_git(&root, &["tag", "--sort=-creatordate"]).await?;
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// An annotated tag when a message is given (what releases want), a light one
+/// otherwise.
+#[tauri::command]
+pub async fn git_create_tag(root: String, name: String, message: String) -> Result<String, String> {
+    if message.trim().is_empty() {
+        run_git(&root, &["tag", &name]).await
+    } else {
+        run_git(&root, &["tag", "-a", &name, "-m", &message]).await
+    }
+}
+
+#[tauri::command]
+pub async fn git_delete_tag(root: String, name: String) -> Result<String, String> {
+    run_git(&root, &["tag", "-d", &name]).await
+}
+
+#[tauri::command]
+pub async fn git_push_tags(root: String) -> Result<String, String> {
+    run_git(&root, &["push", "--tags"]).await
+}
+
+/// Undoes a commit by adding the opposite one — the safe way to take back
+/// work that is already published.
+#[tauri::command]
+pub async fn git_revert_commit(root: String, sha: String) -> Result<String, String> {
+    run_git(&root, &["revert", "--no-edit", &sha]).await
+}
+
+#[tauri::command]
+pub async fn git_cherry_pick(root: String, sha: String) -> Result<String, String> {
+    run_git(&root, &["cherry-pick", &sha]).await
+}
+
+/// Moves the current branch to a commit. `soft` keeps the changes staged,
+/// `mixed` keeps them in the working tree, `hard` discards them — which is why
+/// the UI asks twice for that one.
+#[tauri::command]
+pub async fn git_reset_to(root: String, sha: String, mode: String) -> Result<String, String> {
+    let flag = match mode.as_str() {
+        "soft" => "--soft",
+        "hard" => "--hard",
+        "mixed" => "--mixed",
+        other => return Err(format!("Unknown reset mode: {other}")),
+    };
+    run_git(&root, &["reset", flag, &sha]).await
+}
+
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct BlameLine {
     pub sha: String,
@@ -463,6 +604,25 @@ mod tests {
         assert_eq!(blame[0].sha, "a".repeat(40));
         assert_eq!(blame[0].author, "Linh");
         assert_eq!(blame[1].summary, "first commit");
+    }
+
+    #[test]
+    fn remotes_are_listed_once_even_though_git_prints_fetch_and_push() {
+        let text = "origin	https://github.com/aime-mini/aime-editor.git (fetch)
+                    origin	https://github.com/aime-mini/aime-editor.git (push)
+                    upstream	git@github.com:other/repo.git (fetch)
+                    upstream	git@github.com:other/repo.git (push)
+";
+        let remotes = super::parse_remotes(text);
+        assert_eq!(remotes.len(), 2);
+        assert_eq!(remotes[0].name, "origin");
+        assert_eq!(remotes[0].url, "https://github.com/aime-mini/aime-editor.git");
+        assert_eq!(remotes[1].url, "git@github.com:other/repo.git");
+    }
+
+    #[test]
+    fn a_repo_without_remotes_lists_none() {
+        assert!(super::parse_remotes("").is_empty());
     }
 
     #[test]

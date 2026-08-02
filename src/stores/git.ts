@@ -82,10 +82,37 @@ interface GitState {
   listBranches: () => Promise<GitBranch[]>;
   checkout: (name: string) => Promise<void>;
   createBranch: (name: string) => Promise<void>;
+  renameBranch: (from: string, to: string) => Promise<void>;
+  /** "unmerged" means git refused because the branch holds unmerged work. */
+  deleteBranch: (name: string, force?: boolean) => Promise<"deleted" | "unmerged" | "failed">;
+  mergeBranch: (name: string) => Promise<void>;
+  fetch: () => Promise<void>;
+  listRemotes: () => Promise<GitRemote[]>;
+  setRemote: (name: string, url: string) => Promise<void>;
+  listTags: () => Promise<string[]>;
+  createTag: (name: string, message: string) => Promise<void>;
+  deleteTag: (name: string) => Promise<void>;
+  pushTags: () => Promise<void>;
+  revertCommit: (sha: string) => Promise<void>;
+  cherryPick: (sha: string) => Promise<void>;
+  resetTo: (sha: string, mode: ResetMode) => Promise<void>;
   setCommitMessage: (message: string) => void;
   generateCommitMessage: () => Promise<void>;
   clear: () => void;
 }
+
+/** Mirror of the Rust `GitRemote` (git/mod.rs). */
+export interface GitRemote {
+  name: string;
+  url: string;
+}
+
+/**
+ * What a reset does with the work that came after the target commit:
+ * `soft` keeps it staged, `mixed` keeps it in the working tree, `hard` throws
+ * it away - which is why the panel confirms that one twice.
+ */
+export type ResetMode = "soft" | "mixed" | "hard";
 
 /** Serializes a git operation: run, surface errors, then re-read status. */
 async function runOp(set: (partial: Partial<GitState>) => void, op: () => Promise<unknown>) {
@@ -251,6 +278,98 @@ export const useGit = create<GitState>((set, get) => ({
   createBranch: async (name) => {
     const root = useWorkspace.getState().rootPath;
     if (root) await runOp(set, () => invoke("git_create_branch", { root, name }));
+  },
+
+  renameBranch: async (from, to) => {
+    const root = useWorkspace.getState().rootPath;
+    if (root) await runOp(set, () => invoke("git_rename_branch", { root, from, to }));
+  },
+
+  deleteBranch: async (name, force = false) => {
+    const root = useWorkspace.getState().rootPath;
+    if (!root) return "failed";
+    set({ busy: true, lastError: null });
+    try {
+      await invoke("git_delete_branch", { root, name, force });
+      return "deleted";
+    } catch (err: unknown) {
+      const message = String(err);
+      // git's own wording; the panel turns it into an explicit "delete anyway"
+      // rather than force-deleting behind the user's back.
+      if (/not fully merged/i.test(message)) return "unmerged";
+      set({ lastError: message });
+      return "failed";
+    } finally {
+      set({ busy: false });
+      await get().refresh();
+    }
+  },
+
+  mergeBranch: async (name) => {
+    const root = useWorkspace.getState().rootPath;
+    if (root) await runOp(set, () => invoke("git_merge_branch", { root, name }));
+  },
+
+  fetch: async () => {
+    const root = useWorkspace.getState().rootPath;
+    if (root) await runOp(set, () => invoke("git_fetch", { root }));
+  },
+
+  listRemotes: async () => {
+    const root = useWorkspace.getState().rootPath;
+    if (!root) return [];
+    try {
+      return await invoke<GitRemote[]>("git_remotes", { root });
+    } catch (err: unknown) {
+      set({ lastError: String(err) });
+      return [];
+    }
+  },
+
+  setRemote: async (name, url) => {
+    const root = useWorkspace.getState().rootPath;
+    if (root) await runOp(set, () => invoke("git_set_remote", { root, name, url }));
+  },
+
+  listTags: async () => {
+    const root = useWorkspace.getState().rootPath;
+    if (!root) return [];
+    try {
+      return await invoke<string[]>("git_tags", { root });
+    } catch (err: unknown) {
+      set({ lastError: String(err) });
+      return [];
+    }
+  },
+
+  createTag: async (name, message) => {
+    const root = useWorkspace.getState().rootPath;
+    if (root) await runOp(set, () => invoke("git_create_tag", { root, name, message }));
+  },
+
+  deleteTag: async (name) => {
+    const root = useWorkspace.getState().rootPath;
+    if (root) await runOp(set, () => invoke("git_delete_tag", { root, name }));
+  },
+
+  pushTags: async () => {
+    const root = useWorkspace.getState().rootPath;
+    if (root) await runOp(set, () => invoke("git_push_tags", { root }));
+  },
+
+  revertCommit: async (sha) => {
+    const root = useWorkspace.getState().rootPath;
+    if (root) await runOp(set, () => invoke("git_revert_commit", { root, sha }));
+  },
+
+  cherryPick: async (sha) => {
+    const root = useWorkspace.getState().rootPath;
+    if (root) await runOp(set, () => invoke("git_cherry_pick", { root, sha }));
+  },
+
+  resetTo: async (sha, mode) => {
+    const root = useWorkspace.getState().rootPath;
+    if (root) await runOp(set, () => invoke("git_reset_to", { root, sha, mode }));
   },
 
   setCommitMessage: (message) => {

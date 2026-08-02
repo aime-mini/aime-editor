@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { AppWindow, Bot, FolderOpen, FolderPlus, PanelLeft, SquareTerminal } from "lucide-react";
+import {
+  AppWindow,
+  Bot,
+  FolderOpen,
+  FolderPlus,
+  GitBranch,
+  Loader2,
+  PanelLeft,
+  SquareTerminal,
+} from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import logo from "./assets/logo.svg";
 import { useT } from "./i18n";
@@ -30,6 +39,8 @@ function WelcomeScreen() {
   const { openFolder, adoptFolder } = useWorkspace();
   const { folders, forget } = useRecent();
   const [newProjectParent, setNewProjectParent] = useState<string | null>(null);
+  const [cloneUrl, setCloneUrl] = useState<string | null>(null);
+  const [cloning, setCloning] = useState(false);
   const t = useT();
 
   const pickNewProjectLocation = async () => {
@@ -51,6 +62,28 @@ function WelcomeScreen() {
       console.error("failed to create project folder:", err);
     } finally {
       setNewProjectParent(null);
+    }
+  };
+
+  /** The folder git itself would create: the repository name without `.git`. */
+  const repositoryNameOf = (url: string) =>
+    url
+      .replace(/\.git$/, "")
+      .split(/[\\/:]/)
+      .filter(Boolean)
+      .pop() ?? "repository";
+
+  const cloneInto = async (url: string) => {
+    const parent = await open({ directory: true, multiple: false, title: t("dialog.pickParentTitle") });
+    if (typeof parent !== "string") return;
+    setCloning(true);
+    try {
+      const path = await invoke<string>("git_clone", { url, parent, folder: repositoryNameOf(url) });
+      await adoptFolder(path);
+    } catch (err: unknown) {
+      console.error("clone failed:", err);
+    } finally {
+      setCloning(false);
     }
   };
 
@@ -91,6 +124,17 @@ function WelcomeScreen() {
                 <FolderPlus size={16} /> {t("welcome.newProject")}
               </button>
               <button
+                onClick={() => {
+                  setCloneUrl("");
+                }}
+                disabled={cloning}
+                className={actionButton}
+                title={t("welcome.cloneHint")}
+              >
+                {cloning ? <Loader2 size={16} className="animate-spin" /> : <GitBranch size={16} />}
+                {t("welcome.clone")}
+              </button>
+              <button
                 onClick={() => void openNewWindow()}
                 className={actionButton}
                 title={t("welcome.newWindowHint")}
@@ -122,6 +166,20 @@ function WelcomeScreen() {
         </div>
       </div>
 
+      {cloneUrl !== null && (
+        <PromptModal
+          title={t("modal.cloneTitle")}
+          hint={t("modal.cloneHint")}
+          initialValue=""
+          onSubmit={(url) => {
+            setCloneUrl(null);
+            if (url.trim()) void cloneInto(url.trim());
+          }}
+          onClose={() => {
+            setCloneUrl(null);
+          }}
+        />
+      )}
       {newProjectParent && (
         <PromptModal
           title={t("modal.newProjectTitle")}

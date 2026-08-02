@@ -3,27 +3,58 @@ import {
   Archive,
   ArchiveRestore,
   ArrowDown,
+  ArrowDownToLine,
   ArrowUp,
   Check,
   ChevronDown,
+  Cloud,
+  Copy,
   GitBranch,
   GitBranchPlus,
+  GitMerge,
   History,
   Loader2,
   Minus,
+  MoreHorizontal,
+  Pencil,
   Plus,
   RefreshCw,
   Sparkles,
+  Tag,
   Trash2,
   TriangleAlert,
   Undo2,
 } from "lucide-react";
 import { useT } from "../i18n";
 import { useAi } from "../stores/ai";
-import { isStaged, isUnstaged, useGit, type GitFile } from "../stores/git";
+import {
+  isStaged,
+  isUnstaged,
+  useGit,
+  type GitBranch as GitBranchInfo,
+  type GitFile,
+  type ResetMode,
+} from "../stores/git";
 import { useWorkspace } from "../stores/workspace";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { PromptModal } from "./PromptModal";
+
+/**
+ * Confirmations and prompts this panel can raise. Modelled as a union so a
+ * dialog cannot exist without the data it acts on - "delete which branch?" is
+ * unrepresentable.
+ */
+type GitDialog =
+  | { kind: "renameBranch"; from: string }
+  | { kind: "deleteBranch"; name: string; force: boolean }
+  | { kind: "mergeBranch"; name: string; into: string }
+  | { kind: "createTag" }
+  | { kind: "tagMessage"; name: string }
+  | { kind: "deleteTag"; name: string }
+  | { kind: "setRemote"; name: string; url: string }
+  | { kind: "revert"; sha: string; short: string }
+  | { kind: "cherryPick"; sha: string; short: string }
+  | { kind: "reset"; sha: string; short: string; mode: ResetMode };
 
 /** Status letter with VS Code-ish coloring. */
 function StatusLetter({ file, staged }: { file: GitFile; staged: boolean }) {
@@ -102,6 +133,11 @@ export function GitPanel() {
   const openConflict = useWorkspace((s) => s.openConflict);
   const [branchMenu, setBranchMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [newBranchModal, setNewBranchModal] = useState(false);
+  /**
+   * Every confirm/prompt this panel can raise. One state instead of ten flags:
+   * only one dialog is ever open, and each carries exactly what it acts on.
+   */
+  const [dialog, setDialog] = useState<GitDialog | null>(null);
   const [stashModal, setStashModal] = useState(false);
   // History has its own scroll area so a long log never shrinks the panel scrollbar.
   const [historyOpen, setHistoryOpen] = useState(true);
@@ -191,14 +227,194 @@ export function GitPanel() {
         if (!branch.current) void git.checkout(branch.name);
       },
     }));
-    items.push({
-      label: t("git.newBranch"),
-      icon: <GitBranchPlus size={13} />,
-      onClick: () => {
-        setNewBranchModal(true);
+    const others = branches.filter((branch) => !branch.current);
+    // git names the checked-out branch itself; the status is only a fallback
+    // for the moment right after a checkout, before it is re-read.
+    const current = branches.find((branch) => branch.current)?.name ?? git.status?.branch ?? "";
+    items.push(
+      {
+        label: t("git.newBranch"),
+        icon: <GitBranchPlus size={13} />,
+        onClick: () => {
+          setNewBranchModal(true);
+        },
       },
-    });
+      {
+        label: t("git.renameBranch"),
+        icon: <Pencil size={13} />,
+        onClick: () => {
+          if (current) setDialog({ kind: "renameBranch", from: current });
+        },
+      },
+      {
+        label: t("git.mergeBranch"),
+        icon: <GitMerge size={13} />,
+        onClick: () => {
+          pickBranch(x, y, others, (name) => {
+            setDialog({ kind: "mergeBranch", name, into: current });
+          });
+        },
+      },
+      {
+        label: t("git.deleteBranch"),
+        icon: <Trash2 size={13} />,
+        danger: true,
+        onClick: () => {
+          // The current branch is absent from the list on purpose: git cannot
+          // delete the branch you are standing on.
+          pickBranch(x, y, others, (name) => {
+            setDialog({ kind: "deleteBranch", name, force: false });
+          });
+        },
+      },
+    );
     setBranchMenu({ x, y, items });
+  };
+
+  const closeDialog = () => {
+    setDialog(null);
+  };
+
+  /** Second-level menu for actions that need another branch as their target. */
+  const pickBranch = (x: number, y: number, branches: GitBranchInfo[], onPick: (name: string) => void) => {
+    setBranchMenu({
+      x,
+      y,
+      items:
+        branches.length === 0
+          ? [{ label: t("git.noOtherBranches"), onClick: () => undefined }]
+          : branches.map((branch) => ({
+              label: branch.name,
+              icon: <GitBranch size={13} />,
+              onClick: () => {
+                onPick(branch.name);
+              },
+            })),
+    });
+  };
+
+  /** Remotes and tags - the last reasons a user would open another Git app. */
+  const showRepoMenu = (x: number, y: number) => {
+    setBranchMenu({
+      x,
+      y,
+      items: [
+        {
+          label: t("git.remotes"),
+          icon: <Cloud size={13} />,
+          onClick: () => {
+            void git.listRemotes().then((remotes) => {
+              setBranchMenu({
+                x,
+                y,
+                items: [
+                  ...remotes.map((remote) => ({
+                    label: `${remote.name} - ${remote.url}`,
+                    icon: <Pencil size={13} />,
+                    onClick: () => {
+                      setDialog({ kind: "setRemote", name: remote.name, url: remote.url });
+                    },
+                  })),
+                  {
+                    label: t("git.addRemote"),
+                    icon: <Plus size={13} />,
+                    onClick: () => {
+                      setDialog({ kind: "setRemote", name: "origin", url: "" });
+                    },
+                  },
+                ],
+              });
+            });
+          },
+        },
+        {
+          label: t("git.newTag"),
+          icon: <Tag size={13} />,
+          onClick: () => {
+            setDialog({ kind: "createTag" });
+          },
+        },
+        {
+          label: t("git.tags"),
+          icon: <Tag size={13} />,
+          onClick: () => {
+            void git.listTags().then((tags) => {
+              setBranchMenu({
+                x,
+                y,
+                items:
+                  tags.length === 0
+                    ? [{ label: t("git.noTags"), onClick: () => undefined }]
+                    : tags.map((tag) => ({
+                        label: tag,
+                        icon: <Trash2 size={13} />,
+                        danger: true,
+                        onClick: () => {
+                          setDialog({ kind: "deleteTag", name: tag });
+                        },
+                      })),
+              });
+            });
+          },
+        },
+        {
+          label: t("git.pushTags"),
+          icon: <ArrowUp size={13} />,
+          onClick: () => void git.pushTags(),
+        },
+      ],
+    });
+  };
+
+  /** Right-click on a commit: the operations that act on history itself. */
+  const showCommitMenu = (x: number, y: number, sha: string, short: string) => {
+    setBranchMenu({
+      x,
+      y,
+      items: [
+        {
+          label: t("git.copySha"),
+          icon: <Copy size={13} />,
+          onClick: () => void navigator.clipboard.writeText(sha),
+        },
+        {
+          label: t("git.revertCommit"),
+          icon: <Undo2 size={13} />,
+          onClick: () => {
+            setDialog({ kind: "revert", sha, short });
+          },
+        },
+        {
+          label: t("git.cherryPick"),
+          icon: <GitMerge size={13} />,
+          onClick: () => {
+            setDialog({ kind: "cherryPick", sha, short });
+          },
+        },
+        {
+          label: t("git.resetSoft"),
+          icon: <History size={13} />,
+          onClick: () => {
+            setDialog({ kind: "reset", sha, short, mode: "soft" });
+          },
+        },
+        {
+          label: t("git.resetMixed"),
+          icon: <History size={13} />,
+          onClick: () => {
+            setDialog({ kind: "reset", sha, short, mode: "mixed" });
+          },
+        },
+        {
+          label: t("git.resetHard"),
+          icon: <TriangleAlert size={13} />,
+          danger: true,
+          onClick: () => {
+            setDialog({ kind: "reset", sha, short, mode: "hard" });
+          },
+        },
+      ],
+    });
   };
 
   useEffect(() => {
@@ -266,6 +482,13 @@ export function GitPanel() {
           )}
           <span className="flex-1" />
           <button
+            onClick={() => void git.fetch()}
+            title={t("git.fetch")}
+            className="rounded p-1 text-muted hover:bg-elevated hover:text-fg"
+          >
+            <ArrowDownToLine size={12} />
+          </button>
+          <button
             onClick={() => void git.pull()}
             title={t("git.pull")}
             className="rounded p-1 text-muted hover:bg-elevated hover:text-fg"
@@ -285,6 +508,16 @@ export function GitPanel() {
             className="rounded p-1 text-muted hover:bg-elevated hover:text-fg"
           >
             <RefreshCw size={12} />
+          </button>
+          <button
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              showRepoMenu(rect.right, rect.bottom + 4);
+            }}
+            title={t("git.repoMenu")}
+            className="rounded p-1 text-muted hover:bg-elevated hover:text-fg"
+          >
+            <MoreHorizontal size={12} />
           </button>
         </div>
 
@@ -518,6 +751,10 @@ export function GitPanel() {
                 onClick={() => {
                   openCommit(commit.hash);
                 }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  showCommitMenu(e.clientX, e.clientY, commit.hash, commit.short);
+                }}
                 title={`${commit.subject} - ${commit.author}, ${commit.when}`}
                 className="flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left hover:bg-elevated"
               >
@@ -569,6 +806,129 @@ export function GitPanel() {
           onClose={() => {
             setNewBranchModal(false);
           }}
+        />
+      )}
+      {dialog?.kind === "renameBranch" && (
+        <PromptModal
+          title={t("modal.renameBranchTitle", { name: dialog.from })}
+          initialValue={dialog.from}
+          onSubmit={(name) => {
+            if (name && name !== dialog.from) void git.renameBranch(dialog.from, name);
+            setDialog(null);
+          }}
+          onClose={closeDialog}
+        />
+      )}
+      {dialog?.kind === "deleteBranch" && (
+        <PromptModal
+          title={
+            dialog.force
+              ? t("modal.deleteBranchForceTitle", { name: dialog.name })
+              : t("modal.deleteBranchTitle", { name: dialog.name })
+          }
+          hint={dialog.force ? t("modal.deleteBranchForceHint") : t("modal.deleteBranchHint")}
+          danger
+          onSubmit={() => {
+            // git refuses to drop unmerged work; that refusal becomes a second,
+            // explicit question instead of a silent force-delete.
+            void git.deleteBranch(dialog.name, dialog.force).then((result) => {
+              setDialog(
+                result === "unmerged" ? { kind: "deleteBranch", name: dialog.name, force: true } : null,
+              );
+            });
+          }}
+          onClose={closeDialog}
+        />
+      )}
+      {dialog?.kind === "mergeBranch" && (
+        <PromptModal
+          title={t("modal.mergeBranchTitle", { name: dialog.name, into: dialog.into })}
+          hint={t("modal.mergeBranchHint")}
+          onSubmit={() => {
+            void git.mergeBranch(dialog.name);
+            setDialog(null);
+          }}
+          onClose={closeDialog}
+        />
+      )}
+      {dialog?.kind === "createTag" && (
+        <PromptModal
+          title={t("modal.newTagTitle")}
+          initialValue=""
+          onSubmit={(name) => {
+            setDialog(name.trim() ? { kind: "tagMessage", name: name.trim() } : null);
+          }}
+          onClose={closeDialog}
+        />
+      )}
+      {dialog?.kind === "tagMessage" && (
+        <PromptModal
+          title={t("modal.tagMessageTitle", { name: dialog.name })}
+          hint={t("modal.tagMessageHint")}
+          initialValue=""
+          allowEmpty
+          onSubmit={(message) => {
+            void git.createTag(dialog.name, message);
+            setDialog(null);
+          }}
+          onClose={closeDialog}
+        />
+      )}
+      {dialog?.kind === "deleteTag" && (
+        <PromptModal
+          title={t("modal.deleteTagTitle", { name: dialog.name })}
+          danger
+          onSubmit={() => {
+            void git.deleteTag(dialog.name);
+            setDialog(null);
+          }}
+          onClose={closeDialog}
+        />
+      )}
+      {dialog?.kind === "setRemote" && (
+        <PromptModal
+          title={t("modal.remoteUrlTitle", { name: dialog.name })}
+          hint={t("modal.remoteUrlHint")}
+          initialValue={dialog.url}
+          onSubmit={(url) => {
+            if (url.trim()) void git.setRemote(dialog.name, url.trim());
+            setDialog(null);
+          }}
+          onClose={closeDialog}
+        />
+      )}
+      {dialog?.kind === "revert" && (
+        <PromptModal
+          title={t("modal.revertTitle", { sha: dialog.short })}
+          hint={t("modal.revertHint")}
+          onSubmit={() => {
+            void git.revertCommit(dialog.sha);
+            setDialog(null);
+          }}
+          onClose={closeDialog}
+        />
+      )}
+      {dialog?.kind === "cherryPick" && (
+        <PromptModal
+          title={t("modal.cherryPickTitle", { sha: dialog.short })}
+          hint={t("modal.cherryPickHint")}
+          onSubmit={() => {
+            void git.cherryPick(dialog.sha);
+            setDialog(null);
+          }}
+          onClose={closeDialog}
+        />
+      )}
+      {dialog?.kind === "reset" && (
+        <PromptModal
+          title={t("modal.resetTitle", { sha: dialog.short })}
+          hint={t(`modal.resetHint.${dialog.mode}`)}
+          danger={dialog.mode === "hard"}
+          onSubmit={() => {
+            void git.resetTo(dialog.sha, dialog.mode);
+            setDialog(null);
+          }}
+          onClose={closeDialog}
         />
       )}
       {stashModal && (
