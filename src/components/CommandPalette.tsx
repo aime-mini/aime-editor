@@ -145,6 +145,16 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         },
       },
       {
+        id: "add-provider",
+        title: t("cmd.addProvider"),
+        icon: <Bot size={14} />,
+        run: () => {
+          void invoke<string>("providers_config_path")
+            .then((path) => openFile(path))
+            .catch(console.error);
+        },
+      },
+      {
         id: "manage-mcp",
         title: t("cmd.manageMcp"),
         icon: <Plug size={14} />,
@@ -228,6 +238,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
     setSidebarView,
     setMemoryOpen,
     setMcpOpen,
+    openFile,
     newSession,
     tasks,
     runTask,

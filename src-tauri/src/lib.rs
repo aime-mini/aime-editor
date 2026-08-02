@@ -30,6 +30,11 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 window_cmds::fit_and_maximize(&window);
             }
+            // User-defined AI CLIs, read once: a bad file costs its own
+            // providers, never the built-in ones.
+            if let Ok(config_dir) = app.path().app_config_dir() {
+                providers::generic::install(providers::generic::load(&config_dir.join("providers.json")));
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -63,6 +68,8 @@ pub fn run() {
             providers::ai_cancel,
             providers::ai_oneshot,
             providers::provider_health,
+            providers::list_providers,
+            providers::providers_config_path,
             git::git_status,
             git::git_stage,
             git::git_unstage,

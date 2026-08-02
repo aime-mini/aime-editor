@@ -288,6 +288,7 @@ export const en = {
   "cmd.openExplorer": "Open file explorer",
   "cmd.revealCurrent": "Reveal current file in File Explorer",
   "cmd.editMemory": "Edit AI memory (AGENTS.md)…",
+  "cmd.addProvider": "Add an AI CLI (providers.json)…",
   "cmd.manageMcp": "MCP servers…",
 
   "memory.global": "Global (all projects)",

@@ -26,7 +26,7 @@ import { useLayout } from "../stores/layout";
 import { runInTerminal } from "../stores/terminals";
 import { useWorkspace } from "../stores/workspace";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
-import { capabilitiesOf, effortsOf, PROVIDER_OPTIONS, type ProviderOption } from "../lib/providers";
+import { capabilitiesOf, effortsOf, type ProviderOption } from "../lib/providers";
 import type { ChatMessage, Permission, TokenUsage } from "../lib/types";
 import type { TranslationKey } from "../i18n/en";
 
@@ -264,6 +264,8 @@ export function AiPanel() {
     loginCommand,
     checkHealth,
     watchSignIn,
+    providers,
+    loadProviders,
   } = useAi();
   const rootPath = useWorkspace((s) => s.rootPath);
   const [input, setInput] = useState("");
@@ -273,6 +275,12 @@ export function AiPanel() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const t = useT();
   const capabilities = capabilitiesOf(providerId);
+  // Built-in providers keep their capability table; a configured one is named
+  // by its own config, so the picker shows whatever the user called it.
+  const providerOptions: ProviderOption[] = providers.map((provider) => ({
+    value: provider.id,
+    label: provider.displayName,
+  }));
 
   const formatWhen = (ts: number) =>
     new Date(ts).toLocaleString(undefined, {
@@ -301,6 +309,10 @@ export function AiPanel() {
   // so the user is guided before the first prompt instead of after a failure.
   // Re-probing on focus catches the return from a browser sign-in or from an
   // install run in another window — the banner clears itself.
+  useEffect(() => {
+    void loadProviders();
+  }, [loadProviders]);
+
   useEffect(() => {
     void checkHealth();
     const recheck = () => void checkHealth();
@@ -356,7 +368,7 @@ export function AiPanel() {
           <PickerChip
             icon={<Bot size={14} className="text-accent" />}
             value={providerId}
-            options={PROVIDER_OPTIONS}
+            options={providerOptions}
             title={t("ai.provider")}
             onChange={(next) => {
               setSignedInConfirmed(false); // it described the previous CLI

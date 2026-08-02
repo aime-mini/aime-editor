@@ -24,6 +24,16 @@ interface ExitPayload {
   code: number | null;
 }
 
+/** Mirror of the Rust `ProviderSummary` (providers/mod.rs). */
+export interface ProviderSummary {
+  id: string;
+  displayName: string;
+  builtIn: boolean;
+  installCommand: string;
+  parser: string;
+  textField: string;
+}
+
 /** Mirror of the Rust `ProviderHealth` (providers/mod.rs). */
 interface ProviderHealth {
   installed: boolean;
@@ -119,6 +129,10 @@ interface AiState {
   effort: string;
   /** How much the agent may do on its own (ARCHITECTURE.md §4). */
   permission: Permission;
+  /** Every provider Aime can talk to, including ones from providers.json. */
+  providers: ProviderSummary[];
+  /** Loads the provider list; called once when the AI panel mounts. */
+  loadProviders: () => Promise<void>;
   /** Result of the startup CLI probe; "missing" shows an install banner. */
   providerHealth: "unknown" | "ok" | "missing";
   /** null = the CLI offers no sign-in probe, so nothing may be claimed. */
@@ -288,6 +302,7 @@ export const useAi = create<AiState>((set, get) => {
     model: "",
     effort: "",
     permission: storedPermission(),
+    providers: [],
     providerHealth: "unknown",
     signedIn: null,
     loginCommand: "",
@@ -328,6 +343,14 @@ export const useAi = create<AiState>((set, get) => {
             }
           : { ...freshSessionIdentity(), createdAt: Date.now() }),
       });
+    },
+
+    loadProviders: async () => {
+      try {
+        set({ providers: await invoke<ProviderSummary[]>("list_providers") });
+      } catch (err: unknown) {
+        console.error("failed to list providers:", err);
+      }
     },
 
     checkHealth: async () => {
@@ -377,7 +400,12 @@ export const useAi = create<AiState>((set, get) => {
     sendPrompt: async (prompt, cwd) => {
       await ensureListeners();
       lastStderrLine = "";
-      activeParser = createEventParser(get().providerId);
+      const provider = get().providers.find((candidate) => candidate.id === get().providerId);
+      activeParser = createEventParser({
+        id: get().providerId,
+        parser: provider?.parser,
+        textField: provider?.textField,
+      });
       set((s) => ({
         lastError: null,
         running: true,

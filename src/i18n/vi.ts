@@ -289,6 +289,7 @@ export const vi: Record<TranslationKey, string> = {
   "cmd.openExplorer": "Mở cây file",
   "cmd.revealCurrent": "Mở file hiện tại trong File Explorer",
   "cmd.editMemory": "Sửa bộ nhớ AI (AGENTS.md)…",
+  "cmd.addProvider": "Thêm AI CLI (providers.json)…",
   "cmd.manageMcp": "MCP server…",
 
   "memory.global": "Toàn cục (mọi dự án)",

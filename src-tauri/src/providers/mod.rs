@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod claude;
 pub mod codex;
+pub mod generic;
 
 use adapter::{adapter_for, Permission, TurnRequest};
 use serde::Serialize;
@@ -92,6 +93,7 @@ pub async fn ai_send_prompt(
     let adapter = adapter_for(&provider_id)?;
     let args = adapter.chat_args(&TurnRequest {
         prompt: &prompt,
+        cwd: &cwd,
         session_id: session_id.as_deref(),
         model: options.model.as_deref(),
         effort: options.effort.as_deref(),
@@ -213,6 +215,90 @@ pub async fn ai_oneshot(
         });
     }
     adapter.parse_oneshot(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// One provider the UI can offer, whether built in or configured.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSummary {
+    pub id: String,
+    pub display_name: String,
+    /// Built-in providers have a capability table in the UI; configured ones
+    /// get the neutral defaults, since Aime cannot know their models.
+    pub built_in: bool,
+    pub install_command: String,
+    /// "plain" or "jsonl": how the frontend should read this CLI's output.
+    pub parser: String,
+    /// For jsonl: the field carrying assistant text.
+    pub text_field: String,
+}
+
+/// Every provider Aime can talk to right now.
+#[tauri::command]
+pub fn list_providers() -> Vec<ProviderSummary> {
+    let mut providers = vec![
+        ProviderSummary {
+            id: "claude".into(),
+            display_name: "Claude Code".into(),
+            built_in: true,
+            install_command: "npm install -g @anthropic-ai/claude-code".into(),
+            parser: "claude".into(),
+            text_field: String::new(),
+        },
+        ProviderSummary {
+            id: "codex".into(),
+            display_name: "Codex".into(),
+            built_in: true,
+            install_command: "npm install -g @openai/codex".into(),
+            parser: "codex".into(),
+            text_field: String::new(),
+        },
+    ];
+    providers.extend(generic::configured().iter().map(|adapter| ProviderSummary {
+        id: adapter.config.id.clone(),
+        display_name: adapter.config.display_name.clone(),
+        built_in: false,
+        install_command: adapter.config.install.clone(),
+        parser: match adapter.config.parser {
+            generic::ParserKind::Plain => "plain".into(),
+            generic::ParserKind::Jsonl => "jsonl".into(),
+        },
+        text_field: adapter.config.text_field.clone(),
+    }));
+    providers
+}
+
+/// A ready-to-edit example, written the first time the user asks for it: an
+/// empty file teaches nothing, and a wrong guess at the schema costs more time
+/// than it saves.
+const PROVIDERS_TEMPLATE: &str = r#"[
+  {
+    "id": "gemini",
+    "displayName": "Gemini CLI",
+    "command": "gemini",
+    "args": ["-p", "{prompt}"],
+    "resumeArgs": [],
+    "parser": "plain",
+    "login": "gemini auth login",
+    "install": "npm install -g @google/gemini-cli",
+    "memory": "config-pointer",
+    "memoryFile": ".gemini/GEMINI.md"
+  }
+]
+"#;
+
+/// Where the user writes their own provider definitions. Creates the file with
+/// a working example on first use, and returns the path either way.
+#[tauri::command]
+pub fn providers_config_path(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("providers.json");
+    if !path.exists() {
+        std::fs::write(&path, PROVIDERS_TEMPLATE).map_err(|e| e.to_string())?;
+    }
+    Ok(path.to_string_lossy().to_string())
 }
 
 #[derive(Serialize)]

@@ -91,11 +91,6 @@ export const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   },
 };
 
-/** Providers the picker offers, in display order. */
-export const PROVIDER_OPTIONS: ProviderOption[] = Object.entries(PROVIDER_CAPABILITIES).map(
-  ([value, { displayName }]) => ({ value, label: displayName }),
-);
-
 export function capabilitiesOf(providerId: string): ProviderCapabilities {
   return (
     PROVIDER_CAPABILITIES[providerId] ?? {

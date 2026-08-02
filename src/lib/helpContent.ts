@@ -88,6 +88,13 @@ const EN: HelpTopic[] = [
     keywords: "provider switch codex claude login sign in key account",
   },
   {
+    id: "ai-add-provider",
+    section: "AI",
+    title: "Use another AI CLI",
+    body: "Claude Code and Codex are built in, but any command-line AI can be added without waiting for a new Aime release: 'Add an AI CLI' in the command palette creates providers.json with a working example and opens it. Describe the command, where the prompt goes ({prompt}), how to resume a conversation ({sessionId}), and whether it prints plain text or JSON per line. The new CLI then appears in the provider picker like the built-in ones. Aime cannot know its models or its permission flags, so it sends what every CLI understands: the instruction in the prompt itself - including your AGENTS.md when the CLI has no memory file of its own.",
+    keywords: "providers.json generic adapter gemini custom cli add provider",
+  },
+  {
     id: "ai-chat",
     section: "AI",
     title: "Chat with the AI",
@@ -307,6 +314,13 @@ const VI: HelpTopic[] = [
     title: "Chọn AI CLI & đăng nhập",
     body: "Chip đầu tiên trên header panel AI chuyển giữa Claude Code và Codex. Đổi provider sẽ mở phiên mới vì id resume thuộc về đúng một CLI - các phiên cũ vẫn giữ CLI đã tạo ra chúng. Nút chìa khóa bên cạnh dùng để đăng nhập: nó mở một tab terminal chạy đúng lệnh login của CLI đó (claude auth login / codex login), nên thông tin đăng nhập nằm ở CLI, không đi qua Aime. Đăng nhập rồi thì nút chuyển màu xanh, bấm vào chỉ báo là đã đăng nhập; sau khi login xong Aime tự nhận, không cần bấm gì thêm.",
     keywords: "provider đổi codex claude đăng nhập login chìa khóa tài khoản",
+  },
+  {
+    id: "ai-add-provider",
+    section: "AI",
+    title: "Dùng AI CLI khác",
+    body: "Claude Code và Codex có sẵn, nhưng anh thêm được bất kỳ AI chạy dòng lệnh nào mà không cần chờ bản Aime mới: lệnh 'Thêm AI CLI' trong command palette tạo sẵn providers.json có mẫu chạy được và mở lên. Anh khai lệnh chạy, chỗ đặt prompt ({prompt}), cách nối lại hội thoại ({sessionId}), và nó in text thường hay JSON mỗi dòng. Xong là CLI đó hiện trong picker như hai cái có sẵn. Aime không thể biết model hay cờ phân quyền của nó, nên gửi thứ mọi CLI đều hiểu: chỉ dẫn nằm ngay trong prompt - kèm cả AGENTS.md của anh nếu CLI đó không có file memory riêng.",
+    keywords: "providers.json generic adapter gemini cli tùy chỉnh thêm provider",
   },
   {
     id: "ai-chat",

@@ -1,4 +1,4 @@
-use super::{claude, codex};
+use super::{claude, codex, generic};
 use crate::mcp::{McpServer, McpServerSpec};
 use std::path::{Path, PathBuf};
 
@@ -22,6 +22,8 @@ pub enum Permission {
 /// Everything an adapter needs to build the arguments of one chat turn.
 pub struct TurnRequest<'a> {
     pub prompt: &'a str,
+    /// Workspace root: some adapters must read the project's own memory.
+    pub cwd: &'a str,
     /// Provider-side conversation id; `Some` means "continue that conversation".
     pub session_id: Option<&'a str>,
     /// UI overrides — `None` or empty leaves the CLI's own default in place.
@@ -90,7 +92,9 @@ pub fn adapter_for(provider_id: &str) -> Result<&'static dyn Adapter, String> {
     match provider_id {
         "claude" => Ok(&claude::ClaudeAdapter),
         "codex" => Ok(&codex::CodexAdapter),
-        other => Err(format!("Unsupported provider: {other}")),
+        other => generic::find(other)
+            .map(|adapter| adapter as &'static dyn Adapter)
+            .ok_or_else(|| format!("Unsupported provider: {other}")),
     }
 }
 

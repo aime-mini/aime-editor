@@ -215,6 +215,7 @@ mod tests {
     fn turn(session_id: Option<&'static str>, permission: Permission) -> TurnRequest<'static> {
         TurnRequest {
             prompt: "hello",
+            cwd: "",
             session_id,
             model: None,
             effort: None,
