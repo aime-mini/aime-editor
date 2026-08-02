@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+/* Dark-first theme — single accent color (see ARCHITECTURE.md §6); light via [data-theme="light"] */
+:root {
+  --bg: #16181d;
+  --bg-panel: #1c1f26;
+  --bg-elevated: #23272f;
+  --border: #2b303a;
+  --text: #d7dae0;
+  --text-muted: #8b919d;
+  --accent: #6c8cff;
+  --accent-soft: rgba(108, 140, 255, 0.14);
+  --danger: #e5534b;
+  --warn: #daaa3f;
+  --ok: #57ab5a;
+}
+
+:root[data-theme="light"] {
+  --bg: #f7f8fa;
+  --bg-panel: #ffffff;
+  --bg-elevated: #eef0f4;
+  --border: #d9dde4;
+  --text: #24292f;
+  --text-muted: #6b7280;
+  --accent: #4f6ef2;
+  --accent-soft: rgba(79, 110, 242, 0.12);
+  --danger: #cf222e;
+  --warn: #9a6700;
+  --ok: #1a7f37;
+}
+
+@theme {
+  --color-bg: var(--bg);
+  --color-panel: var(--bg-panel);
+  --color-elevated: var(--bg-elevated);
+  --color-line: var(--border);
+  --color-fg: var(--text);
+  --color-muted: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-warn: var(--warn);
+  --color-ok: var(--ok);
+  --font-sans: Inter, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Git change marks in the Monaco line-decorations margin */
+.git-gutter-added {
+  border-left: 3px solid var(--ok);
+}
+.git-gutter-modified {
+  border-left: 3px solid var(--accent);
+}
+.git-gutter-deleted {
+  border-left: 3px solid var(--danger);
+}
+
+/* Inline blame on the cursor line (GitLens style) */
+.blame-inline {
+  color: var(--text-muted);
+  opacity: 0.55;
+  font-style: italic;
+}

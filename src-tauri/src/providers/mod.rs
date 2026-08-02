@@ -1,0 +1,266 @@
+pub mod adapter;
+pub mod claude;
+pub mod codex;
+
+use adapter::{adapter_for, Permission, TurnRequest};
+use serde::Serialize;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
+
+static RUN_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Holds kill handles so running processes can be cancelled by run_id.
+#[derive(Default)]
+pub struct ProviderState {
+    kill_senders: Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+}
+
+impl ProviderState {
+    /// A poisoned lock still holds valid data — recover it instead of panicking.
+    fn senders(&self) -> std::sync::MutexGuard<'_, HashMap<String, tokio::sync::oneshot::Sender<()>>> {
+        self.kill_senders
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// Per-turn provider overrides chosen in the UI; `None`/empty = CLI default.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptOptions {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// How much the agent may do on its own; defaults to the least guarded.
+    #[serde(default)]
+    pub permission: Permission,
+}
+
+#[derive(Clone, Serialize)]
+struct StreamPayload {
+    run_id: String,
+    event: Value,
+}
+
+#[derive(Clone, Serialize)]
+struct ExitPayload {
+    run_id: String,
+    code: Option<i32>,
+}
+
+/// Builds a process for a CLI. On Windows, npm-installed CLIs are `.cmd`
+/// shims — they must be run through `cmd /C`.
+pub fn cli_command<I, S>(program: &str, args: I) -> Command
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg(program).args(args);
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        cmd
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        cmd
+    }
+}
+
+/// Sends a prompt to an AI provider and streams each JSONL line to the frontend
+/// via the `ai:stream` event. Emits `ai:exit` when done. Returns the run_id immediately.
+#[tauri::command]
+pub async fn ai_send_prompt(
+    app: AppHandle,
+    state: State<'_, ProviderState>,
+    provider_id: String,
+    prompt: String,
+    cwd: String,
+    session_id: Option<String>,
+    options: PromptOptions,
+) -> Result<String, String> {
+    let run_id = format!("run-{}", RUN_COUNTER.fetch_add(1, Ordering::Relaxed));
+
+    let adapter = adapter_for(&provider_id)?;
+    let args = adapter.chat_args(&TurnRequest {
+        prompt: &prompt,
+        session_id: session_id.as_deref(),
+        model: options.model.as_deref(),
+        effort: options.effort.as_deref(),
+        permission: options.permission,
+    });
+    let mut cmd = cli_command(adapter.command(), &args);
+    cmd.current_dir(&cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null());
+
+    // Structured prefix — the frontend maps it to a localized message (ai.cliMissing).
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("CLI_MISSING::{provider_id}::{e}"))?;
+
+    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
+
+    let (kill_tx, mut kill_rx) = tokio::sync::oneshot::channel::<()>();
+    state.senders().insert(run_id.clone(), kill_tx);
+
+    // stderr goes to its own event stream for debugging
+    {
+        let app = app.clone();
+        let run_id = run_id.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ = app.emit(
+                    "ai:stderr",
+                    StreamPayload {
+                        run_id: run_id.clone(),
+                        event: Value::String(line),
+                    },
+                );
+            }
+        });
+    }
+
+    // stdout JSONL → ai:stream; wait for process exit or a cancel signal
+    {
+        let app = app.clone();
+        let run_id = run_id.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            let code: Option<i32>;
+            loop {
+                tokio::select! {
+                    _ = &mut kill_rx => {
+                        let _ = child.kill().await;
+                        code = None;
+                        break;
+                    }
+                    line = lines.next_line() => {
+                        match line {
+                            Ok(Some(text)) => {
+                                let event = serde_json::from_str::<Value>(&text)
+                                    .unwrap_or_else(|_| serde_json::json!({ "type": "raw", "text": text }));
+                                let _ = app.emit("ai:stream", StreamPayload { run_id: run_id.clone(), event });
+                            }
+                            _ => {
+                                code = child.wait().await.ok().and_then(|s| s.code());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(s) = app.try_state::<ProviderState>() {
+                s.senders().remove(&run_id);
+            }
+            let _ = app.emit(
+                "ai:exit",
+                ExitPayload {
+                    run_id: run_id.clone(),
+                    code,
+                },
+            );
+        });
+    }
+
+    Ok(run_id)
+}
+
+/// Cancels a running AI turn.
+#[tauri::command]
+pub fn ai_cancel(state: State<'_, ProviderState>, run_id: String) -> Result<(), String> {
+    if let Some(tx) = state.senders().remove(&run_id) {
+        let _ = tx.send(());
+    }
+    Ok(())
+}
+
+/// One-shot AI call (e.g. commit-message generation) — separate from the chat
+/// session so it never pollutes conversation history, and constrained by each
+/// adapter so it cannot change anything on disk.
+#[tauri::command]
+pub async fn ai_oneshot(
+    provider_id: String,
+    prompt: String,
+    cwd: String,
+    model: Option<String>,
+) -> Result<String, String> {
+    let adapter = adapter_for(&provider_id)?;
+    let args = adapter.oneshot_args(&prompt, model.as_deref());
+    let output = cli_command(adapter.command(), &args)
+        .current_dir(&cwd)
+        .output()
+        .await
+        .map_err(|e| format!("CLI_MISSING::{provider_id}::{e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "AI call failed".into()
+        } else {
+            stderr
+        });
+    }
+    adapter.parse_oneshot(&String::from_utf8_lossy(&output.stdout))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderHealth {
+    pub installed: bool,
+    pub version: Option<String>,
+    /// `None` = the CLI offers no sign-in probe, so the state is unknown.
+    pub signed_in: Option<bool>,
+    /// Command that signs the user in, offered as a one-click terminal action.
+    pub login_command: String,
+}
+
+/// Availability + sign-in probe (`<cli> --version`, then the adapter's auth
+/// check) so the UI can guide the user before the first prompt instead of
+/// failing mid-conversation.
+#[tauri::command]
+pub async fn provider_health(provider_id: String) -> Result<ProviderHealth, String> {
+    let adapter = adapter_for(&provider_id)?;
+    let login_command = adapter.login_command().to_string();
+
+    let version = match cli_command(adapter.command(), ["--version"]).output().await {
+        Ok(output) if output.status.success() => {
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        }
+        _ => None,
+    };
+    if version.is_none() {
+        return Ok(ProviderHealth {
+            installed: false,
+            version: None,
+            signed_in: None,
+            login_command,
+        });
+    }
+
+    let mut signed_in = None;
+    if let Some(probe) = adapter.auth_probe_args() {
+        if let Ok(output) = cli_command(adapter.command(), probe).output().await {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            signed_in = Some(adapter.is_signed_in(output.status.success(), stdout.trim()));
+        }
+    }
+
+    Ok(ProviderHealth {
+        installed: true,
+        version,
+        signed_in,
+        login_command,
+    })
+}

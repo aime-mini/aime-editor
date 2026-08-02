@@ -1,0 +1,477 @@
+import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { translate } from "../i18n";
+import { createEventParser, type EventParser } from "../lib/aiParsers";
+import { effortsOf } from "../lib/providers";
+import {
+  addUsage,
+  EMPTY_USAGE,
+  PERMISSION_ORDER,
+  type ChatMessage,
+  type Permission,
+  type TokenUsage,
+  type UiAiEvent,
+} from "../lib/types";
+
+interface StreamPayload {
+  run_id: string;
+  event: unknown;
+}
+
+interface ExitPayload {
+  run_id: string;
+  code: number | null;
+}
+
+/** Mirror of the Rust `ProviderHealth` (providers/mod.rs). */
+interface ProviderHealth {
+  installed: boolean;
+  version: string | null;
+  signedIn: boolean | null;
+  loginCommand: string;
+}
+
+/** One chat session, persisted per project (schema is owned here, Rust just stores JSON). */
+export interface StoredSession {
+  /** App-side identity — exists before the CLI assigns its own session id. */
+  localId: string;
+  /** Provider session id; lets the CLI resume its full context across app restarts. */
+  sessionId: string | null;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  totalCostUsd: number;
+  messages: ChatMessage[];
+  /** AI CLI that owns `sessionId` — resume ids are not portable across CLIs. */
+  providerId?: string;
+  /** Provider overrides chosen for this session ("" = provider default). */
+  model?: string;
+  effort?: string;
+  usage?: TokenUsage;
+}
+
+interface SessionFile {
+  version: 1;
+  sessions: StoredSession[];
+}
+
+const MAX_SESSIONS_PER_PROJECT = 20;
+const TITLE_MAX_CHARS = 60;
+const PERMISSION_KEY = "aime.permission";
+/** Key of the boolean this setting replaced; read once, to keep the old choice. */
+const LEGACY_AUTO_APPROVE_KEY = "aime.autoApprove";
+const PROVIDER_KEY = "aime.provider";
+const DEFAULT_PROVIDER = "claude";
+/** Sign-in happens in a terminal/browser, so the state is polled back in. */
+const SIGN_IN_POLL_MS = 2_500;
+const SIGN_IN_POLL_TIMEOUT_MS = 5 * 60_000;
+
+/** Reads the saved level, adopting the choice made under the old boolean setting. */
+function storedPermission(): Permission {
+  const stored = localStorage.getItem(PERMISSION_KEY);
+  if (stored && PERMISSION_ORDER.includes(stored as Permission)) return stored as Permission;
+  return localStorage.getItem(LEGACY_AUTO_APPROVE_KEY) === "false" ? "edits" : "full";
+}
+
+function freshSessionIdentity() {
+  return {
+    localId: crypto.randomUUID(),
+    sessionId: null,
+    totalCostUsd: 0,
+    messages: [],
+    sessionUsage: EMPTY_USAGE,
+  };
+}
+
+function titleOf(messages: ChatMessage[]): string {
+  const firstUserText = messages.find((m) => m.role === "user")?.parts.find((p) => p.kind === "text");
+  const title = firstUserText?.kind === "text" ? firstUserText.text.trim() : "";
+  return title.length > TITLE_MAX_CHARS ? `${title.slice(0, TITLE_MAX_CHARS)}…` : title || "—";
+}
+
+function isSessionFile(value: unknown): value is SessionFile {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as { version?: unknown; sessions?: unknown };
+  return candidate.version === 1 && Array.isArray(candidate.sessions);
+}
+
+/** Maps the backend's structured spawn error to a localized message. */
+function formatSendError(e: unknown): string {
+  const raw = String(e);
+  const missing = /^CLI_MISSING::(.+?)::([\s\S]*)$/.exec(raw);
+  return missing ? translate("ai.cliMissing", { cli: missing[1], error: missing[2] }) : raw;
+}
+
+interface AiState {
+  providerId: string;
+  messages: ChatMessage[];
+  running: boolean;
+  runId: string | null;
+  /** Provider session id of the live session (drives `--resume`). */
+  sessionId: string | null;
+  localId: string;
+  createdAt: number;
+  totalCostUsd: number;
+  lastError: string | null;
+  /** Provider overrides for this session; "" = let the CLI decide. */
+  model: string;
+  effort: string;
+  /** How much the agent may do on its own (ARCHITECTURE.md §4). */
+  permission: Permission;
+  /** Result of the startup CLI probe; "missing" shows an install banner. */
+  providerHealth: "unknown" | "ok" | "missing";
+  /** null = the CLI offers no sign-in probe, so nothing may be claimed. */
+  signedIn: boolean | null;
+  /** Command that signs the user in, run in a terminal on request. */
+  loginCommand: string;
+  checkHealth: () => Promise<void>;
+  /** Re-probes until the sign-in the user just started lands (or times out). */
+  watchSignIn: () => void;
+  /** Token totals across the live session's turns. */
+  sessionUsage: TokenUsage;
+  /** Saved sessions of the current project, most recent first (includes the live one). */
+  history: StoredSession[];
+  /** Workspace the store is currently bound to (persistence key). */
+  projectRoot: string | null;
+
+  /** Binds the store to a workspace: flushes the previous one, restores the latest session. */
+  hydrate: (rootPath: string) => Promise<void>;
+  /** Unbinds from the workspace (folder closed): flushes, then resets to a clean slate. */
+  closeProject: () => void;
+  sendPrompt: (prompt: string, cwd: string) => Promise<void>;
+  cancel: () => Promise<void>;
+  newSession: () => void;
+  resumeSession: (localId: string) => void;
+  /** Switching CLI starts a new session — resume ids belong to one provider. */
+  setProvider: (providerId: string) => void;
+  setModel: (model: string) => void;
+  setEffort: (effort: string) => void;
+  cyclePermission: () => void;
+}
+
+/** Patches the last assistant message (the one currently streaming). */
+function patchLastAssistant(
+  messages: ChatMessage[],
+  patch: (last: ChatMessage) => ChatMessage,
+): ChatMessage[] {
+  const last = messages.at(-1);
+  if (!last || last.role !== "assistant") return messages;
+  return [...messages.slice(0, -1), patch(last)];
+}
+
+function appendText(message: ChatMessage, text: string): ChatMessage {
+  const lastPart = message.parts.at(-1);
+  const parts =
+    lastPart?.kind === "text"
+      ? [...message.parts.slice(0, -1), { kind: "text" as const, text: lastPart.text + text }]
+      : [...message.parts, { kind: "text" as const, text }];
+  return { ...message, parts };
+}
+
+let listenersReady = false;
+/** Most recent stderr line of the running turn — appended to exit errors. */
+let lastStderrLine = "";
+/** Parser of the turn in flight; parsers carry per-run state, so it is rebuilt each turn. */
+let activeParser: EventParser = () => [];
+/** Interval id of the sign-in watcher; at most one runs at a time. */
+let signInPollId: number | null = null;
+
+function stopSignInWatch(): void {
+  if (signInPollId !== null) {
+    window.clearInterval(signInPollId);
+    signInPollId = null;
+  }
+}
+
+export const useAi = create<AiState>((set, get) => {
+  /** Upserts the live session into history and writes the project's session file. */
+  const persist = async () => {
+    const { projectRoot, messages, localId, sessionId, createdAt, totalCostUsd, history } = get();
+    const { providerId, model, effort, sessionUsage } = get();
+    if (!projectRoot || messages.length === 0) return;
+    const live: StoredSession = {
+      localId,
+      sessionId,
+      title: titleOf(messages),
+      createdAt,
+      updatedAt: Date.now(),
+      totalCostUsd,
+      messages,
+      providerId,
+      model,
+      effort,
+      usage: sessionUsage,
+    };
+    const merged = [live, ...history.filter((s) => s.localId !== localId)]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, MAX_SESSIONS_PER_PROJECT);
+    set({ history: merged });
+    const file: SessionFile = { version: 1, sessions: merged };
+    try {
+      await invoke("save_ai_sessions", { rootPath: projectRoot, sessions: file });
+    } catch (err: unknown) {
+      console.error("failed to save AI sessions:", err);
+    }
+  };
+
+  const applyUiEvent = (ev: UiAiEvent) => {
+    switch (ev.kind) {
+      case "session-info":
+        set({ sessionId: ev.sessionId });
+        break;
+      case "message-delta":
+        set((s) => ({ messages: patchLastAssistant(s.messages, (m) => appendText(m, ev.text)) }));
+        break;
+      case "tool-call":
+        set((s) => ({
+          messages: patchLastAssistant(s.messages, (m) => ({
+            ...m,
+            parts: [...m.parts, { kind: "tool", name: ev.name, detail: ev.detail }],
+          })),
+        }));
+        break;
+      case "done":
+        set((s) => ({
+          messages: patchLastAssistant(s.messages, (m) => ({
+            ...m,
+            costUsd: ev.costUsd,
+            durationMs: ev.durationMs,
+            usage: ev.usage,
+          })),
+          totalCostUsd: s.totalCostUsd + (ev.costUsd ?? 0),
+          sessionUsage: ev.usage ? addUsage(s.sessionUsage, ev.usage) : s.sessionUsage,
+          sessionId: ev.sessionId ?? s.sessionId,
+        }));
+        break;
+      case "error":
+        set({ lastError: ev.message });
+        break;
+    }
+  };
+
+  const ensureListeners = async () => {
+    if (listenersReady) return;
+    listenersReady = true;
+    await listen<StreamPayload>("ai:stream", ({ payload }) => {
+      if (payload.run_id !== get().runId) return;
+      activeParser(payload.event).forEach(applyUiEvent);
+    });
+    await listen<ExitPayload>("ai:exit", ({ payload }) => {
+      if (payload.run_id !== get().runId) return;
+      set({ running: false, runId: null });
+      if (payload.code !== null && payload.code !== 0) {
+        // The CLI's own stderr (e.g. "please log in") beats a bare exit code.
+        const detail = lastStderrLine ? `\n${lastStderrLine}` : "";
+        set({ lastError: translate("ai.exitWithCode", { code: payload.code }) + detail });
+      }
+      void persist();
+    });
+    await listen<StreamPayload>("ai:stderr", ({ payload }) => {
+      if (typeof payload.event === "string" && payload.event.trim()) {
+        lastStderrLine = payload.event.trim();
+      }
+      console.warn("[ai stderr]", payload.event);
+    });
+  };
+
+  return {
+    providerId: localStorage.getItem(PROVIDER_KEY) ?? DEFAULT_PROVIDER,
+    messages: [],
+    running: false,
+    runId: null,
+    sessionId: null,
+    localId: crypto.randomUUID(),
+    createdAt: Date.now(),
+    totalCostUsd: 0,
+    lastError: null,
+    model: "",
+    effort: "",
+    permission: storedPermission(),
+    providerHealth: "unknown",
+    signedIn: null,
+    loginCommand: "",
+    sessionUsage: EMPTY_USAGE,
+    history: [],
+    projectRoot: null,
+
+    hydrate: async (rootPath) => {
+      if (get().projectRoot === rootPath) return;
+      await persist(); // flush the previous project's live session
+      let stored: StoredSession[] = [];
+      try {
+        const value = await invoke<unknown>("load_ai_sessions", { rootPath });
+        if (isSessionFile(value)) stored = value.sessions;
+      } catch (err: unknown) {
+        console.error("failed to load AI sessions:", err);
+      }
+      const latest = stored.at(0);
+      set({
+        projectRoot: rootPath,
+        history: stored,
+        lastError: null,
+        running: false,
+        runId: null,
+        // Continue where the project left off, or start clean.
+        ...(latest
+          ? {
+              localId: latest.localId,
+              sessionId: latest.sessionId,
+              createdAt: latest.createdAt,
+              totalCostUsd: latest.totalCostUsd,
+              messages: latest.messages,
+              // Sessions saved before providers were selectable are Claude's.
+              providerId: latest.providerId ?? DEFAULT_PROVIDER,
+              model: latest.model ?? "",
+              effort: latest.effort ?? "",
+              sessionUsage: latest.usage ?? EMPTY_USAGE,
+            }
+          : { ...freshSessionIdentity(), createdAt: Date.now() }),
+      });
+    },
+
+    checkHealth: async () => {
+      const probed = get().providerId;
+      try {
+        const health = await invoke<ProviderHealth>("provider_health", { providerId: probed });
+        // The user may have switched provider while the probe was in flight.
+        if (get().providerId !== probed) return;
+        set({
+          providerHealth: health.installed ? "ok" : "missing",
+          signedIn: health.signedIn,
+          loginCommand: health.loginCommand,
+        });
+        if (health.signedIn === true) stopSignInWatch();
+      } catch (err: unknown) {
+        console.error("provider health check failed:", err);
+      }
+    },
+
+    watchSignIn: () => {
+      stopSignInWatch();
+      const startedAt = Date.now();
+      signInPollId = window.setInterval(() => {
+        // Give up quietly if the user abandoned the sign-in — the probe is
+        // cheap, but nothing should poll forever in the background.
+        if (Date.now() - startedAt > SIGN_IN_POLL_TIMEOUT_MS) {
+          stopSignInWatch();
+          return;
+        }
+        void get().checkHealth();
+      }, SIGN_IN_POLL_MS);
+    },
+
+    closeProject: () => {
+      void persist();
+      set({
+        ...freshSessionIdentity(),
+        createdAt: Date.now(),
+        projectRoot: null,
+        history: [],
+        lastError: null,
+        running: false,
+        runId: null,
+      });
+    },
+
+    sendPrompt: async (prompt, cwd) => {
+      await ensureListeners();
+      lastStderrLine = "";
+      activeParser = createEventParser(get().providerId);
+      set((s) => ({
+        lastError: null,
+        running: true,
+        messages: [
+          ...s.messages,
+          { role: "user", parts: [{ kind: "text", text: prompt }] },
+          { role: "assistant", parts: [] },
+        ],
+      }));
+      try {
+        const runId = await invoke<string>("ai_send_prompt", {
+          providerId: get().providerId,
+          prompt,
+          cwd,
+          sessionId: get().sessionId,
+          options: {
+            model: get().model || null,
+            effort: get().effort || null,
+            permission: get().permission,
+          },
+        });
+        set({ runId });
+      } catch (e) {
+        set({ running: false, lastError: formatSendError(e) });
+        void persist();
+      }
+    },
+
+    cancel: async () => {
+      const { runId } = get();
+      if (runId) await invoke("ai_cancel", { runId });
+      set({ running: false, runId: null });
+      void persist();
+    },
+
+    newSession: () => {
+      void persist();
+      set({ ...freshSessionIdentity(), createdAt: Date.now(), lastError: null });
+    },
+
+    resumeSession: (localId) => {
+      const { running, history } = get();
+      if (running) return;
+      const target = history.find((s) => s.localId === localId);
+      if (!target) return;
+      void persist();
+      set({
+        localId: target.localId,
+        sessionId: target.sessionId,
+        createdAt: target.createdAt,
+        totalCostUsd: target.totalCostUsd,
+        messages: target.messages,
+        providerId: target.providerId ?? DEFAULT_PROVIDER,
+        model: target.model ?? "",
+        effort: target.effort ?? "",
+        sessionUsage: target.usage ?? EMPTY_USAGE,
+        lastError: null,
+      });
+    },
+
+    setProvider: (providerId) => {
+      if (get().providerId === providerId || get().running) return;
+      localStorage.setItem(PROVIDER_KEY, providerId);
+      stopSignInWatch(); // the watcher belonged to the previous CLI
+      void persist();
+      // Model/effort names and the resume id belong to the previous CLI.
+      set({
+        ...freshSessionIdentity(),
+        createdAt: Date.now(),
+        providerId,
+        model: "",
+        effort: "",
+        lastError: null,
+        providerHealth: "unknown",
+        signedIn: null,
+      });
+    },
+
+    setModel: (model) => {
+      // Effort levels are per model — drop one the new model cannot accept.
+      const supported = effortsOf(get().providerId, model);
+      const effort = supported.some((o) => o.value === get().effort) ? get().effort : "";
+      set({ model, effort });
+    },
+
+    setEffort: (effort) => {
+      set({ effort });
+    },
+
+    cyclePermission: () => {
+      const next =
+        PERMISSION_ORDER[(PERMISSION_ORDER.indexOf(get().permission) + 1) % PERMISSION_ORDER.length];
+      localStorage.setItem(PERMISSION_KEY, next);
+      set({ permission: next });
+    },
+  };
+});

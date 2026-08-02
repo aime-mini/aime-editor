@@ -1,0 +1,17 @@
+#!/bin/sh
+# Blocks the commit if code does not meet project standards (rule: no sloppy code).
+set -e
+
+# cargo is installed per-user and may be missing from git bash's PATH
+PATH="$HOME/.cargo/bin:$PATH"
+
+echo "[pre-commit] prettier --check"
+npx prettier --check "src/**/*.{ts,tsx,css}" --log-level warn
+
+echo "[pre-commit] eslint"
+npx eslint src
+
+echo "[pre-commit] cargo fmt --check"
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+echo "[pre-commit] OK"
