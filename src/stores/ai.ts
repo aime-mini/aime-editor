@@ -75,6 +75,28 @@ const PERMISSION_KEY = "aime.permission";
 const LEGACY_AUTO_APPROVE_KEY = "aime.autoApprove";
 const PROVIDER_KEY = "aime.provider";
 const DEFAULT_PROVIDER = "claude";
+
+/** The CLI the user last picked. Their choice outlives any one conversation. */
+function preferredProvider(): string {
+  return localStorage.getItem(PROVIDER_KEY) ?? DEFAULT_PROVIDER;
+}
+
+/**
+ * The conversation to reopen when a project is opened, if any.
+ *
+ * A conversation cannot change CLI half way - the resume id belongs to the
+ * one that made it - so only the newest conversation of the chosen provider
+ * is continued. Picking Claude and finding Codex selected on the next launch
+ * was this, before: the user's pick was only stored, never allowed to win.
+ * The other conversations stay in the history list, and opening one from
+ * there switches the provider back with it.
+ */
+export function sessionToResume<T extends { providerId?: string }>(
+  stored: readonly T[],
+  preferred: string,
+): T | undefined {
+  return stored.find((session) => (session.providerId ?? DEFAULT_PROVIDER) === preferred);
+}
 /** Sign-in happens in a terminal/browser, so the state is polled back in. */
 const SIGN_IN_POLL_MS = 2_500;
 const SIGN_IN_POLL_TIMEOUT_MS = 5 * 60_000;
@@ -316,7 +338,7 @@ export const useAi = create<AiState>((set, get) => {
   };
 
   return {
-    providerId: localStorage.getItem(PROVIDER_KEY) ?? DEFAULT_PROVIDER,
+    providerId: preferredProvider(),
     messages: [],
     running: false,
     runId: null,
@@ -346,7 +368,8 @@ export const useAi = create<AiState>((set, get) => {
       } catch (err: unknown) {
         console.error("failed to load AI sessions:", err);
       }
-      const latest = stored.at(0);
+      const providerId = preferredProvider();
+      const latest = sessionToResume(stored, providerId);
       set({
         projectRoot: rootPath,
         history: stored,
@@ -361,13 +384,12 @@ export const useAi = create<AiState>((set, get) => {
               createdAt: latest.createdAt,
               totalCostUsd: latest.totalCostUsd,
               messages: latest.messages,
-              // Sessions saved before providers were selectable are Claude's.
-              providerId: latest.providerId ?? DEFAULT_PROVIDER,
+              providerId,
               model: latest.model ?? "",
               effort: latest.effort ?? "",
               sessionUsage: latest.usage ?? EMPTY_USAGE,
             }
-          : { ...freshSessionIdentity(), createdAt: Date.now() }),
+          : { ...freshSessionIdentity(), createdAt: Date.now(), providerId, model: "", effort: "" }),
       });
     },
 
