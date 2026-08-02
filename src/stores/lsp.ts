@@ -51,6 +51,13 @@ function registerProviders(languageId: string): void {
   monaco.languages.registerDefinitionProvider(languageId, {
     provideDefinition: (model, position) => session()?.definition(model, position) ?? null,
   });
+  monaco.languages.registerReferenceProvider(languageId, {
+    provideReferences: (model, position) => session()?.references(model, position) ?? [],
+  });
+  monaco.languages.registerRenameProvider(languageId, {
+    provideRenameEdits: (model, position, newName) =>
+      session()?.rename(model, position, newName) ?? { edits: [] },
+  });
   monaco.languages.registerSignatureHelpProvider(languageId, {
     signatureHelpTriggerCharacters: ["(", ","],
     provideSignatureHelp: (model, position) => session()?.signatureHelp(model, position) ?? null,

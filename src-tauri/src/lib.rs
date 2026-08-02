@@ -123,6 +123,7 @@ pub fn run() {
             lsp::lsp_start,
             lsp::lsp_send,
             lsp::lsp_stop,
+            lsp::edits::apply_text_edits,
             window_cmds::open_new_window,
         ])
         .run(tauri::generate_context!())

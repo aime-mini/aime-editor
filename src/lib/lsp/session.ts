@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { monaco } from "../monaco";
 import { LspClient } from "./client";
 import {
@@ -81,6 +82,17 @@ interface LspCompletionItem {
   sortText?: string;
   filterText?: string;
   textEdit?: { range?: LspRange; newText: string };
+}
+
+interface LspTextEdit {
+  range: LspRange;
+  newText: string;
+}
+
+/** Servers answer a rename with either shape; both are handled. */
+interface LspWorkspaceEdit {
+  changes?: Record<string, LspTextEdit[]>;
+  documentChanges?: { textDocument?: { uri?: string }; edits?: LspTextEdit[] }[];
 }
 
 interface LspLocation {
@@ -289,6 +301,76 @@ export class LanguageSession {
       value: answer,
       dispose: () => undefined,
     };
+  }
+
+  async references(
+    model: monaco.editor.ITextModel,
+    position: monaco.IPosition,
+  ): Promise<monaco.languages.Location[]> {
+    const answer = await this.client.request<LspLocation[] | null>("textDocument/references", {
+      ...this.documentPosition(model, position),
+      context: { includeDeclaration: true },
+    });
+    return (answer ?? []).flatMap((location) => {
+      const uri = location.uri ?? location.targetUri;
+      const range = location.range ?? location.targetSelectionRange;
+      if (!uri || !range) return [];
+      return [{ uri: monaco.Uri.file(uriToPath(uri)), range: toMonacoRange(range) }];
+    });
+  }
+
+  /**
+   * Renames a symbol across the project.
+   *
+   * A rename reaches files that are not open, and Monaco can only edit buffers
+   * it holds. Those files are rewritten on disk instead - the watcher picks the
+   * change up - while open files get real editor edits, so they stay undoable
+   * and the user decides when to save them.
+   */
+  async rename(
+    model: monaco.editor.ITextModel,
+    position: monaco.IPosition,
+    newName: string,
+  ): Promise<monaco.languages.WorkspaceEdit> {
+    const answer = await this.client.request<LspWorkspaceEdit | null>("textDocument/rename", {
+      ...this.documentPosition(model, position),
+      newName,
+    });
+
+    const byUri = answer?.changes ?? {};
+    for (const documentChange of answer?.documentChanges ?? []) {
+      const uri = documentChange.textDocument?.uri;
+      if (uri) byUri[uri] = [...(byUri[uri] ?? []), ...(documentChange.edits ?? [])];
+    }
+
+    const openModels = new Map(
+      monaco.editor
+        .getModels()
+        .map((candidate) => [pathToUri(candidate.uri.fsPath || candidate.uri.path), candidate]),
+    );
+    const edits: monaco.languages.IWorkspaceTextEdit[] = [];
+    const onDisk: Promise<unknown>[] = [];
+
+    for (const [uri, fileEdits] of Object.entries(byUri)) {
+      const target = openModels.get(uri);
+      if (target) {
+        for (const edit of fileEdits) {
+          edits.push({
+            resource: target.uri,
+            versionId: undefined,
+            textEdit: { range: toMonacoRange(edit.range), text: edit.newText },
+          });
+        }
+      } else {
+        onDisk.push(
+          invoke("apply_text_edits", { path: uriToPath(uri), edits: fileEdits }).catch((err: unknown) => {
+            console.error("rename could not update", uri, err);
+          }),
+        );
+      }
+    }
+    await Promise.all(onDisk);
+    return { edits };
   }
 
   async dispose(): Promise<void> {

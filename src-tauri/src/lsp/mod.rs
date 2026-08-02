@@ -4,6 +4,8 @@
 //! server, frames messages both ways, and relays JSON to the window that owns
 //! it — protocol semantics live on the frontend, next to Monaco.
 
+pub mod edits;
+
 use crate::providers::cli_command;
 use serde::Serialize;
 use std::collections::HashMap;
