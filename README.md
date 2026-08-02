@@ -39,3 +39,17 @@ editor layer** on top of them:
 
 Every AI CLI is reached through an adapter that normalizes its output into one event set, so the UI
 never knows which CLI answers: `src-tauri/src/providers/adapter.rs` is the whole contract.
+
+## Running from source
+
+Requirements: Node ≥ 20, Rust (stable; MSVC on Windows). For the AI features, install one of the
+supported CLIs - [Claude Code](https://code.claude.com) (`npm install -g @anthropic-ai/claude-code`)
+or [Codex](https://github.com/openai/codex) (`npm install -g @openai/codex`) - and sign in from
+inside Aime with the key button in the AI panel. Without either, Aime still works as a plain editor
+with Git, terminal and tasks.
+
+```bash
+npm install
+npm run tauri dev      # run the app (the first Rust build takes a while)
+npm run tauri build    # package installers
+```
