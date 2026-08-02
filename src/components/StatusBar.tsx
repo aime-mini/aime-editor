@@ -17,6 +17,7 @@ import {
   PackageCheck,
   PanelLeft,
   Play,
+  Settings2,
   SquareTerminal,
   Sun,
 } from "lucide-react";
@@ -45,6 +46,7 @@ export function StatusBar() {
   const { running, totalCostUsd, sessionId, providerId } = useAi();
   const { tasks, run: runTask } = useTasks();
   const setInstallerTools = useLayout((s) => s.setInstallerTools);
+  const setSettingsOpen = useLayout((s) => s.setSettingsOpen);
   const [taskMenu, setTaskMenu] = useState<{ x: number; y: number } | null>(null);
   const { theme, toggle } = useTheme();
   const { locale, setLocale } = useI18n();
@@ -206,6 +208,15 @@ export function StatusBar() {
           title={theme === "dark" ? "Light mode" : "Dark mode"}
         >
           {theme === "dark" ? <Sun size={11} /> : <Moon size={11} />}
+        </button>
+        <button
+          onClick={() => {
+            setSettingsOpen(true);
+          }}
+          className="rounded px-1 py-0.5 hover:bg-elevated hover:text-fg"
+          title={t("settings.title")}
+        >
+          <Settings2 size={11} />
         </button>
         <button
           onClick={toggleHelp}

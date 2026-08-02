@@ -24,6 +24,7 @@ import { McpModal } from "./components/McpModal";
 import { MemoryModal } from "./components/MemoryModal";
 import { Sidebar } from "./components/Sidebar";
 import { PromptModal } from "./components/PromptModal";
+import { SettingsModal } from "./components/SettingsModal";
 import { StatusBar } from "./components/StatusBar";
 import { UpdateNotice } from "./components/UpdateNotice";
 import { TerminalPanel } from "./components/TerminalPanel";
@@ -390,6 +391,7 @@ export default function App() {
   const { paletteOpen, togglePalette, setPaletteOpen } = useLayout();
   const { memoryOpen, setMemoryOpen, mcpOpen, setMcpOpen } = useLayout();
   const { installerTools, setInstallerTools } = useLayout();
+  const { settingsOpen, setSettingsOpen } = useLayout();
 
   // `aime <folder>` launch: adopt the CLI folder unless the user beat us to the dialog.
   useEffect(() => {
@@ -447,6 +449,10 @@ export default function App() {
       } else if (e.code === "Backquote") {
         e.preventDefault();
         toggleTerminal();
+      } else if (e.key === ",") {
+        // Ctrl+, is where every editor keeps its settings.
+        e.preventDefault();
+        useLayout.getState().setSettingsOpen(true);
       } else if (key === "w") {
         // Closes the current editor tab, not the window - the editor meaning
         // of Ctrl+W is the one a user has in their fingers here.
@@ -493,6 +499,13 @@ export default function App() {
         <McpModal
           onClose={() => {
             setMcpOpen(false);
+          }}
+        />
+      )}
+      {settingsOpen && (
+        <SettingsModal
+          onClose={() => {
+            setSettingsOpen(false);
           }}
         />
       )}

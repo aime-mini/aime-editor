@@ -12,6 +12,7 @@ import { useLayout } from "../stores/layout";
 import { useLsp } from "../stores/lsp";
 import { useGit } from "../stores/git";
 import { monacoThemeOf, useTheme } from "../stores/theme";
+import { useSettings } from "../stores/settings";
 import { useWorkspace } from "../stores/workspace";
 import { ConflictView } from "./ConflictView";
 
@@ -153,15 +154,26 @@ function registerAiActions(editor: MonacoEditor.IStandaloneCodeEditor) {
   }
 }
 
+/** Everything that is not a user preference. */
 const EDITOR_OPTIONS = {
   fontFamily: "JetBrains Mono, Consolas, monospace",
-  fontSize: 13,
-  minimap: { enabled: false },
   smoothScrolling: true,
   automaticLayout: true,
   scrollBeyondLastLine: false,
   padding: { top: 8 },
 } as const;
+
+/** Editor options as the user's settings make them. */
+function useEditorOptions() {
+  const { fontSize, wordWrap, minimap, tabSize } = useSettings();
+  return {
+    ...EDITOR_OPTIONS,
+    fontSize,
+    tabSize,
+    wordWrap: wordWrap ? ("on" as const) : ("off" as const),
+    minimap: { enabled: minimap },
+  };
+}
 
 interface GutterRange {
   start: number;
@@ -374,6 +386,7 @@ function BlameView({ relativePath }: { relativePath: string }) {
 }
 
 export function EditorPane() {
+  const editorOptions = useEditorOptions();
   const {
     openFilePath,
     diffPath,
@@ -539,7 +552,7 @@ export function EditorPane() {
             });
           }}
           theme={monacoThemeOf(theme)}
-          options={EDITOR_OPTIONS}
+          options={editorOptions}
         />
       </div>
     </div>

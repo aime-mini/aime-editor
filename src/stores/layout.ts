@@ -27,6 +27,8 @@ interface LayoutState {
   /** Tools the installer is working through; empty = no installer open. */
   installerTools: string[];
   setInstallerTools: (toolIds: string[]) => void;
+  settingsOpen: boolean;
+  setSettingsOpen: (open: boolean) => void;
   toggleSidebar: () => void;
   toggleAiPanel: () => void;
   toggleTerminal: () => void;
@@ -65,6 +67,10 @@ export const useLayout = create<LayoutState>((set) => ({
   installerTools: [],
   setInstallerTools: (toolIds) => {
     set({ installerTools: toolIds });
+  },
+  settingsOpen: false,
+  setSettingsOpen: (open) => {
+    set({ settingsOpen: open });
   },
   toggleSidebar: () => {
     set((s) => ({ sidebarVisible: !s.sidebarVisible }));

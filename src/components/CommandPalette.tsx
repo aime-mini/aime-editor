@@ -15,6 +15,7 @@ import {
   Moon,
   PanelLeft,
   Play,
+  Settings2,
   Plug,
   Plus,
   SquareTerminal,
@@ -52,6 +53,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   const { toggleSidebar, toggleAiPanel, setTerminalVisible, setSidebarView, toggleHelp, setMemoryOpen } =
     useLayout();
   const setMcpOpen = useLayout((s) => s.setMcpOpen);
+  const setSettingsOpen = useLayout((s) => s.setSettingsOpen);
   const addTerminalTab = useTerminals((s) => s.addTab);
   const tasks = useTasks((s) => s.tasks);
   const runTask = useTasks((s) => s.run);
@@ -163,6 +165,15 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         },
       },
       {
+        id: "open-settings",
+        title: t("settings.title"),
+        icon: <Settings2 size={14} />,
+        hint: "Ctrl+,",
+        run: () => {
+          setSettingsOpen(true);
+        },
+      },
+      {
         id: "help",
         title: t("help.title"),
         icon: <CircleHelp size={14} />,
@@ -238,6 +249,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
     setSidebarView,
     setMemoryOpen,
     setMcpOpen,
+    setSettingsOpen,
     openFile,
     newSession,
     tasks,

@@ -235,6 +235,20 @@ const EN: HelpTopic[] = [
     keywords: "fix error failure build failed exit code ai repair",
   },
   {
+    id: "settings",
+    section: "UI & shortcuts",
+    title: "Settings",
+    body: "Ctrl+, the gear in the status bar, or 'Settings' in the palette opens one page with everything adjustable: theme, language, font size, line wrapping, indent size, which AI CLI and model to use, and what the AI is allowed to do. The same switches also live where they are used - the shield in the AI panel, the theme in the status bar - because the fastest place to change something is where you noticed it. Changes apply immediately.",
+    keywords: "settings preferences options font size word wrap theme language ctrl+,",
+  },
+  {
+    id: "ai-actions",
+    section: "AI",
+    title: "Ask about the code you are looking at",
+    body: "Select some code, right-click, and the editor's own menu offers: explain this, clean this up, write tests for it, find and fix bugs, add comments. Aime writes the prompt with the file and the selection in it, so there is nothing to compose and no path to remember. With nothing selected the action takes the whole file. Anything that changes files can be taken back with Undo this turn.",
+    keywords: "explain refactor tests fix comments right-click selection context menu ai",
+  },
+  {
     id: "palette",
     section: "UI & shortcuts",
     title: "Command palette",
@@ -482,6 +496,20 @@ const VI: HelpTopic[] = [
     title: "Nhờ AI sửa khi task lỗi",
     body: "Khi task kết thúc với mã lỗi khác 0, một thanh đỏ hiện phía trên terminal. Nút 'Nhờ AI sửa' gửi lệnh, mã lỗi và output đã bắt được sang panel AI, yêu cầu AI tìm nguyên nhân, sửa rồi chạy lại task để xác nhận. Không dùng AI thì thanh đó chỉ là thông báo lỗi, bấm X để bỏ qua.",
     keywords: "sửa lỗi build fail exit code ai khắc phục",
+  },
+  {
+    id: "settings",
+    section: "Giao diện & phím tắt",
+    title: "Cài đặt",
+    body: "Ctrl+, nút bánh răng trên status bar, hoặc 'Cài đặt' trong palette mở một trang gom hết mọi thứ chỉnh được: theme, ngôn ngữ, cỡ chữ, xuống dòng tự động, độ thụt dòng, dùng AI CLI và model nào, AI được phép làm gì. Các công tắc đó vẫn nằm sẵn ở nơi anh dùng chúng - chip khiên trong panel AI, theme ở status bar - vì chỗ nhanh nhất để đổi là ngay chỗ anh nhận ra cần đổi. Thay đổi có hiệu lực ngay.",
+    keywords: "cài đặt tuỳ chọn cỡ chữ xuống dòng theme ngôn ngữ ctrl+,",
+  },
+  {
+    id: "ai-actions",
+    section: "AI",
+    title: "Hỏi AI ngay trên đoạn code đang xem",
+    body: "Bôi đen đoạn code, chuột phải, menu của editor có sẵn: giải thích đoạn này, viết lại cho gọn, viết test, tìm và sửa bug, thêm chú thích. Aime tự soạn prompt kèm tên file và đoạn code, nên anh không phải gõ gì cũng không cần nhớ đường dẫn. Không bôi đen thì nó lấy cả file. Việc nào có sửa file đều hoàn tác lại được bằng nút 'Hoàn tác lượt này'.",
+    keywords: "giải thích refactor test sửa bug chú thích chuột phải bôi đen menu ai",
   },
   {
     id: "palette",

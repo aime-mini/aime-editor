@@ -1,0 +1,76 @@
+import { create } from "zustand";
+
+/**
+ * Editor preferences the user can change, kept in one place.
+ *
+ * Deliberately small: every option here is one someone actually asked for by
+ * squinting at the screen or fighting a long line. Options that only exist to
+ * look configurable are how a settings page becomes unusable.
+ */
+export interface EditorSettings {
+  fontSize: number;
+  wordWrap: boolean;
+  minimap: boolean;
+  /** Lines the editor keeps visible above and below the cursor. */
+  tabSize: number;
+}
+
+const STORAGE_KEY = "aime.settings";
+
+export const DEFAULT_SETTINGS: EditorSettings = {
+  fontSize: 13,
+  wordWrap: false,
+  minimap: false,
+  tabSize: 2,
+};
+
+/** Bounds that keep the editor readable whatever is in storage. */
+const FONT_SIZE_RANGE = { min: 9, max: 28 };
+const TAB_SIZE_RANGE = { min: 1, max: 8 };
+
+function clamp(value: number, { min, max }: { min: number; max: number }, fallback: number): number {
+  return Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : fallback;
+}
+
+/** Reads stored settings, repairing anything that is out of range or absent. */
+export function sanitize(stored: unknown): EditorSettings {
+  if (typeof stored !== "object" || stored === null) return DEFAULT_SETTINGS;
+  const raw = stored as Partial<Record<keyof EditorSettings, unknown>>;
+  return {
+    fontSize: clamp(Number(raw.fontSize), FONT_SIZE_RANGE, DEFAULT_SETTINGS.fontSize),
+    wordWrap: typeof raw.wordWrap === "boolean" ? raw.wordWrap : DEFAULT_SETTINGS.wordWrap,
+    minimap: typeof raw.minimap === "boolean" ? raw.minimap : DEFAULT_SETTINGS.minimap,
+    tabSize: clamp(Number(raw.tabSize), TAB_SIZE_RANGE, DEFAULT_SETTINGS.tabSize),
+  };
+}
+
+function load(): EditorSettings {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) return DEFAULT_SETTINGS;
+  try {
+    return sanitize(JSON.parse(raw));
+  } catch {
+    // Corrupted storage should cost the user their preferences, not their editor.
+    return DEFAULT_SETTINGS;
+  }
+}
+
+interface SettingsState extends EditorSettings {
+  update: (patch: Partial<EditorSettings>) => void;
+  reset: () => void;
+}
+
+export const useSettings = create<SettingsState>((set, get) => ({
+  ...load(),
+
+  update: (patch) => {
+    const next = sanitize({ ...get(), ...patch });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    set(next);
+  },
+
+  reset: () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_SETTINGS));
+    set(DEFAULT_SETTINGS);
+  },
+}));
