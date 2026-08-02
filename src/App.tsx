@@ -101,72 +101,76 @@ function WelcomeScreen() {
     "flex w-full items-center gap-2 rounded-lg border border-line px-4 py-2 font-medium text-muted hover:border-accent hover:text-fg";
 
   return (
-    <div className="flex h-full items-center justify-center">
-      <div className="w-full max-w-2xl px-8">
-        <div className="flex flex-col items-center gap-3">
-          <img src={logo} alt="Aime" className="size-20 drop-shadow-lg" />
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight">Aime</h1>
-          <p className="max-w-sm text-center text-muted">{t("app.tagline")}</p>
-        </div>
+    // Centred while it fits, scrollable the moment it does not - otherwise a
+    // long environment report pushes the logo off the top of the window.
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto flex min-h-full w-full max-w-2xl items-center px-8 py-10">
+        <div className="w-full">
+          <div className="flex flex-col items-center gap-3">
+            <img src={logo} alt="Aime" className="size-20 drop-shadow-lg" />
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight">Aime</h1>
+            <p className="max-w-sm text-center text-muted">{t("app.tagline")}</p>
+          </div>
 
-        <div className="mt-10 grid grid-cols-2 gap-10">
-          <section>
-            <h2 className="text-[11px] font-semibold tracking-wider text-muted uppercase">
-              {t("welcome.start")}
-            </h2>
-            <div className="mt-3 flex flex-col gap-2">
-              <button
-                onClick={() => void openFolder()}
-                className="flex w-full items-center gap-2 rounded-lg bg-accent px-4 py-2 font-medium text-white hover:opacity-90"
-              >
-                <FolderOpen size={16} /> {t("welcome.openFolder")}
-              </button>
-              <button onClick={() => void pickNewProjectLocation()} className={actionButton}>
-                <FolderPlus size={16} /> {t("welcome.newProject")}
-              </button>
-              <button
-                onClick={() => {
-                  setCloneUrl("");
-                }}
-                disabled={cloning}
-                className={actionButton}
-                title={t("welcome.cloneHint")}
-              >
-                {cloning ? <Loader2 size={16} className="animate-spin" /> : <GitBranch size={16} />}
-                {t("welcome.clone")}
-              </button>
-              <button
-                onClick={() => void openNewWindow()}
-                className={actionButton}
-                title={t("welcome.newWindowHint")}
-              >
-                <AppWindow size={16} /> {t("welcome.newWindow")}
-              </button>
-            </div>
-          </section>
-
-          <section>
-            <h2 className="text-[11px] font-semibold tracking-wider text-muted uppercase">
-              {t("welcome.recent")}
-            </h2>
-            <div className="mt-3 flex flex-col gap-1">
-              {folders.length === 0 && <p className="py-2 text-muted">{t("welcome.noRecent")}</p>}
-              {folders.map((f) => (
+          <div className="mt-10 grid grid-cols-2 gap-10">
+            <section>
+              <h2 className="text-[11px] font-semibold tracking-wider text-muted uppercase">
+                {t("welcome.start")}
+              </h2>
+              <div className="mt-3 flex flex-col gap-2">
                 <button
-                  key={f.path}
-                  onClick={() => void openRecent(f.path)}
-                  title={f.path}
-                  className="flex flex-col rounded-md px-2 py-1.5 text-left hover:bg-elevated"
+                  onClick={() => void openFolder()}
+                  className="flex w-full items-center gap-2 rounded-lg bg-accent px-4 py-2 font-medium text-white hover:opacity-90"
                 >
-                  <span className="font-medium text-accent">{folderNameOf(f.path)}</span>
-                  <span className="truncate text-[11px] text-muted">{f.path}</span>
+                  <FolderOpen size={16} /> {t("welcome.openFolder")}
                 </button>
-              ))}
-            </div>
-          </section>
-        </div>
+                <button onClick={() => void pickNewProjectLocation()} className={actionButton}>
+                  <FolderPlus size={16} /> {t("welcome.newProject")}
+                </button>
+                <button
+                  onClick={() => {
+                    setCloneUrl("");
+                  }}
+                  disabled={cloning}
+                  className={actionButton}
+                  title={t("welcome.cloneHint")}
+                >
+                  {cloning ? <Loader2 size={16} className="animate-spin" /> : <GitBranch size={16} />}
+                  {t("welcome.clone")}
+                </button>
+                <button
+                  onClick={() => void openNewWindow()}
+                  className={actionButton}
+                  title={t("welcome.newWindowHint")}
+                >
+                  <AppWindow size={16} /> {t("welcome.newWindow")}
+                </button>
+              </div>
+            </section>
 
-        <EnvironmentCheck />
+            <section>
+              <h2 className="text-[11px] font-semibold tracking-wider text-muted uppercase">
+                {t("welcome.recent")}
+              </h2>
+              <div className="mt-3 flex flex-col gap-1">
+                {folders.length === 0 && <p className="py-2 text-muted">{t("welcome.noRecent")}</p>}
+                {folders.map((f) => (
+                  <button
+                    key={f.path}
+                    onClick={() => void openRecent(f.path)}
+                    title={f.path}
+                    className="flex flex-col rounded-md px-2 py-1.5 text-left hover:bg-elevated"
+                  >
+                    <span className="font-medium text-accent">{folderNameOf(f.path)}</span>
+                    <span className="truncate text-[11px] text-muted">{f.path}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          </div>
+
+          <EnvironmentCheck />
+        </div>
       </div>
 
       {cloneUrl !== null && (
