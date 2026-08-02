@@ -20,7 +20,7 @@ const EN: HelpTopic[] = [
     id: "open-project",
     section: "Getting started",
     title: "Open a project",
-    body: "On the welcome screen: Open Folder picks any folder, Recent reopens the last 8 workspaces, New Project creates a folder and opens it in one step, and Clone Repository takes a git URL, asks where to put it, and opens the clone - no terminal needed. Below that, This machine reports what Aime found: both AI CLIs with their sign-in state, Git, Node and the language servers, each with the exact command to fix it.",
+    body: "On the welcome screen: Open Folder picks any folder, Recent reopens the last 8 workspaces, New Project creates a folder and opens it in one step, and Clone Repository takes a git URL, asks where to put it, and opens the clone - no terminal needed. A single quiet line at the bottom reports what Aime found on this machine - it either says everything is ready or names what is missing, and opens the full list (both AI CLIs with their sign-in state, Git, Node, language servers) with the exact command to fix each one.",
     keywords: "workspace recent folder start clone git url github",
   },
   {

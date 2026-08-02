@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, Copy, Loader2, TriangleAlert, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, Loader2, TriangleAlert, X } from "lucide-react";
 import { useT } from "../i18n";
 
 /** Mirror of the Rust `ToolStatus` (environment.rs). */
@@ -90,6 +90,7 @@ function ToolRow({ tool }: { tool: ToolStatus }) {
 export function EnvironmentCheck() {
   const [tools, setTools] = useState<ToolStatus[] | null>(null);
   const [servers, setServers] = useState<ToolStatus[]>([]);
+  const [expanded, setExpanded] = useState(false);
   const t = useT();
 
   useEffect(() => {
@@ -112,15 +113,52 @@ export function EnvironmentCheck() {
     };
   }, []);
 
+  if (tools === null) {
+    return (
+      <p className="mt-6 flex items-center justify-center gap-2 text-[11px] text-muted">
+        <Loader2 size={12} className="animate-spin" /> {t("env.checking")}
+      </p>
+    );
+  }
+
+  const everything = [...tools, ...servers];
+  const needsAttention = everything.filter((tool) => readinessOf(tool) !== "ready");
+  const Marker = expanded ? ChevronDown : ChevronRight;
+
   return (
-    <section className="mt-8">
-      <h2 className="text-[11px] font-semibold tracking-wider text-muted uppercase">{t("env.title")}</h2>
-      {tools === null ? (
-        <p className="mt-3 flex items-center gap-2 text-[12px] text-muted">
-          <Loader2 size={12} className="animate-spin" /> {t("env.checking")}
-        </p>
-      ) : (
-        <div className="mt-2 rounded-lg border border-line px-3 py-2">
+    <section className="mt-6 flex flex-col items-center">
+      {/* Progressive disclosure (ARCHITECTURE.md §6): the machine's state is
+          ambient information. One quiet line when all is well, one warning
+          line when it is not, and the full report only if asked for - a
+          welcome screen that needs scrolling is one that got in the way. */}
+      <button
+        onClick={() => {
+          setExpanded((open) => !open);
+        }}
+        title={t("env.title")}
+        className="flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-muted hover:bg-elevated hover:text-fg"
+      >
+        <Marker size={11} className="shrink-0 opacity-60" />
+        {needsAttention.length === 0 ? (
+          <>
+            <Check size={11} className="shrink-0 text-ok" />
+            {t("env.allReady")}
+          </>
+        ) : (
+          <>
+            <TriangleAlert size={11} className="shrink-0 text-warn" />
+            <span className="truncate">
+              {t("env.needsAttention", {
+                count: String(needsAttention.length),
+                names: needsAttention.map((tool) => tool.label).join(", "),
+              })}
+            </span>
+          </>
+        )}
+      </button>
+
+      {expanded && (
+        <div className="mt-1 w-full rounded-lg border border-line px-3 py-2">
           {tools.map((tool) => (
             <ToolRow key={tool.id} tool={tool} />
           ))}

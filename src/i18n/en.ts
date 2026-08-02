@@ -15,6 +15,8 @@ export const en = {
 
   "env.title": "This machine",
   "env.checking": "Checking what is installed…",
+  "env.allReady": "everything Aime uses is ready",
+  "env.needsAttention": "{count} to set up: {names}",
   "env.languageServers": "Language servers",
   "env.hint":
     "Aime installs nothing for you - copy a command to fix a row. Missing AI or language servers only remove features; the editor, Git and terminal always work.",
