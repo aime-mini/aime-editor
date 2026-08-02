@@ -1,4 +1,5 @@
 mod cli;
+mod environment;
 mod fs_cmds;
 mod fs_watch;
 mod git;
@@ -40,6 +41,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cli::initial_folder,
+            environment::environment_report,
+            environment::language_server_report,
+            environment::login_command_for,
             fs_cmds::list_dir,
             fs_cmds::list_files,
             fs_cmds::read_file,

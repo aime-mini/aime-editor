@@ -16,6 +16,7 @@ import logo from "./assets/logo.svg";
 import { useT } from "./i18n";
 import { AiPanel } from "./components/AiPanel";
 import { EditorPane } from "./components/EditorPane";
+import { EnvironmentCheck } from "./components/EnvironmentCheck";
 import { CommandPalette } from "./components/CommandPalette";
 import { HelpModal } from "./components/HelpModal";
 import { McpModal } from "./components/McpModal";
@@ -164,6 +165,8 @@ function WelcomeScreen() {
             </div>
           </section>
         </div>
+
+        <EnvironmentCheck />
       </div>
 
       {cloneUrl !== null && (

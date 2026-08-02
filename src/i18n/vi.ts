@@ -15,6 +15,13 @@ export const vi: Record<TranslationKey, string> = {
   "welcome.recent": "Gần đây",
   "welcome.noRecent": "Chưa có gì - mở một thư mục để bắt đầu.",
 
+  "env.title": "Máy này có gì",
+  "env.checking": "Đang kiểm tra những gì đã cài…",
+  "env.languageServers": "Language server",
+  "env.hint":
+    "Aime không tự cài gì cho bạn - chép lệnh để tự xử lý từng dòng. Thiếu AI hay language server chỉ mất tính năng đó; editor, Git và terminal luôn chạy.",
+  "env.copy": "Chép lệnh",
+
   "editor.pickFile": "Chọn một file để mở",
   "editor.closeTab": "Đóng tab",
   "editor.unsavedHint": "Chưa lưu (Ctrl+S)",

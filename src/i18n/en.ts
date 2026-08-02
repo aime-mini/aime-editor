@@ -13,6 +13,13 @@ export const en = {
   "welcome.recent": "Recent",
   "welcome.noRecent": "Nothing yet - open a folder to get started.",
 
+  "env.title": "This machine",
+  "env.checking": "Checking what is installed…",
+  "env.languageServers": "Language servers",
+  "env.hint":
+    "Aime installs nothing for you - copy a command to fix a row. Missing AI or language servers only remove features; the editor, Git and terminal always work.",
+  "env.copy": "Copy command",
+
   "editor.pickFile": "Select a file to open",
   "editor.closeTab": "Close tab",
   "editor.unsavedHint": "Unsaved (Ctrl+S)",
