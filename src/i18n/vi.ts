@@ -68,6 +68,11 @@ export const vi: Record<TranslationKey, string> = {
   "ai.permission.edits":
     "Quyền: SỬA FILE - sửa file thoải mái, lệnh chạy trong sandbox giới hạn ở dự án này. Bấm để chuyển mức an toàn hơn.",
   "ai.permission.readOnly": "Quyền: CHỈ ĐỌC - AI đọc và giải thích, không thay đổi gì. Bấm để mở thêm quyền.",
+  "ai.turnChanged": "đã sửa {count} file",
+  "ai.turnReview": "Xem thay đổi",
+  "ai.turnUndo": "Hoàn tác lượt này",
+  "ai.turnUndoHint": "Đưa mọi file về đúng như trước lượt này - phần bạn đã stage vẫn được giữ",
+  "ai.turnUndone": "đã hoàn tác - {count} file trở lại như cũ",
   "ai.usage.title": "Sử dụng trong phiên",
   "ai.usage.input": "Token đầu vào",
   "ai.usage.output": "Token đầu ra",

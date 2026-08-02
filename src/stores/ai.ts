@@ -4,11 +4,13 @@ import { listen } from "@tauri-apps/api/event";
 import { translate } from "../i18n";
 import { createEventParser, type EventParser } from "../lib/aiParsers";
 import { effortsOf } from "../lib/providers";
+import { useWorkspace } from "./workspace";
 import {
   addUsage,
   EMPTY_USAGE,
   PERMISSION_ORDER,
   type ChatMessage,
+  type Checkpoint,
   type Permission,
   type TokenUsage,
   type UiAiEvent,
@@ -155,6 +157,8 @@ interface AiState {
   closeProject: () => void;
   sendPrompt: (prompt: string, cwd: string) => Promise<void>;
   cancel: () => Promise<void>;
+  /** Puts the project back to how it was before that turn. */
+  undoTurn: (messageIndex: number) => Promise<void>;
   newSession: () => void;
   resumeSession: (localId: string) => void;
   /** Switching CLI starts a new session — resume ids belong to one provider. */
@@ -229,6 +233,27 @@ export const useAi = create<AiState>((set, get) => {
     }
   };
 
+  /**
+   * After a turn, records which files it touched. This is what turns "the AI
+   * did something" into a sentence a person can act on - and it is measured
+   * from the project itself, not from what the AI claims to have done.
+   */
+  const recordChangedFiles = async () => {
+    const { projectRoot, messages } = get();
+    const last = messages.at(-1);
+    if (!projectRoot || last?.role !== "assistant" || !last.checkpoint) return;
+    try {
+      const changedFiles = await invoke<string[]>("checkpoint_diff", {
+        root: projectRoot,
+        checkpoint: last.checkpoint,
+      });
+      set((s) => ({ messages: patchLastAssistant(s.messages, (m) => ({ ...m, changedFiles })) }));
+      void persist();
+    } catch (err: unknown) {
+      console.warn("could not tell what the turn changed:", err);
+    }
+  };
+
   const applyUiEvent = (ev: UiAiEvent) => {
     switch (ev.kind) {
       case "session-info":
@@ -274,6 +299,7 @@ export const useAi = create<AiState>((set, get) => {
     await listen<ExitPayload>("ai:exit", ({ payload }) => {
       if (payload.run_id !== get().runId) return;
       set({ running: false, runId: null });
+      void recordChangedFiles();
       if (payload.code !== null && payload.code !== 0) {
         // The CLI's own stderr (e.g. "please log in") beats a bare exit code.
         const detail = lastStderrLine ? `\n${lastStderrLine}` : "";
@@ -401,6 +427,16 @@ export const useAi = create<AiState>((set, get) => {
       await ensureListeners();
       lastStderrLine = "";
       const provider = get().providers.find((candidate) => candidate.id === get().providerId);
+      // Taken before the CLI runs, so an unwanted turn is always reversible.
+      // Costs nothing when the AI changes nothing, and is skipped outside a
+      // git repository, where the UI then offers no undo rather than a lie.
+      let checkpoint: Checkpoint | null = null;
+      try {
+        checkpoint = await invoke<Checkpoint | null>("checkpoint_create", { root: cwd });
+      } catch (err: unknown) {
+        console.warn("no checkpoint for this turn:", err);
+      }
+
       activeParser = createEventParser({
         id: get().providerId,
         parser: provider?.parser,
@@ -412,7 +448,7 @@ export const useAi = create<AiState>((set, get) => {
         messages: [
           ...s.messages,
           { role: "user", parts: [{ kind: "text", text: prompt }] },
-          { role: "assistant", parts: [] },
+          { role: "assistant", parts: [], checkpoint: checkpoint ?? undefined },
         ],
       }));
       try {
@@ -439,6 +475,29 @@ export const useAi = create<AiState>((set, get) => {
       if (runId) await invoke("ai_cancel", { runId });
       set({ running: false, runId: null });
       void persist();
+    },
+
+    undoTurn: async (messageIndex) => {
+      const { projectRoot, messages } = get();
+      const target = messages[messageIndex];
+      if (!projectRoot || !target.checkpoint) return;
+      set({ lastError: null });
+      try {
+        await invoke<number>("checkpoint_restore", {
+          root: projectRoot,
+          checkpoint: target.checkpoint,
+        });
+        set((s) => ({
+          messages: s.messages.map((message, index) =>
+            index === messageIndex ? { ...message, undone: true } : message,
+          ),
+        }));
+        // The tree, the editor and the Git panel all read from disk.
+        useWorkspace.getState().refreshTree();
+        void persist();
+      } catch (err: unknown) {
+        set({ lastError: String(err) });
+      }
     },
 
     newSession: () => {

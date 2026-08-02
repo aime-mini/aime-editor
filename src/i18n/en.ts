@@ -67,6 +67,11 @@ export const en = {
     "Permissions: EDITS - files are edited freely, commands run sandboxed to this project. Click for a safer level.",
   "ai.permission.readOnly":
     "Permissions: READ-ONLY - the AI reads and explains but changes nothing. Click to allow more.",
+  "ai.turnChanged": "changed {count} file(s)",
+  "ai.turnReview": "See the changes",
+  "ai.turnUndo": "Undo this turn",
+  "ai.turnUndoHint": "Puts every file back the way it was before this turn - your own staged work is kept",
+  "ai.turnUndone": "undone - {count} file(s) put back",
   "ai.usage.title": "Session usage",
   "ai.usage.input": "Input tokens",
   "ai.usage.output": "Output tokens",

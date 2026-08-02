@@ -52,12 +52,24 @@ export function truncateDetail(text: string, max = 100): string {
 
 export type MessagePart = { kind: "text"; text: string } | { kind: "tool"; name: string; detail: string };
 
+/** Mirror of the Rust `Checkpoint` (checkpoint.rs). */
+export interface Checkpoint {
+  sha: string;
+  untracked: string[];
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   parts: MessagePart[];
   costUsd?: number;
   durationMs?: number;
   usage?: TokenUsage;
+  /** State of the project before this turn, when it could be captured. */
+  checkpoint?: Checkpoint;
+  /** Files this turn changed; empty or absent means it changed nothing. */
+  changedFiles?: string[];
+  /** Set once the user has taken this turn back. */
+  undone?: boolean;
 }
 
 export interface DirEntry {

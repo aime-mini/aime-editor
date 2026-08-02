@@ -130,6 +130,13 @@ const EN: HelpTopic[] = [
     keywords: "tokens cost money spend activity subscription",
   },
   {
+    id: "ai-undo",
+    section: "AI",
+    title: "Taking a turn back",
+    body: "Letting an AI change your project is only comfortable if changing it back is one click. Under every answer that touched files, Aime says how many it changed and offers Undo this turn, which puts each of them back exactly as it was before you sent the message - including files the AI created, which are removed. Anything you had staged yourself stays staged, and your own edits from before the turn are kept. This needs the project to be a git repository; without one, no undo is offered rather than a promise that cannot be kept.",
+    keywords: "undo revert rollback checkpoint mistake ai changed files safety",
+  },
+  {
     id: "ai-sessions",
     section: "AI",
     title: "Sessions & memory",
@@ -363,6 +370,13 @@ const VI: HelpTopic[] = [
     title: "Mức dùng & chi phí",
     body: "Nút activity trên khung chat hiển thị tổng của phiên: token vào/ra, cache đọc/ghi, kèm chi phí với CLI nào có báo giá. Claude Code báo chi phí từng lượt; Codex tính theo gói thuê bao và không báo giá, nên Aime chỉ hiện token thay vì bịa ra con số.",
     keywords: "token chi phí tiền usage thuê bao",
+  },
+  {
+    id: "ai-undo",
+    section: "AI",
+    title: "Lấy lại một lượt AI",
+    body: "Để AI sửa dự án chỉ thoải mái khi việc sửa ngược lại chỉ tốn một cú bấm. Dưới mỗi câu trả lời có đụng vào file, Aime nói rõ nó sửa bao nhiêu file và cho nút 'Hoàn tác lượt này' - đưa từng file về đúng như trước lúc anh gửi tin nhắn, kể cả file do AI tạo ra cũng bị xoá đi. Phần anh đã stage vẫn nguyên, và những sửa đổi của chính anh trước lượt đó vẫn được giữ. Việc này cần dự án là repo git; không có git thì Aime không hiện nút hoàn tác, thay vì hứa một điều không giữ được.",
+    keywords: "hoàn tác undo rollback checkpoint sai an toàn ai sửa file",
   },
   {
     id: "ai-sessions",

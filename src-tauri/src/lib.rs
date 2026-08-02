@@ -1,3 +1,4 @@
+mod checkpoint;
 mod cli;
 mod environment;
 mod fs_cmds;
@@ -48,6 +49,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cli::initial_folder,
+            checkpoint::checkpoint_create,
+            checkpoint::checkpoint_diff,
+            checkpoint::checkpoint_restore,
             environment::environment_report,
             environment::language_server_report,
             environment::login_command_for,

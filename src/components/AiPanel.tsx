@@ -13,11 +13,13 @@ import {
   MessageSquare,
   Plug,
   Plus,
+  Loader2,
   RefreshCw,
   SendHorizontal,
   Shield,
   ShieldOff,
   SlidersHorizontal,
+  Undo2,
   Wrench,
 } from "lucide-react";
 import { useT } from "../i18n";
@@ -201,7 +203,64 @@ function ProviderNotice({
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+/**
+ * What a turn did to the project, and how to take it back.
+ *
+ * The point of an AI editor is that the AI changes your files - which is only
+ * comfortable if changing them back is one click. Deliberately worded without
+ * a single git term: the user is told how many files moved and offered to undo
+ * it, not offered a stash object.
+ */
+function TurnChanges({ message, index }: { message: ChatMessage; index: number }) {
+  const undoTurn = useAi((s) => s.undoTurn);
+  const running = useAi((s) => s.running);
+  const setSidebarView = useLayout((s) => s.setSidebarView);
+  const [undoing, setUndoing] = useState(false);
+  const t = useT();
+
+  const changed = message.changedFiles ?? [];
+  if (changed.length === 0) return null;
+
+  if (message.undone) {
+    return (
+      <span className="flex items-center gap-1.5 text-[11px] text-muted">
+        <Undo2 size={11} /> {t("ai.turnUndone", { count: String(changed.length) })}
+      </span>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-[11px]">
+      <span className="text-muted" title={changed.join("\n")}>
+        {t("ai.turnChanged", { count: String(changed.length) })}
+      </span>
+      <button
+        onClick={() => {
+          setSidebarView("git");
+        }}
+        className="rounded-md border border-line px-2 py-0.5 text-muted hover:border-accent hover:text-fg"
+      >
+        {t("ai.turnReview")}
+      </button>
+      <button
+        onClick={() => {
+          setUndoing(true);
+          void undoTurn(index).finally(() => {
+            setUndoing(false);
+          });
+        }}
+        disabled={running || undoing}
+        className="flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-muted hover:border-warn hover:text-warn disabled:opacity-40"
+        title={t("ai.turnUndoHint")}
+      >
+        {undoing ? <Loader2 size={10} className="animate-spin" /> : <Undo2 size={10} />}
+        {t("ai.turnUndo")}
+      </button>
+    </div>
+  );
+}
+
+function MessageBubble({ message, index }: { message: ChatMessage; index: number }) {
   const isUser = message.role === "user";
   const t = useT();
   return (
@@ -230,6 +289,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           ),
         )}
       </div>
+      <TurnChanges message={message} index={index} />
       {message.costUsd !== undefined && (
         <span className="text-[10px] text-muted">
           ${message.costUsd.toFixed(4)}
@@ -535,7 +595,7 @@ export function AiPanel() {
           </div>
         )}
         {messages.map((m, i) => (
-          <MessageBubble key={i} message={m} />
+          <MessageBubble key={i} message={m} index={i} />
         ))}
         {lastError && (
           <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-danger">
