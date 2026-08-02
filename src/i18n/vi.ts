@@ -42,6 +42,12 @@ export const vi: Record<TranslationKey, string> = {
   "install.partly": "Đã cài {ok}/{total} - phần còn lại ghi ở trên",
   "install.close": "Đóng",
 
+  "update.available": "Đã có Aime {version}.",
+  "update.install": "Cập nhật ngay",
+  "update.installing": "Đang tải…",
+  "update.later": "Để sau",
+  "update.failed": "Cập nhật thất bại - xem log.",
+
   "editor.pickFile": "Chọn một file để mở",
   "editor.closeTab": "Đóng tab",
   "editor.unsavedHint": "Chưa lưu (Ctrl+S)",

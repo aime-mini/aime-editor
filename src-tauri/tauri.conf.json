@@ -34,6 +34,19 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJDNjE5ODM4RTI4MjZGNkYKUldSdmI0TGlPSmhoTEZxUjZsZ2xQek1HNktMempYZjNXeEJETm5mOE5aRXJ1VkRseldLSnZFUjcK",
+      "endpoints": [
+        "https://github.com/aime-mini/aime-editor/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

@@ -25,6 +25,7 @@ import { MemoryModal } from "./components/MemoryModal";
 import { Sidebar } from "./components/Sidebar";
 import { PromptModal } from "./components/PromptModal";
 import { StatusBar } from "./components/StatusBar";
+import { UpdateNotice } from "./components/UpdateNotice";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { useAi } from "./stores/ai";
 import { useLayout } from "./stores/layout";
@@ -464,6 +465,7 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col">
+      <UpdateNotice />
       <main className="min-h-0 flex-1">{rootPath ? <WorkspaceLayout /> : <WelcomeScreen />}</main>
       <StatusBar />
       {helpOpen && (

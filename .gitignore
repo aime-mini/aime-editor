@@ -23,6 +23,10 @@ STATUS.md
 ARCHITECTURE.md
 ROADMAP.md
 
+# Updater signing keys - losing control of these means signing fake updates.
+*.key
+*.key.pub
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

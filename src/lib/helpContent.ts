@@ -24,6 +24,13 @@ const EN: HelpTopic[] = [
     keywords: "workspace recent folder start clone git url github",
   },
   {
+    id: "updates",
+    section: "Getting started",
+    title: "Updates",
+    body: "Aime checks once per launch whether a newer version was published. When there is one, a bar appears at the top of the window with the version number - nothing downloads until you press Update now, and dismissing it keeps quiet until the next launch. Updates are signed, so a build that was not produced by the project's own release job is refused.",
+    keywords: "update upgrade version release auto-update signed",
+  },
+  {
     id: "cli",
     section: "Getting started",
     title: "Open from the terminal",
@@ -250,6 +257,13 @@ const VI: HelpTopic[] = [
     title: "Mở dự án",
     body: "Ở màn hình chào: Open Folder chọn thư mục bất kỳ, Recent mở lại 8 workspace gần nhất, New Project tạo thư mục mới và mở luôn.",
     keywords: "workspace recent folder mở thư mục",
+  },
+  {
+    id: "updates",
+    section: "Bắt đầu",
+    title: "Cập nhật",
+    body: "Mỗi lần mở app Aime kiểm tra một lần xem có bản mới chưa. Có thì hiện một thanh trên cùng cửa sổ kèm số phiên bản - không tải gì cho tới khi anh bấm Cập nhật ngay, bấm X thì im tới lần mở sau. Bản cập nhật có ký số, nên bản dựng không phải do quy trình phát hành của dự án tạo ra sẽ bị từ chối.",
+    keywords: "cập nhật update phiên bản release ký số",
   },
   {
     id: "cli",

@@ -32,4 +32,6 @@ notify = "8.2.0"
 notify-debouncer-mini = "0.7.0"
 dunce = "1.0.5"
 portable-pty = "0.9.0"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"
 

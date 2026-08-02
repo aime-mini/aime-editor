@@ -40,6 +40,12 @@ export const en = {
   "install.partly": "{ok} of {total} installed - the rest is listed above",
   "install.close": "Close",
 
+  "update.available": "Aime {version} is available.",
+  "update.install": "Update now",
+  "update.installing": "Downloading…",
+  "update.later": "Later",
+  "update.failed": "Update failed - see the log.",
+
   "editor.pickFile": "Select a file to open",
   "editor.closeTab": "Close tab",
   "editor.unsavedHint": "Unsaved (Ctrl+S)",

@@ -62,3 +62,14 @@ Code standards are enforced by a pre-commit hook (prettier, eslint, rustfmt). En
 ```bash
 git config core.hooksPath .githooks
 ```
+
+## Releases
+
+Tagging `v*` builds installers for Windows, macOS and Linux in CI and opens a
+draft release; publishing it is a human decision. The same job signs
+`latest.json`, which the app checks once per launch - a new version appears as
+a bar at the top of the window, and nothing downloads until the user says so.
+
+Signing needs two repository secrets: `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Keep a backup of the private key: without
+it, no future build can update an existing install.
