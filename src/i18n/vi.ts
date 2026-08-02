@@ -65,6 +65,10 @@ export const vi: Record<TranslationKey, string> = {
   "mcp.envPlaceholder": "Biến môi trường, mỗi dòng một KEY=VALUE (chỉ cho server stdio)",
   "mcp.footer": "URL sẽ được thêm dạng HTTP server; còn lại coi là lệnh để CLI khởi chạy.",
 
+  "lsp.running": "Code intelligence đang chạy cho {language}",
+  "lsp.missing": "Chưa cài {command} - file này không có gợi ý và báo lỗi. Cài bằng: {install}",
+  "lsp.failed": "Language server đã dừng: {reason}. Mở lại file để thử lại.",
+
   "tasks.menu": "Chạy task (build / test / run)",
   "tasks.none": "Không phát hiện task nào cho dự án này",
   "tasks.runCommand": "Chạy task: {label}",

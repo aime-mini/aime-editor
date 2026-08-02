@@ -4,6 +4,7 @@ import {
   ArrowDown,
   ArrowUp,
   Bot,
+  Braces,
   CircleDollarSign,
   CircleHelp,
   FlaskConical,
@@ -21,10 +22,12 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useI18n, useT } from "../i18n";
+import { languageOf } from "../lib/languages";
 import { capabilitiesOf } from "../lib/providers";
 import { useAi } from "../stores/ai";
 import { useGit } from "../stores/git";
 import { useLayout } from "../stores/layout";
+import { useLsp } from "../stores/lsp";
 import { useTasks, type TaskKind } from "../stores/tasks";
 import { useTheme } from "../stores/theme";
 import { useWorkspace } from "../stores/workspace";
@@ -49,7 +52,14 @@ export function StatusBar() {
   const toggleHelp = useLayout((s) => s.toggleHelp);
   const setSidebarView = useLayout((s) => s.setSidebarView);
   const gitStatus = useGit((s) => s.status);
+  const openFilePath = useWorkspace((s) => s.openFilePath);
+  const lspLanguages = useLsp((s) => s.languages);
   const t = useT();
+
+  // Code intelligence for the file in front of the user: silent when it just
+  // works, and explicit about what to install when it cannot.
+  const openLanguage = openFilePath ? languageOf(openFilePath) : null;
+  const lsp = openLanguage ? lspLanguages[openLanguage] : undefined;
 
   const taskItems: MenuItem[] =
     tasks.length === 0
@@ -154,6 +164,21 @@ export function StatusBar() {
         {sessionId && (
           <span title={`Session ${sessionId}`}>
             {t("status.session")}: {sessionId.slice(0, 8)}
+          </span>
+        )}
+        {lsp && lsp.kind !== "unsupported" && openLanguage && (
+          <span
+            className={`flex items-center gap-1 ${lsp.kind === "running" ? "text-ok" : lsp.kind === "missing" ? "text-warn" : ""}`}
+            title={
+              lsp.kind === "missing"
+                ? t("lsp.missing", { command: lsp.command, install: lsp.installHint })
+                : lsp.kind === "failed"
+                  ? t("lsp.failed", { reason: lsp.reason })
+                  : t("lsp.running", { language: openLanguage })
+            }
+          >
+            <Braces size={11} />
+            {openLanguage}
           </span>
         )}
         {/* Subscription CLIs report no price - showing $0.0000 would be a lie. */}

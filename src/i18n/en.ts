@@ -64,6 +64,11 @@ export const en = {
   "mcp.envPlaceholder": "Environment variables, one KEY=VALUE per line (stdio servers only)",
   "mcp.footer": "A URL is added as an HTTP server; anything else as a command the CLI launches.",
 
+  "lsp.running": "Code intelligence active for {language}",
+  "lsp.missing":
+    "{command} is not installed - completions and diagnostics are off for this file. Install it with: {install}",
+  "lsp.failed": "Language server stopped: {reason}. Reopen the file to try again.",
+
   "tasks.menu": "Run a task (build / test / run)",
   "tasks.none": "No tasks detected for this project",
   "tasks.runCommand": "Run task: {label}",

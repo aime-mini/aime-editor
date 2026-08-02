@@ -66,6 +66,14 @@ const EN: HelpTopic[] = [
     keywords: "save dirty modified undo ctrl+z monaco",
   },
   {
+    id: "lsp",
+    section: "Editor",
+    title: "Code intelligence (completions, types, go to definition)",
+    body: "Aime speaks LSP to the same language servers VS Code uses, so typing '.' offers real completions, hovering shows types and docs, F12 jumps to a definition, signature help appears inside call parentheses, and errors underline themselves as you type. Servers are not bundled - install the one for your language and Aime finds it on PATH: typescript-language-server, pyright, gopls, rust-analyzer. The language chip in the status bar tells you the state: green means a server is running, amber means it is missing and its tooltip carries the exact install command. TypeScript and JavaScript still get Monaco's built-in IntelliSense even with no server installed.",
+    keywords:
+      "lsp intellisense completion autocomplete hover definition f12 diagnostics errors gopls pyright rust-analyzer",
+  },
+  {
     id: "ai-requirements",
     section: "AI",
     title: "What the AI needs (and what works without it)",
@@ -263,6 +271,14 @@ const VI: HelpTopic[] = [
     title: "Soạn thảo & lưu",
     body: "Ctrl+S để lưu. Chấm tròn cạnh đường dẫn file báo thay đổi chưa lưu; Ctrl+Z về đúng bản đã lưu thì chấm tự tắt.",
     keywords: "lưu save dirty undo",
+  },
+  {
+    id: "lsp",
+    section: "Editor",
+    title: "Code intelligence (gợi ý, kiểu, nhảy tới định nghĩa)",
+    body: "Aime nói chuyện LSP với đúng những language server mà VS Code dùng: gõ '.' ra gợi ý thật, rê chuột thấy kiểu và tài liệu, F12 nhảy tới định nghĩa, gợi ý tham số hiện trong ngoặc hàm, lỗi gạch chân ngay khi gõ. Server không được đóng gói kèm - anh cài server cho ngôn ngữ của mình rồi Aime tự tìm trên PATH: typescript-language-server, pyright, gopls, rust-analyzer. Chip ngôn ngữ trên status bar cho biết trạng thái: xanh là server đang chạy, vàng là chưa cài và tooltip ghi sẵn lệnh cài. Riêng TypeScript/JavaScript vẫn có IntelliSense sẵn của Monaco kể cả khi chưa cài server.",
+    keywords:
+      "lsp intellisense gợi ý autocomplete hover định nghĩa f12 lỗi chẩn đoán gopls pyright rust-analyzer",
   },
   {
     id: "ai-requirements",
