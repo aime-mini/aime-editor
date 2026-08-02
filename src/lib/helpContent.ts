@@ -235,6 +235,13 @@ const EN: HelpTopic[] = [
     keywords: "fix error failure build failed exit code ai repair",
   },
   {
+    id: "error-log",
+    section: "UI & shortcuts",
+    title: "When something breaks",
+    body: "Failures are written to a log file on this machine - the render error that would otherwise leave a blank window, a rejected promise nobody handled - and Settings has a button that opens it. Nothing is sent anywhere. A crash reporter would have been less work, but stack traces carry file paths, project names and sometimes prompts, and an editor that opens private repositories has no business posting those to a third party. If you want to report a problem, the log is there to attach, by your decision rather than by default.",
+    keywords: "error log crash report diagnostics privacy blank window",
+  },
+  {
     id: "updates",
     section: "UI & shortcuts",
     title: "Updates and channels",
@@ -517,6 +524,13 @@ const VI: HelpTopic[] = [
     title: "Nhờ AI sửa khi task lỗi",
     body: "Khi task kết thúc với mã lỗi khác 0, một thanh đỏ hiện phía trên terminal. Nút 'Nhờ AI sửa' gửi lệnh, mã lỗi và output đã bắt được sang panel AI, yêu cầu AI tìm nguyên nhân, sửa rồi chạy lại task để xác nhận. Không dùng AI thì thanh đó chỉ là thông báo lỗi, bấm X để bỏ qua.",
     keywords: "sửa lỗi build fail exit code ai khắc phục",
+  },
+  {
+    id: "error-log",
+    section: "Giao diện & phím tắt",
+    title: "Khi có gì đó hỏng",
+    body: "Lỗi được ghi vào một file log ngay trên máy anh - lỗi render mà bình thường chỉ để lại màn hình trắng, promise bị bỏ rơi không ai bắt - và trong Cài đặt có nút mở nó ra. Không có gì được gửi đi đâu. Làm crash reporter thì nhàn hơn, nhưng stack trace mang theo đường dẫn file, tên dự án, đôi khi cả prompt; một editor mở repo riêng tư của người ta thì không có quyền đẩy mấy thứ đó cho bên thứ ba. Muốn báo lỗi thì file log nằm sẵn đó để anh đính kèm - theo quyết định của anh, không phải mặc định.",
+    keywords: "nhật ký lỗi crash báo lỗi chẩn đoán riêng tư màn hình trắng",
   },
   {
     id: "updates",

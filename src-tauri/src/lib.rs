@@ -1,5 +1,6 @@
 mod checkpoint;
 mod cli;
+mod diagnostics;
 mod environment;
 mod fs_cmds;
 mod fs_watch;
@@ -60,6 +61,8 @@ pub fn run() {
             environment::unattended_setup_targets,
             fs_cmds::list_dir,
             fs_cmds::list_files,
+            diagnostics::report_error,
+            diagnostics::error_log_path,
             updates::update_check,
             updates::update_install,
             fs_cmds::read_file,

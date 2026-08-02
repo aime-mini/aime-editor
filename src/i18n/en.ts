@@ -112,6 +112,8 @@ export const en = {
   "settings.channel.stable.short": "Stable",
   "settings.channel.beta": "Pre-releases too: newer, and correspondingly less proven.",
   "settings.channel.beta.short": "Beta",
+  "settings.errorLog": "Error log",
+  "settings.errorLogHint": "Kept on this machine. Nothing is sent anywhere.",
   "ai.usage.title": "Session usage",
   "ai.usage.input": "Input tokens",
   "ai.usage.output": "Output tokens",

@@ -113,6 +113,8 @@ export const vi: Record<TranslationKey, string> = {
   "settings.channel.stable.short": "Ổn định",
   "settings.channel.beta": "Nhận cả bản thử nghiệm: mới hơn, và tương ứng là ít được kiểm chứng hơn.",
   "settings.channel.beta.short": "Thử nghiệm",
+  "settings.errorLog": "Nhật ký lỗi",
+  "settings.errorLogHint": "Lưu ngay trên máy anh. Không gửi đi đâu cả.",
   "ai.usage.title": "Sử dụng trong phiên",
   "ai.usage.input": "Token đầu vào",
   "ai.usage.output": "Token đầu ra",

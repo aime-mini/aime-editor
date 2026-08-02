@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Check, Cpu, Eye, Monitor, Settings2, Shield, ShieldOff, X } from "lucide-react";
 import { useI18n, useT } from "../i18n";
+import { errorLogPath } from "../lib/diagnostics";
 import { capabilitiesOf, effortsOf } from "../lib/providers";
 import { PERMISSION_ORDER, type Permission } from "../lib/types";
 import { useAi } from "../stores/ai";
@@ -280,6 +281,19 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               disabled={!rootPath}
               title={rootPath ? undefined : t("settings.needsProject")}
               className="rounded-md border border-line px-2 py-1 text-[11.5px] text-muted hover:border-accent hover:text-fg disabled:opacity-40"
+            >
+              {t("settings.open")}
+            </button>
+          </Row>
+          <Row label={t("settings.errorLog")} hint={t("settings.errorLogHint")}>
+            <button
+              onClick={() => {
+                void errorLogPath()
+                  .then((path) => openFile(path))
+                  .then(onClose)
+                  .catch(console.error);
+              }}
+              className="rounded-md border border-line px-2 py-1 text-[11.5px] text-muted hover:border-accent hover:text-fg"
             >
               {t("settings.open")}
             </button>

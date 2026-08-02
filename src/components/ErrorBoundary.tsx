@@ -24,6 +24,11 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error("Aime failed to render:", error, info.componentStack);
+    // Imported here, not at the top: this file must keep working when the
+    // module graph is what broke.
+    void import("../lib/diagnostics").then(({ reportError }) => {
+      reportError("render", error, info.componentStack ?? "");
+    });
   }
 
   render() {
@@ -48,6 +53,9 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
         >
           {error.message}
         </pre>
+        <p style={{ margin: "1rem 0 0", fontSize: "0.8rem", opacity: 0.6 }}>
+          This was written to Aime's error log on this machine. Nothing was sent anywhere.
+        </p>
         <button
           onClick={() => {
             window.location.reload();
