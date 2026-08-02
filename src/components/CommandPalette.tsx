@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   AppWindow,
@@ -22,7 +21,9 @@ import {
   Sun,
 } from "lucide-react";
 import { useI18n, useT } from "../i18n";
+import { invoke } from "@tauri-apps/api/core";
 import { fuzzyFilter } from "../lib/fuzzy";
+import { projectFiles } from "../lib/projectFiles";
 import { useAi } from "../stores/ai";
 import { useLayout } from "../stores/layout";
 import { useTasks } from "../stores/tasks";
@@ -76,7 +77,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (!rootPath) return;
     let stale = false;
-    invoke<string[]>("list_files", { root: rootPath })
+    void projectFiles(rootPath)
       .then((list) => {
         if (!stale) setFiles(list);
       })

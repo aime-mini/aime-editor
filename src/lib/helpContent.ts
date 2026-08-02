@@ -242,6 +242,13 @@ const EN: HelpTopic[] = [
     keywords: "settings preferences options font size word wrap theme language ctrl+,",
   },
   {
+    id: "ai-composer",
+    section: "AI",
+    title: "Pointing the AI at the right thing",
+    body: "Type @ in the chat box and a file picker opens over it - a few letters of the name are enough, arrows and Enter choose, and the path lands in the message. That is the whole reason it exists: the CLI needs a path, and nobody remembers paths. On an empty conversation the suggestions above the box are picked from what is actually in front of you - the file you have open, the changes you have not committed, tests if this project can run them, a README if it has none - so the first question is one worth asking. Every suggestion is just a prompt: send it, then keep talking normally.",
+    keywords: "@ mention file picker path suggestions starter empty chat composer",
+  },
+  {
     id: "inline-ai",
     section: "AI",
     title: "Suggestions at the cursor",
@@ -510,6 +517,13 @@ const VI: HelpTopic[] = [
     title: "Cài đặt",
     body: "Ctrl+, nút bánh răng trên status bar, hoặc 'Cài đặt' trong palette mở một trang gom hết mọi thứ chỉnh được: theme, ngôn ngữ, cỡ chữ, xuống dòng tự động, độ thụt dòng, dùng AI CLI và model nào, AI được phép làm gì. Các công tắc đó vẫn nằm sẵn ở nơi anh dùng chúng - chip khiên trong panel AI, theme ở status bar - vì chỗ nhanh nhất để đổi là ngay chỗ anh nhận ra cần đổi. Thay đổi có hiệu lực ngay.",
     keywords: "cài đặt tuỳ chọn cỡ chữ xuống dòng theme ngôn ngữ ctrl+,",
+  },
+  {
+    id: "ai-composer",
+    section: "AI",
+    title: "Chỉ đúng thứ cần hỏi cho AI",
+    body: "Gõ @ trong khung chat là hiện bảng chọn file ngay trên đó - gõ vài chữ trong tên là đủ, mũi tên và Enter để chọn, đường dẫn tự vào tin nhắn. Lý do có nó đúng một câu: CLI cần đường dẫn, mà không ai nhớ đường dẫn. Khi hội thoại còn trống, các gợi ý phía trên khung được chọn theo đúng thứ đang ở trước mặt anh - file đang mở, các thay đổi chưa commit, viết test nếu dự án chạy được test, viết README nếu chưa có - nên câu hỏi đầu tiên là câu đáng hỏi. Mỗi gợi ý chỉ là một prompt: gửi rồi nói chuyện tiếp bình thường.",
+    keywords: "@ nhắc file bảng chọn đường dẫn gợi ý mở đầu khung chat",
   },
   {
     id: "inline-ai",

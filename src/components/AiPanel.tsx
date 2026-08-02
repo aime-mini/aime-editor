@@ -23,6 +23,12 @@ import {
   Wrench,
 } from "lucide-react";
 import { useT } from "../i18n";
+import { hasReadme, startersFor } from "../lib/aiStarters";
+import { fuzzyFilter } from "../lib/fuzzy";
+import { activeMention, applyMention } from "../lib/mentions";
+import { projectFiles } from "../lib/projectFiles";
+import { useGit } from "../stores/git";
+import { useTasks } from "../stores/tasks";
 import { useAi } from "../stores/ai";
 import { useLayout } from "../stores/layout";
 import { runInTerminal } from "../stores/terminals";
@@ -43,14 +49,14 @@ const PERMISSION_UI: Record<Permission, { icon: typeof Shield; className: string
   readOnly: { icon: Eye, className: "text-muted", label: "ai.permission.readOnly" },
 };
 
+/** Files offered at once for an `@` mention - a list, not a directory listing. */
+const MENTION_LIMIT = 8;
+
+/** Stable empty list: a fresh array every render would re-run everything. */
+const NO_FILES: string[] = [];
+
 /** How long the "already signed in" confirmation stays on screen. */
 const SIGNED_IN_NOTICE_MS = 4000;
-
-const SUGGESTION_KEYS: TranslationKey[] = [
-  "ai.suggestion.summarize",
-  "ai.suggestion.findBugs",
-  "ai.suggestion.readme",
-];
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -331,10 +337,20 @@ export function AiPanel() {
   } = useAi();
   const rootPath = useWorkspace((s) => s.rootPath);
   const [input, setInput] = useState("");
+  const [fileIndex, setFileIndex] = useState<{ root: string; files: string[] } | null>(null);
+  /** Where the caret is: the composer needs it during render, and reading a
+   *  ref while rendering is a lie waiting for the next paint. */
+  const [caret, setCaret] = useState(0);
+  /** Which mention suggestion is selected, or null when the picker is closed. */
+  const [mentionIndex, setMentionIndex] = useState<number | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const [historyMenu, setHistoryMenu] = useState<{ x: number; y: number } | null>(null);
   const [usageOpen, setUsageOpen] = useState(false);
   const [signedInConfirmed, setSignedInConfirmed] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const changedFiles = useGit((s) => s.status?.files.length ?? 0);
+  const hasTests = useTasks((s) => s.tasks.some((task) => task.kind === "test"));
+  const openFilePath = useWorkspace((s) => s.openFilePath);
   const t = useT();
   const capabilities = capabilitiesOf(providerId);
   // Built-in providers keep their capability table; a configured one is named
@@ -417,10 +433,53 @@ export function AiPanel() {
     </button>
   );
 
+  // One walk of the tree per project, shared with the command palette.
+  useEffect(() => {
+    if (!rootPath) return;
+    let stale = false;
+    void projectFiles(rootPath)
+      .then((list) => {
+        if (!stale) setFileIndex({ root: rootPath, files: list });
+      })
+      .catch(console.error);
+    return () => {
+      stale = true;
+    };
+  }, [rootPath]);
+
+  const files = fileIndex?.root === rootPath ? fileIndex.files : NO_FILES;
+  const mention = activeMention(input, caret);
+  const mentionMatches =
+    mention === null
+      ? []
+      : fuzzyFilter(files, mention.query, (path) => path, MENTION_LIMIT).map((match) => match.item);
+  const pickerOpen = mentionIndex !== null && mentionMatches.length > 0;
+
+  /** Puts the chosen path in the composer and hands the cursor back. */
+  const pickMention = (path: string) => {
+    if (!mention) return;
+    const next = applyMention(input, mention, path);
+    setInput(next.text);
+    setCaret(next.cursor);
+    setMentionIndex(null);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(next.cursor, next.cursor);
+    });
+  };
+
+  const starters = startersFor({
+    openFileName: openFilePath?.split(/[\\/]/).pop() ?? null,
+    changedFiles,
+    hasTests,
+    hasReadme: hasReadme(files),
+  });
+
   const submit = () => {
     const prompt = input.trim();
     if (!prompt || running || !rootPath || !inputEnabled) return;
     setInput("");
+    setMentionIndex(null);
     void sendPrompt(prompt, rootPath);
   };
 
@@ -580,18 +639,19 @@ export function AiPanel() {
         {messages.length === 0 && (
           <div className="mt-6 flex flex-col gap-2">
             <p className="text-center text-muted">{t("ai.emptyPrompt")}</p>
-            {SUGGESTION_KEYS.map((key) => (
+            {starters.map((starter) => (
               <button
-                key={key}
+                key={starter.key}
                 onClick={() => {
-                  if (rootPath) void sendPrompt(t(key), rootPath);
+                  if (rootPath) void sendPrompt(t(starter.promptKey, starter.params), rootPath);
                 }}
                 disabled={!rootPath || running}
                 className="rounded-lg border border-line px-3 py-2 text-left text-muted hover:border-accent hover:text-fg disabled:opacity-50"
               >
-                {t(key)}
+                {t(starter.key, starter.params)}
               </button>
             ))}
+            <p className="mt-1 text-center text-[11px] text-muted">{t("ai.mentionHint")}</p>
           </div>
         )}
         {messages.map((m, i) => (
@@ -604,14 +664,65 @@ export function AiPanel() {
         )}
       </div>
 
-      <div className="border-t border-line p-2.5">
+      <div className="relative border-t border-line p-2.5">
+        {pickerOpen && (
+          <ul className="absolute bottom-full left-2.5 z-20 mb-1 w-[calc(100%-1.25rem)] overflow-hidden rounded-lg border border-line bg-panel shadow-xl">
+            {mentionMatches.map((path, i) => (
+              <li key={path}>
+                <button
+                  onMouseDown={(e) => {
+                    // Down, not click: the textarea must not lose focus first.
+                    e.preventDefault();
+                    pickMention(path);
+                  }}
+                  className={`flex w-full items-baseline gap-2 px-2.5 py-1 text-left text-[12px] ${
+                    i === mentionIndex ? "bg-accent text-white" : "hover:bg-elevated"
+                  }`}
+                >
+                  <span className="truncate">{path.split(/[\\/]/).pop()}</span>
+                  <span className="min-w-0 flex-1 truncate text-right text-[10.5px] opacity-60">{path}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <div className="flex items-end gap-1.5 rounded-lg border border-line bg-elevated px-2 py-1.5 focus-within:border-accent">
           <textarea
+            ref={inputRef}
             value={input}
             onChange={(e) => {
               setInput(e.target.value);
+              setCaret(e.target.selectionStart);
+              // Typing `@` opens the picker; typing past every match closes it.
+              setMentionIndex(activeMention(e.target.value, e.target.selectionStart) ? 0 : null);
+            }}
+            onSelect={(e) => {
+              setCaret(e.currentTarget.selectionStart);
             }}
             onKeyDown={(e) => {
+              if (pickerOpen) {
+                const move = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+                if (move !== 0) {
+                  e.preventDefault();
+                  setMentionIndex((current) => {
+                    const at = (current ?? 0) + move;
+                    return (at + mentionMatches.length) % mentionMatches.length;
+                  });
+                  return;
+                }
+                if (e.key === "Enter" || e.key === "Tab") {
+                  e.preventDefault();
+                  // Safe: the picker is only open with a selected match, and
+                  // every keystroke resets the selection to the first one.
+                  pickMention(mentionMatches[mentionIndex]);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setMentionIndex(null);
+                  return;
+                }
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 submit();

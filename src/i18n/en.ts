@@ -88,6 +88,25 @@ export const en = {
   "settings.inlineAi.auto":
     "Suggests after a pause in typing. Each suggestion runs your AI CLI, so it costs a moment and a little money.",
   "settings.inlineAi.auto.short": "Auto",
+  "ai.mentionHint": "Type @ to point at a file",
+  "ai.starter.explainFile": "Explain {file}",
+  "ai.starter.explainFile.prompt":
+    "Explain what {file} does, in plain language: its purpose, how it fits the rest of the project, and anything surprising about it.",
+  "ai.starter.reviewChanges": "Review my {count} uncommitted changes",
+  "ai.starter.reviewChanges.prompt":
+    "Review the uncommitted changes in this working tree. Point out bugs, missed cases and anything that would embarrass me in review. Be specific about file and line.",
+  "ai.starter.testFile": "Write tests for {file}",
+  "ai.starter.testFile.prompt":
+    "Write tests for {file} using the test setup this project already has. Cover the cases that would actually break, not the trivial ones.",
+  "ai.starter.explainProject": "What does this project do?",
+  "ai.starter.explainProject.prompt":
+    "Read this project and explain what it does, how it is structured, and where I should start reading. Keep it short enough to hold in my head.",
+  "ai.starter.writeReadme": "Write a README",
+  "ai.starter.writeReadme.prompt":
+    "This project has no README. Read the code and write one: what it is, how to run it, how to work on it.",
+  "ai.starter.findBugs": "Find bugs in this project",
+  "ai.starter.findBugs.prompt":
+    "Look for real bugs in this project - wrong logic, unhandled failures, race conditions. For each one, say where it is and what input triggers it. Skip style opinions.",
   "ai.usage.title": "Session usage",
   "ai.usage.input": "Input tokens",
   "ai.usage.output": "Output tokens",
@@ -105,9 +124,6 @@ export const en = {
   "ai.cliMissing": "Could not run `{cli}` CLI: {error}. Is it installed?",
   "ai.cliNotFound":
     "{provider} CLI not found. Install it with `{install}`, then check again. The editor, file tree, terminal and Git keep working without AI.",
-  "ai.suggestion.summarize": "Summarize this project's structure",
-  "ai.suggestion.findBugs": "Find potential bugs in the open file",
-  "ai.suggestion.readme": "Write a README for this project",
 
   "mcp.title": "MCP servers - {provider}",
   "mcp.hint":

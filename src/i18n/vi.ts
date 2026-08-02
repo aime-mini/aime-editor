@@ -89,6 +89,25 @@ export const vi: Record<TranslationKey, string> = {
   "settings.inlineAi.auto":
     "Tự gợi ý sau khi anh ngừng gõ. Mỗi gợi ý chạy AI CLI một lần nên tốn vài giây và một ít tiền.",
   "settings.inlineAi.auto.short": "Tự động",
+  "ai.mentionHint": "Gõ @ để chỉ đích danh một file",
+  "ai.starter.explainFile": "Giải thích {file}",
+  "ai.starter.explainFile.prompt":
+    "Giải thích {file} làm gì bằng lời dễ hiểu: mục đích của nó, nó ăn khớp với phần còn lại của dự án ra sao, và có chỗ nào bất thường không.",
+  "ai.starter.reviewChanges": "Xem lại {count} thay đổi chưa commit",
+  "ai.starter.reviewChanges.prompt":
+    "Xem lại các thay đổi chưa commit trong working tree. Chỉ ra bug, trường hợp bỏ sót, và những chỗ sẽ bị chê khi review. Nói rõ file và dòng.",
+  "ai.starter.testFile": "Viết test cho {file}",
+  "ai.starter.testFile.prompt":
+    "Viết test cho {file} theo đúng bộ test dự án này đang dùng. Tập trung vào các ca thật sự dễ vỡ, đừng viết test cho chuyện hiển nhiên.",
+  "ai.starter.explainProject": "Dự án này làm gì?",
+  "ai.starter.explainProject.prompt":
+    "Đọc dự án này rồi giải thích nó làm gì, tổ chức ra sao, và nên bắt đầu đọc từ đâu. Ngắn gọn đủ để nhớ được.",
+  "ai.starter.writeReadme": "Viết README",
+  "ai.starter.writeReadme.prompt":
+    "Dự án này chưa có README. Đọc code rồi viết một cái: nó là gì, chạy thế nào, muốn sửa thì bắt đầu từ đâu.",
+  "ai.starter.findBugs": "Tìm bug trong dự án",
+  "ai.starter.findBugs.prompt":
+    "Tìm bug thật trong dự án này - sai logic, lỗi không xử lý, race condition. Mỗi lỗi nói rõ nằm ở đâu và dữ liệu nào kích hoạt nó. Bỏ qua chuyện style.",
   "ai.usage.title": "Sử dụng trong phiên",
   "ai.usage.input": "Token đầu vào",
   "ai.usage.output": "Token đầu ra",
@@ -106,9 +125,6 @@ export const vi: Record<TranslationKey, string> = {
   "ai.cliMissing": "Không chạy được `{cli}` CLI: {error}. Đã cài chưa?",
   "ai.cliNotFound":
     "Không tìm thấy {provider} CLI. Cài bằng `{install}` rồi bấm kiểm tra lại. Editor, cây file, terminal và Git vẫn dùng bình thường không cần AI.",
-  "ai.suggestion.summarize": "Tóm tắt cấu trúc dự án này",
-  "ai.suggestion.findBugs": "Tìm bug tiềm ẩn trong file đang mở",
-  "ai.suggestion.readme": "Viết README cho dự án",
 
   "mcp.title": "MCP server - {provider}",
   "mcp.hint":
