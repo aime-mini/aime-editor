@@ -1,6 +1,8 @@
 // Bundle Monaco locally (NO CDN — a desktop app must work fully offline)
 import * as monaco from "monaco-editor";
 import { loader } from "@monaco-editor/react";
+import { primeLanguages } from "./languages";
+import { attachEditor } from "../stores/lsp";
 
 // monaco-editor >= 0.53 uses an exports map — specifiers no longer carry the `esm/vs` prefix
 import editorWorker from "monaco-editor/editor/editor.worker.js?worker";
@@ -73,3 +75,8 @@ monaco.editor.defineTheme("aime-light", {
 loader.config({ monaco });
 
 export { monaco };
+
+// Everything that needs the editor's own registry gets it here, so no other
+// module has to import Monaco - which is what keeps it off the welcome screen.
+primeLanguages(monaco);
+attachEditor(monaco);

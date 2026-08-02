@@ -1,4 +1,4 @@
-import { monaco } from "./monaco";
+import type * as Monaco from "monaco-editor";
 
 /**
  * What language a file is, answered by Monaco's own registry.
@@ -24,13 +24,18 @@ interface Lookup {
 
 let lookup: Lookup | null = null;
 
-/** Built once: the registry is fixed for the lifetime of the window. */
-function index(): Lookup {
-  if (lookup) return lookup;
+/**
+ * Fills the table from Monaco's registry.
+ *
+ * Called by `lib/monaco.ts` as soon as Monaco is loaded, which keeps this
+ * module free of a static import of it - the one thing that would drag 4.4 MB
+ * onto the welcome screen, where no file is open and no language is needed.
+ */
+export function primeLanguages(api: typeof Monaco): void {
   const byExtension = new Map<string, string>();
   const byFilename = new Map<string, string>();
 
-  for (const language of monaco.languages.getLanguages()) {
+  for (const language of api.languages.getLanguages()) {
     for (const extension of language.extensions ?? []) {
       byExtension.set(extension.replace(/^\./, "").toLowerCase(), language.id);
     }
@@ -45,11 +50,13 @@ function index(): Lookup {
   for (const [extension, id] of Object.entries(OVERRIDES)) byExtension.set(extension, id);
 
   lookup = { byExtension, byFilename };
-  return lookup;
 }
 
+/** The table, or nothing when Monaco has not been loaded yet. */
+const EMPTY: Lookup = { byExtension: new Map(), byFilename: new Map() };
+
 export function languageOf(path: string): string {
-  const { byExtension, byFilename } = index();
+  const { byExtension, byFilename } = lookup ?? EMPTY;
   const name = (path.split(/[\\/]/).pop() ?? path).toLowerCase();
   // A file is known by its whole name (Dockerfile, Makefile) or by its suffix.
   const byName = byFilename.get(name);
@@ -58,7 +65,13 @@ export function languageOf(path: string): string {
   return byExtension.get(extension) ?? "plaintext";
 }
 
-/** How many languages this build highlights out of the box. */
+/**
+ * How many languages this build highlights out of the box.
+ *
+ * Zero until Monaco has loaded - the welcome screen asks for this number, and
+ * loading four megabytes to print it would be exactly backwards. The caller
+ * that shows it loads Monaco in the background and asks again.
+ */
 export function supportedLanguageCount(): number {
-  return monaco.languages.getLanguages().length;
+  return lookup === null ? 0 : new Set(lookup.byExtension.values()).size;
 }

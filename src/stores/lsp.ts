@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { monaco } from "../lib/monaco";
-import { LanguageSession } from "../lib/lsp/session";
+import type * as Monaco from "monaco-editor";
+import type { LanguageSession } from "../lib/lsp/session";
 import { useWorkspace } from "./workspace";
 
 /** Mirror of the Rust `ServerAvailability` (lsp/mod.rs). */
@@ -24,6 +24,9 @@ export type LanguageState =
 
 /** Live sessions by language; the providers below read this map. */
 const sessions = new Map<string, LanguageSession>();
+
+/** Monaco, once the workbench has loaded it; nothing here works without it. */
+let editor: typeof Monaco | null = null;
 const providersRegistered = new Set<string>();
 
 /** Characters that should re-open the completion list mid-word. */
@@ -36,8 +39,9 @@ const TRIGGER_CHARACTERS = [".", ":", ">", "<", '"', "'", "/", "@", "(", ","];
  * answer "nothing", which is exactly how the editor behaves without LSP.
  */
 function registerProviders(languageId: string): void {
-  if (providersRegistered.has(languageId)) return;
+  if (providersRegistered.has(languageId) || !editor) return;
   providersRegistered.add(languageId);
+  const monaco = editor;
   const session = () => sessions.get(languageId);
 
   monaco.languages.registerCompletionItemProvider(languageId, {
@@ -107,6 +111,9 @@ export const useLsp = create<LspStoreState>((set, get) => ({
 
     set((s) => ({ languages: { ...s.languages, [languageId]: { kind: "starting" } } }));
     try {
+      // Imported here, not at the top: a language session speaks to Monaco,
+      // and the status bar imports this store long before an editor exists.
+      const { LanguageSession } = await import("../lib/lsp/session");
       const session = await LanguageSession.start(languageId, rootPath, () => {
         sessions.delete(languageId);
         set((s) => ({
@@ -117,7 +124,7 @@ export const useLsp = create<LspStoreState>((set, get) => ({
       registerProviders(languageId);
       set((s) => ({ languages: { ...s.languages, [languageId]: { kind: "running" } } }));
       // Files opened while the server was starting still need syncing.
-      monaco.editor.getModels().forEach((model) => {
+      editor?.editor.getModels().forEach((model) => {
         if (model.getLanguageId() === languageId) session.openModel(model);
       });
     } catch (err: unknown) {
@@ -139,21 +146,32 @@ export const useLsp = create<LspStoreState>((set, get) => ({
   },
 }));
 
-/** Every file the user opens asks its language for a server, once. */
-monaco.editor.onDidCreateModel((model) => {
-  const languageId = model.getLanguageId();
-  const session = sessions.get(languageId);
-  if (session) {
-    session.openModel(model);
-    return;
-  }
-  void useLsp
-    .getState()
-    .ensure(languageId)
-    .then(() => {
-      sessions.get(languageId)?.openModel(model);
-    });
-});
+/**
+ * Hands the editor to the store, once Monaco exists.
+ *
+ * The store is imported by the status bar, which is on screen before any
+ * editor is - so it must not import Monaco itself. `lib/monaco.ts` calls this
+ * the moment it has loaded, and from then on every file the user opens asks
+ * its language for a server, once.
+ */
+export function attachEditor(api: typeof Monaco): void {
+  if (editor) return;
+  editor = api;
+  api.editor.onDidCreateModel((model) => {
+    const languageId = model.getLanguageId();
+    const session = sessions.get(languageId);
+    if (session) {
+      session.openModel(model);
+      return;
+    }
+    void useLsp
+      .getState()
+      .ensure(languageId)
+      .then(() => {
+        sessions.get(languageId)?.openModel(model);
+      });
+  });
+}
 
 // Language servers are per workspace: closing or switching projects stops them,
 // and the next opened file starts the right ones again.

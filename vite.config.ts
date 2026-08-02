@@ -21,6 +21,11 @@ export default defineConfig(async () => ({
         // Splitting it out lets the window paint without waiting for the whole
         // editor, and keeps it cached across releases of Aime itself.
         manualChunks: (id: string) => {
+          // Vite's dynamic-import helper is shared, and Rollup parks it in
+          // whichever chunk uses it most - Monaco. The entry then imports
+          // 4.4 MB to get one function, undoing the split. Its own chunk
+          // costs a few hundred bytes and keeps the editor off first paint.
+          if (id.includes("vite/preload-helper")) return "preload";
           if (id.includes("node_modules/monaco-editor")) return "monaco";
           if (id.includes("node_modules/react") || id.includes("node_modules/scheduler")) return "react";
           return undefined;

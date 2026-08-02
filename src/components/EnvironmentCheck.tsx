@@ -110,6 +110,33 @@ function ToolRow({ tool }: { tool: ToolStatus }) {
  * hands over the exact command. A missing AI CLI is a warning, not an error -
  * the editor works without one (ARCHITECTURE.md §1.6).
  */
+/**
+ * The highlighted-language count, once Monaco can be asked for it.
+ *
+ * Monaco is loaded on demand with the editor, and the welcome screen has no
+ * editor - so it is fetched here in the background and the line appears when
+ * the answer does. Blocking the first screen on four megabytes to print one
+ * number would be exactly backwards.
+ */
+function useLanguageCount(): number {
+  const [count, setCount] = useState(supportedLanguageCount);
+
+  useEffect(() => {
+    if (count > 0) return;
+    let stale = false;
+    void import("../lib/monaco")
+      .then(() => {
+        if (!stale) setCount(supportedLanguageCount());
+      })
+      .catch(console.error);
+    return () => {
+      stale = true;
+    };
+  }, [count]);
+
+  return count;
+}
+
 export function EnvironmentCheck() {
   const [tools, setTools] = useState<ToolStatus[] | null>(null);
   const [servers, setServers] = useState<ToolStatus[]>([]);
@@ -117,6 +144,7 @@ export function EnvironmentCheck() {
   // Offered once. Skipping is a decision, and Aime does not ask twice.
   // Runs once per machine, in the background, without asking.
   const [autoSetup, setAutoSetup] = useState<"idle" | "running" | "done">("idle");
+  const languageCount = useLanguageCount();
   const t = useT();
 
   // Policy, stated in the help and in the line this renders: using Aime means
@@ -213,7 +241,7 @@ export function EnvironmentCheck() {
             <Check size={11} className="shrink-0 text-ok" />
             <span className="truncate">
               {t("env.ready", {
-                languages: String(supportedLanguageCount()),
+                languages: String(languageCount),
                 servers: String(ready + BUILT_IN_INTELLISENSE),
               })}
             </span>
