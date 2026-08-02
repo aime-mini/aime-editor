@@ -5,7 +5,9 @@ import { Lightbulb, TriangleAlert, X } from "lucide-react";
 import { Range as MonacoRange, type editor as MonacoEditor } from "monaco-editor";
 import "../lib/monaco";
 import { useT } from "../i18n";
+import { AI_ACTIONS, buildPrompt, labelOf } from "../lib/aiActions";
 import { languageOf } from "../lib/languages";
+import { useAi } from "../stores/ai";
 import { useLayout } from "../stores/layout";
 import { useLsp } from "../stores/lsp";
 import { useGit } from "../stores/git";
@@ -115,6 +117,40 @@ function EditorTabs() {
       })}
     </div>
   );
+}
+
+/**
+ * Puts the AI in the editor's own right-click menu.
+ *
+ * Registered on the editor instance rather than globally, so the actions know
+ * which file they are in. With nothing selected they act on the whole file,
+ * because "explain this file" is a question people ask just as often.
+ */
+function registerAiActions(editor: MonacoEditor.IStandaloneCodeEditor) {
+  for (const action of AI_ACTIONS) {
+    editor.addAction({
+      id: `aime.ai.${action.id}`,
+      label: labelOf(action),
+      contextMenuGroupId: "aime-ai",
+      contextMenuOrder: AI_ACTIONS.indexOf(action),
+      run: (instance) => {
+        const model = instance.getModel();
+        const { rootPath, openFilePath } = useWorkspace.getState();
+        if (!model || !rootPath || !openFilePath) return;
+
+        const selection = instance.getSelection();
+        const selected = selection && !selection.isEmpty() ? model.getValueInRange(selection) : "";
+        const relative = openFilePath.startsWith(rootPath)
+          ? openFilePath.slice(rootPath.length + 1)
+          : openFilePath;
+
+        useLayout.getState().setAiPanelVisible(true);
+        void useAi
+          .getState()
+          .sendPrompt(buildPrompt(action, relative, selected, model.getLanguageId()), rootPath);
+      },
+    });
+  }
 }
 
 const EDITOR_OPTIONS = {
@@ -495,6 +531,7 @@ export function EditorPane() {
           }}
           onMount={(editor) => {
             editorRef.current = editor;
+            registerAiActions(editor);
             decorationsRef.current = editor.createDecorationsCollection();
             blameDecoRef.current = editor.createDecorationsCollection();
             editor.onDidChangeCursorPosition((e) => {

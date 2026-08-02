@@ -72,16 +72,21 @@ jobs:
       - name: Build the app
         run: cargo build
         working-directory: src-tauri
+      # bash, not Start-Process: `npm` on a Windows runner is a shim that
+      # Start-Process cannot resolve, which is how this step failed the first
+      # time it ran.
       - name: Start the dev server the debug build loads
-        run: Start-Process npm -ArgumentList 'run','dev'
-        shell: pwsh
+        run: npm run dev &
+        shell: bash
       - name: Wait for the dev server
         run: |
-          for ($i = 0; $i -lt 60; $i++) {
-            try { Invoke-WebRequest http://localhost:1420 -UseBasicParsing | Out-Null; exit 0 } catch { Start-Sleep 2 }
-          }
-          Write-Error "the dev server never came up"
-        shell: pwsh
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:1420 >/dev/null && exit 0
+            sleep 2
+          done
+          echo "the dev server never came up" >&2
+          exit 1
+        shell: bash
       - name: Run the end-to-end suite
         run: npm run test:e2e
         env:
