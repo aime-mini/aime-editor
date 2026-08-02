@@ -17,6 +17,14 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   go: "go",
   py: "python",
   cs: "csharp",
+  php: "php",
+  c: "c",
+  h: "c",
+  cpp: "cpp",
+  cc: "cpp",
+  cxx: "cpp",
+  hpp: "cpp",
+  hh: "cpp",
   java: "java",
   yml: "yaml",
   yaml: "yaml",
@@ -27,7 +35,17 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   ps1: "powershell",
 };
 
+/** Files that are known by name rather than by extension. */
+const LANGUAGE_BY_FILENAME: Record<string, string> = {
+  dockerfile: "dockerfile",
+  makefile: "makefile",
+  ".gitignore": "plaintext",
+};
+
 export function languageOf(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  const name = (path.split(/[\\/]/).pop() ?? path).toLowerCase();
+  const byName = LANGUAGE_BY_FILENAME[name];
+  if (byName) return byName;
+  const ext = name.split(".").pop() ?? "";
   return LANGUAGE_BY_EXTENSION[ext] ?? "plaintext";
 }

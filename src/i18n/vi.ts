@@ -24,6 +24,23 @@ export const vi: Record<TranslationKey, string> = {
     "Aime không tự cài gì cho bạn - chép lệnh để tự xử lý từng dòng. Thiếu AI hay language server chỉ mất tính năng đó; editor, Git và terminal luôn chạy.",
   "env.copy": "Chép lệnh",
 
+  "env.install": "Cài giúp tôi",
+  "setup.title": "Thiết lập code intelligence?",
+  "setup.body":
+    "Aime có thể cài giúp những thứ còn thiếu để gợi ý, xem kiểu và nhảy tới định nghĩa chạy được cho các ngôn ngữ của bạn: {names}. Nó chạy đúng trình cài thật và hiện từng dòng cho bạn xem.",
+  "setup.installAll": "Cài tất cả ({count})",
+  "setup.skip": "Để sau",
+  "install.title": "Đang cài {tool}",
+  "install.starting": "Đang bắt đầu…",
+  "install.running": "Đang chạy - có thể mất một phút",
+  "install.done": "Đã cài xong. Mở lại một file thuộc ngôn ngữ đó để dùng.",
+  "install.failed": "Trình cài thoát với mã {code} - log phía trên nói rõ lý do.",
+  "install.runtimeMissing":
+    "Chưa có {runtime}, mà chính nó mới chạy được lệnh cài này. Cài {runtime} trước đã.",
+  "install.progress": "Đang cài… xong {done}/{total}",
+  "install.partly": "Đã cài {ok}/{total} - phần còn lại ghi ở trên",
+  "install.close": "Đóng",
+
   "editor.pickFile": "Chọn một file để mở",
   "editor.closeTab": "Đóng tab",
   "editor.unsavedHint": "Chưa lưu (Ctrl+S)",
@@ -79,6 +96,10 @@ export const vi: Record<TranslationKey, string> = {
   "mcp.envPlaceholder": "Biến môi trường, mỗi dòng một KEY=VALUE (chỉ cho server stdio)",
   "mcp.footer": "URL sẽ được thêm dạng HTTP server; còn lại coi là lệnh để CLI khởi chạy.",
 
+  "lsp.offer":
+    "{language} chưa có gợi ý - cài {command} để có gợi ý khi gõ, xem kiểu và nhảy tới định nghĩa.",
+  "lsp.offerInstall": "Cài ngay",
+  "lsp.offerDismiss": "Bỏ qua ngôn ngữ này",
   "lsp.running": "Code intelligence đang chạy cho {language}",
   "lsp.missing": "Chưa cài {command} - file này không có gợi ý và báo lỗi. Cài bằng: {install}",
   "lsp.failed": "Language server đã dừng: {reason}. Mở lại file để thử lại.",

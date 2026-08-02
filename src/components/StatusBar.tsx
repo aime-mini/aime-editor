@@ -44,6 +44,7 @@ export function StatusBar() {
   const rootPath = useWorkspace((s) => s.rootPath);
   const { running, totalCostUsd, sessionId, providerId } = useAi();
   const { tasks, run: runTask } = useTasks();
+  const setInstallerTools = useLayout((s) => s.setInstallerTools);
   const [taskMenu, setTaskMenu] = useState<{ x: number; y: number } | null>(null);
   const { theme, toggle } = useTheme();
   const { locale, setLocale } = useI18n();
@@ -167,7 +168,10 @@ export function StatusBar() {
           </span>
         )}
         {lsp && lsp.kind !== "unsupported" && openLanguage && (
-          <span
+          <button
+            onClick={() => {
+              if (lsp.kind === "missing") setInstallerTools([openLanguage]);
+            }}
             className={`flex items-center gap-1 ${lsp.kind === "running" ? "text-ok" : lsp.kind === "missing" ? "text-warn" : ""}`}
             title={
               lsp.kind === "missing"
@@ -179,7 +183,7 @@ export function StatusBar() {
           >
             <Braces size={11} />
             {openLanguage}
-          </span>
+          </button>
         )}
         {/* Subscription CLIs report no price - showing $0.0000 would be a lie. */}
         {capabilitiesOf(providerId).reportsCost && (

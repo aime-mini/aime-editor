@@ -1,15 +1,61 @@
 ﻿import { useCallback, useEffect, useRef, useState } from "react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
-import { TriangleAlert, X } from "lucide-react";
+import { Lightbulb, TriangleAlert, X } from "lucide-react";
 import { Range as MonacoRange, type editor as MonacoEditor } from "monaco-editor";
 import "../lib/monaco";
 import { useT } from "../i18n";
 import { languageOf } from "../lib/languages";
+import { useLayout } from "../stores/layout";
+import { useLsp } from "../stores/lsp";
 import { useGit } from "../stores/git";
 import { monacoThemeOf, useTheme } from "../stores/theme";
 import { useWorkspace } from "../stores/workspace";
 import { ConflictView } from "./ConflictView";
+
+/**
+ * Offers the missing language server for the file in front of the user.
+ *
+ * A yellow dot in the status bar is easy to never notice; this appears exactly
+ * when the gap matters - the moment a Python or Go file is open and typing
+ * gives nothing - and disappears for good once dismissed for that language.
+ */
+function LanguageServerOffer({ languageId }: { languageId: string }) {
+  const state = useLsp((s) => s.languages[languageId]);
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  const t = useT();
+
+  if (state?.kind !== "missing" || dismissed.includes(languageId)) return null;
+  const runnable = !state.installHint.startsWith("http");
+
+  return (
+    <div className="flex items-center gap-2 border-b border-warn/40 bg-warn/10 px-3 py-1 text-[12px]">
+      <Lightbulb size={12} className="shrink-0 text-warn" />
+      <span className="min-w-0 flex-1 truncate text-warn">
+        {t("lsp.offer", { language: languageId, command: state.command })}
+      </span>
+      {runnable && (
+        <button
+          onClick={() => {
+            useLayout.getState().setInstallerTools([languageId]);
+          }}
+          className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-[11.5px] font-medium text-white hover:opacity-90"
+        >
+          {t("lsp.offerInstall")}
+        </button>
+      )}
+      <button
+        onClick={() => {
+          setDismissed((current) => [...current, languageId]);
+        }}
+        title={t("lsp.offerDismiss")}
+        className="shrink-0 rounded p-1 text-muted hover:text-fg"
+      >
+        <X size={11} />
+      </button>
+    </div>
+  );
+}
 
 /** Tab label: the file name, which is what the user recognizes. */
 function fileNameOf(path: string): string {
@@ -438,6 +484,7 @@ export function EditorPane() {
         </button>
       )}
       <EditorTabs />
+      <LanguageServerOffer languageId={languageOf(openFilePath)} />
       <div className="min-h-0 flex-1">
         <Editor
           path={openFilePath}

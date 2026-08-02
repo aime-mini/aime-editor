@@ -44,6 +44,7 @@ pub fn run() {
             environment::environment_report,
             environment::language_server_report,
             environment::login_command_for,
+            environment::install_tool,
             fs_cmds::list_dir,
             fs_cmds::list_files,
             fs_cmds::read_file,

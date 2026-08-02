@@ -22,6 +22,23 @@ export const en = {
     "Aime installs nothing for you - copy a command to fix a row. Missing AI or language servers only remove features; the editor, Git and terminal always work.",
   "env.copy": "Copy command",
 
+  "env.install": "Install it for me",
+  "setup.title": "Set up code intelligence?",
+  "setup.body":
+    "Aime can install what is missing so completions, types and go-to-definition work for your languages: {names}. It runs the real installers and shows you every line.",
+  "setup.installAll": "Install all ({count})",
+  "setup.skip": "Not now",
+  "install.title": "Installing {tool}",
+  "install.starting": "Starting…",
+  "install.running": "Running - this can take a minute",
+  "install.done": "Installed. Reopen a file of that language to use it.",
+  "install.failed": "The installer exited with code {code} - the log above says why.",
+  "install.runtimeMissing":
+    "{runtime} is not installed, and it is what runs this install. Install {runtime} first.",
+  "install.progress": "Installing… {done} of {total} done",
+  "install.partly": "{ok} of {total} installed - the rest is listed above",
+  "install.close": "Close",
+
   "editor.pickFile": "Select a file to open",
   "editor.closeTab": "Close tab",
   "editor.unsavedHint": "Unsaved (Ctrl+S)",
@@ -78,6 +95,10 @@ export const en = {
   "mcp.envPlaceholder": "Environment variables, one KEY=VALUE per line (stdio servers only)",
   "mcp.footer": "A URL is added as an HTTP server; anything else as a command the CLI launches.",
 
+  "lsp.offer":
+    "No completions for {language} yet - install {command} to get suggestions, types and go-to-definition.",
+  "lsp.offerInstall": "Install it",
+  "lsp.offerDismiss": "Not for this language",
   "lsp.running": "Code intelligence active for {language}",
   "lsp.missing":
     "{command} is not installed - completions and diagnostics are off for this file. Install it with: {install}",

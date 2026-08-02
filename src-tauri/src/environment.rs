@@ -5,8 +5,12 @@
 //! up front. Nothing here installs anything — Aime reports and gives the exact
 //! command, the same contract the AI panel already follows.
 
+use crate::mcp::tokenize_command;
 use crate::providers::{adapter::adapter_for, cli_command, provider_health};
 use serde::Serialize;
+use std::process::Stdio;
+use tauri::{AppHandle, Emitter};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// One tool Aime can use, and whether this machine has it.
 #[derive(Serialize)]
@@ -91,7 +95,21 @@ pub async fn environment_report() -> Vec<ToolStatus> {
 #[tauri::command]
 pub async fn language_server_report() -> Vec<ToolStatus> {
     let mut report = Vec::new();
-    for language in ["typescript", "python", "go", "rust"] {
+    // One row per server, not per language: typescript and javascript share one.
+    for language in [
+        "typescript",
+        "python",
+        "go",
+        "rust",
+        "csharp",
+        "php",
+        "sql",
+        "shell",
+        "yaml",
+        "dockerfile",
+        "cpp",
+        "java",
+    ] {
         let Ok(Some(availability)) = crate::lsp::lsp_availability(language.to_string()).await else {
             continue;
         };
@@ -105,6 +123,21 @@ pub async fn language_server_report() -> Vec<ToolStatus> {
             required: false,
         });
     }
+    // Monaco ships the same language services VS Code uses for these, so a
+    // server would only duplicate every suggestion. Listed anyway, because
+    // "is my language covered?" deserves an answer rather than a silence.
+    for (id, label) in [("html", "HTML"), ("css", "CSS"), ("json", "JSON")] {
+        report.push(ToolStatus {
+            id: id.to_string(),
+            label: format!("{label} (built in)"),
+            installed: true,
+            version: None,
+            signed_in: None,
+            install_hint: String::new(),
+            required: false,
+        });
+    }
+
     report
 }
 
@@ -113,4 +146,92 @@ pub async fn language_server_report() -> Vec<ToolStatus> {
 #[tauri::command]
 pub fn login_command_for(provider_id: String) -> Result<String, String> {
     Ok(adapter_for(&provider_id)?.login_command().to_string())
+}
+
+/// One line of an install run, relayed live so the user watches it happen.
+const INSTALL_OUTPUT_EVENT: &str = "install:output";
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallLine {
+    tool_id: String,
+    line: String,
+}
+
+/// The install command Aime is willing to run for a tool. Commands come from
+/// Aime's own tables, never from the caller: the UI asks to install a known
+/// tool, it does not hand over a command line to execute.
+fn install_command_for(tool_id: &str) -> Option<String> {
+    if let Some(spec) = crate::lsp::spec_for(tool_id) {
+        return Some(spec.install_hint.to_string());
+    }
+    PROVIDERS
+        .iter()
+        .find(|(id, _, _)| *id == tool_id)
+        .map(|(_, _, hint)| (*hint).to_string())
+}
+
+/// Runs the install for a known tool, streaming every line to the window, and
+/// answers with the exit code. Nothing is installed silently and nothing is
+/// installed that Aime did not itself propose.
+#[tauri::command]
+pub async fn install_tool(app: AppHandle, tool_id: String) -> Result<i32, String> {
+    let command = install_command_for(&tool_id).ok_or_else(|| format!("Nothing to install for {tool_id}"))?;
+    let tokens = tokenize_command(&command);
+    let (program, args) = tokens
+        .split_first()
+        .ok_or_else(|| "Empty install command".to_string())?;
+    // A URL is documentation, not something to run (Git, Node).
+    if program.starts_with("http") {
+        return Err(format!("{command} must be installed by hand"));
+    }
+    // Every install command needs its own runtime - npm, go, rustup. Saying
+    // which one is missing beats letting the user read a spawn failure.
+    if version_of(program).await.is_none() {
+        return Err(format!("RUNTIME_MISSING::{program}"));
+    }
+
+    let emit = |line: String| {
+        let _ = app.emit(
+            INSTALL_OUTPUT_EVENT,
+            InstallLine {
+                tool_id: tool_id.clone(),
+                line,
+            },
+        );
+    };
+    emit(format!("$ {command}"));
+
+    let mut child = cli_command(program, args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{program} is not available: {e}"))?;
+
+    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
+    let mut lines = BufReader::new(stdout).lines();
+    let mut errors = BufReader::new(stderr).lines();
+
+    // Installers write progress to both streams; the user wants to see both.
+    loop {
+        tokio::select! {
+            line = lines.next_line() => match line {
+                Ok(Some(text)) => emit(text),
+                _ => break,
+            },
+            line = errors.next_line() => {
+                if let Ok(Some(text)) = line {
+                    emit(text);
+                }
+            },
+        }
+    }
+    while let Ok(Some(text)) = errors.next_line().await {
+        emit(text);
+    }
+
+    let status = child.wait().await.map_err(|e| e.to_string())?;
+    Ok(status.code().unwrap_or(-1))
 }

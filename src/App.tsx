@@ -19,6 +19,7 @@ import { EditorPane } from "./components/EditorPane";
 import { EnvironmentCheck } from "./components/EnvironmentCheck";
 import { CommandPalette } from "./components/CommandPalette";
 import { HelpModal } from "./components/HelpModal";
+import { InstallerModal } from "./components/InstallerModal";
 import { McpModal } from "./components/McpModal";
 import { MemoryModal } from "./components/MemoryModal";
 import { Sidebar } from "./components/Sidebar";
@@ -387,6 +388,7 @@ export default function App() {
   const { toggleSidebar, toggleAiPanel, toggleTerminal, helpOpen, toggleHelp, setHelpOpen } = useLayout();
   const { paletteOpen, togglePalette, setPaletteOpen } = useLayout();
   const { memoryOpen, setMemoryOpen, mcpOpen, setMcpOpen } = useLayout();
+  const { installerTools, setInstallerTools } = useLayout();
 
   // `aime <folder>` launch: adopt the CLI folder unless the user beat us to the dialog.
   useEffect(() => {
@@ -489,6 +491,14 @@ export default function App() {
         <McpModal
           onClose={() => {
             setMcpOpen(false);
+          }}
+        />
+      )}
+      {installerTools.length > 0 && (
+        <InstallerModal
+          tools={installerTools}
+          onClose={() => {
+            setInstallerTools([]);
           }}
         />
       )}

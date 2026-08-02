@@ -31,43 +31,152 @@ pub struct ServerSpec {
     pub command: &'static str,
     pub args: &'static [&'static str],
     pub install_hint: &'static str,
+    /// How to tell whether this server is installed.
+    pub probe: Probe,
 }
 
-/// TypeScript's server also covers JavaScript, so both ids map to it.
+/// How to tell whether a server is installed. Measured, not assumed
+/// (2026-08-02): of the servers Aime ships with, `--version` exits 0 for
+/// typescript-language-server, yaml-language-server and bash-language-server,
+/// but exits 1 for pyright-langserver, intelephense, sql-language-server and
+/// docker-langserver, which answer only to a real LSP session. Trusting
+/// `--version` everywhere would report four of them as missing forever, right
+/// after the user installed them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Probe {
+    /// Present on PATH means installed. Correct for real binaries and for npm
+    /// shims, which only exist once their package is installed.
+    OnPath,
+    /// `--version` must exit 0. Needed where the name on PATH is a launcher
+    /// for something that may not be there: `rust-analyzer` is a rustup proxy
+    /// that exists even when the component was never added.
+    VersionFlag,
+}
+
+/// Every server Aime knows how to start, verified to exist (npm and NuGet
+/// checked 2026-08-02). Servers that need a toolchain rather than a package -
+/// Java's JDT LS, clangd for C/C++ - are deliberately absent: offering a
+/// one-click install that cannot work is worse than saying nothing.
+///
+/// HTML, CSS and JSON are absent for a different reason: Monaco ships language
+/// services for them, so adding a server would only duplicate every
+/// suggestion.
 const SERVERS: &[ServerSpec] = &[
+    // TypeScript's server also covers JavaScript, so both ids map to it.
     ServerSpec {
         language_id: "typescript",
         command: "typescript-language-server",
         args: &["--stdio"],
         install_hint: "npm install -g typescript-language-server typescript",
+        probe: Probe::OnPath,
     },
     ServerSpec {
         language_id: "javascript",
         command: "typescript-language-server",
         args: &["--stdio"],
         install_hint: "npm install -g typescript-language-server typescript",
+        probe: Probe::OnPath,
     },
     ServerSpec {
         language_id: "python",
         command: "pyright-langserver",
         args: &["--stdio"],
         install_hint: "npm install -g pyright",
+        probe: Probe::OnPath,
     },
     ServerSpec {
         language_id: "go",
         command: "gopls",
         args: &[],
         install_hint: "go install golang.org/x/tools/gopls@latest",
+        probe: Probe::OnPath,
     },
     ServerSpec {
         language_id: "rust",
         command: "rust-analyzer",
         args: &[],
         install_hint: "rustup component add rust-analyzer",
+        probe: Probe::VersionFlag,
+    },
+    ServerSpec {
+        language_id: "csharp",
+        command: "csharp-ls",
+        args: &[],
+        install_hint: "dotnet tool install --global csharp-ls",
+        probe: Probe::OnPath,
+    },
+    ServerSpec {
+        language_id: "php",
+        command: "intelephense",
+        args: &["--stdio"],
+        install_hint: "npm install -g intelephense",
+        probe: Probe::OnPath,
+    },
+    ServerSpec {
+        language_id: "sql",
+        command: "sql-language-server",
+        args: &["up", "--method", "stdio"],
+        install_hint: "npm install -g sql-language-server",
+        probe: Probe::OnPath,
+    },
+    ServerSpec {
+        language_id: "shell",
+        command: "bash-language-server",
+        args: &["start"],
+        install_hint: "npm install -g bash-language-server",
+        probe: Probe::OnPath,
+    },
+    ServerSpec {
+        language_id: "yaml",
+        command: "yaml-language-server",
+        args: &["--stdio"],
+        install_hint: "npm install -g yaml-language-server",
+        probe: Probe::OnPath,
+    },
+    ServerSpec {
+        language_id: "dockerfile",
+        command: "docker-langserver",
+        args: &["--stdio"],
+        install_hint: "npm install -g dockerfile-language-server-nodejs",
+        probe: Probe::OnPath,
+    },
+    // clangd serves C and C++; it ships inside LLVM rather than as a package.
+    ServerSpec {
+        language_id: "cpp",
+        command: "clangd",
+        args: &[],
+        install_hint: CLANGD_INSTALL,
+        probe: Probe::OnPath,
+    },
+    ServerSpec {
+        language_id: "c",
+        command: "clangd",
+        args: &[],
+        install_hint: CLANGD_INSTALL,
+        probe: Probe::OnPath,
+    },
+    // Eclipse JDT LS is published as an archive, not a package: there is no
+    // command Aime could run, so the user gets the download page instead of a
+    // button that would only fail.
+    ServerSpec {
+        language_id: "java",
+        command: "jdtls",
+        args: &[],
+        install_hint: "https://download.eclipse.org/jdtls/snapshots/",
+        probe: Probe::OnPath,
     },
 ];
 
-fn spec_for(language_id: &str) -> Option<&'static ServerSpec> {
+/// Windows has a package manager for LLVM; elsewhere the system one is the way.
+#[cfg(target_os = "windows")]
+const CLANGD_INSTALL: &str =
+    "winget install --id LLVM.LLVM -e --accept-package-agreements --accept-source-agreements";
+#[cfg(target_os = "macos")]
+const CLANGD_INSTALL: &str = "brew install llvm";
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+const CLANGD_INSTALL: &str = "sudo apt install clangd";
+
+pub fn spec_for(language_id: &str) -> Option<&'static ServerSpec> {
     SERVERS.iter().find(|spec| spec.language_id == language_id)
 }
 
@@ -139,18 +248,32 @@ pub async fn lsp_availability(language_id: String) -> Result<Option<ServerAvaila
     let Some(spec) = spec_for(&language_id) else {
         return Ok(None);
     };
-    // `--version` is universal enough; a server that answers anything at all is
-    // installed, and one that cannot be spawned is not.
-    let available = cli_command(spec.command, ["--version"])
-        .output()
-        .await
-        .is_ok_and(|output| output.status.success() || !output.stdout.is_empty());
+    let available = match spec.probe {
+        Probe::OnPath => resolves_on_path(spec.command).await,
+        Probe::VersionFlag => cli_command(spec.command, ["--version"])
+            .output()
+            .await
+            .is_ok_and(|output| output.status.success()),
+    };
     Ok(Some(ServerAvailability {
         language_id: spec.language_id.to_string(),
         command: spec.command.to_string(),
         available,
         install_hint: spec.install_hint.to_string(),
     }))
+}
+
+/// Whether the operating system can find this executable at all.
+async fn resolves_on_path(command: &str) -> bool {
+    let finder = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
+    cli_command(finder, [command])
+        .output()
+        .await
+        .is_ok_and(|output| output.status.success())
 }
 
 /// Starts the language server for `language_id` in `root` and streams its
@@ -298,7 +421,7 @@ pub fn stop_for_window(window: &Window) {
 
 #[cfg(test)]
 mod tests {
-    use super::{content_length, frame, spec_for};
+    use super::{content_length, frame, spec_for, Probe};
 
     #[test]
     fn framing_counts_bytes_not_characters() {
@@ -324,6 +447,42 @@ mod tests {
         assert_eq!(content_length("Content-Type: application/vscode-jsonrpc"), None);
         assert_eq!(content_length("Content-Length: not-a-number"), None);
         assert_eq!(content_length("no colon here"), None);
+    }
+
+    #[test]
+    fn detection_matches_how_each_server_actually_behaves() {
+        // Measured: these exit 1 on --version, so presence is the only signal.
+        for language in ["python", "php", "sql", "dockerfile"] {
+            assert_eq!(
+                spec_for(language).expect("served").probe,
+                Probe::OnPath,
+                "{language} answers nothing to --version"
+            );
+        }
+        // rust-analyzer is a rustup proxy: on PATH proves nothing.
+        assert_eq!(spec_for("rust").expect("served").probe, Probe::VersionFlag);
+    }
+
+    #[test]
+    fn every_language_the_user_asked_for_is_covered() {
+        for language in [
+            "csharp",
+            "html",
+            "css",
+            "go",
+            "python",
+            "java",
+            "c",
+            "cpp",
+            "typescript",
+            "rust",
+            "php",
+            "sql",
+        ] {
+            // HTML and CSS are served by Monaco itself, so they need no spec.
+            let covered = spec_for(language).is_some() || matches!(language, "html" | "css");
+            assert!(covered, "{language} has no code intelligence path");
+        }
     }
 
     #[test]

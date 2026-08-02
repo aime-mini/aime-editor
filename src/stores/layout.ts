@@ -24,6 +24,9 @@ interface LayoutState {
   setMemoryOpen: (open: boolean) => void;
   mcpOpen: boolean;
   setMcpOpen: (open: boolean) => void;
+  /** Tools the installer is working through; empty = no installer open. */
+  installerTools: string[];
+  setInstallerTools: (toolIds: string[]) => void;
   toggleSidebar: () => void;
   toggleAiPanel: () => void;
   toggleTerminal: () => void;
@@ -58,6 +61,10 @@ export const useLayout = create<LayoutState>((set) => ({
   mcpOpen: false,
   setMcpOpen: (open) => {
     set({ mcpOpen: open });
+  },
+  installerTools: [],
+  setInstallerTools: (toolIds) => {
+    set({ installerTools: toolIds });
   },
   toggleSidebar: () => {
     set((s) => ({ sidebarVisible: !s.sidebarVisible }));

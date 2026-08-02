@@ -64,6 +64,8 @@ interface LspStoreState {
   ensure: (languageId: string) => Promise<void>;
   /** Stops every server (workspace closed or app shutting down). */
   stopAll: () => Promise<void>;
+  /** Drops what was learned about a language, so the next file re-probes it. */
+  forget: (languageId: string) => void;
 }
 
 export const useLsp = create<LspStoreState>((set, get) => ({
@@ -116,6 +118,10 @@ export const useLsp = create<LspStoreState>((set, get) => ({
         languages: { ...s.languages, [languageId]: { kind: "failed", reason: String(err) } },
       }));
     }
+  },
+
+  forget: (languageId) => {
+    set((s) => ({ languages: { ...s.languages, [languageId]: undefined } }));
   },
 
   stopAll: async () => {

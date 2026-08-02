@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, ChevronDown, ChevronRight, Copy, Loader2, TriangleAlert, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, Download, Loader2, TriangleAlert, X } from "lucide-react";
 import { useT } from "../i18n";
+import { useLayout } from "../stores/layout";
+
+/** Remembers that the one-click setup was already offered on this machine. */
+const SETUP_OFFERED_KEY = "aime.setupOffered";
 
 /** Mirror of the Rust `ToolStatus` (environment.rs). */
 interface ToolStatus {
@@ -46,6 +50,9 @@ function ToolRow({ tool }: { tool: ToolStatus }) {
   const readiness = readinessOf(tool);
   const Icon = ICONS[readiness];
   const action = actionFor(tool);
+  // A signed-out CLI needs a person at a browser, and a documentation
+  // link is not a command - neither is something Aime can run.
+  const installable = !tool.installed && !tool.installHint.startsWith("http");
 
   useEffect(() => {
     if (!copied) return;
@@ -64,6 +71,17 @@ function ToolRow({ tool }: { tool: ToolStatus }) {
       <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
         {action ?? tool.version ?? ""}
       </span>
+      {action && installable && (
+        <button
+          onClick={() => {
+            useLayout.getState().setInstallerTools([tool.id]);
+          }}
+          title={t("env.install")}
+          className="shrink-0 rounded p-1 text-muted hover:bg-elevated hover:text-accent"
+        >
+          <Download size={11} />
+        </button>
+      )}
       {action && (
         <button
           onClick={() => {
@@ -91,6 +109,8 @@ export function EnvironmentCheck() {
   const [tools, setTools] = useState<ToolStatus[] | null>(null);
   const [servers, setServers] = useState<ToolStatus[]>([]);
   const [expanded, setExpanded] = useState(false);
+  // Offered once. Skipping is a decision, and Aime does not ask twice.
+  const [setupOffered, setSetupOffered] = useState(() => localStorage.getItem(SETUP_OFFERED_KEY) === "true");
   const t = useT();
 
   useEffect(() => {
@@ -123,7 +143,45 @@ export function EnvironmentCheck() {
 
   const everything = [...tools, ...servers];
   const needsAttention = everything.filter((tool) => readinessOf(tool) !== "ready");
+  // Signing in needs a person at a browser and documentation links are not
+  // commands, so neither belongs in a one-click install.
+  const installable = needsAttention.filter(
+    (tool) => !tool.installed && !tool.installHint.startsWith("http"),
+  );
+  const offerSetup = !setupOffered && installable.length > 0;
+  const dismissSetup = () => {
+    localStorage.setItem(SETUP_OFFERED_KEY, "true");
+    setSetupOffered(true);
+  };
   const Marker = expanded ? ChevronDown : ChevronRight;
+
+  if (offerSetup) {
+    return (
+      <section className="mt-6 rounded-lg border border-accent/40 bg-accent-soft px-4 py-3">
+        <p className="text-[12.5px] font-medium">{t("setup.title")}</p>
+        <p className="mt-1 text-[11.5px] text-muted">
+          {t("setup.body", { names: installable.map((tool) => tool.label).join(", ") })}
+        </p>
+        <div className="mt-2.5 flex items-center gap-2">
+          <button
+            onClick={() => {
+              useLayout.getState().setInstallerTools(installable.map((tool) => tool.id));
+              dismissSetup();
+            }}
+            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
+          >
+            <Download size={12} /> {t("setup.installAll", { count: String(installable.length) })}
+          </button>
+          <button
+            onClick={dismissSetup}
+            className="rounded-lg border border-line px-3 py-1.5 text-xs text-muted hover:text-fg"
+          >
+            {t("setup.skip")}
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="mt-6 flex flex-col items-center">
