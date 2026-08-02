@@ -13,6 +13,21 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+
+  build: {
+    rollupOptions: {
+      output: {
+        // Monaco is most of the bundle and changes only when it is upgraded.
+        // Splitting it out lets the window paint without waiting for the whole
+        // editor, and keeps it cached across releases of Aime itself.
+        manualChunks: (id: string) => {
+          if (id.includes("node_modules/monaco-editor")) return "monaco";
+          if (id.includes("node_modules/react") || id.includes("node_modules/scheduler")) return "react";
+          return undefined;
+        },
+      },
+    },
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,

@@ -5,7 +5,6 @@ name: check
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 concurrency:
@@ -51,3 +50,40 @@ jobs:
       - name: Tests
         run: cargo test
         working-directory: src-tauri
+
+  # The window itself: WebDriver drives the real app, which is the only place
+  # React, Monaco and Rust run together. Windows runners ship WebView2 and the
+  # matching Edge driver, so this needs no downloads beyond tauri-driver.
+  end-to-end:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+      - name: Build the app
+        run: cargo build
+        working-directory: src-tauri
+      - name: Start the dev server the debug build loads
+        run: Start-Process npm -ArgumentList 'run','dev'
+        shell: pwsh
+      - name: Wait for the dev server
+        run: |
+          for ($i = 0; $i -lt 60; $i++) {
+            try { Invoke-WebRequest http://localhost:1420 -UseBasicParsing | Out-Null; exit 0 } catch { Start-Sleep 2 }
+          }
+          Write-Error "the dev server never came up"
+        shell: pwsh
+      - name: Run the end-to-end suite
+        run: npm run test:e2e
+        env:
+          # Windows runners expose the Edge driver's folder here.
+          AIME_EDGE_DRIVER: ${{ env.EDGEWEBDRIVER }}\msedgedriver.exe
