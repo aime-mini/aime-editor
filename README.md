@@ -64,6 +64,24 @@ Code standards are enforced by a pre-commit hook (prettier, eslint, rustfmt). En
 git config core.hooksPath .githooks
 ```
 
+## Who decides what
+
+Aime has a single owner. What the editor becomes, what ships and when, and every
+release is the owner's call - there is no committee here, and the roadmap is not
+open for negotiation.
+
+Everything else is welcome as a pull request: a bug fix, a language server that
+is missing, an adapter for another AI CLI, a translation. Keep it to one problem
+per pull request, and before you open it:
+
+- `npm run check`, `npm test` and `cd src-tauri && cargo test` all pass
+- the pre-commit hook is on (`git config core.hooksPath .githooks`) and never bypassed
+- anything a user would notice is added to the in-app Help in **both** languages
+  (`src/lib/helpContent.ts`) - a feature nobody can find has not shipped
+
+Direct pushes to `main` and the release tags stay with the owner, who also holds
+the signing keys. That is the whole of it.
+
 ## Releases
 
 Tagging `v*` builds installers for Windows, macOS and Linux in CI and opens a
