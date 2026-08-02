@@ -17,9 +17,9 @@ export const vi: Record<TranslationKey, string> = {
 
   "env.title": "Máy này có gì",
   "env.checking": "Đang kiểm tra những gì đã cài…",
-  "env.allReady": "mọi thứ Aime cần đều sẵn sàng",
-  "env.needsAttention": "{count} thứ cần cài: {names}",
   "env.settingUp": "đang tự cài code intelligence cho bạn…",
+  "env.ready": "sẵn sàng: tô màu {languages} ngôn ngữ, gợi ý thông minh cho {servers}",
+  "env.blocked": "thiếu {names} - Aime cần cái này",
   "env.languageServers": "Language server",
   "env.hint":
     "Aime không tự cài gì cho bạn - chép lệnh để tự xử lý từng dòng. Thiếu AI hay language server chỉ mất tính năng đó; editor, Git và terminal luôn chạy.",

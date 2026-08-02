@@ -2,8 +2,12 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Check, ChevronDown, ChevronRight, Copy, Download, Loader2, TriangleAlert, X } from "lucide-react";
 import { useT } from "../i18n";
+import { supportedLanguageCount } from "../lib/languages";
 import { useLayout } from "../stores/layout";
 import { useLsp } from "../stores/lsp";
+
+/** TypeScript, JavaScript, HTML, CSS and JSON: Monaco brings their services. */
+const BUILT_IN_INTELLISENSE = 5;
 
 /** Remembers that first-launch setup already ran on this machine. */
 const SETUP_DONE_KEY = "aime.setupDone";
@@ -171,7 +175,11 @@ export function EnvironmentCheck() {
   }
 
   const everything = [...tools, ...servers];
-  const needsAttention = everything.filter((tool) => readinessOf(tool) !== "ready");
+  // Only a tool Aime cannot work without is worth alarming about on the way in.
+  // A language server for a language the user may never touch is not: they are
+  // offered the moment such a file is actually opened, and listed under Details.
+  const blocking = everything.filter((tool) => readinessOf(tool) === "missing");
+  const ready = servers.filter((server) => server.installed).length;
   const Marker = expanded ? ChevronDown : ChevronRight;
 
   return (
@@ -193,18 +201,20 @@ export function EnvironmentCheck() {
             <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
             {t("env.settingUp")}
           </>
-        ) : needsAttention.length === 0 ? (
+        ) : blocking.length > 0 ? (
           <>
-            <Check size={11} className="shrink-0 text-ok" />
-            {t("env.allReady")}
+            <TriangleAlert size={11} className="shrink-0 text-danger" />
+            <span className="truncate text-danger">
+              {t("env.blocked", { names: blocking.map((tool) => tool.label).join(", ") })}
+            </span>
           </>
         ) : (
           <>
-            <TriangleAlert size={11} className="shrink-0 text-warn" />
+            <Check size={11} className="shrink-0 text-ok" />
             <span className="truncate">
-              {t("env.needsAttention", {
-                count: String(needsAttention.length),
-                names: needsAttention.map((tool) => tool.label).join(", "),
+              {t("env.ready", {
+                languages: String(supportedLanguageCount()),
+                servers: String(ready + BUILT_IN_INTELLISENSE),
               })}
             </span>
           </>
