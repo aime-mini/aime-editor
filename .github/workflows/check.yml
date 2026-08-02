@@ -97,5 +97,22 @@ jobs:
           "AIME_EDGE_DRIVER=$driver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & $driver --version
         shell: pwsh
+      # Session creation timed out on the runner while passing locally, and a
+      # WebDriver timeout says nothing about why. This proves the three things
+      # a session needs - the binary, the WebView2 runtime, and a window that
+      # stays up - so the next failure names itself.
+      - name: Prove the app can start at all
+        run: |
+          $exe = 'src-tauri/target/debug/ai-mini-editor.exe'
+          if (-not (Test-Path $exe)) { Write-Error "no binary at $exe"; exit 1 }
+          $runtime = Get-ItemProperty -ErrorAction SilentlyContinue `
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          Write-Host "WebView2 runtime: $(if ($runtime) { $runtime.pv } else { 'NOT INSTALLED' })"
+          $app = Start-Process $exe -ArgumentList $env:TEMP -PassThru
+          Start-Sleep -Seconds 20
+          if ($app.HasExited) { Write-Error "the app exited with $($app.ExitCode)"; exit 1 }
+          Write-Host "the app was still running after 20s"
+          Stop-Process -Id $app.Id -Force
+        shell: pwsh
       - name: Run the end-to-end suite
         run: npm run test:e2e
