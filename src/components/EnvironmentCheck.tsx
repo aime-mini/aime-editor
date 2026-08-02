@@ -3,9 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { Check, ChevronDown, ChevronRight, Copy, Download, Loader2, TriangleAlert, X } from "lucide-react";
 import { useT } from "../i18n";
 import { useLayout } from "../stores/layout";
+import { useLsp } from "../stores/lsp";
 
-/** Remembers that the one-click setup was already offered on this machine. */
-const SETUP_OFFERED_KEY = "aime.setupOffered";
+/** Remembers that first-launch setup already ran on this machine. */
+const SETUP_DONE_KEY = "aime.setupDone";
 
 /** Mirror of the Rust `ToolStatus` (environment.rs). */
 interface ToolStatus {
@@ -110,8 +111,36 @@ export function EnvironmentCheck() {
   const [servers, setServers] = useState<ToolStatus[]>([]);
   const [expanded, setExpanded] = useState(false);
   // Offered once. Skipping is a decision, and Aime does not ask twice.
-  const [setupOffered, setSetupOffered] = useState(() => localStorage.getItem(SETUP_OFFERED_KEY) === "true");
+  // Runs once per machine, in the background, without asking.
+  const [autoSetup, setAutoSetup] = useState<"idle" | "running" | "done">("idle");
   const t = useT();
+
+  // Policy, stated in the help and in the line this renders: using Aime means
+  // letting it set up the small, user-scoped language servers by itself.
+  // Nothing here needs elevation and nothing touches the system.
+  useEffect(() => {
+    if (localStorage.getItem(SETUP_DONE_KEY) === "true") return;
+    localStorage.setItem(SETUP_DONE_KEY, "true");
+    invoke<string[]>("unattended_setup_targets")
+      .then(async (targets) => {
+        if (targets.length === 0) return;
+        setAutoSetup("running");
+        for (const target of targets) {
+          try {
+            await invoke<number>("install_tool", { toolId: target });
+            useLsp.getState().forget(target);
+          } catch (err: unknown) {
+            console.error("unattended setup failed for", target, err);
+          }
+        }
+        setAutoSetup("done");
+        // Re-read, so the line reflects what the machine now has.
+        void invoke<ToolStatus[]>("language_server_report").then(setServers);
+      })
+      .catch((err: unknown) => {
+        console.error("unattended setup could not start:", err);
+      });
+  }, []);
 
   useEffect(() => {
     let stale = false;
@@ -143,45 +172,7 @@ export function EnvironmentCheck() {
 
   const everything = [...tools, ...servers];
   const needsAttention = everything.filter((tool) => readinessOf(tool) !== "ready");
-  // Signing in needs a person at a browser and documentation links are not
-  // commands, so neither belongs in a one-click install.
-  const installable = needsAttention.filter(
-    (tool) => !tool.installed && !tool.installHint.startsWith("http"),
-  );
-  const offerSetup = !setupOffered && installable.length > 0;
-  const dismissSetup = () => {
-    localStorage.setItem(SETUP_OFFERED_KEY, "true");
-    setSetupOffered(true);
-  };
   const Marker = expanded ? ChevronDown : ChevronRight;
-
-  if (offerSetup) {
-    return (
-      <section className="mt-6 rounded-lg border border-accent/40 bg-accent-soft px-4 py-3">
-        <p className="text-[12.5px] font-medium">{t("setup.title")}</p>
-        <p className="mt-1 text-[11.5px] text-muted">
-          {t("setup.body", { names: installable.map((tool) => tool.label).join(", ") })}
-        </p>
-        <div className="mt-2.5 flex items-center gap-2">
-          <button
-            onClick={() => {
-              useLayout.getState().setInstallerTools(installable.map((tool) => tool.id));
-              dismissSetup();
-            }}
-            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
-          >
-            <Download size={12} /> {t("setup.installAll", { count: String(installable.length) })}
-          </button>
-          <button
-            onClick={dismissSetup}
-            className="rounded-lg border border-line px-3 py-1.5 text-xs text-muted hover:text-fg"
-          >
-            {t("setup.skip")}
-          </button>
-        </div>
-      </section>
-    );
-  }
 
   return (
     <section className="mt-6 flex flex-col items-center">
@@ -197,7 +188,12 @@ export function EnvironmentCheck() {
         className="flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-muted hover:bg-elevated hover:text-fg"
       >
         <Marker size={11} className="shrink-0 opacity-60" />
-        {needsAttention.length === 0 ? (
+        {autoSetup === "running" ? (
+          <>
+            <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+            {t("env.settingUp")}
+          </>
+        ) : needsAttention.length === 0 ? (
           <>
             <Check size={11} className="shrink-0 text-ok" />
             {t("env.allReady")}

@@ -141,6 +141,38 @@ pub async fn language_server_report() -> Vec<ToolStatus> {
     report
 }
 
+/// Tools Aime sets up by itself on first launch.
+///
+/// The line is drawn at what installs into the user's own npm prefix in a few
+/// seconds and needs no elevation: those run unattended, because asking about
+/// each one is a worse experience than the install itself. Anything that pulls
+/// a toolchain - Go, .NET, LLVM, a JDK - stays an explicit offer, since it can
+/// mean hundreds of megabytes or an elevation prompt.
+#[tauri::command]
+pub async fn unattended_setup_targets() -> Vec<String> {
+    let mut targets = Vec::new();
+    for language in [
+        "typescript",
+        "python",
+        "php",
+        "sql",
+        "shell",
+        "yaml",
+        "dockerfile",
+    ] {
+        let installable =
+            install_command_for(language).is_some_and(|command| command.starts_with("npm install"));
+        let missing = matches!(
+            crate::lsp::lsp_availability(language.to_string()).await,
+            Ok(Some(ref availability)) if !availability.available
+        );
+        if installable && missing {
+            targets.push(language.to_string());
+        }
+    }
+    targets
+}
+
 /// Signs in to a provider by handing its own login command to the caller —
 /// the welcome screen runs it in a terminal, exactly like the AI panel.
 #[tauri::command]
