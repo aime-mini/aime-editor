@@ -98,7 +98,7 @@ const EN: HelpTopic[] = [
     id: "ai-add-provider",
     section: "AI",
     title: "Use another AI CLI",
-    body: "Claude Code and Codex are built in, but any command-line AI can be added without waiting for a new Aime release: 'Add an AI CLI' in the command palette creates providers.json with a working example and opens it. Describe the command, where the prompt goes ({prompt}), how to resume a conversation ({sessionId}), and whether it prints plain text or JSON per line. The new CLI then appears in the provider picker like the built-in ones. Aime cannot know its models or its permission flags, so it sends what every CLI understands: the instruction in the prompt itself - including your AGENTS.md when the CLI has no memory file of its own.",
+    body: "Claude Code and Codex are built in, but any command-line AI can be added without waiting for a new Aime release: 'Add an AI CLI' in the command palette creates providers.json with a working example and opens it. Describe the command, where the prompt goes ({prompt}), how to resume a conversation ({sessionId}), and whether it prints plain text or JSON per line. The new CLI then appears in the provider picker like the built-in ones. Aime cannot know its models or its permission flags, so it sends what every CLI understands: the instruction in the prompt itself - including your AGENTS.md when the CLI has no memory file of its own. If your CLI can read its prompt from standard input, set promptStdin to true and drop {prompt} from the arguments: on Windows every CLI runs through cmd.exe, which ends a command line at the first line break, so a prompt passed as an argument arrives with only its first line. The built-in providers already use stdin for exactly this reason.",
     keywords: "providers.json generic adapter gemini custom cli add provider",
   },
   {
@@ -361,7 +361,7 @@ const VI: HelpTopic[] = [
     id: "ai-add-provider",
     section: "AI",
     title: "Dùng AI CLI khác",
-    body: "Claude Code và Codex có sẵn, nhưng anh thêm được bất kỳ AI chạy dòng lệnh nào mà không cần chờ bản Aime mới: lệnh 'Thêm AI CLI' trong command palette tạo sẵn providers.json có mẫu chạy được và mở lên. Anh khai lệnh chạy, chỗ đặt prompt ({prompt}), cách nối lại hội thoại ({sessionId}), và nó in text thường hay JSON mỗi dòng. Xong là CLI đó hiện trong picker như hai cái có sẵn. Aime không thể biết model hay cờ phân quyền của nó, nên gửi thứ mọi CLI đều hiểu: chỉ dẫn nằm ngay trong prompt - kèm cả AGENTS.md của anh nếu CLI đó không có file memory riêng.",
+    body: "Claude Code và Codex có sẵn, nhưng anh thêm được bất kỳ AI chạy dòng lệnh nào mà không cần chờ bản Aime mới: lệnh 'Thêm AI CLI' trong command palette tạo sẵn providers.json có mẫu chạy được và mở lên. Anh khai lệnh chạy, chỗ đặt prompt ({prompt}), cách nối lại hội thoại ({sessionId}), và nó in text thường hay JSON mỗi dòng. Xong là CLI đó hiện trong picker như hai cái có sẵn. Aime không thể biết model hay cờ phân quyền của nó, nên gửi thứ mọi CLI đều hiểu: chỉ dẫn nằm ngay trong prompt - kèm cả AGENTS.md của anh nếu CLI đó không có file memory riêng. Nếu CLI của anh đọc được prompt từ standard input, hãy đặt promptStdin là true và bỏ {prompt} khỏi args: trên Windows mọi CLI đều chạy qua cmd.exe, mà cmd.exe cắt dòng lệnh ngay ký tự xuống dòng đầu tiên, nên prompt truyền bằng tham số chỉ đến được đúng dòng đầu. Hai provider có sẵn dùng stdin chính vì lý do này.",
     keywords: "providers.json generic adapter gemini cli tùy chỉnh thêm provider",
   },
   {

@@ -8,7 +8,7 @@
 //! Configs are loaded once and leaked deliberately: they live for the whole
 //! process anyway, and `Adapter` is handed out as `&'static dyn Adapter`.
 
-use super::adapter::{explicit, Adapter, Permission, TurnRequest, PROGRESS_MEMORY_PROMPT};
+use super::adapter::{explicit, Adapter, Invocation, Permission, TurnRequest, PROGRESS_MEMORY_PROMPT};
 use crate::mcp::{McpServer, McpServerSpec};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -70,6 +70,11 @@ pub struct ProviderConfig {
     /// The CLI's own user-level memory file, relative to the home directory.
     #[serde(default)]
     pub memory_file: String,
+    /// Send the prompt on stdin instead of substituting `{prompt}`. Strongly
+    /// preferred where the CLI supports it: on Windows a prompt passed as an
+    /// argument loses everything after its first line (see `Invocation`).
+    #[serde(default)]
+    pub prompt_stdin: bool,
 }
 
 fn default_text_field() -> String {
@@ -113,13 +118,24 @@ fn expand(args: &[String], prompt: &str, session_id: Option<&str>, model: Option
     expanded
 }
 
+impl GenericAdapter {
+    /// Hands the prompt over the channel this CLI was configured for.
+    fn deliver(&self, args: Vec<String>, prompt: String) -> Invocation {
+        if self.config.prompt_stdin {
+            Invocation::piped(args, prompt)
+        } else {
+            Invocation::plain(args)
+        }
+    }
+}
+
 impl Adapter for GenericAdapter {
     fn command(&self) -> &'static str {
         // The config outlives the process; see the module comment.
         Box::leak(self.config.command.clone().into_boxed_str())
     }
 
-    fn chat_args(&self, req: &TurnRequest<'_>) -> Vec<String> {
+    fn chat_invocation(&self, req: &TurnRequest<'_>) -> Invocation {
         // An unknown CLI has no permission flags to map onto and no
         // system-prompt hook, so everything Aime needs it to know travels in
         // the prompt - the one channel every CLI accepts.
@@ -149,11 +165,11 @@ impl Adapter for GenericAdapter {
                 req.model,
             ));
         }
-        args
+        self.deliver(args, prompt)
     }
 
-    fn oneshot_args(&self, prompt: &str, model: Option<&str>) -> Vec<String> {
-        expand(&self.config.args, prompt, None, model)
+    fn oneshot_invocation(&self, prompt: &str, model: Option<&str>) -> Invocation {
+        self.deliver(expand(&self.config.args, prompt, None, model), prompt.to_string())
     }
 
     fn parse_oneshot(&self, stdout: &str) -> Result<String, String> {
@@ -271,6 +287,7 @@ mod tests {
                 install: String::new(),
                 memory: super::MemoryStrategy::default(),
                 memory_file: String::new(),
+                prompt_stdin: false,
             },
         }
     }
@@ -288,8 +305,9 @@ mod tests {
 
     #[test]
     fn the_prompt_lands_where_the_config_puts_it() {
-        let args =
-            adapter(&["chat", "--input", "{prompt}"], &[], ParserKind::Plain).chat_args(&turn("hello", None));
+        let args = adapter(&["chat", "--input", "{prompt}"], &[], ParserKind::Plain)
+            .chat_invocation(&turn("hello", None))
+            .args;
         assert_eq!(args[0], "chat");
         assert_eq!(args[1], "--input");
         assert!(args[2].ends_with("hello"), "prompt is substituted, not appended");
@@ -297,7 +315,9 @@ mod tests {
 
     #[test]
     fn the_journal_rule_travels_with_the_prompt() {
-        let args = adapter(&["{prompt}"], &[], ParserKind::Plain).chat_args(&turn("do it", None));
+        let args = adapter(&["{prompt}"], &[], ParserKind::Plain)
+            .chat_invocation(&turn("do it", None))
+            .args;
         assert!(args[0].contains(".aime/PROGRESS.md"));
     }
 
@@ -307,7 +327,9 @@ mod tests {
             permission: Permission::ReadOnly,
             ..turn("explain", None)
         };
-        let args = adapter(&["{prompt}"], &[], ParserKind::Plain).chat_args(&request);
+        let args = adapter(&["{prompt}"], &[], ParserKind::Plain)
+            .chat_invocation(&request)
+            .args;
         assert!(args[0].contains("Read and explain only"));
     }
 
@@ -324,22 +346,31 @@ mod tests {
 
         let mut injecting = adapter(&["{prompt}"], &[], ParserKind::Plain);
         injecting.config.memory = MemoryStrategy::PromptInject;
-        assert!(injecting.chat_args(&request)[0].contains("Prefer tabs over spaces."));
+        assert!(injecting.chat_invocation(&request).args[0].contains("Prefer tabs over spaces."));
 
         // A CLI that reads AGENTS.md itself must not be told it twice.
         let mut native = adapter(&["{prompt}"], &[], ParserKind::Plain);
         native.config.memory = MemoryStrategy::Native;
-        assert!(!native.chat_args(&request)[0].contains("Prefer tabs over spaces."));
+        assert!(!native.chat_invocation(&request).args[0].contains("Prefer tabs over spaces."));
 
         std::fs::remove_dir_all(&workspace).ok();
     }
 
     #[test]
+    fn a_stdin_provider_gets_the_prompt_on_stdin_and_not_in_its_arguments() {
+        let mut piped = adapter(&["chat"], &[], ParserKind::Plain);
+        piped.config.prompt_stdin = true;
+        let call = piped.chat_invocation(&turn("hello", None));
+        assert_eq!(call.args, vec!["chat".to_string()]);
+        assert!(call.stdin.expect("prompt on stdin").ends_with("hello"));
+    }
+
+    #[test]
     fn resume_arguments_only_appear_for_a_continued_conversation() {
         let generic = adapter(&["{prompt}"], &["--resume", "{sessionId}"], ParserKind::Plain);
-        assert_eq!(generic.chat_args(&turn("hi", None)).len(), 1);
+        assert_eq!(generic.chat_invocation(&turn("hi", None)).args.len(), 1);
 
-        let resumed = generic.chat_args(&turn("hi", Some("abc")));
+        let resumed = generic.chat_invocation(&turn("hi", Some("abc"))).args;
         assert_eq!(resumed[1], "--resume");
         assert_eq!(resumed[2], "abc");
     }

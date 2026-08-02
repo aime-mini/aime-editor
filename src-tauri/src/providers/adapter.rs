@@ -32,7 +32,36 @@ pub struct TurnRequest<'a> {
     pub permission: Permission,
 }
 
-/// One headless AI CLI. Adapters only build arguments and read the CLI's
+/// One call to a CLI: its arguments, and the prompt when that travels on stdin.
+///
+/// The distinction is not cosmetic. On Windows every CLI is launched through
+/// `cmd /C`, because npm installs them as batch shims, and cmd.exe ends a
+/// command line at the first newline - so a multi-line prompt passed as an
+/// argument silently arrives with every line but the first missing. Both
+/// built-in CLIs read their prompt from stdin, which has no such limit and no
+/// length ceiling either.
+pub struct Invocation {
+    pub args: Vec<String>,
+    /// `Some` = write this to the child's stdin, then close it.
+    pub stdin: Option<String>,
+}
+
+impl Invocation {
+    /// The prompt travels on stdin - correct for any CLI that accepts it.
+    pub fn piped(args: Vec<String>, prompt: impl Into<String>) -> Self {
+        Self {
+            args,
+            stdin: Some(prompt.into()),
+        }
+    }
+
+    /// The prompt is already inside `args`, the way that CLI requires.
+    pub fn plain(args: Vec<String>) -> Self {
+        Self { args, stdin: None }
+    }
+}
+
+/// One headless AI CLI. Adapters only build invocations and read the CLI's
 /// output shape — spawning, streaming and cancellation are shared (mod.rs),
 /// and normalizing events into the UI event set happens on the frontend
 /// (ARCHITECTURE.md §4).
@@ -40,11 +69,11 @@ pub trait Adapter: Send + Sync {
     /// Executable name, resolved through PATH.
     fn command(&self) -> &'static str;
 
-    /// Arguments of a streaming chat turn.
-    fn chat_args(&self, req: &TurnRequest<'_>) -> Vec<String>;
+    /// One streaming chat turn.
+    fn chat_invocation(&self, req: &TurnRequest<'_>) -> Invocation;
 
-    /// Arguments of a one-shot, side-effect-free call (e.g. commit messages).
-    fn oneshot_args(&self, prompt: &str, model: Option<&str>) -> Vec<String>;
+    /// One side-effect-free call (e.g. commit messages).
+    fn oneshot_invocation(&self, prompt: &str, model: Option<&str>) -> Invocation;
 
     /// Extracts the answer text from a completed one-shot run's stdout.
     fn parse_oneshot(&self, stdout: &str) -> Result<String, String>;

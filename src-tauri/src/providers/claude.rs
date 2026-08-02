@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-use super::adapter::{explicit, Adapter, Permission, TurnRequest, PROGRESS_MEMORY_PROMPT};
+use super::adapter::{explicit, Adapter, Invocation, Permission, TurnRequest, PROGRESS_MEMORY_PROMPT};
 use crate::mcp::{tokenize_command, McpServer, McpServerSpec};
 
 /// Adapter for the Claude Code CLI (headless mode), verified against 2.1.220.
@@ -15,7 +15,6 @@ pub const COMMAND: &str = "claude";
 /// `permission_denials: []`), auto-accepted edits, or plan mode, which
 /// researches and answers without touching the working tree.
 pub fn build_args(
-    prompt: &str,
     session_id: Option<&str>,
     model: Option<&str>,
     effort: Option<&str>,
@@ -26,9 +25,9 @@ pub fn build_args(
         Permission::Edits => "acceptEdits",
         Permission::ReadOnly => "plan",
     };
+    // `-p` with no prompt argument makes the CLI read it from stdin.
     let mut args: Vec<String> = vec![
         "-p".into(),
-        prompt.into(),
         "--output-format".into(),
         "stream-json".into(),
         "--include-partial-messages".into(),
@@ -80,14 +79,16 @@ impl Adapter for ClaudeAdapter {
         COMMAND
     }
 
-    fn chat_args(&self, req: &TurnRequest<'_>) -> Vec<String> {
-        build_args(req.prompt, req.session_id, req.model, req.effort, req.permission)
+    fn chat_invocation(&self, req: &TurnRequest<'_>) -> Invocation {
+        Invocation::piped(
+            build_args(req.session_id, req.model, req.effort, req.permission),
+            req.prompt,
+        )
     }
 
-    fn oneshot_args(&self, prompt: &str, model: Option<&str>) -> Vec<String> {
+    fn oneshot_invocation(&self, prompt: &str, model: Option<&str>) -> Invocation {
         let mut args: Vec<String> = vec![
             "-p".into(),
-            prompt.into(),
             "--output-format".into(),
             "json".into(),
             "--tools".into(),
@@ -97,7 +98,7 @@ impl Adapter for ClaudeAdapter {
             args.push("--model".into());
             args.push(model.into());
         }
-        args
+        Invocation::piped(args, prompt)
     }
 
     fn parse_oneshot(&self, stdout: &str) -> Result<String, String> {
@@ -173,7 +174,7 @@ mod tests {
 
     #[test]
     fn fresh_session_has_progress_memory_but_no_resume() {
-        let args = build_args("hello", None, None, None, Permission::Full);
+        let args = build_args(None, None, None, Permission::Full);
         assert!(args.contains(&"--append-system-prompt".to_string()));
         assert!(!args.contains(&"--resume".to_string()));
     }
@@ -181,7 +182,7 @@ mod tests {
     #[test]
     fn each_permission_level_maps_to_its_own_cli_mode() {
         let mode_of = |permission| {
-            let args = build_args("hello", None, None, None, permission);
+            let args = build_args(None, None, None, permission);
             let at = args
                 .iter()
                 .position(|a| a == "--permission-mode")
@@ -195,7 +196,7 @@ mod tests {
 
     #[test]
     fn resumed_session_appends_resume_id_last() {
-        let args = build_args("hello", Some("abc-123"), None, None, Permission::Full);
+        let args = build_args(Some("abc-123"), None, None, Permission::Full);
         let resume_at = args
             .iter()
             .position(|a| a == "--resume")
@@ -205,7 +206,7 @@ mod tests {
 
     #[test]
     fn model_and_effort_are_forwarded_when_set() {
-        let args = build_args("hello", None, Some("opus"), Some("high"), Permission::Full);
+        let args = build_args(None, Some("opus"), Some("high"), Permission::Full);
         let model_at = args.iter().position(|a| a == "--model").expect("--model present");
         assert_eq!(args.get(model_at + 1).map(String::as_str), Some("opus"));
         let effort_at = args
@@ -217,7 +218,7 @@ mod tests {
 
     #[test]
     fn empty_overrides_fall_back_to_cli_defaults() {
-        let args = build_args("hello", None, Some(""), Some(""), Permission::Full);
+        let args = build_args(None, Some(""), Some(""), Permission::Full);
         assert!(!args.contains(&"--model".to_string()));
         assert!(!args.contains(&"--effort".to_string()));
     }

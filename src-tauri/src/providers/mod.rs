@@ -3,7 +3,7 @@ pub mod claude;
 pub mod codex;
 pub mod generic;
 
-use adapter::{adapter_for, Permission, TurnRequest};
+use adapter::{adapter_for, Invocation, Permission, TurnRequest};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -11,8 +11,8 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, Command};
 
 static RUN_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -76,6 +76,33 @@ where
     }
 }
 
+/// Whether the child needs a writable stdin, given how its prompt travels.
+fn stdin_for(invocation: &Invocation) -> Stdio {
+    if invocation.stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    }
+}
+
+/// Hands the prompt to a spawned CLI and closes the pipe, which is what tells
+/// the CLI the prompt is complete. A failure here means the process died before
+/// reading it, so it is reported rather than ignored.
+async fn send_prompt(child: &mut Child, invocation: &Invocation) -> Result<(), String> {
+    let Some(prompt) = invocation.stdin.as_deref() else {
+        return Ok(());
+    };
+    let mut stdin = child.stdin.take().ok_or("Failed to open the CLI's stdin")?;
+    stdin
+        .write_all(prompt.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to send the prompt: {e}"))?;
+    stdin
+        .shutdown()
+        .await
+        .map_err(|e| format!("Failed to finish the prompt: {e}"))
+}
+
 /// Sends a prompt to an AI provider and streams each JSONL line to the frontend
 /// via the `ai:stream` event. Emits `ai:exit` when done. Returns the run_id immediately.
 #[tauri::command]
@@ -91,7 +118,7 @@ pub async fn ai_send_prompt(
     let run_id = format!("run-{}", RUN_COUNTER.fetch_add(1, Ordering::Relaxed));
 
     let adapter = adapter_for(&provider_id)?;
-    let args = adapter.chat_args(&TurnRequest {
+    let invocation = adapter.chat_invocation(&TurnRequest {
         prompt: &prompt,
         cwd: &cwd,
         session_id: session_id.as_deref(),
@@ -99,16 +126,17 @@ pub async fn ai_send_prompt(
         effort: options.effort.as_deref(),
         permission: options.permission,
     });
-    let mut cmd = cli_command(adapter.command(), &args);
+    let mut cmd = cli_command(adapter.command(), &invocation.args);
     cmd.current_dir(&cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .stdin(Stdio::null());
+        .stdin(stdin_for(&invocation));
 
     // Structured prefix — the frontend maps it to a localized message (ai.cliMissing).
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("CLI_MISSING::{provider_id}::{e}"))?;
+    send_prompt(&mut child, &invocation).await?;
 
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
     let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
@@ -199,12 +227,19 @@ pub async fn ai_oneshot(
     model: Option<String>,
 ) -> Result<String, String> {
     let adapter = adapter_for(&provider_id)?;
-    let args = adapter.oneshot_args(&prompt, model.as_deref());
-    let output = cli_command(adapter.command(), &args)
+    let invocation = adapter.oneshot_invocation(&prompt, model.as_deref());
+    let mut child = cli_command(adapter.command(), &invocation.args)
         .current_dir(&cwd)
-        .output()
-        .await
+        .stdin(stdin_for(&invocation))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("CLI_MISSING::{provider_id}::{e}"))?;
+    send_prompt(&mut child, &invocation).await?;
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("AI call failed: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -277,6 +312,7 @@ const PROVIDERS_TEMPLATE: &str = r#"[
     "displayName": "Gemini CLI",
     "command": "gemini",
     "args": ["-p", "{prompt}"],
+    "promptStdin": false,
     "resumeArgs": [],
     "parser": "plain",
     "login": "gemini auth login",

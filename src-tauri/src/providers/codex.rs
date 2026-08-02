@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-use super::adapter::{explicit, Adapter, Permission, TurnRequest, PROGRESS_MEMORY_PROMPT};
+use super::adapter::{explicit, Adapter, Invocation, Permission, TurnRequest, PROGRESS_MEMORY_PROMPT};
 use crate::mcp::{tokenize_command, McpServer, McpServerSpec};
 
 /// Adapter for the OpenAI Codex CLI, verified against codex-cli 0.146.0:
@@ -92,7 +92,7 @@ impl Adapter for CodexAdapter {
         COMMAND
     }
 
-    fn chat_args(&self, req: &TurnRequest<'_>) -> Vec<String> {
+    fn chat_invocation(&self, req: &TurnRequest<'_>) -> Invocation {
         let mut args: Vec<String> = vec!["exec".into()];
         if req.session_id.is_some() {
             args.push("resume".into());
@@ -126,16 +126,16 @@ impl Adapter for CodexAdapter {
             args.push(format!("model_reasoning_effort={effort}"));
         }
 
-        // Everything after `--` is positional, so prompts may start with a dash.
-        args.push("--".into());
+        // `exec resume` takes the thread id positionally; the prompt itself is
+        // read from stdin, which the CLI does when no prompt argument is given.
         if let Some(id) = req.session_id {
+            args.push("--".into());
             args.push(id.into());
         }
-        args.push(prompt_with_progress_rule(req.prompt));
-        args
+        Invocation::piped(args, prompt_with_progress_rule(req.prompt))
     }
 
-    fn oneshot_args(&self, prompt: &str, model: Option<&str>) -> Vec<String> {
+    fn oneshot_invocation(&self, prompt: &str, model: Option<&str>) -> Invocation {
         // Codex cannot run tool-less; a read-only sandbox with no approvals is
         // the equivalent guarantee that a one-shot call changes nothing.
         let mut args: Vec<String> = vec![
@@ -151,9 +151,7 @@ impl Adapter for CodexAdapter {
             args.push("-m".into());
             args.push(model.into());
         }
-        args.push("--".into());
-        args.push(prompt.into());
-        args
+        Invocation::piped(args, prompt)
     }
 
     fn parse_oneshot(&self, stdout: &str) -> Result<String, String> {
@@ -229,45 +227,62 @@ mod tests {
 
     #[test]
     fn fresh_turn_uses_exec_and_carries_the_progress_rule() {
-        let args = CodexAdapter.chat_args(&turn(None, Permission::Full));
-        assert_eq!(args.first().map(String::as_str), Some("exec"));
-        assert!(!args.contains(&"resume".to_string()));
-        assert!(args.last().expect("prompt").contains(".aime/PROGRESS.md"));
-        assert!(args.last().expect("prompt").ends_with("hello"));
+        let call = CodexAdapter.chat_invocation(&turn(None, Permission::Full));
+        assert_eq!(call.args.first().map(String::as_str), Some("exec"));
+        assert!(!call.args.contains(&"resume".to_string()));
+        let prompt = call.stdin.expect("prompt on stdin");
+        assert!(prompt.contains(".aime/PROGRESS.md"));
+        assert!(prompt.ends_with("hello"));
+    }
+
+    /// The regression this guards: passed as an argument, a multi-line prompt
+    /// loses every line but the first on Windows (see `Invocation`).
+    #[test]
+    fn the_prompt_never_travels_as_an_argument() {
+        let call = CodexAdapter.chat_invocation(&turn(None, Permission::Full));
+        assert!(!call.args.iter().any(|arg| arg.contains("hello")));
+        assert!(call.stdin.is_some());
     }
 
     #[test]
-    fn resumed_turn_passes_the_thread_id_before_the_prompt() {
-        let args = CodexAdapter.chat_args(&turn(Some("thread-1"), Permission::Full));
-        assert_eq!(args.get(1).map(String::as_str), Some("resume"));
-        let end_of_options = index_of(&args, "--").expect("-- separator");
-        assert_eq!(args.get(end_of_options + 1).map(String::as_str), Some("thread-1"));
-        assert!(args.get(end_of_options + 2).expect("prompt").ends_with("hello"));
+    fn resumed_turn_passes_the_thread_id_positionally() {
+        let call = CodexAdapter.chat_invocation(&turn(Some("thread-1"), Permission::Full));
+        assert_eq!(call.args.get(1).map(String::as_str), Some("resume"));
+        let end_of_options = index_of(&call.args, "--").expect("-- separator");
+        assert_eq!(
+            call.args.get(end_of_options + 1).map(String::as_str),
+            Some("thread-1")
+        );
+        assert_eq!(call.args.len(), end_of_options + 2, "the id is the last argument");
     }
 
     #[test]
     fn each_permission_level_maps_to_its_own_sandbox() {
-        let full = CodexAdapter.chat_args(&turn(None, Permission::Full));
+        let full = CodexAdapter.chat_invocation(&turn(None, Permission::Full)).args;
         assert!(full.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
         assert!(!full.iter().any(|a| a.starts_with("sandbox_mode")));
 
-        let edits = CodexAdapter.chat_args(&turn(None, Permission::Edits));
+        let edits = CodexAdapter.chat_invocation(&turn(None, Permission::Edits)).args;
         assert!(!edits.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
         assert!(edits.contains(&"sandbox_mode=workspace-write".to_string()));
         assert!(edits.contains(&"approval_policy=never".to_string()));
 
-        let read_only = CodexAdapter.chat_args(&turn(None, Permission::ReadOnly));
+        let read_only = CodexAdapter
+            .chat_invocation(&turn(None, Permission::ReadOnly))
+            .args;
         assert!(read_only.contains(&"sandbox_mode=read-only".to_string()));
         assert!(read_only.contains(&"approval_policy=never".to_string()));
     }
 
     #[test]
     fn model_and_effort_are_forwarded_when_set() {
-        let args = CodexAdapter.chat_args(&TurnRequest {
-            model: Some("gpt-5.6-sol"),
-            effort: Some("high"),
-            ..turn(None, Permission::Full)
-        });
+        let args = CodexAdapter
+            .chat_invocation(&TurnRequest {
+                model: Some("gpt-5.6-sol"),
+                effort: Some("high"),
+                ..turn(None, Permission::Full)
+            })
+            .args;
         let model_at = index_of(&args, "-m").expect("-m present");
         assert_eq!(args.get(model_at + 1).map(String::as_str), Some("gpt-5.6-sol"));
         assert!(args.contains(&"model_reasoning_effort=high".to_string()));
@@ -275,21 +290,23 @@ mod tests {
 
     #[test]
     fn empty_overrides_fall_back_to_cli_defaults() {
-        let args = CodexAdapter.chat_args(&TurnRequest {
-            model: Some(""),
-            effort: Some(""),
-            ..turn(None, Permission::Full)
-        });
+        let args = CodexAdapter
+            .chat_invocation(&TurnRequest {
+                model: Some(""),
+                effort: Some(""),
+                ..turn(None, Permission::Full)
+            })
+            .args;
         assert!(!args.contains(&"-m".to_string()));
         assert!(!args.iter().any(|a| a.starts_with("model_reasoning_effort")));
     }
 
     #[test]
     fn oneshot_runs_read_only_and_never_asks() {
-        let args = CodexAdapter.oneshot_args("write a commit message", None);
-        assert!(args.contains(&"sandbox_mode=read-only".to_string()));
-        assert!(args.contains(&"approval_policy=never".to_string()));
-        assert_eq!(args.last().map(String::as_str), Some("write a commit message"));
+        let call = CodexAdapter.oneshot_invocation("write a commit message", None);
+        assert!(call.args.contains(&"sandbox_mode=read-only".to_string()));
+        assert!(call.args.contains(&"approval_policy=never".to_string()));
+        assert_eq!(call.stdin.as_deref(), Some("write a commit message"));
     }
 
     #[test]
