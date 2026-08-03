@@ -1,3 +1,4 @@
+mod aime_dir;
 mod checkpoint;
 mod cli;
 mod diagnostics;

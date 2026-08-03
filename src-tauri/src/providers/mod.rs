@@ -194,6 +194,12 @@ pub async fn ai_send_prompt(
             if let Some(s) = app.try_state::<ProviderState>() {
                 s.senders().remove(&run_id);
             }
+            // Every turn tells the agent to journal into `.aime/`, so the folder
+            // can have just been born in someone else's repository. Guard it
+            // here, while the turn that created it is still ending.
+            if let Err(err) = crate::aime_dir::ensure_self_ignored(std::path::Path::new(&cwd)) {
+                eprintln!("[aime_dir] could not write the .aime guard in '{cwd}': {err}");
+            }
             let _ = app.emit(
                 "ai:exit",
                 ExitPayload {

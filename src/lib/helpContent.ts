@@ -140,8 +140,8 @@ const EN: HelpTopic[] = [
     id: "ai-sessions",
     section: "AI",
     title: "Sessions & memory",
-    body: "Chats are saved per project and restored when you reopen it - the AI resumes with its full context, even after a restart. The CLI you picked is part of that: reopening a project continues its newest conversation with that CLI, and if there is none it starts a fresh one rather than switching CLI behind your back - a conversation cannot change CLI half way, because the resume id belongs to the one that made it. The history button switches between the project's last 20 sessions, and opening an older one brings its CLI back with it; + starts a fresh one. The AI also maintains .aime/PROGRESS.md as a progress journal, so long tasks survive any interruption.",
-    keywords: "resume history restore context progress journal remember",
+    body: "Chats are saved per project and restored when you reopen it - the AI resumes with its full context, even after a restart. The CLI you picked is part of that: reopening a project continues its newest conversation with that CLI, and if there is none it starts a fresh one rather than switching CLI behind your back - a conversation cannot change CLI half way, because the resume id belongs to the one that made it. The history button switches between the project's last 20 sessions, and opening an older one brings its CLI back with it; + starts a fresh one. The AI also maintains .aime/PROGRESS.md as a progress journal, so long tasks survive any interruption. That folder is Aime's notes about your project, not part of it, so it ignores itself: the first time it appears Aime writes .aime/.gitignore, and git stops seeing the folder without your own .gitignore being touched. Edit that file and it is yours - Aime never rewrites it.",
+    keywords: "resume history restore context progress journal remember gitignore commit",
   },
   {
     id: "ai-memory-editor",
@@ -431,8 +431,8 @@ const VI: HelpTopic[] = [
     id: "ai-sessions",
     section: "AI",
     title: "Phiên & bộ nhớ",
-    body: "Hội thoại được lưu theo từng dự án và khôi phục khi mở lại - AI tiếp tục với đầy đủ ngữ cảnh, kể cả sau khi tắt app. CLI anh chọn cũng nằm trong đó: mở lại dự án là tiếp tục hội thoại mới nhất của đúng CLI đó, không có thì mở phiên mới chứ không tự đổi CLI sau lưng anh - một hội thoại không thể đổi CLI giữa chừng vì mã resume thuộc về CLI đã tạo ra nó. Nút lịch sử chuyển giữa 20 phiên gần nhất, mở lại phiên cũ thì CLI của phiên đó quay lại theo; dấu + tạo phiên mới. AI còn tự ghi nhật ký tiến độ .aime/PROGRESS.md nên task dài không bao giờ mất dấu.",
-    keywords: "resume lịch sử khôi phục ngữ cảnh nhớ tiến độ",
+    body: "Hội thoại được lưu theo từng dự án và khôi phục khi mở lại - AI tiếp tục với đầy đủ ngữ cảnh, kể cả sau khi tắt app. CLI anh chọn cũng nằm trong đó: mở lại dự án là tiếp tục hội thoại mới nhất của đúng CLI đó, không có thì mở phiên mới chứ không tự đổi CLI sau lưng anh - một hội thoại không thể đổi CLI giữa chừng vì mã resume thuộc về CLI đã tạo ra nó. Nút lịch sử chuyển giữa 20 phiên gần nhất, mở lại phiên cũ thì CLI của phiên đó quay lại theo; dấu + tạo phiên mới. AI còn tự ghi nhật ký tiến độ .aime/PROGRESS.md nên task dài không bao giờ mất dấu. Thư mục đó là ghi chép của Aime về dự án chứ không thuộc dự án, nên nó tự loại mình ra: lần đầu xuất hiện, Aime ghi .aime/.gitignore và git thôi nhìn thấy thư mục này, không cần đụng vào .gitignore của anh. Anh sửa file đó thì nó thuộc về anh - Aime không bao giờ ghi đè.",
+    keywords: "resume lịch sử khôi phục ngữ cảnh nhớ tiến độ gitignore commit",
   },
   {
     id: "ai-memory-editor",

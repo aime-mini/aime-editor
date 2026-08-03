@@ -247,7 +247,7 @@ fn gather_facts(root: &Path) -> FolderFacts {
 
 /// Tasks the user defined for this project, overriding detected ones by id.
 fn custom_tasks(root: &Path) -> Vec<TaskDef> {
-    std::fs::read_to_string(root.join(".aime").join("tasks.json"))
+    std::fs::read_to_string(root.join(crate::aime_dir::AIME_DIR).join("tasks.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<Vec<TaskDef>>(&text).ok())
         .unwrap_or_default()
