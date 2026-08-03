@@ -274,6 +274,11 @@ export const vi: Record<TranslationKey, string> = {
   "debug.openFileFirst": "Mở file muốn chạy, quá trình gỡ lỗi bắt đầu từ đó.",
   "debug.probing": "Đang tìm trình gỡ lỗi…",
   "debug.unsupported": "Aime chưa có trình gỡ lỗi đã kiểm chứng cho {languageId}.",
+  "debug.plannedGet": "Lấy {tool}",
+  "debug.planned.java":
+    "Java cần Eclipse JDT LS kèm plugin java-debug - trình gỡ lỗi nằm trong language server chứ không phải một bản độc lập. Sửa code, gợi ý và nhảy tới định nghĩa thì đã chạy; chỉ thiếu phần bước từng dòng.",
+  "debug.planned.cpp":
+    "C và C++ cần gdb 14 trở lên (bản này nói DAP sẵn, `gdb -i dap`) hoặc lldb-dap của LLVM. Sửa code và gợi ý đã chạy qua clangd; chỉ thiếu phần bước từng dòng.",
   "debug.missing": "Máy chưa có trình gỡ lỗi {adapter}.",
   "debug.download": "Tải về",
   "debug.downloading": "Đang tải…",

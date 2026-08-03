@@ -1,5 +1,15 @@
 import { useEffect } from "react";
-import { Bug, ChevronDown, ChevronRight, CircleDot, Download, Loader2, Play } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import {
+  Bug,
+  ChevronDown,
+  ChevronRight,
+  CircleDot,
+  Download,
+  ExternalLink,
+  Loader2,
+  Play,
+} from "lucide-react";
 import { useT } from "../i18n";
 import { displayLine } from "../lib/dap/launch";
 import { fileNameOf, relativeTo } from "../lib/dap/paths";
@@ -7,6 +17,31 @@ import type { Scope, StackFrame, Variable } from "../lib/dap/protocol";
 import { languageOf } from "../lib/languages";
 import { useDebug } from "../stores/debug";
 import { useWorkspace } from "../stores/workspace";
+
+/**
+ * Languages Aime means to debug, and the tool each one is waiting on.
+ *
+ * Deliberately not in the Rust catalog: that table holds adapters that exist
+ * and have been driven. This is the honest answer to "why not my language",
+ * which is a sentence, not a runnable entry — writing it as one would put a
+ * language in the table on the strength of its README (ARCHITECTURE.md §5).
+ */
+interface Planned {
+  note: "debug.planned.java" | "debug.planned.cpp";
+  /** The tool's own download page — Aime cannot fetch these for you. */
+  tool: string;
+  page: string;
+}
+
+const PLANNED: Record<string, Planned | undefined> = {
+  java: {
+    note: "debug.planned.java",
+    tool: "Eclipse JDT LS",
+    page: "https://download.eclipse.org/jdtls/snapshots/?d",
+  },
+  cpp: { note: "debug.planned.cpp", tool: "LLVM (lldb-dap)", page: "https://releases.llvm.org/" },
+  c: { note: "debug.planned.cpp", tool: "LLVM (lldb-dap)", page: "https://releases.llvm.org/" },
+};
 
 /** A collapsible-looking section header — the panel is short enough not to collapse. */
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -41,7 +76,31 @@ function StartRow() {
     return <p className="px-2 py-2 text-[11.5px] text-muted">{t("debug.probing")}</p>;
   }
   if (adapter === null) {
-    return <p className="px-2 py-2 text-[11.5px] text-muted">{t("debug.unsupported", { languageId })}</p>;
+    // A language with no adapter is a dead end unless it says what it is
+    // waiting for. These are the ones people ask about, and the answer is a
+    // missing *tool*, not a missing decision - so it belongs on screen at the
+    // moment someone opens such a file rather than in a roadmap.
+    const waitingFor = PLANNED[languageId];
+    return (
+      <div className="space-y-1.5 px-2 py-2 text-[11.5px]">
+        <p className="text-muted">{t("debug.unsupported", { languageId })}</p>
+        {waitingFor && (
+          <>
+            <p className="text-muted/80">{t(waitingFor.note)}</p>
+            {/* A link, not a Download button: pressing Download elsewhere in
+                this panel ends in a working debugger, and these do not yet. */}
+            <button
+              onClick={() => {
+                openUrl(waitingFor.page).catch(console.error);
+              }}
+              className="flex items-center gap-1.5 text-accent hover:underline"
+            >
+              <ExternalLink size={11} /> {t("debug.plannedGet", { tool: waitingFor.tool })}
+            </button>
+          </>
+        )}
+      </div>
+    );
   }
 
   if (!adapter.available) {

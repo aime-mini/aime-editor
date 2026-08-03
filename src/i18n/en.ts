@@ -273,6 +273,11 @@ export const en = {
   "debug.openFileFirst": "Open the file you want to run, and debugging starts there.",
   "debug.probing": "Looking for a debug adapter…",
   "debug.unsupported": "Aime has no verified debug adapter for {languageId} yet.",
+  "debug.plannedGet": "Get {tool}",
+  "debug.planned.java":
+    "Java needs Eclipse JDT LS with its java-debug plugin - a debugger that lives inside a language server rather than a standalone one. Editing, completions and go-to-definition already work; only stepping is missing.",
+  "debug.planned.cpp":
+    "C and C++ need either gdb 14 or newer (which speaks DAP itself, `gdb -i dap`) or lldb-dap from LLVM. Editing and completions already work through clangd; only stepping is missing.",
   "debug.missing": "The {adapter} debug adapter is not here yet.",
   "debug.download": "Download it",
   "debug.downloading": "Downloading…",
