@@ -65,30 +65,33 @@ pub struct AdapterSpec {
     pub install_hint: &'static str,
 }
 
+/// Pinned rather than "latest": a machine set up today and one set up next
+/// month must debug identically, and the archive layout is then a fact instead
+/// of a hope. Driven end to end on 2026-08-03.
+const JS_DEBUG_ARCHIVE_URL: &str =
+    "https://github.com/microsoft/vscode-js-debug/releases/download/v1.117.0/js-debug-dap-v1.117.0.tar.gz";
+
 /// Everything Aime can debug today.
 const ADAPTERS: &[AdapterSpec] = &[
     AdapterSpec {
-    id: "js-debug",
-    // One adapter for the whole Node side: js-debug reads source maps, so a
-    // TypeScript program is debugged as the JavaScript it compiles to.
-    language_ids: &["javascript", "typescript"],
-    config_type: "pwa-node",
-    transport: Transport::TcpServer,
-    runner: Runner::NodeScript {
-        script: "js-debug/src/dapDebugServer.js",
-        // Port 0 lets the operating system pick a free port, which the adapter
-        // then announces; the explicit host stops it from binding IPv6 only,
-        // which it does by default and which `127.0.0.1` cannot reach.
-        args: &["0", "127.0.0.1"],
-    },
-    // Pinned rather than "latest": a machine set up today and one set up next
-    // month must debug identically, and the archive layout below is then a
-    // fact instead of a hope. Driven end to end on 2026-08-03.
-    archive: Some(Archive {
-        url: "https://github.com/microsoft/vscode-js-debug/releases/download/v1.117.0/js-debug-dap-v1.117.0.tar.gz",
-        unpacks_to: "js-debug",
-    }),
-    install_hint: "Node.js — https://nodejs.org",
+        id: "js-debug",
+        // One adapter for the whole Node side: js-debug reads source maps, so a
+        // TypeScript program is debugged as the JavaScript it compiles to.
+        language_ids: &["javascript", "typescript"],
+        config_type: "pwa-node",
+        transport: Transport::TcpServer,
+        runner: Runner::NodeScript {
+            script: "js-debug/src/dapDebugServer.js",
+            // Port 0 lets the operating system pick a free port, which the
+            // adapter then announces; the explicit host stops it from binding
+            // IPv6 only, which it does by default and `127.0.0.1` cannot reach.
+            args: &["0", "127.0.0.1"],
+        },
+        archive: Some(Archive {
+            url: JS_DEBUG_ARCHIVE_URL,
+            unpacks_to: "js-debug",
+        }),
+        install_hint: "Node.js — https://nodejs.org",
     },
     AdapterSpec {
         id: "debugpy",

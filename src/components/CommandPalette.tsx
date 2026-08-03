@@ -4,6 +4,7 @@ import {
   AppWindow,
   Bot,
   Brain,
+  Bug,
   CircleHelp,
   ExternalLink,
   File,
@@ -25,6 +26,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { fuzzyFilter } from "../lib/fuzzy";
 import { projectFiles } from "../lib/projectFiles";
 import { useAi } from "../stores/ai";
+import { useDebug } from "../stores/debug";
 import { useLayout } from "../stores/layout";
 import { useTasks } from "../stores/tasks";
 import { useTerminals } from "../stores/terminals";
@@ -51,8 +53,12 @@ type Row = { kind: "command"; command: Command } | { kind: "file"; path: string 
  */
 export function CommandPalette({ onClose }: { onClose: () => void }) {
   const { rootPath, openFolder, closeFolder, openFile, openFilePath } = useWorkspace();
-  const { toggleSidebar, toggleAiPanel, setTerminalVisible, setSidebarView, toggleHelp, setMemoryOpen } =
+  const { toggleSidebar, toggleAiPanel, showTerminal, setSidebarView, toggleHelp, setMemoryOpen } =
     useLayout();
+  const showDebugConsole = useLayout((s) => s.showDebugConsole);
+  const startDebug = useDebug((s) => s.start);
+  const stopDebug = useDebug((s) => s.stop);
+  const debugging = useDebug((s) => s.status.kind !== "idle");
   const setMcpOpen = useLayout((s) => s.setMcpOpen);
   const setSettingsOpen = useLayout((s) => s.setSettingsOpen);
   const addTerminalTab = useTerminals((s) => s.addTab);
@@ -121,7 +127,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         title: t("terminal.newTab"),
         icon: <SquareTerminal size={14} />,
         run: () => {
-          setTerminalVisible(true);
+          showTerminal();
           addTerminalTab();
         },
       },
@@ -201,6 +207,20 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
           },
         },
         {
+          id: "open-debug",
+          title: t("cmd.debugPanel"),
+          icon: <Bug size={14} />,
+          run: () => {
+            setSidebarView("debug");
+          },
+        },
+        {
+          id: "debug-console",
+          title: t("cmd.debugConsole"),
+          icon: <Bug size={14} />,
+          run: showDebugConsole,
+        },
+        {
           id: "new-ai-session",
           title: t("ai.newSession"),
           icon: <Plus size={14} />,
@@ -230,6 +250,25 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
           revealItemInDir(openFilePath).catch(console.error);
         },
       });
+      // Starting and stopping are mutually exclusive, and offering the one
+      // that cannot work is how a palette becomes noise.
+      items.push(
+        debugging
+          ? {
+              id: "debug-stop",
+              title: t("cmd.debugStop"),
+              icon: <Bug size={14} />,
+              hint: "Shift+F5",
+              run: () => void stopDebug(),
+            }
+          : {
+              id: "debug-start",
+              title: t("cmd.debugStart"),
+              icon: <Bug size={14} />,
+              hint: "F5",
+              run: () => void startDebug(),
+            },
+      );
     }
     return items;
   }, [
@@ -242,7 +281,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
     closeFolder,
     toggleSidebar,
     toggleAiPanel,
-    setTerminalVisible,
+    showTerminal,
     addTerminalTab,
     toggleTheme,
     setLocale,
@@ -251,6 +290,10 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
     setMemoryOpen,
     setMcpOpen,
     setSettingsOpen,
+    showDebugConsole,
+    debugging,
+    startDebug,
+    stopDebug,
     openFile,
     newSession,
     tasks,

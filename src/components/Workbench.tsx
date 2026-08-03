@@ -3,9 +3,9 @@ import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from
 import { Bot, PanelLeft, SquareTerminal } from "lucide-react";
 import { useT } from "../i18n";
 import { AiPanel } from "./AiPanel";
+import { BottomPanel } from "./BottomPanel";
 import { EditorPane } from "./EditorPane";
 import { Sidebar } from "./Sidebar";
-import { TerminalPanel } from "./TerminalPanel";
 import { useLayout } from "../stores/layout";
 
 /** Drag bar between panels — thin, highlighted on hover/drag. */
@@ -53,15 +53,14 @@ function CollapsedRail({
 export default function Workbench() {
   const sidebarRef = useRef<ImperativePanelHandle>(null);
   const aiPanelRef = useRef<ImperativePanelHandle>(null);
-  const terminalRef = useRef<ImperativePanelHandle>(null);
+  const bottomRef = useRef<ImperativePanelHandle>(null);
   const {
     sidebarVisible,
     aiPanelVisible,
-    terminalVisible,
-    terminalEverOpened,
+    bottomVisible,
     setSidebarVisible,
     setAiPanelVisible,
-    setTerminalVisible,
+    setBottomVisible,
   } = useLayout();
   const t = useT();
 
@@ -82,11 +81,11 @@ export default function Workbench() {
   }, [aiPanelVisible]);
 
   useEffect(() => {
-    const panel = terminalRef.current;
+    const panel = bottomRef.current;
     if (!panel) return;
-    if (terminalVisible && panel.isCollapsed()) panel.expand();
-    if (!terminalVisible && !panel.isCollapsed()) panel.collapse();
-  }, [terminalVisible]);
+    if (bottomVisible && panel.isCollapsed()) panel.expand();
+    if (!bottomVisible && !panel.isCollapsed()) panel.collapse();
+  }, [bottomVisible]);
 
   // Dragging below minSize snaps the panel into a thin rail (collapsedSize),
   // never to nothing — the rail keeps an expand button visible.
@@ -130,7 +129,7 @@ export default function Workbench() {
           </Panel>
           <ResizeHandle horizontal />
           <Panel
-            ref={terminalRef}
+            ref={bottomRef}
             id="terminal"
             order={2}
             collapsible
@@ -139,22 +138,22 @@ export default function Workbench() {
             minSize={10}
             maxSize={75}
             onCollapse={() => {
-              setTerminalVisible(false);
+              setBottomVisible(false);
             }}
             onExpand={() => {
-              setTerminalVisible(true);
+              setBottomVisible(true);
             }}
           >
-            <div className={terminalVisible ? "h-full" : "hidden"}>
-              {terminalEverOpened && <TerminalPanel />}
+            <div className={bottomVisible ? "h-full" : "hidden"}>
+              <BottomPanel />
             </div>
-            {!terminalVisible && (
+            {!bottomVisible && (
               <CollapsedRail
                 horizontal
                 icon={<SquareTerminal size={16} />}
                 title={t("layout.toggleTerminal")}
                 onExpand={() => {
-                  setTerminalVisible(true);
+                  setBottomVisible(true);
                 }}
               />
             )}

@@ -86,3 +86,25 @@ body,
   opacity: 0.55;
   font-style: italic;
 }
+
+/* Breakpoints and the paused line, in Monaco's glyph margin */
+.debug-breakpoint::after {
+  content: "";
+  display: block;
+  width: 10px;
+  height: 10px;
+  margin: 4px auto 0;
+  border-radius: 50%;
+  background: var(--danger);
+}
+.debug-execution-arrow::after {
+  content: "▶";
+  display: block;
+  color: var(--warn);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+.debug-execution-line {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+}

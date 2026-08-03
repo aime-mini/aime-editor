@@ -88,7 +88,7 @@ export function StatusBar() {
   const [taskMenu, setTaskMenu] = useState<{ x: number; y: number } | null>(null);
   const { theme, toggle } = useTheme();
   const { locale, setLocale } = useI18n();
-  const { sidebarVisible, aiPanelVisible, terminalVisible, toggleSidebar, toggleAiPanel, toggleTerminal } =
+  const { sidebarVisible, aiPanelVisible, bottomVisible, toggleSidebar, toggleAiPanel, toggleBottomPanel } =
     useLayout();
   const toggleHelp = useLayout((s) => s.toggleHelp);
   const setSidebarView = useLayout((s) => s.setSidebarView);
@@ -134,8 +134,8 @@ export function StatusBar() {
               <Bot size={11} />
             </button>
             <button
-              onClick={toggleTerminal}
-              className={`rounded px-1 py-0.5 hover:bg-elevated hover:text-fg ${terminalVisible ? "text-accent" : ""}`}
+              onClick={toggleBottomPanel}
+              className={`rounded px-1 py-0.5 hover:bg-elevated hover:text-fg ${bottomVisible ? "text-accent" : ""}`}
               title={t("layout.toggleTerminal")}
             >
               <SquareTerminal size={11} />

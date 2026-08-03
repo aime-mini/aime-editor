@@ -68,7 +68,7 @@ export const useTasks = create<TasksState>((set, get) => ({
     // The shell reports the exit code itself: an interactive shell does not
     // exit after a task, so the PTY's own exit event never fires here.
     const commandLine = await invoke<string>("task_command_line", { command: task.command });
-    useLayout.getState().setTerminalVisible(true);
+    useLayout.getState().showTerminal();
     const tabKey = useTerminals.getState().addTab({ initialCommand: commandLine, title: task.label });
     set((s) => ({ runs: { ...s.runs, [tabKey]: { task, output: "", exitCode: null } } }));
   },

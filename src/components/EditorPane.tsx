@@ -9,6 +9,7 @@ import { AI_ACTIONS, buildPrompt, labelOf } from "../lib/aiActions";
 import { registerInlineAi } from "../lib/aiInline";
 import { languageOf } from "../lib/languages";
 import { useAi } from "../stores/ai";
+import { useDebug } from "../stores/debug";
 import { useLayout } from "../stores/layout";
 import { useLsp } from "../stores/lsp";
 import { useGit } from "../stores/git";
@@ -16,6 +17,8 @@ import { monacoThemeOf, useTheme } from "../stores/theme";
 import { useSettings } from "../stores/settings";
 import { useWorkspace } from "../stores/workspace";
 import { ConflictView } from "./ConflictView";
+import { DebugToolbar } from "./DebugToolbar";
+import { useDebugGutter } from "./useDebugGutter";
 
 /**
  * Offers the missing language server for the file in front of the user.
@@ -128,6 +131,21 @@ function EditorTabs() {
  * which file they are in. With nothing selected they act on the whole file,
  * because "explain this file" is a question people ask just as often.
  */
+/** F9 on the cursor line, the shortcut the gutter click has in every editor. */
+function registerBreakpointAction(editor: MonacoEditor.IStandaloneCodeEditor) {
+  editor.addAction({
+    id: "aime.debug.toggleBreakpoint",
+    label: translate("debug.toggleBreakpoint"),
+    keybindings: [KeyCode.F9],
+    contextMenuGroupId: "debug",
+    run: (instance) => {
+      const path = useWorkspace.getState().openFilePath;
+      const line = instance.getPosition()?.lineNumber;
+      if (path && line !== undefined) useDebug.getState().toggleBreakpoint(path, line);
+    },
+  });
+}
+
 function registerAiActions(editor: MonacoEditor.IStandaloneCodeEditor) {
   editor.addAction({
     id: "aime.ai.suggest",
@@ -174,6 +192,9 @@ const EDITOR_OPTIONS = {
   automaticLayout: true,
   scrollBeyondLastLine: false,
   padding: { top: 8 },
+  // The strip breakpoints live in. Always on: a margin that appears with the
+  // first breakpoint would shift the whole file sideways as it is set.
+  glyphMargin: true,
 } as const;
 
 /** Editor options as the user's settings make them. */
@@ -422,6 +443,11 @@ export function EditorPane() {
   const decorationsRef = useRef<MonacoEditor.IEditorDecorationsCollection | null>(null);
   const blameRef = useRef<BlameLine[]>([]);
   const blameDecoRef = useRef<MonacoEditor.IEditorDecorationsCollection | null>(null);
+  // Held in state as well as in the ref: the debug gutter is an effect, and an
+  // effect cannot know a ref was filled in without a render to tell it.
+  const [editorInstance, setEditorInstance] = useState<MonacoEditor.IStandaloneCodeEditor | null>(null);
+
+  useDebugGutter(editorInstance, openFilePath);
 
   const relativeOpenPath =
     openFilePath && rootPath ? openFilePath.slice(rootPath.length + 1).replaceAll("\\", "/") : null;
@@ -534,6 +560,8 @@ export function EditorPane() {
       <div className="flex items-center gap-2 border-b border-line bg-panel px-3 py-1.5 text-xs">
         <span className="truncate text-muted">{openFilePath}</span>
         {dirty && <span className="size-2 shrink-0 rounded-full bg-accent" title={t("editor.unsavedHint")} />}
+        <span className="flex-1" />
+        <DebugToolbar />
       </div>
       {openFileConflicted && (
         <button
@@ -558,8 +586,10 @@ export function EditorPane() {
           }}
           onMount={(editor) => {
             editorRef.current = editor;
+            setEditorInstance(editor);
             registerInlineAi();
             registerAiActions(editor);
+            registerBreakpointAction(editor);
             decorationsRef.current = editor.createDecorationsCollection();
             blameDecoRef.current = editor.createDecorationsCollection();
             editor.onDidChangeCursorPosition((e) => {

@@ -5,7 +5,10 @@ import { create } from "zustand";
  * itself (autoSaveId); this store only tracks visibility so the status bar
  * and keyboard shortcuts can control panels from outside the PanelGroup.
  */
-export type SidebarView = "files" | "git";
+export type SidebarView = "files" | "git" | "debug";
+
+/** The bottom panel hosts two things; only one is on screen at a time. */
+export type BottomView = "terminal" | "debug";
 
 interface LayoutState {
   /** false = collapsed to a thin rail (never fully hidden) */
@@ -13,8 +16,14 @@ interface LayoutState {
   sidebarView: SidebarView;
   setSidebarView: (view: SidebarView) => void;
   aiPanelVisible: boolean;
-  terminalVisible: boolean;
-  /** Latches on first open — the terminal pane mounts lazily but is never unmounted by toggling. */
+  bottomVisible: boolean;
+  bottomView: BottomView;
+  /**
+   * Latches the first time the terminal view is actually shown — the pane
+   * mounts lazily but is never unmounted by toggling, or the shell would die.
+   * Opening the panel on the Debug Console must not spawn a shell nobody asked
+   * for, which is why this is not simply "the panel was opened".
+   */
   terminalEverOpened: boolean;
   helpOpen: boolean;
   paletteOpen: boolean;
@@ -31,12 +40,26 @@ interface LayoutState {
   setSettingsOpen: (open: boolean) => void;
   toggleSidebar: () => void;
   toggleAiPanel: () => void;
-  toggleTerminal: () => void;
+  toggleBottomPanel: () => void;
   setSidebarVisible: (visible: boolean) => void;
   setAiPanelVisible: (visible: boolean) => void;
-  setTerminalVisible: (visible: boolean) => void;
+  setBottomVisible: (visible: boolean) => void;
+  setBottomView: (view: BottomView) => void;
+  /** Reveals the bottom panel with the terminal in it. */
+  showTerminal: () => void;
+  /** Reveals the bottom panel with the Debug Console in it. */
+  showDebugConsole: () => void;
   setHelpOpen: (open: boolean) => void;
   toggleHelp: () => void;
+}
+
+/** The terminal pane must exist before it can be shown, and forever after. */
+function withTerminalLatch(state: LayoutState, visible: boolean, view: BottomView) {
+  return {
+    bottomVisible: visible,
+    bottomView: view,
+    terminalEverOpened: state.terminalEverOpened || (visible && view === "terminal"),
+  };
 }
 
 export const useLayout = create<LayoutState>((set) => ({
@@ -46,7 +69,8 @@ export const useLayout = create<LayoutState>((set) => ({
     set({ sidebarView: view, sidebarVisible: true });
   },
   aiPanelVisible: true,
-  terminalVisible: false,
+  bottomVisible: false,
+  bottomView: "terminal",
   terminalEverOpened: false,
   helpOpen: false,
   paletteOpen: false,
@@ -78,11 +102,8 @@ export const useLayout = create<LayoutState>((set) => ({
   toggleAiPanel: () => {
     set((s) => ({ aiPanelVisible: !s.aiPanelVisible }));
   },
-  toggleTerminal: () => {
-    set((s) => ({
-      terminalVisible: !s.terminalVisible,
-      terminalEverOpened: s.terminalEverOpened || !s.terminalVisible,
-    }));
+  toggleBottomPanel: () => {
+    set((s) => withTerminalLatch(s, !s.bottomVisible, s.bottomView));
   },
   setSidebarVisible: (visible) => {
     set({ sidebarVisible: visible });
@@ -90,11 +111,17 @@ export const useLayout = create<LayoutState>((set) => ({
   setAiPanelVisible: (visible) => {
     set({ aiPanelVisible: visible });
   },
-  setTerminalVisible: (visible) => {
-    set((s) => ({
-      terminalVisible: visible,
-      terminalEverOpened: s.terminalEverOpened || visible,
-    }));
+  setBottomVisible: (visible) => {
+    set((s) => withTerminalLatch(s, visible, s.bottomView));
+  },
+  setBottomView: (view) => {
+    set((s) => withTerminalLatch(s, true, view));
+  },
+  showTerminal: () => {
+    set((s) => withTerminalLatch(s, true, "terminal"));
+  },
+  showDebugConsole: () => {
+    set((s) => withTerminalLatch(s, true, "debug"));
   },
   setHelpOpen: (open) => {
     set({ helpOpen: open });

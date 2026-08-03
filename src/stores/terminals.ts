@@ -65,6 +65,6 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
  * answer — Aime never proxies their prompts or touches their credentials.
  */
 export function runInTerminal(command: string, title?: string): void {
-  useLayout.getState().setTerminalVisible(true);
+  useLayout.getState().showTerminal();
   useTerminals.getState().addTab({ initialCommand: command, title });
 }

@@ -24,6 +24,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { StatusBar } from "./components/StatusBar";
 import { UpdateNotice } from "./components/UpdateNotice";
 import { useAi } from "./stores/ai";
+import { useDebug } from "./stores/debug";
 import { useLayout } from "./stores/layout";
 import { useRecent } from "./stores/recent";
 import { useWorkspace } from "./stores/workspace";
@@ -202,9 +203,28 @@ function WelcomeScreen() {
   );
 }
 
+/** The debugger keys, in the arrangement every editor has agreed on. */
+const DEBUG_KEYS = new Set(["F5", "F10", "F11"]);
+
+function runDebugShortcut(key: string, shift: boolean): void {
+  const debug = useDebug.getState();
+  if (key === "F5") {
+    if (shift) {
+      void debug.stop();
+    } else if (debug.status.kind === "paused") {
+      void debug.resume();
+    } else if (debug.status.kind === "idle") {
+      void debug.start();
+    }
+    return;
+  }
+  if (key === "F10") void debug.stepOver();
+  if (key === "F11") void (shift ? debug.stepOut() : debug.stepInto());
+}
+
 export default function App() {
   const rootPath = useWorkspace((s) => s.rootPath);
-  const { toggleSidebar, toggleAiPanel, toggleTerminal, helpOpen, toggleHelp, setHelpOpen } = useLayout();
+  const { toggleSidebar, toggleAiPanel, toggleBottomPanel, helpOpen, toggleHelp, setHelpOpen } = useLayout();
   const { paletteOpen, togglePalette, setPaletteOpen } = useLayout();
   const { memoryOpen, setMemoryOpen, mcpOpen, setMcpOpen } = useLayout();
   const { installerTools, setInstallerTools } = useLayout();
@@ -241,12 +261,19 @@ export default function App() {
   }, []);
 
   // Global shortcuts: Ctrl+Shift+N new window, Ctrl+B file tree, Ctrl+L AI panel,
-  // Ctrl+` terminal, F1 help
+  // Ctrl+` terminal, F1 help, and the debugger keys every editor shares
+  // (F5 run/continue, Shift+F5 stop, F10/F11 step). F9 belongs to the editor,
+  // which is the only thing that knows where the cursor is.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "F1") {
         e.preventDefault();
         toggleHelp();
+        return;
+      }
+      if (DEBUG_KEYS.has(e.key)) {
+        e.preventDefault();
+        runDebugShortcut(e.key, e.shiftKey);
         return;
       }
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -265,7 +292,7 @@ export default function App() {
         toggleAiPanel();
       } else if (e.code === "Backquote") {
         e.preventDefault();
-        toggleTerminal();
+        toggleBottomPanel();
       } else if (e.key === ",") {
         // Ctrl+, is where every editor keeps its settings.
         e.preventDefault();
@@ -284,7 +311,7 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [toggleSidebar, toggleAiPanel, toggleTerminal, toggleHelp, togglePalette]);
+  }, [toggleSidebar, toggleAiPanel, toggleBottomPanel, toggleHelp, togglePalette]);
 
   return (
     <div className="flex h-full flex-col">

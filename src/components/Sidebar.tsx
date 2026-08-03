@@ -1,10 +1,17 @@
-import { Files, GitBranch } from "lucide-react";
+import { Bug, Files, GitBranch } from "lucide-react";
 import { useT } from "../i18n";
 import { useLayout, type SidebarView } from "../stores/layout";
+import { DebugPanel } from "./DebugPanel";
 import { FileTree } from "./FileTree";
 import { GitPanel } from "./GitPanel";
 
-/** Left sidebar: Explorer / Git views behind a compact tab strip. */
+const VIEWS: Record<SidebarView, React.ComponentType> = {
+  files: FileTree,
+  git: GitPanel,
+  debug: DebugPanel,
+};
+
+/** Left sidebar: Explorer / Git / Debug views behind a compact tab strip. */
 export function Sidebar() {
   const { sidebarView, setSidebarView } = useLayout();
   const t = useT();
@@ -23,13 +30,18 @@ export function Sidebar() {
     </button>
   );
 
+  const View = VIEWS[sidebarView];
+
   return (
     <div className="flex h-full flex-col bg-panel">
       <div className="flex border-b border-line">
         {tab("files", <Files size={14} />, t("sidebar.files"))}
         {tab("git", <GitBranch size={14} />, t("sidebar.git"))}
+        {tab("debug", <Bug size={14} />, t("sidebar.debug"))}
       </div>
-      <div className="min-h-0 flex-1">{sidebarView === "files" ? <FileTree /> : <GitPanel />}</div>
+      <div className="min-h-0 flex-1">
+        <View />
+      </div>
     </div>
   );
 }
