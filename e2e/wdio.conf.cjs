@@ -52,7 +52,12 @@ exports.config = {
     if (!fs.existsSync(nativeDriver)) {
       throw new Error(`no Edge driver at ${nativeDriver} - see e2e/README.md`);
     }
-    tauriDriver = spawn(tauriDriverPath(), ["--native-driver", nativeDriver]);
+    // AIME_UNATTENDED reaches the app through tauri-driver, which spawns it:
+    // the window is parked off the desktop and never takes focus, so a run
+    // does not maximize over - and type into - whatever else is open.
+    tauriDriver = spawn(tauriDriverPath(), ["--native-driver", nativeDriver], {
+      env: { ...process.env, AIME_UNATTENDED: "1" },
+    });
     tauriDriver.stderr.on("data", (chunk) => {
       process.stderr.write(`[tauri-driver] ${chunk}`);
     });
