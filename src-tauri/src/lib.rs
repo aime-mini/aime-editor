@@ -141,6 +141,7 @@ pub fn run() {
             lsp::edits::apply_text_edits,
             dap::catalog::dap_availability,
             dap::catalog::dap_download,
+            dap::catalog::dap_program,
             dap::dap_start,
             dap::dap_connect,
             dap::dap_send,

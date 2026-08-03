@@ -24,6 +24,8 @@ export interface AdapterAvailability {
   available: boolean;
   /** True when Aime can fetch the adapter itself, with no user action. */
   downloadable: boolean;
+  /** True when a run builds the project before the debugger sees it. */
+  buildsFirst: boolean;
   installHint: string;
 }
 
@@ -117,6 +119,12 @@ interface DebugState {
   evaluate: (expression: string) => Promise<void>;
   clearConsole: () => void;
 }
+
+/**
+ * Said once in the console before a build, in English on purpose: it lands next
+ * to the compiler's own output, which is not translated either.
+ */
+const BUILDING = "Building…\n";
 
 /** Nothing to show while the program is on the move. */
 const CLEARED_STACK = {
@@ -214,11 +222,23 @@ export const useDebug = create<DebugState>((set, get) => ({
     useLayout.getState().showDebugConsole();
     set({ status: { kind: "starting" }, output: [], exitCode: null, ...CLEARED_STACK });
     try {
+      // A CLR debugger attaches to an assembly, not to a source file, so what
+      // gets launched is whatever the backend says to launch - for C# that
+      // means building first, which takes long enough to be worth announcing.
+      if (adapter.buildsFirst) {
+        set((s) => ({ output: appendOutput(s.output, { category: "console", output: BUILDING }) }));
+      }
+      const program = await invoke<string>("dap_program", {
+        languageId,
+        root: rootPath,
+        file: openFilePath,
+      });
+
       const { DebugSession } = await import("../lib/dap/session");
       session = await DebugSession.launch({
         languageId,
         root: rootPath,
-        configuration: launchConfig(adapter.configType, openFilePath, rootPath),
+        configuration: launchConfig(adapter.configType, program, rootPath),
         breakpoints: new Map(Object.entries(get().breakpoints)),
         callbacks: {
           onOutput: (body) => {

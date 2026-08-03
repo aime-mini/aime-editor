@@ -245,8 +245,9 @@ const EN: HelpTopic[] = [
     id: "debug-adapters",
     section: "Debug",
     title: "What Aime can debug",
-    body: "JavaScript and TypeScript through js-debug, Python through debugpy, Go through delve. Nothing is bundled: js-debug has no package to install, so Aime downloads the pinned release into its own data folder when you press Download it - debugpy comes from your own Python and delve from your own Go toolchain, and the panel shows the exact install command when either is missing. delve is found even when GOPATH/bin is not on PATH, because `go install` is how it is meant to be installed. .NET, C++ and Java are deliberately absent until their adapters have been driven for real; a language listed here is one that was tested, not one that was read about.",
-    keywords: "js-debug debugpy delve go python node typescript adapter download install",
+    body: "JavaScript and TypeScript through js-debug, Python through debugpy, Go through delve, C# and F# through netcoredbg. Nothing is bundled: js-debug and netcoredbg have no package to install, so Aime downloads the pinned release into its own data folder when you press Download it - debugpy comes from your own Python and delve from your own Go toolchain, and the panel shows the exact install command when either is missing. delve is found even when GOPATH/bin is not on PATH, because `go install` is how it is meant to be installed. C# is the one language where starting a run builds first: a CLR debugger attaches to an assembly, not to a .cs file, so Aime builds the project and debugs what came out - the console says Building… while it does. C++ and Java are deliberately absent until their adapters have been driven for real; a language listed here is one that was tested, not one that was read about.",
+    keywords:
+      "js-debug debugpy delve netcoredbg go python node typescript csharp dotnet adapter download install build",
   },
   {
     id: "debug-console",
@@ -564,8 +565,9 @@ const VI: HelpTopic[] = [
     id: "debug-adapters",
     section: "Gỡ lỗi",
     title: "Aime gỡ lỗi được những gì",
-    body: "JavaScript và TypeScript qua js-debug, Python qua debugpy, Go qua delve. Không thứ nào được đóng gói sẵn: js-debug không có package để cài nên Aime tải bản đã ghim về thư mục dữ liệu của nó khi anh bấm 'Tải về' - còn debugpy chạy từ Python của chính anh và delve từ Go toolchain của anh, thiếu cái nào thì panel hiện đúng lệnh cài cái đó. delve vẫn tìm được dù GOPATH/bin không nằm trên PATH, vì `go install` mới là cách nó được cài. .NET, C++ và Java cố tình chưa có cho tới khi adapter của chúng được chạy thật; ngôn ngữ nằm trong danh sách này là ngôn ngữ đã kiểm chứng, không phải đọc tài liệu rồi khai.",
-    keywords: "js-debug debugpy delve go python node typescript adapter tải cài",
+    body: "JavaScript và TypeScript qua js-debug, Python qua debugpy, Go qua delve, C# và F# qua netcoredbg. Không thứ nào được đóng gói sẵn: js-debug và netcoredbg không có package để cài nên Aime tải bản đã ghim về thư mục dữ liệu của nó khi anh bấm 'Tải về' - còn debugpy chạy từ Python của chính anh và delve từ Go toolchain của anh, thiếu cái nào thì panel hiện đúng lệnh cài cái đó. delve vẫn tìm được dù GOPATH/bin không nằm trên PATH, vì `go install` mới là cách nó được cài. C# là ngôn ngữ duy nhất mà bấm chạy sẽ build trước: trình gỡ lỗi CLR gắn vào assembly chứ không gắn vào file .cs, nên Aime build dự án rồi gỡ lỗi thứ vừa build ra - trong lúc đó console ghi 'Building…'. C++ và Java cố tình chưa có cho tới khi adapter của chúng được chạy thật; ngôn ngữ nằm trong danh sách này là ngôn ngữ đã kiểm chứng, không phải đọc tài liệu rồi khai.",
+    keywords:
+      "js-debug debugpy delve netcoredbg go python node typescript csharp dotnet adapter tải cài build",
   },
   {
     id: "debug-console",

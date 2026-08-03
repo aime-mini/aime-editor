@@ -26,9 +26,29 @@ pub enum Transport {
     TcpServer,
 }
 
+/// Where an archive lives, which depends on the adapter's shape.
+pub enum ArchiveUrl {
+    /// The same asset everywhere — js-debug is a Node script, not a binary.
+    Portable(&'static str),
+    /// One asset per operating system, keyed by `std::env::consts::OS`.
+    PerOs(&'static [(&'static str, &'static str)]),
+}
+
+impl ArchiveUrl {
+    fn for_this_machine(&self) -> Option<&'static str> {
+        match self {
+            ArchiveUrl::Portable(url) => Some(url),
+            ArchiveUrl::PerOs(assets) => assets
+                .iter()
+                .find(|(os, _)| *os == std::env::consts::OS)
+                .map(|(_, url)| *url),
+        }
+    }
+}
+
 /// An archive Aime downloads because the adapter has no package to install.
 pub struct Archive {
-    pub url: &'static str,
+    pub url: ArchiveUrl,
     /// Folder the archive unpacks into, relative to Aime's adapter directory.
     /// Used to tell "already downloaded" from "not yet".
     pub unpacks_to: &'static str,
@@ -51,6 +71,22 @@ pub enum Runner {
         script: &'static str,
         args: &'static [&'static str],
     },
+    /// A native executable inside a downloaded archive. The path carries no
+    /// extension: `.exe` belongs to Windows and is added there.
+    ArchiveBinary {
+        binary: &'static str,
+        args: &'static [&'static str],
+    },
+}
+
+/// What has to happen before a program can be debugged at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Prepare {
+    /// The program is the file the user opened, and it is ready to run.
+    Nothing,
+    /// Build with the .NET SDK and debug what it produced: netcoredbg attaches
+    /// to an assembly, and a `.cs` file is not one.
+    DotnetBuild,
 }
 
 pub struct AdapterSpec {
@@ -61,6 +97,7 @@ pub struct AdapterSpec {
     pub transport: Transport,
     pub runner: Runner,
     pub archive: Option<Archive>,
+    pub prepare: Prepare,
     /// Shown when the adapter is missing and Aime cannot fetch it itself.
     pub install_hint: &'static str,
 }
@@ -70,6 +107,24 @@ pub struct AdapterSpec {
 /// of a hope. Driven end to end on 2026-08-03.
 const JS_DEBUG_ARCHIVE_URL: &str =
     "https://github.com/microsoft/vscode-js-debug/releases/download/v1.117.0/js-debug-dap-v1.117.0.tar.gz";
+
+/// netcoredbg is a native binary, so the asset differs per platform. Pinned for
+/// the same reason js-debug is. Driven end to end on Windows 2026-08-03; the
+/// other two assets are the same release of the same adapter.
+const NETCOREDBG_ASSETS: ArchiveUrl = ArchiveUrl::PerOs(&[
+    (
+        "windows",
+        "https://github.com/Samsung/netcoredbg/releases/download/3.2.0-1092/netcoredbg-win64.zip",
+    ),
+    (
+        "macos",
+        "https://github.com/Samsung/netcoredbg/releases/download/3.2.0-1092/netcoredbg-osx-arm64.zip",
+    ),
+    (
+        "linux",
+        "https://github.com/Samsung/netcoredbg/releases/download/3.2.0-1092/netcoredbg-linux-amd64.tar.gz",
+    ),
+]);
 
 /// Everything Aime can debug today.
 const ADAPTERS: &[AdapterSpec] = &[
@@ -88,9 +143,10 @@ const ADAPTERS: &[AdapterSpec] = &[
             args: &["0", "127.0.0.1"],
         },
         archive: Some(Archive {
-            url: JS_DEBUG_ARCHIVE_URL,
+            url: ArchiveUrl::Portable(JS_DEBUG_ARCHIVE_URL),
             unpacks_to: "js-debug",
         }),
+        prepare: Prepare::Nothing,
         install_hint: "Node.js — https://nodejs.org",
     },
     AdapterSpec {
@@ -108,6 +164,7 @@ const ADAPTERS: &[AdapterSpec] = &[
             probe_args: &["version"],
         },
         archive: None,
+        prepare: Prepare::Nothing,
         install_hint: "go install github.com/go-delve/delve/cmd/dlv@latest",
     },
     AdapterSpec {
@@ -123,7 +180,27 @@ const ADAPTERS: &[AdapterSpec] = &[
             probe_args: &["-c", "import debugpy"],
         },
         archive: None,
+        prepare: Prepare::Nothing,
         install_hint: "pip install debugpy",
+    },
+    AdapterSpec {
+        id: "netcoredbg",
+        language_ids: &["csharp"],
+        config_type: "coreclr",
+        // Measured: `--interpreter=vscode` is DAP over stdin and stdout, and it
+        // never asks for a second connection.
+        transport: Transport::Stdio,
+        runner: Runner::ArchiveBinary {
+            binary: "netcoredbg/netcoredbg",
+            args: &["--interpreter=vscode"],
+        },
+        archive: Some(Archive {
+            url: NETCOREDBG_ASSETS,
+            unpacks_to: "netcoredbg",
+        }),
+        // A .cs file is not something a CLR debugger can attach to.
+        prepare: Prepare::DotnetBuild,
+        install_hint: ".NET SDK — https://dotnet.microsoft.com/download",
     },
 ];
 
@@ -173,6 +250,11 @@ async fn toolchain_binary(program: &str) -> Option<PathBuf> {
     candidate.is_file().then_some(candidate)
 }
 
+/// The name a native binary has on this platform.
+fn with_exe_suffix(binary: &str) -> String {
+    format!("{binary}{}", std::env::consts::EXE_SUFFIX)
+}
+
 async fn runs(program: &str, probe_args: &[&str]) -> bool {
     super::adapter_command(program, probe_args)
         .output()
@@ -208,10 +290,7 @@ impl AdapterSpec {
                 args: args.iter().map(|arg| (*arg).to_string()).collect(),
             }),
             Runner::NodeScript { script, args } => {
-                let path = adapters_dir(app)?.join(script);
-                if !path.is_file() {
-                    return Err(format!("DAP_MISSING::{}::not downloaded yet", self.id));
-                }
+                let path = self.downloaded_file(app, script)?;
                 let mut all = vec![path.to_string_lossy().to_string()];
                 all.extend(args.iter().map(|arg| (*arg).to_string()));
                 Ok(ResolvedCommand {
@@ -219,6 +298,23 @@ impl AdapterSpec {
                     args: all,
                 })
             }
+            Runner::ArchiveBinary { binary, args } => {
+                let path = self.downloaded_file(app, &with_exe_suffix(binary))?;
+                Ok(ResolvedCommand {
+                    program: path.to_string_lossy().to_string(),
+                    args: args.iter().map(|arg| (*arg).to_string()).collect(),
+                })
+            }
+        }
+    }
+
+    /// A file inside the downloaded archive, or a "download it first" error.
+    fn downloaded_file(&self, app: &AppHandle, relative: &str) -> Result<PathBuf, String> {
+        let path = adapters_dir(app)?.join(relative);
+        if path.is_file() {
+            Ok(path)
+        } else {
+            Err(format!("DAP_MISSING::{}::not downloaded yet", self.id))
         }
     }
 
@@ -226,9 +322,10 @@ impl AdapterSpec {
     async fn is_present(&self, app: &AppHandle) -> bool {
         match &self.runner {
             Runner::OnPath { .. } => self.usable_program().await.is_some(),
-            Runner::NodeScript { script, .. } => adapters_dir(app)
-                .map(|dir| dir.join(script).is_file())
-                .unwrap_or(false),
+            Runner::NodeScript { script, .. } => self.downloaded_file(app, script).is_ok(),
+            Runner::ArchiveBinary { binary, .. } => {
+                self.downloaded_file(app, &with_exe_suffix(binary)).is_ok()
+            }
         }
     }
 }
@@ -246,6 +343,10 @@ pub struct AdapterAvailability {
     pub available: bool,
     /// Whether Aime can fetch it without the user installing anything.
     pub downloadable: bool,
+    /// True when starting a run builds the project first, which the console
+    /// says out loud — a debugger that looks frozen for five seconds is worse
+    /// than one that reports what it is doing.
+    pub builds_first: bool,
     pub install_hint: String,
 }
 
@@ -260,6 +361,7 @@ pub async fn dap_availability(app: AppHandle, language_id: String) -> Option<Ada
         config_type: spec.config_type.to_string(),
         available,
         downloadable: spec.archive.is_some(),
+        builds_first: spec.prepare != Prepare::Nothing,
         install_hint: spec.install_hint.to_string(),
     })
 }
@@ -275,6 +377,10 @@ pub async fn dap_download(app: AppHandle, language_id: String) -> Result<(), Str
         .archive
         .as_ref()
         .ok_or_else(|| format!("{} is installed by its own toolchain", spec.id))?;
+    let url = archive
+        .url
+        .for_this_machine()
+        .ok_or_else(|| format!("{} has no build for {}", spec.id, std::env::consts::OS))?;
     let dir = adapters_dir(&app)?;
     if dir.join(archive.unpacks_to).is_dir() {
         return Ok(());
@@ -293,15 +399,17 @@ pub async fn dap_download(app: AppHandle, language_id: String) -> Result<(), Str
             "--show-error",
             "--output",
             &partial.to_string_lossy(),
-            archive.url,
+            url,
         ],
     )
     .await
     .map_err(|e| format!("Could not download the {} debug adapter: {e}", spec.id))?;
 
+    // `-xf`, not `-xzf`: one flag set reads both .tar.gz and .zip, and the
+    // adapters need both. The tool matters more than the flags — see `unpacker`.
     let extracted = run(
-        "tar",
-        &["-xzf", &partial.to_string_lossy(), "-C", &dir.to_string_lossy()],
+        &unpacker(),
+        &["-xf", &partial.to_string_lossy(), "-C", &dir.to_string_lossy()],
     )
     .await;
     let _ = std::fs::remove_file(&partial);
@@ -314,6 +422,84 @@ pub async fn dap_download(app: AppHandle, language_id: String) -> Result<(), Str
         ));
     }
     Ok(())
+}
+
+/// The archiver to unpack with.
+///
+/// Windows ships bsdtar as the `tar.exe` in its System32 folder, and bsdtar
+/// reads zip as happily as tar.gz. Plain `tar` on PATH is not necessarily that
+/// one: Git for Windows puts GNU tar there, and GNU tar cannot read a zip at
+/// all ("This does not look like a tar archive" — measured against
+/// netcoredbg's own asset). So on Windows the system copy is named outright;
+/// elsewhere `tar` is bsdtar on macOS and GNU tar on Linux, and every asset
+/// Aime fetches for those is a tarball.
+fn unpacker() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        format!(r"{root}\System32\tar.exe")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "tar".to_string()
+    }
+}
+
+/// What the debugger should actually be pointed at.
+///
+/// For most adapters that is the file in front of the user. netcoredbg attaches
+/// to an assembly, so for .NET the project is built first and the artifact is
+/// what gets debugged — `dotnet msbuild -t:Build -getProperty:TargetPath` does
+/// both in one call and prints the exact path, which beats guessing at
+/// `bin/Debug/<framework>/`.
+#[tauri::command]
+pub async fn dap_program(language_id: String, root: String, file: String) -> Result<String, String> {
+    let spec = spec_for(&language_id).ok_or_else(|| format!("No debug adapter for {language_id}"))?;
+    match spec.prepare {
+        Prepare::Nothing => Ok(file),
+        Prepare::DotnetBuild => {
+            let output = super::adapter_command(
+                "dotnet",
+                [
+                    "msbuild",
+                    "-t:Build",
+                    "-getProperty:TargetPath",
+                    "-v:q",
+                    "-nologo",
+                ],
+            )
+            .current_dir(&root)
+            .output()
+            .await
+            .map_err(|e| format!("dotnet is not available: {e}"))?;
+
+            if !output.status.success() {
+                // The build log is the useful part of a failed build.
+                let reason = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!(
+                    "The build failed.
+{}",
+                    pick_message(&reason, &stderr)
+                ));
+            }
+            let target = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if target.is_empty() {
+                return Err("The build produced no assembly to debug.".to_string());
+            }
+            Ok(target)
+        }
+    }
+}
+
+/// Whichever stream the tool explained itself on.
+fn pick_message(stdout: &str, stderr: &str) -> String {
+    let trimmed = stderr.trim();
+    if trimmed.is_empty() {
+        stdout.trim().to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Runs a helper program, turning a non-zero exit into its own message —
@@ -336,7 +522,7 @@ async fn run(program: &str, args: &[&str]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{spec_for, Runner, Transport, ADAPTERS, TOOLCHAIN_BINS};
+    use super::{spec_for, ArchiveUrl, Prepare, Runner, Transport, ADAPTERS, TOOLCHAIN_BINS};
 
     #[test]
     fn node_and_typescript_share_the_one_adapter_that_reads_source_maps() {
@@ -348,7 +534,7 @@ mod tests {
 
     #[test]
     fn a_language_with_no_verified_adapter_says_so_instead_of_guessing() {
-        for language in ["cobol", "csharp", "java"] {
+        for language in ["cobol", "java", "cpp"] {
             assert!(
                 spec_for(language).is_none(),
                 "{language} must not be offered until its adapter is driven for real"
@@ -442,21 +628,63 @@ mod tests {
 
     /// The download and the launch must agree on where the files land, or the
     /// adapter is fetched successfully and then reported as missing forever.
+    /// .NET is the one language here whose debugger attaches to a build
+    /// artifact; every other adapter takes the file the user opened.
+    #[test]
+    fn only_dotnet_has_to_be_built_before_it_can_be_debugged() {
+        assert_eq!(
+            spec_for("csharp").expect("csharp is served").prepare,
+            Prepare::DotnetBuild
+        );
+        for language in ["javascript", "typescript", "python", "go"] {
+            assert_eq!(
+                spec_for(language).expect("served").prepare,
+                Prepare::Nothing,
+                "{language} debugs the file in front of the user"
+            );
+        }
+    }
+
+    /// A native adapter needs an asset for the machine it will run on, and
+    /// forgetting one turns into "no build for linux" at download time.
+    #[test]
+    fn every_downloadable_adapter_has_an_asset_for_every_platform_aime_ships_on() {
+        for spec in ADAPTERS {
+            let Some(archive) = &spec.archive else { continue };
+            let ArchiveUrl::PerOs(assets) = &archive.url else {
+                continue;
+            };
+            for os in ["windows", "macos", "linux"] {
+                assert!(
+                    assets.iter().any(|(candidate, _)| *candidate == os),
+                    "{} has no asset for {os}",
+                    spec.id
+                );
+            }
+        }
+    }
+
     #[test]
     fn what_the_archive_unpacks_to_is_where_the_runner_looks() {
         for spec in ADAPTERS {
             let Some(archive) = &spec.archive else { continue };
+            let url = archive
+                .url
+                .for_this_machine()
+                .unwrap_or_else(|| panic!("{} has no asset for {}", spec.id, std::env::consts::OS));
             assert!(
-                archive.url.starts_with("https://"),
+                url.starts_with("https://"),
                 "{} would be fetched in clear",
                 spec.id
             );
-            let Runner::NodeScript { script, .. } = &spec.runner else {
-                continue;
+            let inside = match &spec.runner {
+                Runner::NodeScript { script, .. } => script,
+                Runner::ArchiveBinary { binary, .. } => binary,
+                Runner::OnPath { .. } => continue,
             };
             assert!(
-                script.starts_with(&format!("{}/", archive.unpacks_to)),
-                "{} looks for {script}, but its archive unpacks to {}",
+                inside.starts_with(&format!("{}/", archive.unpacks_to)),
+                "{} looks for {inside}, but its archive unpacks to {}",
                 spec.id,
                 archive.unpacks_to
             );
