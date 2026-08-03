@@ -10,8 +10,18 @@ interface InstallLine {
   line: string;
 }
 
-/** What happened to one tool in the queue. */
-type Result = { toolId: string; ok: boolean; detail: string };
+/**
+ * What happened to one tool in the queue.
+ *
+ * Kept as data rather than as a finished sentence on purpose: translating here
+ * would put the translator inside the effect that runs the installs, and that
+ * function is new on every render — which restarted the whole queue on every
+ * line of output. Once per render is once per install.
+ */
+type Failure =
+  { kind: "exit"; code: number } | { kind: "runtime"; runtime: string } | { kind: "error"; reason: string };
+
+type Result = { toolId: string; ok: true } | { toolId: string; ok: false; failure: Failure };
 
 /** The backend refuses when the install command's own runtime is absent. */
 const RUNTIME_MISSING = /^RUNTIME_MISSING::(.+)$/;
@@ -44,13 +54,13 @@ export function InstallerModal({ tools, onClose }: { tools: string[]; onClose: (
         try {
           const code = await invoke<number>("install_tool", { toolId });
           if (stale) return;
-          const ok = code === 0;
-          // A freshly installed server should be picked up without a restart.
-          if (ok) useLsp.getState().forget(toolId);
-          setResults((current) => [
-            ...current,
-            { toolId, ok, detail: ok ? "" : t("install.failed", { code: String(code) }) },
-          ]);
+          if (code === 0) {
+            // A freshly installed server should be picked up without a restart.
+            useLsp.getState().forget(toolId);
+            setResults((current) => [...current, { toolId, ok: true }]);
+          } else {
+            setResults((current) => [...current, { toolId, ok: false, failure: { kind: "exit", code } }]);
+          }
         } catch (err: unknown) {
           if (stale) return;
           const reason = String(err);
@@ -60,7 +70,7 @@ export function InstallerModal({ tools, onClose }: { tools: string[]; onClose: (
             {
               toolId,
               ok: false,
-              detail: missing ? t("install.runtimeMissing", { runtime: missing[1] }) : reason,
+              failure: missing ? { kind: "runtime", runtime: missing[1] } : { kind: "error", reason },
             },
           ]);
         }
@@ -75,13 +85,24 @@ export function InstallerModal({ tools, onClose }: { tools: string[]; onClose: (
         stop();
       });
     };
-  }, [tools, t]);
+    // `tools` only: the queue must survive its own output. Adding anything that
+    // is recreated per render - the translator, a handler - relaunches every
+    // install on every log line, which spawns installers faster than they can
+    // finish (reported: "Installing… 0 of 1 done" forever, machine grinding).
+  }, [tools]);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [lines]);
 
-  const failures = results.filter((result) => !result.ok);
+  const failures = results.flatMap((result) => (result.ok ? [] : [result]));
+
+  /** A failure becomes a sentence here, where the translator is allowed. */
+  const explain = (failure: Failure): string => {
+    if (failure.kind === "exit") return t("install.failed", { code: String(failure.code) });
+    if (failure.kind === "runtime") return t("install.runtimeMissing", { runtime: failure.runtime });
+    return failure.reason;
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 pt-20" onClick={onClose}>
@@ -117,7 +138,7 @@ export function InstallerModal({ tools, onClose }: { tools: string[]; onClose: (
           <div className="border-t border-danger/40 bg-danger/10 px-4 py-1.5 text-[11.5px] text-danger">
             {failures.map((failure) => (
               <p key={failure.toolId}>
-                {failure.toolId}: {failure.detail}
+                {failure.toolId}: {explain(failure.failure)}
               </p>
             ))}
           </div>
