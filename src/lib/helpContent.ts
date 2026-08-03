@@ -235,6 +235,13 @@ const EN: HelpTopic[] = [
     keywords: "fix error failure build failed exit code ai repair",
   },
   {
+    id: "ai-setup",
+    section: "Editor",
+    title: "Open a language Aime does not support yet",
+    body: "A bar appears at the top of the editor whenever the open file's language is missing something: a language server (no completions, no types) or a debug adapter (F5 does nothing). Let AI set it up hands the gap to your AI CLI with the exact brief - which command Aime probes for, which of the two is missing, and the file itself - and the agent reads the project, works out what this machine's toolchain actually needs, installs it and shows you each tool's version to prove it. It runs in the AI panel where you can watch and stop it, under whichever permission level you have set, and it stops to ask rather than push through a licence, a multi-gigabyte download or an administrator prompt. Install it stays next to it for the case where Aime already knows the single command - that is faster and costs nothing.",
+    keywords: "unsupported language install setup ai automatic toolchain missing server debugger",
+  },
+  {
     id: "debug",
     section: "Debug",
     title: "Run a program with breakpoints",
@@ -553,6 +560,13 @@ const VI: HelpTopic[] = [
     title: "Nhờ AI sửa khi task lỗi",
     body: "Khi task kết thúc với mã lỗi khác 0, một thanh đỏ hiện phía trên terminal. Nút 'Nhờ AI sửa' gửi lệnh, mã lỗi và output đã bắt được sang panel AI, yêu cầu AI tìm nguyên nhân, sửa rồi chạy lại task để xác nhận. Không dùng AI thì thanh đó chỉ là thông báo lỗi, bấm X để bỏ qua.",
     keywords: "sửa lỗi build fail exit code ai khắc phục",
+  },
+  {
+    id: "ai-setup",
+    section: "Editor",
+    title: "Mở ngôn ngữ Aime chưa hỗ trợ sẵn",
+    body: "Một thanh hiện lên đầu editor mỗi khi file đang mở thiếu thứ gì: thiếu language server (không có gợi ý, không xem được kiểu) hoặc thiếu trình gỡ lỗi (F5 không làm gì). Nút 'Để AI lo' giao đúng khoảng thiếu đó cho AI CLI của anh - kèm chính xác lệnh Aime đang dò, thiếu cái nào trong hai cái, và bản thân file - rồi agent đọc dự án, tự tìm ra toolchain của máy này cần gì, cài, và in version từng tool ra để chứng minh. Nó chạy ngay trong panel AI nên anh xem được và dừng được, theo đúng mức quyền anh đặt, và nó sẽ dừng lại hỏi chứ không tự vượt qua chuyện licence, tải vài GB hay hộp thoại quản trị. Nút 'Cài ngay' vẫn nằm cạnh cho trường hợp Aime đã biết đúng một lệnh - cách đó nhanh hơn và không tốn token.",
+    keywords: "chưa hỗ trợ ngôn ngữ cài đặt ai tự động toolchain thiếu server gỡ lỗi",
   },
   {
     id: "debug",

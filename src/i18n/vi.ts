@@ -150,6 +150,10 @@ export const vi: Record<TranslationKey, string> = {
   "lsp.offer":
     "{language} chưa có gợi ý - cài {command} để có gợi ý khi gõ, xem kiểu và nhảy tới định nghĩa.",
   "lsp.offerInstall": "Cài ngay",
+  "setup.ai": "Để AI lo",
+  "setup.aiHint":
+    "AI đọc dự án này, tự tìm ra máy cần gì, cài rồi kiểm chứng lại - anh xem nó làm ngay trong panel AI.",
+  "setup.debuggerOnly": "{language} chưa gỡ lỗi được ở đây - AI có thể tự tìm ra máy cần gì rồi cài.",
   "lsp.offerDismiss": "Bỏ qua ngôn ngữ này",
   "lsp.running": "Code intelligence đang chạy cho {language}",
   "lsp.missing": "Chưa cài {command} - file này không có gợi ý và báo lỗi. Cài bằng: {install}",

@@ -1,11 +1,12 @@
 ﻿import { useCallback, useEffect, useRef, useState } from "react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
-import { Lightbulb, TriangleAlert, X } from "lucide-react";
+import { Lightbulb, Sparkles, TriangleAlert, X } from "lucide-react";
 import { KeyCode, KeyMod, Range as MonacoRange, type editor as MonacoEditor } from "monaco-editor";
 import "../lib/monaco";
 import { translate, useT } from "../i18n";
 import { AI_ACTIONS, buildPrompt, labelOf } from "../lib/aiActions";
+import { buildSetupPrompt } from "../lib/aiSetup";
 import { registerInlineAi } from "../lib/aiInline";
 import { languageOf } from "../lib/languages";
 import { useAi } from "../stores/ai";
@@ -21,32 +22,75 @@ import { DebugToolbar } from "./DebugToolbar";
 import { useDebugGutter } from "./useDebugGutter";
 
 /**
- * Offers the missing language server for the file in front of the user.
+ * Offers to close whatever gap this file's language has.
  *
- * A yellow dot in the status bar is easy to never notice; this appears exactly
- * when the gap matters - the moment a Python or Go file is open and typing
- * gives nothing - and disappears for good once dismissed for that language.
+ * Two kinds of gap, one banner: no language server (no completions, no types)
+ * and no verified debug adapter (F5 does nothing). It appears exactly when the
+ * gap matters — the moment such a file is open — and stays gone once dismissed
+ * for that language.
+ *
+ * The AI button is the point of an AI editor: Aime knows precisely what it
+ * probed for and did not find, so it hands the agent that brief and lets it
+ * work out this machine's toolchain, install what is missing and verify it,
+ * instead of showing the user a documentation link. "Install it" stays for the
+ * case where Aime already knows the one command to run — that is faster, and it
+ * costs no tokens.
  */
-function LanguageServerOffer({ languageId }: { languageId: string }) {
-  const state = useLsp((s) => s.languages[languageId]);
+function SetupOffer({ languageId, relativePath }: { languageId: string; relativePath: string }) {
+  const server = useLsp((s) => s.languages[languageId]);
+  const adapter = useDebug((s) => s.adapters[languageId]);
+  const probeAdapter = useDebug((s) => s.probeAdapter);
   const [dismissed, setDismissed] = useState<string[]>([]);
   const t = useT();
 
-  if (state?.kind !== "missing" || dismissed.includes(languageId)) return null;
-  const runnable = !state.installHint.startsWith("http");
+  // The banner cannot say a debugger is missing without having asked.
+  useEffect(() => {
+    void probeAdapter(languageId);
+  }, [languageId, probeAdapter]);
+
+  const serverMissing = server?.kind === "missing";
+  // `null` is "no adapter for this language"; `undefined` is "not asked yet".
+  const debuggerMissing = adapter === null || (adapter !== undefined && !adapter.available);
+  if (dismissed.includes(languageId) || (!serverMissing && !debuggerMissing)) return null;
+
+  const runnable = serverMissing && !server.installHint.startsWith("http");
+  const summary = serverMissing
+    ? t("lsp.offer", { language: languageId, command: server.command })
+    : t("setup.debuggerOnly", { language: languageId });
 
   return (
     <div className="flex items-center gap-2 border-b border-warn/40 bg-warn/10 px-3 py-1 text-[12px]">
       <Lightbulb size={12} className="shrink-0 text-warn" />
-      <span className="min-w-0 flex-1 truncate text-warn">
-        {t("lsp.offer", { language: languageId, command: state.command })}
-      </span>
+      <span className="min-w-0 flex-1 truncate text-warn">{summary}</span>
+      <button
+        onClick={() => {
+          const { rootPath } = useWorkspace.getState();
+          if (!rootPath) return;
+          useLayout.getState().setAiPanelVisible(true);
+          void useAi.getState().sendPrompt(
+            buildSetupPrompt({
+              languageId,
+              relativePath,
+              serverCommand: serverMissing ? server.command : null,
+              serverInstallHint: serverMissing ? server.installHint : null,
+              debuggerMissing,
+            }),
+            rootPath,
+          );
+          // The agent works in the open; this banner has said its piece.
+          setDismissed((current) => [...current, languageId]);
+        }}
+        title={t("setup.aiHint")}
+        className="flex shrink-0 items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 text-[11.5px] font-medium text-white hover:opacity-90"
+      >
+        <Sparkles size={11} /> {t("setup.ai")}
+      </button>
       {runnable && (
         <button
           onClick={() => {
             useLayout.getState().setInstallerTools([languageId]);
           }}
-          className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-[11.5px] font-medium text-white hover:opacity-90"
+          className="shrink-0 rounded-md border border-line px-2.5 py-1 text-[11.5px] font-medium text-muted hover:text-fg"
         >
           {t("lsp.offerInstall")}
         </button>
@@ -575,7 +619,9 @@ export function EditorPane() {
         </button>
       )}
       <EditorTabs />
-      <LanguageServerOffer languageId={languageOf(openFilePath)} />
+      {relativeOpenPath !== null && (
+        <SetupOffer languageId={languageOf(openFilePath)} relativePath={relativeOpenPath} />
+      )}
       <div className="min-h-0 flex-1">
         <Editor
           path={openFilePath}

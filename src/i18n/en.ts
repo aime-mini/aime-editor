@@ -149,6 +149,11 @@ export const en = {
   "lsp.offer":
     "No completions for {language} yet - install {command} to get suggestions, types and go-to-definition.",
   "lsp.offerInstall": "Install it",
+  "setup.ai": "Let AI set it up",
+  "setup.aiHint":
+    "The AI reads this project, works out what this machine needs, installs it and verifies it - you watch it happen in the AI panel.",
+  "setup.debuggerOnly":
+    "{language} has no debugger here yet - the AI can work out what this machine needs and set it up.",
   "lsp.offerDismiss": "Not for this language",
   "lsp.running": "Code intelligence active for {language}",
   "lsp.missing":
