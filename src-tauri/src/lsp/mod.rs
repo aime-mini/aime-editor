@@ -7,13 +7,14 @@
 pub mod edits;
 
 use crate::providers::cli_command;
+use crate::wire::{frame, read_message};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, Manager, State, Window};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
 static SERVER_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -214,23 +215,6 @@ struct ExitPayload {
     server_id: u64,
 }
 
-/// Wraps a JSON message in the `Content-Length` envelope LSP requires.
-/// The length counts bytes, not characters — a UTF-8 identifier would
-/// otherwise truncate the message.
-fn frame(message: &str) -> String {
-    format!("Content-Length: {}\r\n\r\n{message}", message.len())
-}
-
-/// Reads the byte count out of a header line, ignoring headers we don't use.
-/// Header names are case-insensitive per the specification.
-fn content_length(header: &str) -> Option<usize> {
-    let (name, value) = header.split_once(':')?;
-    if !name.trim().eq_ignore_ascii_case("Content-Length") {
-        return None;
-    }
-    value.trim().parse().ok()
-}
-
 /// What the UI needs to know about a language: can we start a server, and if
 /// not, what does the user install?
 #[derive(Serialize)]
@@ -355,32 +339,6 @@ pub async fn lsp_start(
     Ok(server_id)
 }
 
-/// Reads one framed message; `None` once the server closes its output.
-async fn read_message<R>(reader: &mut BufReader<R>) -> std::io::Result<Option<String>>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    let mut length = None;
-    loop {
-        let mut header = String::new();
-        if reader.read_line(&mut header).await? == 0 {
-            return Ok(None); // EOF
-        }
-        if header.trim().is_empty() {
-            break; // blank line ends the header block
-        }
-        length = content_length(&header).or(length);
-    }
-    let Some(length) = length else {
-        // A header block without a length is unusable; skipping it keeps the
-        // stream alive instead of desynchronizing it forever.
-        return Ok(Some(String::new()));
-    };
-    let mut body = vec![0u8; length];
-    reader.read_exact(&mut body).await?;
-    Ok(Some(String::from_utf8_lossy(&body).to_string()))
-}
-
 /// Forwards one JSON-RPC message to a running server.
 #[tauri::command]
 pub fn lsp_send(state: State<'_, LspState>, server_id: u64, message: String) -> Result<(), String> {
@@ -423,33 +381,7 @@ pub fn stop_for_window(window: &Window) {
 
 #[cfg(test)]
 mod tests {
-    use super::{content_length, frame, spec_for, Probe};
-
-    #[test]
-    fn framing_counts_bytes_not_characters() {
-        let message = r#"{"id":1,"method":"tên"}"#;
-        let framed = frame(message);
-        assert!(framed.starts_with(&format!("Content-Length: {}\r\n\r\n", message.len())));
-        assert!(framed.ends_with(message));
-        assert!(
-            message.len() > message.chars().count(),
-            "the fixture is multibyte"
-        );
-    }
-
-    #[test]
-    fn the_header_name_is_case_insensitive() {
-        assert_eq!(content_length("Content-Length: 42"), Some(42));
-        assert_eq!(content_length("content-length:42\r\n"), Some(42));
-        assert_eq!(content_length("CONTENT-LENGTH: 7"), Some(7));
-    }
-
-    #[test]
-    fn other_headers_and_junk_carry_no_length() {
-        assert_eq!(content_length("Content-Type: application/vscode-jsonrpc"), None);
-        assert_eq!(content_length("Content-Length: not-a-number"), None);
-        assert_eq!(content_length("no colon here"), None);
-    }
+    use super::{spec_for, Probe};
 
     #[test]
     fn detection_matches_how_each_server_actually_behaves() {

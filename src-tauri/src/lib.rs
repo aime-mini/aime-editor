@@ -1,6 +1,7 @@
 mod aime_dir;
 mod checkpoint;
 mod cli;
+mod dap;
 mod diagnostics;
 mod environment;
 mod fs_cmds;
@@ -15,6 +16,7 @@ mod tasks;
 mod terminal;
 mod updates;
 mod window_cmds;
+mod wire;
 
 use tauri::Manager;
 
@@ -30,6 +32,7 @@ pub fn run() {
         .manage(cli::InitialFolder::from_args())
         .manage(terminal::TerminalState::default())
         .manage(lsp::LspState::default())
+        .manage(dap::DapState::default())
         .setup(|app| {
             // The main window is configured hidden; size it to the real
             // monitor work area, maximize and show (see fit_and_maximize).
@@ -48,6 +51,7 @@ pub fn run() {
                 fs_watch::drop_watcher_for(window);
                 terminal::kill_for_window(window);
                 lsp::stop_for_window(window);
+                dap::stop_for_window(window);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -135,6 +139,12 @@ pub fn run() {
             lsp::lsp_send,
             lsp::lsp_stop,
             lsp::edits::apply_text_edits,
+            dap::catalog::dap_availability,
+            dap::catalog::dap_download,
+            dap::dap_start,
+            dap::dap_connect,
+            dap::dap_send,
+            dap::dap_stop,
             window_cmds::open_new_window,
         ])
         .run(tauri::generate_context!())
