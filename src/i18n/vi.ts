@@ -265,6 +265,8 @@ export const vi: Record<TranslationKey, string> = {
 
   "debug.console": "Bảng điều khiển gỡ lỗi",
   "debug.clearConsole": "Xoá nội dung bảng",
+  "debug.replPlaceholder": "Tính một biểu thức trong khung đang chọn - ↑ để lấy lại lệnh cũ",
+  "debug.replDisabled": "Chương trình phải đang dừng mới tính được biểu thức",
   "debug.noOutput": "Chương trình chưa in gì.",
   "debug.exited": "Chương trình kết thúc với mã {code}",
   "debug.running": "Đang chạy",

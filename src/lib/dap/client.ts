@@ -16,6 +16,11 @@ interface ExitPayload {
   adapterId: number;
 }
 
+interface StdoutPayload {
+  adapterId: number;
+  text: string;
+}
+
 /** What `dap_start` hands back. */
 export interface StartedAdapter {
   adapterId: number;
@@ -61,6 +66,19 @@ export async function stopAdapter(adapterId: number): Promise<void> {
 export function onAdapterExit(adapterId: number, handler: () => void): Promise<UnlistenFn> {
   return listen<ExitPayload>("dap:exit", ({ payload }) => {
     if (payload.adapterId === adapterId) handler();
+  });
+}
+
+/**
+ * Lines the adapter process printed on its own stdout.
+ *
+ * Not a curiosity: measured, delve writes the debugged program's output there
+ * instead of sending `output` events, so without this a Go program looks as if
+ * it printed nothing at all.
+ */
+export function onAdapterStdout(adapterId: number, handler: (text: string) => void): Promise<UnlistenFn> {
+  return listen<StdoutPayload>("dap:stdout", ({ payload }) => {
+    if (payload.adapterId === adapterId) handler(payload.text);
   });
 }
 

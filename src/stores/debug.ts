@@ -113,6 +113,8 @@ interface DebugState {
   stepOut: () => Promise<void>;
   selectFrame: (frameId: number) => Promise<void>;
   toggleVariable: (variablesReference: number) => Promise<void>;
+  /** Runs one expression in the selected frame and writes both to the console. */
+  evaluate: (expression: string) => Promise<void>;
   clearConsole: () => void;
 }
 
@@ -336,6 +338,24 @@ export const useDebug = create<DebugState>((set, get) => ({
     if (variablesReference in get().variables) return;
     const children = (await session?.variables(variablesReference)) ?? [];
     set((s) => ({ variables: { ...s.variables, [variablesReference]: children } }));
+  },
+
+  evaluate: async (expression) => {
+    const trimmed = expression.trim();
+    if (trimmed === "" || !session) return;
+    const echo = (category: "console" | "stdout" | "stderr", text: string) => {
+      set((s) => ({ output: appendOutput(s.output, { category, output: text }) }));
+    };
+    // The expression is echoed first: without it the answers in the console
+    // have nothing to belong to once a few have scrolled past.
+    echo("console", `> ${trimmed}\n`);
+    try {
+      echo("stdout", `${await session.evaluate(trimmed, get().selectedFrameId)}\n`);
+    } catch (err: unknown) {
+      // The adapter's own words - a typo in an expression is answered here, and
+      // it is not a failure of the session.
+      echo("stderr", `${String(err)}\n`);
+    }
   },
 
   clearConsole: () => {

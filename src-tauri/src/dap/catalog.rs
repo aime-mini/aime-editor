@@ -8,8 +8,8 @@
 //!
 //! Only adapters that have been driven end to end appear here. An entry whose
 //! arguments were read off a README and never run is exactly the "half a
-//! debugger" ARCHITECTURE.md §5 refuses to ship, so Node is the whole table
-//! today; Python, Go and .NET join it as each one is verified.
+//! debugger" ARCHITECTURE.md §5 refuses to ship. Node, Python and Go have been;
+//! .NET, C++ and Java join them as each one is.
 
 use serde::Serialize;
 use std::path::PathBuf;
@@ -94,6 +94,23 @@ const ADAPTERS: &[AdapterSpec] = &[
         install_hint: "Node.js — https://nodejs.org",
     },
     AdapterSpec {
+        id: "delve",
+        language_ids: &["go"],
+        config_type: "go",
+        // Measured: `dlv dap` is headless and TCP only — its own help says so,
+        // and it announces "DAP server listening at: 127.0.0.1:PORT".
+        transport: Transport::TcpServer,
+        runner: Runner::OnPath {
+            program: "dlv",
+            args: &["dap", "--listen=127.0.0.1:0"],
+            // `dlv version` costs nothing and proves the binary runs; delve is
+            // installed with `go install`, so a Go toolchain alone proves nothing.
+            probe_args: &["version"],
+        },
+        archive: None,
+        install_hint: "go install github.com/go-delve/delve/cmd/dlv@latest",
+    },
+    AdapterSpec {
         id: "debugpy",
         language_ids: &["python"],
         config_type: "python",
@@ -131,12 +148,63 @@ pub fn adapters_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .join("debug-adapters"))
 }
 
+/// Tools a language toolchain installs, and how to ask where it put them.
+///
+/// `go install` writes into `go env GOPATH`/bin. Go users are expected to have
+/// that on PATH and often have not — and an adapter that is installed but
+/// reported missing is indistinguishable, to the person looking at the panel,
+/// from one that was never installed at all.
+const TOOLCHAIN_BINS: &[(&str, &str, &[&str])] = &[("dlv", "go", &["env", "GOPATH"])];
+
+/// Asks the toolchain where it installs binaries, and looks for one there.
+async fn toolchain_binary(program: &str) -> Option<PathBuf> {
+    let (_, toolchain, query) = TOOLCHAIN_BINS.iter().find(|(tool, _, _)| *tool == program)?;
+    let output = super::adapter_command(toolchain, *query).output().await.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if root.is_empty() {
+        return None;
+    }
+    let candidate = PathBuf::from(root)
+        .join("bin")
+        .join(format!("{program}{}", std::env::consts::EXE_SUFFIX));
+    candidate.is_file().then_some(candidate)
+}
+
+async fn runs(program: &str, probe_args: &[&str]) -> bool {
+    super::adapter_command(program, probe_args)
+        .output()
+        .await
+        .is_ok_and(|output| output.status.success())
+}
+
 impl AdapterSpec {
+    /// The name or path that actually starts this adapter, if anything does.
+    async fn usable_program(&self) -> Option<String> {
+        let Runner::OnPath {
+            program, probe_args, ..
+        } = &self.runner
+        else {
+            return None;
+        };
+        if runs(program, probe_args).await {
+            return Some((*program).to_string());
+        }
+        let fallback = toolchain_binary(program).await?;
+        let path = fallback.to_string_lossy().to_string();
+        runs(&path, probe_args).await.then_some(path)
+    }
+
     /// The command that starts this adapter on this machine.
-    pub fn resolved_command(&self, app: &AppHandle) -> Result<ResolvedCommand, String> {
+    pub async fn resolved_command(&self, app: &AppHandle) -> Result<ResolvedCommand, String> {
         match &self.runner {
             Runner::OnPath { program, args, .. } => Ok(ResolvedCommand {
-                program: (*program).to_string(),
+                program: self
+                    .usable_program()
+                    .await
+                    .ok_or_else(|| format!("DAP_MISSING::{}::{program} is not installed", self.id))?,
                 args: args.iter().map(|arg| (*arg).to_string()).collect(),
             }),
             Runner::NodeScript { script, args } => {
@@ -157,12 +225,7 @@ impl AdapterSpec {
     /// Whether this adapter is ready to run right now.
     async fn is_present(&self, app: &AppHandle) -> bool {
         match &self.runner {
-            Runner::OnPath {
-                program, probe_args, ..
-            } => super::adapter_command(program, *probe_args)
-                .output()
-                .await
-                .is_ok_and(|output| output.status.success()),
+            Runner::OnPath { .. } => self.usable_program().await.is_some(),
             Runner::NodeScript { script, .. } => adapters_dir(app)
                 .map(|dir| dir.join(script).is_file())
                 .unwrap_or(false),
@@ -273,7 +336,7 @@ async fn run(program: &str, args: &[&str]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{spec_for, Runner, Transport, ADAPTERS};
+    use super::{spec_for, Runner, Transport, ADAPTERS, TOOLCHAIN_BINS};
 
     #[test]
     fn node_and_typescript_share_the_one_adapter_that_reads_source_maps() {
@@ -285,7 +348,7 @@ mod tests {
 
     #[test]
     fn a_language_with_no_verified_adapter_says_so_instead_of_guessing() {
-        for language in ["cobol", "go", "csharp", "java"] {
+        for language in ["cobol", "csharp", "java"] {
             assert!(
                 spec_for(language).is_none(),
                 "{language} must not be offered until its adapter is driven for real"
@@ -309,6 +372,52 @@ mod tests {
             probe_args.iter().any(|arg| arg.contains("import debugpy")),
             "the probe must import the adapter, not just find python"
         );
+    }
+
+    /// delve is a headless TCP server by its own documentation, and it must be
+    /// asked for a free port on IPv4 - the same trap js-debug sets.
+    #[test]
+    fn delve_is_reached_over_tcp_on_a_port_the_os_picks() {
+        let spec = spec_for("go").expect("go is served");
+        assert_eq!(spec.id, "delve");
+        assert_eq!(spec.transport, Transport::TcpServer);
+        let Runner::OnPath {
+            program,
+            args,
+            probe_args,
+        } = &spec.runner
+        else {
+            panic!("delve is installed by the Go toolchain, not downloaded");
+        };
+        assert_eq!(*program, "dlv");
+        assert!(args.contains(&"dap"), "the DAP server is a subcommand: {args:?}");
+        assert!(
+            args.iter().any(|arg| arg.contains("--listen=127.0.0.1:0")),
+            "delve must be given an IPv4 address and a port the OS picks: {args:?}"
+        );
+        assert!(
+            !probe_args.is_empty(),
+            "a Go toolchain alone does not prove delve is there"
+        );
+    }
+
+    /// A tool listed as toolchain-installed has to be a tool the catalog looks
+    /// for on PATH, or the fallback lookup can never run.
+    #[test]
+    fn every_toolchain_installed_tool_is_one_the_catalog_looks_up() {
+        for (tool, toolchain, query) in TOOLCHAIN_BINS {
+            assert!(
+                !query.is_empty(),
+                "{toolchain} needs a query to answer where {tool} lands"
+            );
+            assert!(
+                ADAPTERS.iter().any(|spec| matches!(
+                    spec.runner,
+                    Runner::OnPath { program, .. } if program == *tool
+                )),
+                "{tool} is not a program any adapter runs"
+            );
+        }
     }
 
     #[test]

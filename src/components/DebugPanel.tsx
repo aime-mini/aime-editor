@@ -195,11 +195,18 @@ function Breakpoints() {
             key={`${path}:${String(breakpoint.line)}`}
             className="group flex items-center gap-1.5 px-2 py-0.5 text-[11.5px]"
           >
-            <CircleDot size={10} className={breakpoint.verified ? "text-danger" : "text-muted"} />
+            <CircleDot
+              size={10}
+              className={
+                breakpoint.verified ? "text-danger" : breakpoint.message ? "text-warn" : "text-muted"
+              }
+            />
             <button
               onClick={() => void openFile(path)}
               className="min-w-0 flex-1 truncate text-left text-muted hover:text-fg"
-              title={path}
+              // An adapter that refused the line said why; that reason is the
+              // difference between "not attached yet" and "never will be".
+              title={breakpoint.message ?? path}
             >
               {rootPath ? relativeTo(rootPath, path) : fileNameOf(path)}:{displayLine(breakpoint)}
             </button>

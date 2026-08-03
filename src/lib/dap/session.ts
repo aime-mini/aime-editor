@@ -1,6 +1,7 @@
 import {
   DapConnection,
   onAdapterExit,
+  onAdapterStdout,
   openConnection,
   startAdapter,
   stopAdapter,
@@ -86,7 +87,7 @@ export class DebugSession {
   private stoppedOn: { connectionId: number; threadId: number } | null = null;
   private exitCode: number | null = null;
   private ended = false;
-  private unlistenExit: UnlistenFn | null = null;
+  private readonly unlisteners: UnlistenFn[] = [];
 
   private constructor(
     private readonly adapterId: number,
@@ -96,9 +97,15 @@ export class DebugSession {
   static async launch(options: LaunchOptions): Promise<DebugSession> {
     const started = await startAdapter(options.languageId, options.root);
     const session = new DebugSession(started.adapterId, options);
-    session.unlistenExit = await onAdapterExit(started.adapterId, () => {
-      session.finish();
-    });
+    session.unlisteners.push(
+      await onAdapterExit(started.adapterId, () => {
+        session.finish();
+      }),
+      // Adapters that print the program's output rather than sending it.
+      await onAdapterStdout(started.adapterId, (text) => {
+        options.callbacks.onOutput({ category: "stdout", output: text });
+      }),
+    );
 
     try {
       const parent = await session.openSession(started.connectionId);
@@ -373,8 +380,10 @@ export class DebugSession {
     if (this.ended) return;
     this.ended = true;
     this.stoppedOn = null;
-    this.unlistenExit?.();
-    this.unlistenExit = null;
+    this.unlisteners.forEach((unlisten) => {
+      unlisten();
+    });
+    this.unlisteners.length = 0;
     this.options.callbacks.onEnded(this.exitCode);
   }
 }

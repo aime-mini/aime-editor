@@ -37,7 +37,7 @@ describe("applyBreakpointAnswer", () => {
   it("draws the marker where the adapter put it, not where the user clicked", () => {
     // Measured against debugpy 1.8.21: line 4 (a blank line) comes back as 3.
     const [moved] = applyBreakpointAnswer([newBreakpoint(4)], [{ id: 1, verified: true, line: 3 }]);
-    expect(moved).toEqual({ line: 4, actualLine: 3, verified: true, id: 1 });
+    expect(moved).toEqual({ line: 4, actualLine: 3, verified: true, id: 1, message: null });
     expect(displayLine(moved)).toBe(3);
   });
 
@@ -50,22 +50,22 @@ describe("applyBreakpointAnswer", () => {
       { id: 1, verified: false, line: 9 },
     ];
     expect(applyBreakpointAnswer(requested, fromZero)).toEqual([
-      { line: 4, actualLine: 3, verified: true, id: 0 },
-      { line: 9, actualLine: 9, verified: false, id: 1 },
+      { line: 4, actualLine: 3, verified: true, id: 0, message: null },
+      { line: 9, actualLine: 9, verified: false, id: 1, message: null },
     ]);
   });
 
   it("leaves a breakpoint the adapter skipped unverified instead of shifting the rest", () => {
     const requested = [newBreakpoint(4), newBreakpoint(9)];
     expect(applyBreakpointAnswer(requested, [{ verified: true, line: 3 }])).toEqual([
-      { line: 4, actualLine: 3, verified: true, id: null },
-      { line: 9, actualLine: null, verified: false, id: null },
+      { line: 4, actualLine: 3, verified: true, id: null, message: null },
+      { line: 9, actualLine: null, verified: false, id: null, message: null },
     ]);
   });
 
   it("treats an answer with no line as agreeing with the request", () => {
     expect(applyBreakpointAnswer([newBreakpoint(7)], [{ verified: true }])).toEqual([
-      { line: 7, actualLine: 7, verified: true, id: null },
+      { line: 7, actualLine: 7, verified: true, id: null, message: null },
     ]);
   });
 
@@ -74,7 +74,13 @@ describe("applyBreakpointAnswer", () => {
     // both, which is what makes the next `setBreakpoints` ask the same question.
     const once = applyBreakpointAnswer([newBreakpoint(5)], [{ verified: true, line: 3 }]);
     const twice = applyBreakpointAnswer(once, []);
-    expect(twice[0]).toEqual({ line: 5, actualLine: null, verified: false, id: null });
+    expect(twice[0]).toEqual({
+      line: 5,
+      actualLine: null,
+      verified: false,
+      id: null,
+      message: null,
+    });
   });
 });
 
@@ -105,6 +111,7 @@ describe("applyBreakpointEvent", () => {
       actualLine: 8,
       verified: false,
       id: 7,
+      message: null,
     });
   });
 

@@ -89,7 +89,8 @@ export function useDebugGutter(
         .getRanges()
         .map((range) => range.startLineNumber)
         .sort((a, b) => a - b);
-      if (!sameLines(moved, linesInStore())) {
+      const expected = linesInStore();
+      if (!sameLines(moved, expected)) {
         useDebug.getState().replaceBreakpoints(openFilePath, moved);
       }
     });

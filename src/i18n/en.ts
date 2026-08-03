@@ -264,6 +264,8 @@ export const en = {
 
   "debug.console": "Debug Console",
   "debug.clearConsole": "Clear the console",
+  "debug.replPlaceholder": "Evaluate an expression in the selected frame - ↑ for earlier ones",
+  "debug.replDisabled": "Pause the program to evaluate expressions here",
   "debug.noOutput": "Nothing printed yet.",
   "debug.exited": "Program exited with code {code}",
   "debug.running": "Running",

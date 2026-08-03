@@ -41,6 +41,9 @@ const MESSAGE_EVENT: &str = "dap:message";
 const CLOSED_EVENT: &str = "dap:closed";
 /// The adapter process ended — every connection on it is gone with it.
 const EXIT_EVENT: &str = "dap:exit";
+/// A line the adapter process printed on its own stdout, which for some
+/// adapters is where the debugged program's output ends up.
+const STDOUT_EVENT: &str = "dap:stdout";
 
 /// How long a TCP adapter has to announce its address before Aime gives up.
 /// Generous on purpose: the first start also pays Node's own boot time, and a
@@ -106,6 +109,13 @@ struct AdapterPayload {
     adapter_id: u64,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StdoutPayload {
+    adapter_id: u64,
+    text: String,
+}
+
 /// A started adapter, and the first connection to it.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,10 +158,18 @@ fn announced_address(line: &str) -> Option<SocketAddr> {
     line.split_whitespace().last()?.parse().ok()
 }
 
+/// A TCP adapter's own stdout, once the address has been read off it.
+type AdapterOutput = tokio::io::Lines<BufReader<tokio::process::ChildStdout>>;
+
 /// Waits for a TCP adapter to say where it is listening, keeping everything it
 /// printed. An adapter that dies during startup explains itself in that output,
 /// so the text is carried into the error rather than dropped.
-async fn wait_for_address(child: &mut Child) -> Result<SocketAddr, String> {
+///
+/// The reader comes back with the address because the interesting part is often
+/// still to come: measured, `dlv dap` writes the debugged program's stdout to
+/// its own, not as `output` events, so closing this stream would lose every
+/// line a Go program prints.
+async fn wait_for_address(child: &mut Child) -> Result<(SocketAddr, AdapterOutput), String> {
     let stdout = child
         .stdout
         .take()
@@ -172,7 +190,7 @@ async fn wait_for_address(child: &mut Child) -> Result<SocketAddr, String> {
     .await;
 
     match found {
-        Ok(Some(address)) => Ok(address),
+        Ok(Some(address)) => Ok((address, lines)),
         Ok(None) => Err(format!(
             "The debug adapter stopped before it was ready.\n{}",
             transcript.trim()
@@ -196,7 +214,7 @@ pub async fn dap_start(
     root: String,
 ) -> Result<StartedAdapter, String> {
     let spec = spec_for(&language_id).ok_or_else(|| format!("No debug adapter for {language_id}"))?;
-    let command = spec.resolved_command(&app)?;
+    let command = spec.resolved_command(&app).await?;
 
     let mut child = adapter_command(&command.program, &command.args)
         .current_dir(&root)
@@ -352,11 +370,33 @@ async fn reach(
     match transport {
         Transport::Stdio => Ok((None, open_stdio_connection(app, window_label, adapter_id, child)?)),
         Transport::TcpServer => {
-            let address = wait_for_address(child).await?;
+            let (address, remaining) = wait_for_address(child).await?;
             let connection_id = open_tcp_connection(app, window_label, adapter_id, address).await?;
+            relay_stdout(app, window_label, adapter_id, remaining);
             Ok((Some(address), connection_id))
         }
     }
+}
+
+/// Forwards whatever the adapter keeps printing to the window that owns it.
+///
+/// Not protocol traffic — this is the process's own stdout, and for delve it is
+/// the only place the debugged program's output appears at all.
+fn relay_stdout(app: &AppHandle, window_label: &str, adapter_id: u64, mut lines: AdapterOutput) {
+    let app = app.clone();
+    let label = window_label.to_string();
+    tauri::async_runtime::spawn(async move {
+        while let Ok(Some(line)) = lines.next_line().await {
+            let payload = StdoutPayload {
+                adapter_id,
+                // The reader ate the newline; the console renders text, not rows.
+                text: format!("{line}\n"),
+            };
+            if app.emit_to(&label, STDOUT_EVENT, payload).is_err() {
+                break;
+            }
+        }
+    });
 }
 
 async fn open_tcp_connection(
@@ -513,7 +553,7 @@ mod tests {
             .spawn()
             .expect("js-debug starts");
 
-        let address = wait_for_address(&mut child).await.expect("an address");
+        let (address, _remaining) = wait_for_address(&mut child).await.expect("an address");
         let stream = tokio::net::TcpStream::connect(address)
             .await
             .expect("the adapter accepts connections");

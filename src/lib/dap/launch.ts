@@ -34,6 +34,13 @@ export function launchConfig(configType: string, program: string, cwd: string): 
   if (configType === "python") {
     return { ...common, justMyCode: true };
   }
+  if (configType === "go") {
+    // delve compiles the program before running it, and `mode` is how its
+    // launch request is told to: without it there is nothing to debug. "debug"
+    // is `dlv debug` — build this source, then run the binary under the
+    // debugger — which is what pressing F5 on a .go file means.
+    return { ...common, mode: "debug" };
+  }
   return common;
 }
 
@@ -50,10 +57,20 @@ export interface EditorBreakpoint {
    * `breakpoint` event carries, and js-debug resolves its breakpoints that way.
    */
   id: number | null;
+  /**
+   * Why the adapter would not take it, in the adapter's own words.
+   *
+   * Not decoration: delve refuses a breakpoint on a line without a statement
+   * rather than moving it to one ("could not find statement at main.go:8,
+   * please use a line with a statement"). Dropping that leaves the user with a
+   * grey dot and no idea why, on a line where js-debug would simply have moved
+   * it - the reason is the only thing that distinguishes the two.
+   */
+  message: string | null;
 }
 
 export function newBreakpoint(line: number): EditorBreakpoint {
-  return { line, actualLine: null, verified: false, id: null };
+  return { line, actualLine: null, verified: false, id: null, message: null };
 }
 
 /** The line to draw the marker on: what the adapter said, or what was asked. */
@@ -82,7 +99,7 @@ export function applyBreakpointAnswer(
 ): EditorBreakpoint[] {
   return requested.map((breakpoint, index) => {
     const answer = answered[index] as AdapterBreakpoint | undefined;
-    if (!answer) return { ...breakpoint, actualLine: null, verified: false, id: null };
+    if (!answer) return { ...breakpoint, actualLine: null, verified: false, id: null, message: null };
     return {
       line: breakpoint.line,
       // A provisional answer carries no line; the requested one is the best
@@ -90,6 +107,7 @@ export function applyBreakpointAnswer(
       actualLine: answer.line ?? breakpoint.line,
       verified: answer.verified === true,
       id: answer.id ?? null,
+      message: answer.message ?? null,
     };
   });
 }
@@ -119,6 +137,7 @@ export function applyBreakpointEvent(
     ...target,
     actualLine: changed.line ?? target.actualLine,
     verified: changed.verified === true,
+    message: changed.message ?? null,
   };
   return updated;
 }
