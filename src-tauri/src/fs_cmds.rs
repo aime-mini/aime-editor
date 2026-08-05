@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 
 #[derive(Serialize)]
@@ -81,17 +82,49 @@ pub fn list_files(root: String) -> Result<Vec<String>, String> {
     Ok(files)
 }
 
-#[tauri::command]
-pub fn read_file(path: String) -> Result<String, String> {
-    fs::read_to_string(&path).map_err(|e| e.to_string())
+/// The byte order mark, as the character it decodes to. Visual Studio puts one
+/// at the top of the C# files it generates, so most of a .NET solution has it.
+const BOM: &str = "\u{feff}";
+
+/// True when the file on disk starts with a UTF-8 BOM. Read from the bytes each
+/// time rather than remembered, so a file another editor changed still keeps
+/// whatever it has now.
+fn starts_with_bom(path: &Path) -> bool {
+    let Ok(mut file) = fs::File::open(path) else {
+        return false; // a file that does not exist yet has no mark to keep
+    };
+    let mut head = [0u8; 3];
+    file.read_exact(&mut head).is_ok() && head == [0xEF, 0xBB, 0xBF]
 }
 
+/// Reads a file for the editor, without the byte order mark.
+///
+/// Decoded, the mark is an ordinary character: left in, it draws a stray glyph
+/// in front of line 1 and sits between the cursor and the first real character.
+/// `write_file` puts it back, so nothing is lost by hiding it here.
+#[tauri::command]
+pub fn read_file(path: String) -> Result<String, String> {
+    let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    Ok(text.strip_prefix(BOM).unwrap_or(&text).to_string())
+}
+
+/// Writes a file, keeping the byte order mark it had.
+///
+/// Dropping it would rewrite the first bytes of every file the user touches -
+/// a one-line diff in git for each of them, on files nobody meant to change.
 #[tauri::command]
 pub fn write_file(path: String, content: String) -> Result<(), String> {
-    if let Some(parent) = Path::new(&path).parent() {
+    let file = Path::new(&path);
+    if let Some(parent) = file.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    fs::write(&path, content).map_err(|e| e.to_string())
+    let body = content.strip_prefix(BOM).unwrap_or(&content);
+    let text = if starts_with_bom(file) {
+        format!("{BOM}{body}")
+    } else {
+        body.to_string()
+    };
+    fs::write(&path, text).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -114,5 +147,69 @@ pub fn delete_path(path: String) -> Result<(), String> {
         fs::remove_dir_all(target).map_err(|e| e.to_string())
     } else {
         fs::remove_file(target).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    /// Real files, because the whole point is the bytes on disk.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(name);
+        fs::remove_file(&path).ok();
+        path
+    }
+
+    const MARKED: &[u8] = b"\xEF\xBB\xBFusing Nop.Core.Caching;\n";
+
+    #[test]
+    fn the_editor_never_sees_the_byte_order_mark() {
+        let path = scratch("aime-bom-read.cs");
+        fs::write(&path, MARKED).expect("write");
+
+        let text = super::read_file(path.to_string_lossy().to_string()).expect("read");
+
+        assert!(text.starts_with("using"), "the mark reached the editor: {text:?}");
+        fs::remove_file(&path).ok();
+    }
+
+    /// Saving must not quietly rewrite the first bytes of a .NET solution.
+    #[test]
+    fn a_file_that_had_the_mark_still_has_it_after_a_save() {
+        let path = scratch("aime-bom-write.cs");
+        fs::write(&path, MARKED).expect("write");
+
+        let text = super::read_file(path.to_string_lossy().to_string()).expect("read");
+        super::write_file(path.to_string_lossy().to_string(), text).expect("write");
+
+        assert_eq!(
+            fs::read(&path).expect("read back"),
+            MARKED,
+            "the file changed on disk"
+        );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_file_without_the_mark_is_not_given_one() {
+        let path = scratch("aime-bom-none.cs");
+        let plain = b"using Nop.Core.Caching;\n";
+        fs::write(&path, plain).expect("write");
+
+        super::write_file(path.to_string_lossy().to_string(), "changed\n".to_string()).expect("write");
+
+        assert_eq!(fs::read(&path).expect("read back"), b"changed\n");
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_new_file_is_written_as_asked() {
+        let path = scratch("aime-bom-new.cs");
+
+        super::write_file(path.to_string_lossy().to_string(), "fresh\n".to_string()).expect("write");
+
+        assert_eq!(fs::read(&path).expect("read back"), b"fresh\n");
+        fs::remove_file(&path).ok();
     }
 }

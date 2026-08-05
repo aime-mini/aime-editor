@@ -26,6 +26,26 @@ pub struct ToolStatus {
     pub install_hint: String,
     /// true when Aime is unusable without it, false when it only adds features.
     pub required: bool,
+    /// Whether Aime could run the install here: the hint is a command, and the
+    /// program that command runs is on this machine. A download page is not an
+    /// install, and `go install …` without Go is a spawn failure - offering
+    /// either as a button is a promise the row cannot keep.
+    pub installable: bool,
+}
+
+/// Whether a hint is something Aime could run right now.
+async fn can_run_install(installed: bool, install_hint: &str) -> bool {
+    if installed {
+        return false;
+    }
+    // A download Aime performs itself is always runnable.
+    if install_hint.contains("Aime downloads it") {
+        return true;
+    }
+    match install_hint.split_whitespace().next() {
+        Some(program) if !program.starts_with("http") => version_of(program).await.is_some(),
+        _ => false,
+    }
 }
 
 /// AI CLIs, reported with their sign-in state.
@@ -45,7 +65,7 @@ const TOOLS: [(&str, &str, &str, bool); 2] = [
 ];
 
 /// First line of `<tool> --version`, or `None` when the tool cannot be run.
-async fn version_of(command: &str) -> Option<String> {
+pub(crate) async fn version_of(command: &str) -> Option<String> {
     let output = cli_command(command, ["--version"]).output().await.ok()?;
     if !output.status.success() {
         return None;
@@ -63,12 +83,14 @@ pub async fn environment_report() -> Vec<ToolStatus> {
     for (id, label, install_hint) in PROVIDERS {
         // Reuse the AI panel's own probe, so the two can never disagree.
         let health = provider_health(id.to_string()).await.ok();
+        let installed = health.as_ref().is_some_and(|h| h.installed);
         report.push(ToolStatus {
             id: id.to_string(),
             label: label.to_string(),
-            installed: health.as_ref().is_some_and(|h| h.installed),
+            installed,
             version: health.as_ref().and_then(|h| h.version.clone()),
             signed_in: health.as_ref().and_then(|h| h.signed_in),
+            installable: can_run_install(installed, install_hint).await,
             install_hint: install_hint.to_string(),
             // AI is optional by design (ARCHITECTURE.md §1.6).
             required: false,
@@ -77,12 +99,14 @@ pub async fn environment_report() -> Vec<ToolStatus> {
 
     for (id, label, install_hint, required) in TOOLS {
         let version = version_of(id).await;
+        let installed = version.is_some();
         report.push(ToolStatus {
             id: id.to_string(),
             label: label.to_string(),
-            installed: version.is_some(),
+            installed,
             version,
             signed_in: None,
+            installable: can_run_install(installed, install_hint).await,
             install_hint: install_hint.to_string(),
             required,
         });
@@ -93,7 +117,7 @@ pub async fn environment_report() -> Vec<ToolStatus> {
 
 /// Language servers Aime knows about, for the same "what do I have?" view.
 #[tauri::command]
-pub async fn language_server_report() -> Vec<ToolStatus> {
+pub async fn language_server_report(app: AppHandle) -> Vec<ToolStatus> {
     let mut report = Vec::new();
     // One row per server, not per language: typescript and javascript share one.
     for language in [
@@ -110,7 +134,8 @@ pub async fn language_server_report() -> Vec<ToolStatus> {
         "cpp",
         "java",
     ] {
-        let Ok(Some(availability)) = crate::lsp::lsp_availability(language.to_string()).await else {
+        let Ok(Some(availability)) = crate::lsp::lsp_availability(app.clone(), language.to_string()).await
+        else {
             continue;
         };
         report.push(ToolStatus {
@@ -119,6 +144,7 @@ pub async fn language_server_report() -> Vec<ToolStatus> {
             installed: availability.available,
             version: None,
             signed_in: None,
+            installable: availability.installable,
             install_hint: availability.install_hint,
             required: false,
         });
@@ -133,6 +159,7 @@ pub async fn language_server_report() -> Vec<ToolStatus> {
             installed: true,
             version: None,
             signed_in: None,
+            installable: false,
             install_hint: String::new(),
             required: false,
         });
@@ -141,33 +168,51 @@ pub async fn language_server_report() -> Vec<ToolStatus> {
     report
 }
 
-/// Tools Aime sets up by itself on first launch.
+/// Languages Aime sets itself up for, and the program each install needs.
 ///
-/// The line is drawn at what installs into the user's own npm prefix in a few
-/// seconds and needs no elevation: those run unattended, because asking about
-/// each one is a worse experience than the install itself. Anything that pulls
-/// a toolchain - Go, .NET, LLVM, a JDK - stays an explicit offer, since it can
-/// mean hundreds of megabytes or an elevation prompt.
+/// The user's list of what must simply work after installing Aime: go, node,
+/// TypeScript, JavaScript, HTML, CSS, Python, Rust, C# and SQL. Four of those
+/// need nothing at all - Monaco carries HTML, CSS, JavaScript and TypeScript
+/// itself - and the rest are here.
+///
+/// The line is drawn at installs that need no elevation and no toolchain the
+/// machine does not already have. npm packages land in the user's own prefix in
+/// seconds. `gopls`, `rust-analyzer` and `csharp-ls` are the same kind of thing
+/// *provided the toolchain is there* - `go install` without Go is a spawn
+/// failure, so the runtime is checked first and the language is simply left
+/// alone otherwise. Nothing here pulls a toolchain: a JDK or LLVM stays an
+/// explicit offer, and a language with no runtime at all is the AI's job
+/// (`lib/aiSetup.ts`), not a bare command in a status bar.
+const UNATTENDED_SERVERS: &[(&str, &str)] = &[
+    ("typescript", "npm"),
+    ("python", "npm"),
+    ("php", "npm"),
+    ("sql", "npm"),
+    ("shell", "npm"),
+    ("yaml", "npm"),
+    ("dockerfile", "npm"),
+    ("go", "go"),
+    ("rust", "rustup"),
+];
+
+/// Tools Aime sets up by itself on first launch.
 #[tauri::command]
-pub async fn unattended_setup_targets() -> Vec<String> {
+pub async fn unattended_setup_targets(app: AppHandle) -> Vec<String> {
     let mut targets = Vec::new();
-    for language in [
-        "typescript",
-        "python",
-        "php",
-        "sql",
-        "shell",
-        "yaml",
-        "dockerfile",
-    ] {
-        let installable =
-            install_command_for(language).is_some_and(|command| command.starts_with("npm install"));
+    for (language, runtime) in UNATTENDED_SERVERS {
+        // The install command has to be the one that runtime runs: a table that
+        // drifted would otherwise mean checking for `npm` and running `go`.
+        let matches_runtime = install_command_for(language)
+            .is_some_and(|command| command.split_whitespace().next() == Some(runtime));
+        if !matches_runtime || version_of(runtime).await.is_none() {
+            continue;
+        }
         let missing = matches!(
-            crate::lsp::lsp_availability(language.to_string()).await,
+            crate::lsp::lsp_availability(app.clone(), (*language).to_string()).await,
             Ok(Some(ref availability)) if !availability.available
         );
-        if installable && missing {
-            targets.push(language.to_string());
+        if missing {
+            targets.push((*language).to_string());
         }
     }
     targets
@@ -208,6 +253,25 @@ fn install_command_for(tool_id: &str) -> Option<String> {
 /// installed that Aime did not itself propose.
 #[tauri::command]
 pub async fn install_tool(app: AppHandle, tool_id: String) -> Result<i32, String> {
+    // A server Aime fetches itself is not a command line: it is a download, and
+    // the same log window reports it line by line.
+    if let Some(spec) = crate::lsp::spec_for(&tool_id) {
+        if let Some(archive) = &spec.archive {
+            let emit = |line: String| {
+                let _ = app.emit(
+                    INSTALL_OUTPUT_EVENT,
+                    InstallLine {
+                        tool_id: tool_id.clone(),
+                        line,
+                    },
+                );
+            };
+            emit(format!("Downloading {} ({})", spec.command, archive.size_hint));
+            crate::lsp::lsp_download(app.clone(), tool_id.clone()).await?;
+            emit("done".to_string());
+            return Ok(0);
+        }
+    }
     let command = install_command_for(&tool_id).ok_or_else(|| format!("Nothing to install for {tool_id}"))?;
     let tokens = tokenize_command(&command);
     let (program, args) = tokens
@@ -266,4 +330,52 @@ pub async fn install_tool(app: AppHandle, tool_id: String) -> Result<i32, String
 
     let status = child.wait().await.map_err(|e| e.to_string())?;
     Ok(status.code().unwrap_or(-1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UNATTENDED_SERVERS;
+
+    /// Every language Aime installs for itself must have a command in the LSP
+    /// table, and that command must be the one its declared runtime runs -
+    /// otherwise Aime checks for one program and then runs another.
+    #[test]
+    fn every_unattended_install_is_run_by_the_runtime_it_is_checked_for() {
+        for (language, runtime) in UNATTENDED_SERVERS {
+            let spec = crate::lsp::spec_for(language)
+                .unwrap_or_else(|| panic!("{language} has no language server in the table"));
+            assert_eq!(
+                spec.install_hint.split_whitespace().next(),
+                Some(*runtime),
+                "{language} is installed by {}, not by {runtime}",
+                spec.install_hint
+            );
+        }
+    }
+
+    /// The ten languages the user asked to simply work: the four Monaco carries
+    /// on its own are absent because they need nothing, and C# because its server
+    /// is a download worth asking about. The rest install themselves.
+    #[test]
+    fn the_languages_that_must_work_out_of_the_box_are_covered() {
+        let covered: Vec<&str> = UNATTENDED_SERVERS.iter().map(|(language, _)| *language).collect();
+        for language in ["typescript", "python", "go", "rust", "sql"] {
+            assert!(
+                covered.contains(&language),
+                "{language} is not set up on first launch"
+            );
+        }
+        // C# is covered by an explicit offer instead: its server is Roslyn, and a
+        // 65 MB download is not something to do behind someone's back.
+        assert!(
+            !covered.contains(&"csharp"),
+            "Roslyn belongs to a one-click offer with a size in the sentence, not to first launch"
+        );
+        for monaco_own in ["html", "css", "javascript"] {
+            assert!(
+                !covered.contains(&monaco_own),
+                "{monaco_own} needs no server: Monaco brings its own language service"
+            );
+        }
+    }
 }

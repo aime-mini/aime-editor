@@ -11,6 +11,23 @@ import type * as Monaco from "monaco-editor";
  * and which language server to start.
  */
 
+/**
+ * Languages Monaco brings its own IntelliSense for - outline included.
+ *
+ * They need no language server, so anything that asks "does this file have an
+ * outline" has to count them as well as the servers: see sticky scroll in
+ * `EditorPane`. This is the same list the Help screen names.
+ */
+export const LANGUAGES_MONACO_OUTLINES: ReadonlySet<string> = new Set([
+  "typescript",
+  "javascript",
+  "html",
+  "css",
+  "scss",
+  "less",
+  "json",
+]);
+
 /** Where Aime deliberately differs from - or fills a gap in - the registry. */
 const OVERRIDES: Record<string, string> = {
   // Monaco ships no TOML grammar; INI is close enough to stay readable.

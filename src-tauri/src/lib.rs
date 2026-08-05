@@ -1,4 +1,5 @@
 mod aime_dir;
+mod archive;
 mod checkpoint;
 mod cli;
 mod dap;
@@ -10,6 +11,7 @@ mod git;
 mod lsp;
 mod mcp;
 mod memory;
+mod plugins;
 mod providers;
 mod session;
 mod tasks;
@@ -91,6 +93,7 @@ pub fn run() {
             git::git_stage,
             git::git_unstage,
             git::git_discard,
+            git::git_ignore,
             git::git_commit,
             git::git_push,
             git::git_pull,
@@ -135,6 +138,8 @@ pub fn run() {
             mcp::mcp_remove,
             mcp::mcp_login_command,
             lsp::lsp_availability,
+            lsp::lsp_download,
+            lsp::lsp_project_files,
             lsp::lsp_start,
             lsp::lsp_send,
             lsp::lsp_stop,
@@ -142,10 +147,18 @@ pub fn run() {
             dap::catalog::dap_availability,
             dap::catalog::dap_download,
             dap::catalog::dap_program,
+            dap::targets::dap_targets,
+            dap::learned::dap_mark_verified,
+            dap::learned::dap_devices,
+            dap::options::dap_launch_options,
+            dap::options::dap_set_launch_options,
             dap::dap_start,
             dap::dap_connect,
             dap::dap_send,
             dap::dap_stop,
+            plugins::plugin_list,
+            plugins::plugin_source,
+            plugins::plugins_folder,
             window_cmds::open_new_window,
         ])
         .run(tauri::generate_context!())

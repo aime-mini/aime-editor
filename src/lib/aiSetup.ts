@@ -13,6 +13,14 @@
  * cannot guess is how Aime decides the gap is closed.
  */
 
+/** The debug adapter Aime launches for a language, missing from this machine. */
+export interface MissingDebugger {
+  /** Aime launches this one; installing a different adapter changes nothing. */
+  adapterId: string;
+  /** What Aime would run to get it. */
+  installHint: string;
+}
+
 export interface SetupRequest {
   /** Monaco's language id — the same one the whole app keys off. */
   languageId: string;
@@ -22,13 +30,68 @@ export interface SetupRequest {
   serverCommand: string | null;
   /** What Aime would run to install that server, when it knows. */
   serverInstallHint: string | null;
-  /** True when Aime has no verified debug adapter for this language. */
-  debuggerMissing: boolean;
+  /**
+   * The adapter Aime drives for this language when this machine has not got it.
+   * Null whenever no install here would change anything — `lib/dap/availability.ts`
+   * holds which answers that covers, and why each one is silent.
+   */
+  missingDebugger: MissingDebugger | null;
+  /**
+   * True when Aime drives no adapter for this language at all, so no install
+   * alone can make F5 work — but writing one down can (see `TEACH_ADAPTER`).
+   */
+  teachDebugger: boolean;
+  /**
+   * Why Aime's check of a taught adapter failed, when it did. The agent gets its
+   * own entry back together with the protocol-level reason, which is the only
+   * way an iteration is worth anything.
+   */
+  verifyFailure?: string | null;
 }
+
+/**
+ * The contract for teaching Aime a debugger it does not ship.
+ *
+ * Written out in full, in the prompt, because the agent has no other way to
+ * learn it — and precise about the rules Aime enforces, since an entry that
+ * misses one fails verification and costs another turn. The shape is the one
+ * `dap/learned.rs` parses; its tests read the same literal, so the prompt and
+ * the parser cannot drift apart quietly.
+ */
+const TEACH_ADAPTER = [
+  "I have no debug adapter for this language at all, so F5 cannot work here until I am taught one.",
+  "If this is a language people run and step through - not a document, a stylesheet or a data format -",
+  "then teach me. Install the Debug Adapter Protocol adapter it uses, and write",
+  "`.aime/debug-adapters.json` in this project:",
+  "",
+  '{ "adapters": [{',
+  '  "id": "<the adapter\'s own name>",',
+  '  "languageIds": ["<my language id>"],',
+  '  "configType": "<the `type` its launch configuration needs>",',
+  '  "transport": "stdio" | "tcpServer",',
+  '  "program": "<what starts it>", "args": [...], "probeArgs": [...],',
+  '  "launch": { "<fields this adapter requires>": "..." },',
+  '  "prepare": { "command": "<compile step, if it needs one>" },',
+  '  "installHint": "<how to install it, for when it goes missing>",',
+  '  "verifyWith": { "program": "<a program in this project>", "line": <a line that runs> }',
+  "}] }",
+  "",
+  "The rules I enforce, so aim at them:",
+  "- `stdio` means the adapter speaks DAP on its own pipes; `tcpServer` means it prints the address",
+  "  it bound to and I dial in. Getting this wrong looks exactly like a hung adapter.",
+  "- `probeArgs` are arguments that make it print something and exit - I run them to tell whether it",
+  "  is installed. Leave them out and I only look for the program on PATH, which is weaker.",
+  "- `launch` is for fields the adapter itself requires (`mainClass`, `classPaths`, and so on). I add",
+  "  `type`, `request`, `program` and `cwd` myself; do not repeat them.",
+  "- `verifyWith` has to point at a program in this project and a line that really executes. I then",
+  "  start the adapter, set a breakpoint there, launch, and only believe the entry if it stops.",
+  "- Never write the `verified` field. I write that, and only after I have seen the stop myself.",
+].join("\n");
 
 /** Long enough to be unambiguous, short enough that the agent reads all of it. */
 export function buildSetupPrompt(request: SetupRequest): string {
-  const { languageId, relativePath, serverCommand, serverInstallHint, debuggerMissing } = request;
+  const { languageId, relativePath, serverCommand, serverInstallHint, missingDebugger } = request;
+  const { teachDebugger } = request;
 
   const gaps: string[] = [];
   if (serverCommand !== null) {
@@ -37,9 +100,20 @@ export function buildSetupPrompt(request: SetupRequest): string {
         (serverInstallHint === null ? "" : ` My own hint for it is \`${serverInstallHint}\`.`),
     );
   }
-  if (debuggerMissing) {
+  if (missingDebugger !== null) {
     gaps.push(
-      "- Debugging: I have no verified Debug Adapter Protocol adapter for this language, so F5 does nothing.",
+      `- Debugging: I drive the \`${missingDebugger.adapterId}\` Debug Adapter Protocol adapter for ` +
+        "this language and it is not on this machine, so F5 does nothing. My own hint for it is " +
+        `\`${missingDebugger.installHint}\`.`,
+    );
+  }
+  // The teach-only case: code intelligence is fine and there is no adapter to
+  // install, because none exists in me at all. Without this line the prompt
+  // would open with a "what is missing" heading over an empty list.
+  if (serverCommand === null && missingDebugger === null && teachDebugger) {
+    gaps.push(
+      "- Debugging: I drive no Debug Adapter Protocol adapter for this language and this project " +
+        "teaches me none, so F5 cannot work here at all.",
     );
   }
 
@@ -62,10 +136,17 @@ export function buildSetupPrompt(request: SetupRequest): string {
       ? ""
       : `When you are done, \`${serverCommand}\` must be runnable from a new shell: that is exactly ` +
         "what I probe for, and until it is on PATH I will keep reporting the language as unsupported.",
-    debuggerMissing
-      ? "For debugging, tell me which DAP adapter this language uses and where it now lives - I " +
-        "cannot offer stepping until an adapter has been verified against this project."
-      : "",
+    missingDebugger === null
+      ? ""
+      : `For debugging, I look for \`${missingDebugger.adapterId}\` itself rather than for the runtime ` +
+        "around it - a machine that has Python is not a machine that has debugpy - so install it into " +
+        "the toolchain this project actually uses, and tell me where it ended up.",
+    teachDebugger ? TEACH_ADAPTER : "",
+    request.verifyFailure == null
+      ? ""
+      : "There is already an entry for this language in `.aime/debug-adapters.json`, and my own check " +
+        "of it failed. Read that entry, fix it, and leave the `verified` field alone. What I saw:\n" +
+        request.verifyFailure,
   ]
     .filter((line) => line !== "")
     .join("\n");

@@ -6,14 +6,16 @@ import { KeyCode, KeyMod, Range as MonacoRange, type editor as MonacoEditor } fr
 import "../lib/monaco";
 import { translate, useT } from "../i18n";
 import { AI_ACTIONS, buildPrompt, labelOf } from "../lib/aiActions";
-import { buildSetupPrompt } from "../lib/aiSetup";
 import { registerInlineAi } from "../lib/aiInline";
-import { languageOf } from "../lib/languages";
+import { installableDebugger } from "../lib/dap/availability";
+import { LANGUAGES_MONACO_OUTLINES, languageOf } from "../lib/languages";
+import { setActiveEditor } from "../lib/monacoAccess";
 import { useAi } from "../stores/ai";
 import { useDebug } from "../stores/debug";
 import { useLayout } from "../stores/layout";
 import { useLsp } from "../stores/lsp";
 import { useGit } from "../stores/git";
+import { useSetup } from "../stores/setup";
 import { monacoThemeOf, useTheme } from "../stores/theme";
 import { useSettings } from "../stores/settings";
 import { useWorkspace } from "../stores/workspace";
@@ -24,10 +26,15 @@ import { useDebugGutter } from "./useDebugGutter";
 /**
  * Offers to close whatever gap this file's language has.
  *
- * Two kinds of gap, one banner: no language server (no completions, no types)
- * and no verified debug adapter (F5 does nothing). It appears exactly when the
- * gap matters — the moment such a file is open — and stays gone once dismissed
- * for that language.
+ * Two kinds of gap, one banner: a language server that is not installed (no
+ * completions, no types) and a debug adapter this machine has to provide (F5
+ * does nothing). It appears exactly when the gap matters — the moment such a
+ * file is open — and stays gone once dismissed for that language.
+ *
+ * It says nothing about debugging any other kind of file, and that is the whole
+ * design: `installableDebugger` answers only for a language Aime drives an
+ * adapter for, so a Markdown file, a stylesheet or a language whose adapter
+ * Aime has not shipped yet gets no offer that an install could not deliver.
  *
  * The AI button is the point of an AI editor: Aime knows precisely what it
  * probed for and did not find, so it hands the agent that brief and lets it
@@ -49,11 +56,13 @@ function SetupOffer({ languageId, relativePath }: { languageId: string; relative
   }, [languageId, probeAdapter]);
 
   const serverMissing = server?.kind === "missing";
-  // `null` is "no adapter for this language"; `undefined` is "not asked yet".
-  const debuggerMissing = adapter === null || (adapter !== undefined && !adapter.available);
-  if (dismissed.includes(languageId) || (!serverMissing && !debuggerMissing)) return null;
+  const missingDebugger = installableDebugger(adapter);
+  if (dismissed.includes(languageId) || (!serverMissing && missingDebugger === null)) return null;
 
-  const runnable = serverMissing && !server.installHint.startsWith("http");
+  // "Install it" only when the install could actually run: without Go on the
+  // machine, `go install …` is a spawn failure dressed as an offer, and that gap
+  // is the agent's to close.
+  const runnable = serverMissing && server.installable;
   const summary = serverMissing
     ? t("lsp.offer", { language: languageId, command: server.command })
     : t("setup.debuggerOnly", { language: languageId });
@@ -64,24 +73,24 @@ function SetupOffer({ languageId, relativePath }: { languageId: string; relative
       <span className="min-w-0 flex-1 truncate text-warn">{summary}</span>
       <button
         onClick={() => {
-          const { rootPath } = useWorkspace.getState();
-          if (!rootPath) return;
-          useLayout.getState().setAiPanelVisible(true);
-          void useAi.getState().sendPrompt(
-            buildSetupPrompt({
-              languageId,
-              relativePath,
-              serverCommand: serverMissing ? server.command : null,
-              serverInstallHint: serverMissing ? server.installHint : null,
-              debuggerMissing,
-            }),
-            rootPath,
-          );
+          // Its own run, with its own progress modal - not the chat panel. A
+          // setup turn can last a quarter of an hour, and it must not spend the
+          // user's conversation or bury their own thread while it does.
+          void useSetup.getState().start({
+            languageId,
+            relativePath,
+            serverCommand: serverMissing ? server.command : null,
+            serverInstallHint: serverMissing ? server.installHint : null,
+            missingDebugger,
+            // No adapter at all: an install cannot help, but being taught one
+            // can - so the agent gets the contract for writing it down.
+            teachDebugger: adapter === null,
+          });
           // The agent works in the open; this banner has said its piece.
           setDismissed((current) => [...current, languageId]);
         }}
         title={t("setup.aiHint")}
-        className="flex shrink-0 items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 text-[11.5px] font-medium text-white hover:opacity-90"
+        className="flex shrink-0 items-center gap-1.5 rounded-md bg-accent-strong px-2.5 py-1 text-[11.5px] font-medium text-white hover:opacity-90"
       >
         <Sparkles size={11} /> {t("setup.ai")}
       </button>
@@ -168,6 +177,70 @@ function EditorTabs() {
   );
 }
 
+/** Set while the open file is one Aime could stop inside; gates F9 below. */
+const DEBUGGABLE_FILE = "aimeFileIsDebuggable";
+
+/**
+ * F9 on the cursor line, the shortcut the gutter click has in every editor.
+ *
+ * Both the key and the context-menu entry are withdrawn in a file Aime drives
+ * no adapter for — a breakpoint could never bind there, and offering the
+ * gesture only to refuse it is how a README ends up looking debuggable. The
+ * returned key starts out true: until the probe has answered, being able to set
+ * a breakpoint in a program file matters more than hiding one in a document.
+ */
+function registerBreakpointAction(
+  editor: MonacoEditor.IStandaloneCodeEditor,
+): MonacoEditor.IContextKey<boolean> {
+  const debuggable = editor.createContextKey<boolean>(DEBUGGABLE_FILE, true);
+  editor.addAction({
+    id: "aime.debug.editBreakpointRule",
+    label: translate("debug.ruleAction"),
+    // Shift+F9 is where every editor puts a conditional breakpoint.
+    keybindings: [KeyMod.Shift | KeyCode.F9],
+    precondition: DEBUGGABLE_FILE,
+    contextMenuGroupId: "debug",
+    contextMenuOrder: 1,
+    run: (instance) => {
+      const path = useWorkspace.getState().openFilePath;
+      const line = instance.getPosition()?.lineNumber;
+      if (path && line !== undefined) void useDebug.getState().editBreakpointRule(path, line);
+    },
+  });
+  editor.addAction({
+    id: "aime.debug.toggleBreakpoint",
+    label: translate("debug.toggleBreakpoint"),
+    keybindings: [KeyCode.F9],
+    precondition: DEBUGGABLE_FILE,
+    contextMenuGroupId: "debug",
+    run: (instance) => {
+      const path = useWorkspace.getState().openFilePath;
+      const line = instance.getPosition()?.lineNumber;
+      if (path && line !== undefined) void useDebug.getState().toggleBreakpoint(path, line);
+    },
+  });
+  return debuggable;
+}
+
+/**
+ * The command palette, from inside the editor.
+ *
+ * Monaco owns `Ctrl+K` as a chord prefix and stops the event before the window
+ * handler sees it, so without this the palette simply would not open while the
+ * cursor was in a file - which is most of the time. Registered as an editor
+ * action for the same reason F9 is: the editor is where the keystroke lands.
+ */
+function registerPaletteAction(editor: MonacoEditor.IStandaloneCodeEditor) {
+  editor.addAction({
+    id: "aime.palette",
+    label: translate("cmd.palette"),
+    keybindings: [KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.KeyP],
+    run: () => {
+      useLayout.getState().togglePalette();
+    },
+  });
+}
+
 /**
  * Puts the AI in the editor's own right-click menu.
  *
@@ -175,21 +248,6 @@ function EditorTabs() {
  * which file they are in. With nothing selected they act on the whole file,
  * because "explain this file" is a question people ask just as often.
  */
-/** F9 on the cursor line, the shortcut the gutter click has in every editor. */
-function registerBreakpointAction(editor: MonacoEditor.IStandaloneCodeEditor) {
-  editor.addAction({
-    id: "aime.debug.toggleBreakpoint",
-    label: translate("debug.toggleBreakpoint"),
-    keybindings: [KeyCode.F9],
-    contextMenuGroupId: "debug",
-    run: (instance) => {
-      const path = useWorkspace.getState().openFilePath;
-      const line = instance.getPosition()?.lineNumber;
-      if (path && line !== undefined) useDebug.getState().toggleBreakpoint(path, line);
-    },
-  });
-}
-
 function registerAiActions(editor: MonacoEditor.IStandaloneCodeEditor) {
   editor.addAction({
     id: "aime.ai.suggest",
@@ -239,6 +297,12 @@ const EDITOR_OPTIONS = {
   // The strip breakpoints live in. Always on: a margin that appears with the
   // first breakpoint would shift the whole file sideways as it is set.
   glyphMargin: true,
+  // Off here, and turned on per file by the main editor when that file has an
+  // outline (see `hasOutline` in EditorPane). Monaco's own default is on, but
+  // without an outline it falls back to reading indentation, which pins five
+  // rows of bare `{` over a file whose braces sit on their own line. The read-only
+  // views below - a diff, a patch - keep it off: neither has an outline to pin.
+  stickyScroll: { enabled: false },
 } as const;
 
 /** Editor options as the user's settings make them. */
@@ -490,8 +554,29 @@ export function EditorPane() {
   // Held in state as well as in the ref: the debug gutter is an effect, and an
   // effect cannot know a ref was filled in without a render to tell it.
   const [editorInstance, setEditorInstance] = useState<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const debuggableRef = useRef<MonacoEditor.IContextKey<boolean> | null>(null);
 
   useDebugGutter(editorInstance, openFilePath);
+
+  const openLanguage = openFilePath === null ? null : languageOf(openFilePath);
+  // `null` is the probe's answer for a language Aime drives no adapter for, and
+  // the only one that withdraws F9. Re-run on a new editor too: a remount
+  // creates a fresh context key, back at its permissive default.
+  const adapterProbe = useDebug((s) => (openLanguage === null ? undefined : s.adapters[openLanguage]));
+  useEffect(() => {
+    debuggableRef.current?.set(adapterProbe !== null);
+  }, [adapterProbe, editorInstance]);
+
+  /**
+   * Sticky scroll pins the scope you are inside, read from the file's outline -
+   * so it is on exactly when this file has one. Monaco falls back to indentation
+   * otherwise, and a language that puts its braces on their own line then pins
+   * five rows of bare `{` over the code, which reads as a rendering glitch.
+   */
+  const openServer = useLsp((s) => (openLanguage === null ? undefined : s.languages[openLanguage]));
+  const hasOutline =
+    (openServer?.kind === "running" && openServer.outline) ||
+    (openLanguage !== null && LANGUAGES_MONACO_OUTLINES.has(openLanguage));
 
   const relativeOpenPath =
     openFilePath && rootPath ? openFilePath.slice(rootPath.length + 1).replaceAll("\\", "/") : null;
@@ -633,9 +718,13 @@ export function EditorPane() {
           onMount={(editor) => {
             editorRef.current = editor;
             setEditorInstance(editor);
+            // Published for the few things that need a real editor - a plugin's
+            // edit goes through Monaco so Ctrl+Z takes it back.
+            setActiveEditor(editor);
             registerInlineAi();
             registerAiActions(editor);
-            registerBreakpointAction(editor);
+            debuggableRef.current = registerBreakpointAction(editor);
+            registerPaletteAction(editor);
             decorationsRef.current = editor.createDecorationsCollection();
             blameDecoRef.current = editor.createDecorationsCollection();
             editor.onDidChangeCursorPosition((e) => {
@@ -643,7 +732,11 @@ export function EditorPane() {
             });
           }}
           theme={monacoThemeOf(theme)}
-          options={{ ...editorOptions, inlineSuggest: { enabled: inlineAi !== "off" } }}
+          options={{
+            ...editorOptions,
+            inlineSuggest: { enabled: inlineAi !== "off" },
+            stickyScroll: { enabled: hasOutline },
+          }}
         />
       </div>
     </div>

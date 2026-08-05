@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type * as Monaco from "monaco-editor";
-import type { LanguageSession } from "../lib/lsp/session";
+import type { LanguageSession, ProjectOpenMethods } from "../lib/lsp/session";
 import { useWorkspace } from "./workspace";
 
 /** Mirror of the Rust `ServerAvailability` (lsp/mod.rs). */
@@ -10,15 +10,29 @@ interface ServerAvailability {
   command: string;
   available: boolean;
   installHint: string;
+  /** Whether the program that would run the install is on this machine. */
+  installable: boolean;
+  /** True when Aime downloads this server itself rather than the user. */
+  downloadable: boolean;
+  /** The methods this server accepts a project through, when it needs one. */
+  projectOpen: ProjectOpenMethods | null;
 }
 
 export type LanguageState =
   /** No server is defined for this language - nothing to report. */
   | { kind: "unsupported" }
-  /** A server exists but is not installed; the hint says how to get it. */
-  | { kind: "missing"; command: string; installHint: string }
+  /**
+   * A server exists but is not installed; the hint says how to get it, and
+   * `installable` says whether Aime could run that hint here.
+   */
+  | { kind: "missing"; command: string; installHint: string; installable: boolean }
   | { kind: "starting" }
-  | { kind: "running" }
+  /**
+   * `outline` is the server's own answer about `textDocument/documentSymbol`.
+   * The editor turns sticky scroll on only for a language that has one, because
+   * Monaco's fallback reads indentation and pins bare braces instead.
+   */
+  | { kind: "running"; outline: boolean }
   /** The server refused to start or crashed; `reason` is the CLI's own words. */
   | { kind: "failed"; reason: string };
 
@@ -66,6 +80,10 @@ function registerProviders(languageId: string): void {
     signatureHelpTriggerCharacters: ["(", ","],
     provideSignatureHelp: (model, position) => session()?.signatureHelp(model, position) ?? null,
   });
+  monaco.languages.registerDocumentSymbolProvider(languageId, {
+    displayName: "Aime",
+    provideDocumentSymbols: (model) => session()?.documentSymbols(model) ?? [],
+  });
 }
 
 interface LspStoreState {
@@ -103,6 +121,7 @@ export const useLsp = create<LspStoreState>((set, get) => ({
             kind: "missing",
             command: availability.command,
             installHint: availability.installHint,
+            installable: availability.installable,
           },
         },
       }));
@@ -114,15 +133,25 @@ export const useLsp = create<LspStoreState>((set, get) => ({
       // Imported here, not at the top: a language session speaks to Monaco,
       // and the status bar imports this store long before an editor exists.
       const { LanguageSession } = await import("../lib/lsp/session");
-      const session = await LanguageSession.start(languageId, rootPath, () => {
-        sessions.delete(languageId);
-        set((s) => ({
-          languages: { ...s.languages, [languageId]: { kind: "failed", reason: "server stopped" } },
-        }));
-      });
+      const session = await LanguageSession.start(
+        languageId,
+        rootPath,
+        () => {
+          sessions.delete(languageId);
+          set((s) => ({
+            languages: { ...s.languages, [languageId]: { kind: "failed", reason: "server stopped" } },
+          }));
+        },
+        availability.projectOpen ?? undefined,
+      );
       sessions.set(languageId, session);
       registerProviders(languageId);
-      set((s) => ({ languages: { ...s.languages, [languageId]: { kind: "running" } } }));
+      set((s) => ({
+        languages: {
+          ...s.languages,
+          [languageId]: { kind: "running", outline: session.providesOutline },
+        },
+      }));
       // Files opened while the server was starting still need syncing.
       editor?.editor.getModels().forEach((model) => {
         if (model.getLanguageId() === languageId) session.openModel(model);

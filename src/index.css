@@ -1,6 +1,16 @@
 @import "tailwindcss";
 
-/* Dark-first theme — single accent color (see ARCHITECTURE.md §6); light via [data-theme="light"] */
+/*
+ * Dark-first theme — one accent hue in two shades (see ARCHITECTURE.md §6);
+ * light via [data-theme="light"].
+ *
+ * `--accent` is the hue as a mark: text, icons, borders, the unsaved dot. It is
+ * light because it has to read on a near-black panel. `--accent-strong` is the
+ * same hue as a *surface* under white text, where light is exactly wrong: white
+ * on `--accent` measures 3.07:1, under the 4.5:1 a 13px label needs, while the
+ * block itself sits 5.78:1 above the chrome - a button that shouts and a label
+ * that whispers. The strong shade reverses that (5.35:1 for the label).
+ */
 :root {
   --bg: #16181d;
   --bg-panel: #1c1f26;
@@ -9,6 +19,7 @@
   --text: #d7dae0;
   --text-muted: #8b919d;
   --accent: #6c8cff;
+  --accent-strong: #4c5fd7;
   --accent-soft: rgba(108, 140, 255, 0.14);
   --danger: #e5534b;
   --warn: #daaa3f;
@@ -23,6 +34,7 @@
   --text: #24292f;
   --text-muted: #6b7280;
   --accent: #4f6ef2;
+  --accent-strong: #4460e0;
   --accent-soft: rgba(79, 110, 242, 0.12);
   --danger: #cf222e;
   --warn: #9a6700;
@@ -37,6 +49,7 @@
   --color-fg: var(--text);
   --color-muted: var(--text-muted);
   --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
   --color-accent-soft: var(--accent-soft);
   --color-danger: var(--danger);
   --color-warn: var(--warn);
@@ -96,6 +109,17 @@ body,
   margin: 4px auto 0;
   border-radius: 50%;
   background: var(--danger);
+}
+/* A breakpoint with a rule: hollow, so it never passes for an unconditional one. */
+.debug-breakpoint-rule::after {
+  content: "";
+  display: block;
+  width: 10px;
+  height: 10px;
+  margin: 4px auto 0;
+  border-radius: 50%;
+  border: 2px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 25%, transparent);
 }
 .debug-execution-arrow::after {
   content: "▶";

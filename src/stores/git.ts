@@ -76,6 +76,7 @@ interface GitState {
   unstage: (paths: string[]) => Promise<void>;
   discard: (file: GitFile) => Promise<void>;
   discardMany: (files: GitFile[]) => Promise<void>;
+  ignore: (paths: string[]) => Promise<void>;
   commit: () => Promise<void>;
   push: () => Promise<void>;
   pull: () => Promise<void>;
@@ -214,6 +215,11 @@ export const useGit = create<GitState>((set, get) => ({
         await invoke("git_discard", { root, path: file.path, untracked: file.unstaged === "?" });
       }
     });
+  },
+
+  ignore: async (paths) => {
+    const root = useWorkspace.getState().rootPath;
+    if (root) await runOp(set, () => invoke("git_ignore", { root, paths }));
   },
 
   commit: async () => {

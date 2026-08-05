@@ -5,6 +5,7 @@ import { useI18n, useT } from "../i18n";
 import { errorLogPath } from "../lib/diagnostics";
 import { capabilitiesOf, effortsOf } from "../lib/providers";
 import { PERMISSION_ORDER, type Permission } from "../lib/types";
+import { PluginsSection } from "./PluginsSection";
 import { useAi } from "../stores/ai";
 import { INLINE_AI_MODES, UPDATE_CHANNELS, useSettings } from "../stores/settings";
 import { useTheme } from "../stores/theme";
@@ -42,7 +43,9 @@ function Choice<T extends string | number>({
             onChange(option.value);
           }}
           className={`px-2 py-1 text-[11.5px] ${
-            option.value === value ? "bg-accent text-white" : "text-muted hover:bg-elevated hover:text-fg"
+            option.value === value
+              ? "bg-accent-strong text-white"
+              : "text-muted hover:bg-elevated hover:text-fg"
           }`}
         >
           {option.label}
@@ -285,6 +288,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               {t("settings.open")}
             </button>
           </Row>
+          <PluginsSection />
           <Row label={t("settings.errorLog")} hint={t("settings.errorLogHint")}>
             <button
               onClick={() => {

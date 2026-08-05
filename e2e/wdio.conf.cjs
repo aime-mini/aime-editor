@@ -14,13 +14,52 @@ const path = require("node:path");
 
 const project = path.resolve(__dirname, "..");
 const application = path.join(project, "src-tauri", "target", "debug", "ai-mini-editor.exe");
-const nativeDriver =
-  process.env.AIME_EDGE_DRIVER ?? path.join(os.homedir(), ".aime-e2e", "msedgedriver.exe");
+const nativeDriver = process.env.AIME_EDGE_DRIVER ?? path.join(os.homedir(), ".aime-e2e", "msedgedriver.exe");
 
 /** A throwaway project, so the tests never depend on what is on this machine. */
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "aime-e2e-"));
 fs.writeFileSync(path.join(workspace, "hello.ts"), 'export const greeting = "hello";\n');
 fs.writeFileSync(path.join(workspace, "notes.md"), "# Notes\n\nsecond file\n");
+// A file carrying a UTF-8 byte order mark, the way Visual Studio writes C#:
+// 3373 of the 4071 .cs files in the solution this was found on have one.
+fs.writeFileSync(path.join(workspace, "marked.cs"), "\ufeffusing Nop.Core.Caching;\n\nclass Marked { }\n");
+// A file long enough to scroll whose braces sit on their own line - the shape
+// that made Monaco's sticky scroll pin five rows of bare "{" over the code,
+// because without an outline it reads indentation instead.
+fs.writeFileSync(
+  path.join(workspace, "nested.ts"),
+  [
+    "export function deep(): number",
+    "{",
+    "  let total = 0;",
+    "  for (let i = 0; i < 40; i += 1)",
+    "  {",
+    "    if (i % 2 === 0)",
+    "    {",
+    ...Array.from({ length: 40 }, (_, line) => `      total += ${line};`),
+    "    }",
+    "  }",
+    "  return total;",
+    "}",
+    "",
+  ].join("\n"),
+);
+
+// The same shape in a language Monaco has no outline of its own for, so anything
+// sticky scroll pins here came from a real language server answering
+// textDocument/documentSymbol.
+fs.writeFileSync(
+  path.join(workspace, "nested.py"),
+  [
+    "def outer():",
+    "    total = 0",
+    "    for index in range(40):",
+    "        if index % 2 == 0:",
+    ...Array.from({ length: 40 }, (_, line) => `            total += ${line}`),
+    "    return total",
+    "",
+  ].join("\n"),
+);
 
 /** cargo installs it here; the extension matters when spawning on Windows. */
 function tauriDriverPath() {
@@ -46,7 +85,11 @@ exports.config = {
   reporters: ["spec"],
   framework: "mocha",
   logLevel: "error",
-  mochaOpts: { ui: "bdd", timeout: 90_000 },
+  // 240 s, because two of these tests wait on real toolchains: the C# one asks
+  // for up to 180 s around `dotnet build`, and the Java one boots the real JDT
+  // LS twice (verify, then run). 90 s used to cap both from above, which made
+  // those longer inner waits dead letters.
+  mochaOpts: { ui: "bdd", timeout: 240_000 },
 
   onPrepare: () => {
     if (!fs.existsSync(nativeDriver)) {

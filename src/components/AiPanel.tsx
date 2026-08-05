@@ -33,7 +33,9 @@ import { useAi } from "../stores/ai";
 import { useLayout } from "../stores/layout";
 import { runInTerminal } from "../stores/terminals";
 import { useWorkspace } from "../stores/workspace";
+import { Panel, PanelGroup } from "react-resizable-panels";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { ResizeHandle } from "./ResizeHandle";
 import { capabilitiesOf, effortsOf, type ProviderOption } from "../lib/providers";
 import type { ChatMessage, Permission, TokenUsage } from "../lib/types";
 import type { TranslationKey } from "../i18n/en";
@@ -57,6 +59,15 @@ const NO_FILES: string[] = [];
 
 /** How long the "already signed in" confirmation stays on screen. */
 const SIGNED_IN_NOTICE_MS = 4000;
+
+/**
+ * The shortest the prompt box can be without losing anything.
+ *
+ * Its own content sets this: the border above it, 10px of padding twice, the
+ * box's border, 6px of inner padding twice, and the 28px send button - about
+ * 63px, so 72 leaves a line of text visible next to the button.
+ */
+const COMPOSER_FLOOR_PX = 72;
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -348,6 +359,31 @@ export function AiPanel() {
   const [usageOpen, setUsageOpen] = useState(false);
   const [signedInConfirmed, setSignedInConfirmed] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const panelsRef = useRef<HTMLDivElement>(null);
+  /**
+   * The smallest the prompt box may be dragged, as a percentage.
+   *
+   * The panel library speaks only percentages, and a percentage floor is the
+   * wrong floor: on a short window 10% is less than the box's own content, and a
+   * panel clips what does not fit - which showed up as the send button cut off
+   * along the bottom edge. So the real floor is `COMPOSER_FLOOR_PX`, converted
+   * against the height these panels actually have, and re-converted when the
+   * window changes it.
+   */
+  const [composerFloor, setComposerFloor] = useState(12);
+  useEffect(() => {
+    const panels = panelsRef.current;
+    if (!panels) return;
+    const observer = new ResizeObserver(() => {
+      const height = panels.getBoundingClientRect().height;
+      if (height <= 0) return;
+      setComposerFloor(Math.min(50, (COMPOSER_FLOOR_PX / height) * 100));
+    });
+    observer.observe(panels);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
   const changedFiles = useGit((s) => s.status?.files.length ?? 0);
   const hasTests = useTasks((s) => s.tasks.some((task) => task.kind === "test"));
   const openFilePath = useWorkspace((s) => s.openFilePath);
@@ -604,154 +640,186 @@ export function AiPanel() {
         />
       )}
 
-      <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
-        {providerHealth === "missing" && (
-          <ProviderNotice
-            tone="danger"
-            message={t("ai.cliNotFound", {
-              provider: capabilities.displayName,
-              install: capabilities.installCommand,
-            })}
-          >
-            {recheckButton}
-          </ProviderNotice>
-        )}
-        {signedInConfirmed && signedIn === true && (
-          <ProviderNotice
-            tone="ok"
-            message={t("ai.signedInAlready", { provider: capabilities.displayName })}
-          />
-        )}
-        {signInNeeded && (
-          <ProviderNotice
-            tone="warn"
-            message={t("ai.signInRequired", { provider: capabilities.displayName })}
-          >
-            <button
-              onClick={signIn}
-              className="flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90"
-            >
-              <KeyRound size={12} /> {t("ai.signIn")}
-            </button>
-            {recheckButton}
-          </ProviderNotice>
-        )}
-        {messages.length === 0 && (
-          <div className="mt-6 flex flex-col gap-2">
-            <p className="text-center text-muted">{t("ai.emptyPrompt")}</p>
-            {starters.map((starter) => (
-              <button
-                key={starter.key}
-                onClick={() => {
-                  if (rootPath) void sendPrompt(t(starter.promptKey, starter.params), rootPath);
-                }}
-                disabled={!rootPath || running}
-                className="rounded-lg border border-line px-3 py-2 text-left text-muted hover:border-accent hover:text-fg disabled:opacity-50"
-              >
-                {t(starter.key, starter.params)}
-              </button>
-            ))}
-            <p className="mt-1 text-center text-[11px] text-muted">{t("ai.mentionHint")}</p>
-          </div>
-        )}
-        {messages.map((m, i) => (
-          <MessageBubble key={i} message={m} index={i} />
-        ))}
-        {lastError && (
-          <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-danger">
-            {lastError}
-          </div>
-        )}
-      </div>
-
-      <div className="relative border-t border-line p-2.5">
-        {pickerOpen && (
-          <ul className="absolute bottom-full left-2.5 z-20 mb-1 w-[calc(100%-1.25rem)] overflow-hidden rounded-lg border border-line bg-panel shadow-xl">
-            {mentionMatches.map((path, i) => (
-              <li key={path}>
-                <button
-                  onMouseDown={(e) => {
-                    // Down, not click: the textarea must not lose focus first.
-                    e.preventDefault();
-                    pickMention(path);
-                  }}
-                  className={`flex w-full items-baseline gap-2 px-2.5 py-1 text-left text-[12px] ${
-                    i === mentionIndex ? "bg-accent text-white" : "hover:bg-elevated"
-                  }`}
+      {/*
+       * Two panels with a divider: how much room the box you type in gets is the
+       * user's call, not a fixed two rows. Sizes belong to the panel library
+       * (`autoSaveId`), so where this is dragged is remembered like every other
+       * divider in the app - the same arrangement as Changes/History in Git.
+       */}
+      <div ref={panelsRef} className="flex min-h-0 flex-1 flex-col">
+        <PanelGroup direction="vertical" autoSaveId="aime-ai-panel" className="min-h-0 flex-1">
+          <Panel id="ai-messages" order={1} minSize={25} className="flex flex-col">
+            <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
+              {providerHealth === "missing" && (
+                <ProviderNotice
+                  tone="danger"
+                  message={t("ai.cliNotFound", {
+                    provider: capabilities.displayName,
+                    install: capabilities.installCommand,
+                  })}
                 >
-                  <span className="truncate">{path.split(/[\\/]/).pop()}</span>
-                  <span className="min-w-0 flex-1 truncate text-right text-[10.5px] opacity-60">{path}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div className="flex items-end gap-1.5 rounded-lg border border-line bg-elevated px-2 py-1.5 focus-within:border-accent">
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
-              setCaret(e.target.selectionStart);
-              // Typing `@` opens the picker; typing past every match closes it.
-              setMentionIndex(activeMention(e.target.value, e.target.selectionStart) ? 0 : null);
-            }}
-            onSelect={(e) => {
-              setCaret(e.currentTarget.selectionStart);
-            }}
-            onKeyDown={(e) => {
-              if (pickerOpen) {
-                const move = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
-                if (move !== 0) {
-                  e.preventDefault();
-                  setMentionIndex((current) => {
-                    const at = (current ?? 0) + move;
-                    return (at + mentionMatches.length) % mentionMatches.length;
-                  });
-                  return;
-                }
-                if (e.key === "Enter" || e.key === "Tab") {
-                  e.preventDefault();
-                  // Safe: the picker is only open with a selected match, and
-                  // every keystroke resets the selection to the first one.
-                  pickMention(mentionMatches[mentionIndex]);
-                  return;
-                }
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setMentionIndex(null);
-                  return;
-                }
-              }
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-            placeholder={rootPath ? t("ai.inputPlaceholder") : t("ai.inputPlaceholderNoFolder")}
-            disabled={!inputEnabled}
-            rows={2}
-            className="max-h-40 flex-1 resize-none bg-transparent outline-none placeholder:text-muted disabled:opacity-50"
-          />
-          {running ? (
-            <button
-              onClick={() => void cancel()}
-              className="rounded p-1.5 text-danger hover:bg-panel"
-              title={t("ai.stop")}
-            >
-              <CircleStop size={16} />
-            </button>
-          ) : (
-            <button
-              onClick={submit}
-              disabled={!input.trim() || !inputEnabled}
-              className="rounded p-1.5 text-accent hover:bg-panel disabled:opacity-40"
-              title={t("ai.send")}
-            >
-              <SendHorizontal size={16} />
-            </button>
-          )}
-        </div>
+                  {recheckButton}
+                </ProviderNotice>
+              )}
+              {signedInConfirmed && signedIn === true && (
+                <ProviderNotice
+                  tone="ok"
+                  message={t("ai.signedInAlready", { provider: capabilities.displayName })}
+                />
+              )}
+              {signInNeeded && (
+                <ProviderNotice
+                  tone="warn"
+                  message={t("ai.signInRequired", { provider: capabilities.displayName })}
+                >
+                  <button
+                    onClick={signIn}
+                    className="flex items-center gap-1.5 rounded-md bg-accent-strong px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90"
+                  >
+                    <KeyRound size={12} /> {t("ai.signIn")}
+                  </button>
+                  {recheckButton}
+                </ProviderNotice>
+              )}
+              {messages.length === 0 && (
+                <div className="mt-6 flex flex-col gap-2">
+                  <p className="text-center text-muted">{t("ai.emptyPrompt")}</p>
+                  {starters.map((starter) => (
+                    <button
+                      key={starter.key}
+                      onClick={() => {
+                        if (rootPath) void sendPrompt(t(starter.promptKey, starter.params), rootPath);
+                      }}
+                      disabled={!rootPath || running}
+                      className="rounded-lg border border-line px-3 py-2 text-left text-muted hover:border-accent hover:text-fg disabled:opacity-50"
+                    >
+                      {t(starter.key, starter.params)}
+                    </button>
+                  ))}
+                  <p className="mt-1 text-center text-[11px] text-muted">{t("ai.mentionHint")}</p>
+                </div>
+              )}
+              {messages.map((m, i) => (
+                <MessageBubble key={i} message={m} index={i} />
+              ))}
+              {lastError && (
+                <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-danger">
+                  {lastError}
+                </div>
+              )}
+            </div>
+          </Panel>
+
+          <ResizeHandle horizontal />
+
+          {/*
+           * Starts at about the two rows it used to be fixed at: the point is being
+           * able to drag it, not being handed more room than was asked for. The floor
+           * is `composerFloor` - a real pixel height turned into the percentage this
+           * library speaks - and the ceiling stops it swallowing the conversation.
+           */}
+          <Panel
+            id="ai-composer"
+            order={2}
+            minSize={composerFloor}
+            maxSize={60}
+            defaultSize={Math.max(11, composerFloor)}
+            className="flex flex-col"
+          >
+            <div className="relative flex min-h-0 flex-1 flex-col border-t border-line p-2.5">
+              {pickerOpen && (
+                <ul className="absolute bottom-full left-2.5 z-20 mb-1 w-[calc(100%-1.25rem)] overflow-hidden rounded-lg border border-line bg-panel shadow-xl">
+                  {mentionMatches.map((path, i) => (
+                    <li key={path}>
+                      <button
+                        onMouseDown={(e) => {
+                          // Down, not click: the textarea must not lose focus first.
+                          e.preventDefault();
+                          pickMention(path);
+                        }}
+                        className={`flex w-full items-baseline gap-2 px-2.5 py-1 text-left text-[12px] ${
+                          i === mentionIndex ? "bg-accent-strong text-white" : "hover:bg-elevated"
+                        }`}
+                      >
+                        <span className="truncate">{path.split(/[\\/]/).pop()}</span>
+                        <span className="min-w-0 flex-1 truncate text-right text-[10.5px] opacity-60">
+                          {path}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="flex min-h-0 flex-1 items-stretch gap-1.5 rounded-lg border border-line bg-elevated px-2 py-1.5 focus-within:border-accent">
+                <textarea
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    setCaret(e.target.selectionStart);
+                    // Typing `@` opens the picker; typing past every match closes it.
+                    setMentionIndex(activeMention(e.target.value, e.target.selectionStart) ? 0 : null);
+                  }}
+                  onSelect={(e) => {
+                    setCaret(e.currentTarget.selectionStart);
+                  }}
+                  onKeyDown={(e) => {
+                    if (pickerOpen) {
+                      const move = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+                      if (move !== 0) {
+                        e.preventDefault();
+                        setMentionIndex((current) => {
+                          const at = (current ?? 0) + move;
+                          return (at + mentionMatches.length) % mentionMatches.length;
+                        });
+                        return;
+                      }
+                      if (e.key === "Enter" || e.key === "Tab") {
+                        e.preventDefault();
+                        // Safe: the picker is only open with a selected match, and
+                        // every keystroke resets the selection to the first one.
+                        pickMention(mentionMatches[mentionIndex]);
+                        return;
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setMentionIndex(null);
+                        return;
+                      }
+                    }
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      submit();
+                    }
+                  }}
+                  placeholder={rootPath ? t("ai.inputPlaceholder") : t("ai.inputPlaceholderNoFolder")}
+                  disabled={!inputEnabled}
+                  // No `rows`, no `max-h`: the panel above decides how tall this is, and
+                  // the browser's own corner grip would fight the divider for it.
+                  className="min-h-0 flex-1 resize-none bg-transparent outline-none placeholder:text-muted disabled:opacity-50"
+                />
+                {running ? (
+                  <button
+                    onClick={() => void cancel()}
+                    className="self-end rounded p-1.5 text-danger hover:bg-panel"
+                    title={t("ai.stop")}
+                  >
+                    <CircleStop size={16} />
+                  </button>
+                ) : (
+                  <button
+                    onClick={submit}
+                    disabled={!input.trim() || !inputEnabled}
+                    className="self-end rounded p-1.5 text-accent hover:bg-panel disabled:opacity-40"
+                    title={t("ai.send")}
+                  >
+                    <SendHorizontal size={16} />
+                  </button>
+                )}
+              </div>
+            </div>
+          </Panel>
+        </PanelGroup>
       </div>
     </div>
   );

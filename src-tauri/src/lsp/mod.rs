@@ -10,6 +10,7 @@ use crate::providers::cli_command;
 use crate::wire::{frame, read_message};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -36,6 +37,47 @@ pub struct ServerSpec {
     pub install_hint: &'static str,
     /// How to tell whether this server is installed.
     pub probe: Probe,
+    /// Set when the server has no package to install and Aime fetches it itself
+    /// (`archive.rs`), the same contract the debug adapters use.
+    pub archive: Option<ServerArchive>,
+    /// A notification the server needs after `initialized` before it will
+    /// analyse anything. Roslyn is the case: without it the workspace is empty
+    /// and every completion request answers nothing (measured).
+    pub project_open: Option<ProjectOpen>,
+}
+
+/// `ProjectOpen`, as the frontend receives it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectOpenMethods {
+    pub solution_method: String,
+    pub project_method: String,
+}
+
+/// A server distributed as an archive rather than as a package.
+pub struct ServerArchive {
+    pub url: &'static str,
+    /// Folder under Aime's servers directory this archive is unpacked into. A
+    /// nupkg spills `content/`, `lib/` and `_rels/` straight into the current
+    /// directory, so each one gets its own room.
+    pub folder: &'static str,
+    /// A folder the archive must create inside that one - how "downloaded" is
+    /// told from "not yet".
+    pub contains: &'static str,
+    /// The executable, relative to the servers directory.
+    pub binary: &'static str,
+    /// Roughly how big the download is, for the sentence shown before it runs.
+    pub size_hint: &'static str,
+}
+
+/// How a server is told which project to analyse. Two methods because the
+/// argument shape differs: a solution is one uri, projects are a list (measured
+/// against Roslyn - handing a `.csproj` to `solution/open` throws
+/// `InvalidProjectFileException` inside MSBuild).
+#[derive(Clone, Copy)]
+pub struct ProjectOpen {
+    pub solution_method: &'static str,
+    pub project_method: &'static str,
 }
 
 /// How to tell whether a server is installed. Measured, not assumed
@@ -47,6 +89,9 @@ pub struct ServerSpec {
 /// after the user installed them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Probe {
+    /// Aime downloaded it: the binary in its own data folder is the answer, and
+    /// PATH has nothing to do with it.
+    Archive,
     /// Present on PATH means installed. Correct for real binaries and for npm
     /// shims, which only exist once their package is installed.
     OnPath,
@@ -55,6 +100,18 @@ pub enum Probe {
     /// that exists even when the component was never added.
     VersionFlag,
 }
+
+/// The Roslyn language server, pinned like every other archive Aime fetches: a
+/// machine set up today and one set up next month must behave the same.
+///
+/// Measured 2026-08-04: the runnable build is in `content/LanguageServer/win-x64`
+/// of the platform package - `lib/net9.0` alone cannot start (it is missing
+/// `System.CommandLine`). The whole recipe is in ARCHITECTURE.md §5.
+const ROSLYN_PACKAGE_URL: &str = "https://api.nuget.org/v3-flatcontainer/microsoft.codeanalysis.languageserver.win-x64/5.0.0-1.25277.114/microsoft.codeanalysis.languageserver.win-x64.5.0.0-1.25277.114.nupkg";
+
+/// Where the executable lands, relative to Aime's servers directory. The nupkg
+/// unpacks into `content/`, so the folder Aime watches for is that.
+const ROSLYN_BINARY: &str = "roslyn/content/LanguageServer/win-x64/Microsoft.CodeAnalysis.LanguageServer.exe";
 
 /// Every server Aime knows how to start, verified to exist (npm and NuGet
 /// checked 2026-08-02). Servers that need a toolchain rather than a package -
@@ -72,6 +129,8 @@ const SERVERS: &[ServerSpec] = &[
         args: &["--stdio"],
         install_hint: "npm install -g typescript-language-server typescript",
         probe: Probe::OnPath,
+        archive: None,
+        project_open: None,
     },
     ServerSpec {
         language_id: "javascript",
@@ -79,6 +138,8 @@ const SERVERS: &[ServerSpec] = &[
         args: &["--stdio"],
         install_hint: "npm install -g typescript-language-server typescript",
         probe: Probe::OnPath,
+        archive: None,
+        project_open: None,
     },
     ServerSpec {
         language_id: "python",
@@ -86,6 +147,8 @@ const SERVERS: &[ServerSpec] = &[
         args: &["--stdio"],
         install_hint: "npm install -g pyright",
         probe: Probe::OnPath,
+        archive: None,
+        project_open: None,
     },
     ServerSpec {
         language_id: "go",
@@ -93,6 +156,8 @@ const SERVERS: &[ServerSpec] = &[
         args: &[],
         install_hint: "go install golang.org/x/tools/gopls@latest",
         probe: Probe::OnPath,
+        archive: None,
+        project_open: None,
     },
     ServerSpec {
         language_id: "rust",
@@ -100,13 +165,35 @@ const SERVERS: &[ServerSpec] = &[
         args: &[],
         install_hint: "rustup component add rust-analyzer",
         probe: Probe::VersionFlag,
+        archive: None,
+        project_open: None,
     },
     ServerSpec {
         language_id: "csharp",
-        command: "csharp-ls",
-        args: &[],
-        install_hint: "dotnet tool install --global csharp-ls",
-        probe: Probe::OnPath,
+        // The Roslyn language server, which is what VS Code's C# extension runs.
+        // `--logLevel` and `--extensionLogDirectory` are both required by the
+        // server itself, and `{logDir}` is filled in with Aime's own data folder.
+        command: ROSLYN_BINARY,
+        args: &[
+            "--stdio",
+            "--logLevel",
+            "Information",
+            "--extensionLogDirectory",
+            "{logDir}",
+        ],
+        install_hint: "Roslyn language server (65 MB, Aime downloads it)",
+        probe: Probe::Archive,
+        archive: Some(ServerArchive {
+            url: ROSLYN_PACKAGE_URL,
+            folder: "roslyn",
+            contains: "content",
+            binary: ROSLYN_BINARY,
+            size_hint: "65 MB",
+        }),
+        project_open: Some(ProjectOpen {
+            solution_method: "solution/open",
+            project_method: "project/open",
+        }),
     },
     ServerSpec {
         language_id: "php",
@@ -114,6 +201,8 @@ const SERVERS: &[ServerSpec] = &[
         args: &["--stdio"],
         install_hint: "npm install -g intelephense",
         probe: Probe::OnPath,
+        archive: None,
+        project_open: None,
     },
     ServerSpec {
         language_id: "sql",
@@ -121,6 +210,8 @@ const SERVERS: &[ServerSpec] = &[
         args: &["up", "--method", "stdio"],
         install_hint: "npm install -g sql-language-server",
         probe: Probe::OnPath,
+        archive: None,
+        project_open: None,
     },
     ServerSpec {
         language_id: "shell",
@@ -128,6 +219,8 @@ const SERVERS: &[ServerSpec] = &[
         args: &["start"],
         install_hint: "npm install -g bash-language-server",
         probe: Probe::OnPath,
+        archive: None,
+        project_open: None,
     },
     ServerSpec {
         language_id: "yaml",
@@ -135,6 +228,8 @@ const SERVERS: &[ServerSpec] = &[
         args: &["--stdio"],
         install_hint: "npm install -g yaml-language-server",
         probe: Probe::OnPath,
+        archive: None,
+        project_open: None,
     },
     ServerSpec {
         language_id: "dockerfile",
@@ -142,6 +237,8 @@ const SERVERS: &[ServerSpec] = &[
         args: &["--stdio"],
         install_hint: "npm install -g dockerfile-language-server-nodejs",
         probe: Probe::OnPath,
+        archive: None,
+        project_open: None,
     },
     // clangd serves C and C++; it ships inside LLVM rather than as a package.
     ServerSpec {
@@ -150,6 +247,8 @@ const SERVERS: &[ServerSpec] = &[
         args: &[],
         install_hint: CLANGD_INSTALL,
         probe: Probe::OnPath,
+        archive: None,
+        project_open: None,
     },
     ServerSpec {
         language_id: "c",
@@ -157,6 +256,8 @@ const SERVERS: &[ServerSpec] = &[
         args: &[],
         install_hint: CLANGD_INSTALL,
         probe: Probe::OnPath,
+        archive: None,
+        project_open: None,
     },
     // Eclipse JDT LS is published as an archive, not a package: there is no
     // command Aime could run, so the user gets the download page instead of a
@@ -167,6 +268,8 @@ const SERVERS: &[ServerSpec] = &[
         args: &[],
         install_hint: "https://download.eclipse.org/jdtls/snapshots/",
         probe: Probe::OnPath,
+        archive: None,
+        project_open: None,
     },
 ];
 
@@ -224,28 +327,173 @@ pub struct ServerAvailability {
     pub command: String,
     pub available: bool,
     pub install_hint: String,
+    /// Set when the server needs to be told which project to analyse after
+    /// `initialized`; the two method names differ by argument shape.
+    pub project_open: Option<ProjectOpenMethods>,
+    /// True when Aime downloads this server itself rather than the user.
+    pub downloadable: bool,
+    /// Whether the program that would perform the install is on this machine.
+    ///
+    /// False means the hint is documentation rather than something Aime can run:
+    /// `go install …` without Go, a JDK download page. Offering a command that
+    /// cannot work is worse than not offering one - that case belongs to the AI,
+    /// which can install the toolchain first.
+    pub installable: bool,
+}
+
+/// Where Aime keeps the language servers it downloaded itself.
+pub fn servers_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("language-servers"))
+}
+
+/// Where a downloaded server is told to write its own logs. Its own folder, so
+/// a server that logs generously does not bury the rest of Aime's data.
+fn server_log_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = servers_dir(app)?.join("logs");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+/// The command that starts a server on this machine: the name on PATH, or the
+/// executable Aime unpacked. `None` means a downloadable server is not here yet.
+fn resolved_command(app: &AppHandle, spec: &ServerSpec) -> Option<String> {
+    let Some(archive) = &spec.archive else {
+        return Some(spec.command.to_string());
+    };
+    let binary = servers_dir(app).ok()?.join(archive.binary);
+    binary.is_file().then(|| binary.to_string_lossy().to_string())
+}
+
+/// Fills the one placeholder a server's arguments may carry.
+fn resolved_args(app: &AppHandle, spec: &ServerSpec) -> Result<Vec<String>, String> {
+    let log_dir = if spec.args.iter().any(|arg| arg.contains("{logDir}")) {
+        server_log_dir(app)?.to_string_lossy().to_string()
+    } else {
+        String::new()
+    };
+    Ok(spec
+        .args
+        .iter()
+        .map(|arg| arg.replace("{logDir}", &log_dir))
+        .collect())
+}
+
+/// Downloads a server that has no package to install, reporting every step.
+#[tauri::command]
+pub async fn lsp_download(app: AppHandle, language_id: String) -> Result<(), String> {
+    let spec = spec_for(&language_id).ok_or_else(|| format!("No language server for {language_id}"))?;
+    let archive = spec
+        .archive
+        .as_ref()
+        .ok_or_else(|| format!("{} is installed with its own package manager", spec.command))?;
+    let dir = servers_dir(&app)?.join(archive.folder);
+    crate::archive::fetch_and_unpack(archive.url, &dir, archive.contains, archive.folder, |_| ()).await
+}
+
+/// The solution or projects a server should be told to open.
+///
+/// A solution wins when there is one: it is what the toolchain itself considers
+/// the unit of work, and Roslyn loads every project in it. Otherwise every
+/// project file found near the root is offered, because a repository with two of
+/// them has two, and analysing one is analysing half the code.
+#[tauri::command]
+pub fn lsp_project_files(root: String) -> ProjectFiles {
+    let root = std::path::Path::new(&root);
+    let mut solutions = Vec::new();
+    let mut projects = Vec::new();
+    // Two levels: `src/Api/Api.csproj` is normal, deeper is somebody else's tree.
+    for dir in [root.to_path_buf()]
+        .into_iter()
+        .chain(child_dirs(root))
+        .chain(child_dirs(root).flat_map(|dir| child_dirs(&dir).collect::<Vec<_>>()))
+    {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.to_string_lossy().to_lowercase();
+            if name.ends_with(".sln") || name.ends_with(".slnx") {
+                solutions.push(path.to_string_lossy().to_string());
+            } else if name.ends_with(".csproj") || name.ends_with(".fsproj") {
+                projects.push(path.to_string_lossy().to_string());
+            }
+        }
+    }
+    solutions.sort();
+    projects.sort();
+    ProjectFiles { solutions, projects }
+}
+
+/// Directories worth looking inside, skipping the noisy ones.
+fn child_dirs(dir: &std::path::Path) -> impl Iterator<Item = PathBuf> + use<> {
+    let entries = std::fs::read_dir(dir).ok();
+    entries.into_iter().flatten().flatten().filter_map(|entry| {
+        let path = entry.path();
+        let keep = path.is_dir()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| !name.starts_with('.') && !crate::fs_cmds::IGNORED_DIRS.contains(&name));
+        keep.then_some(path)
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFiles {
+    pub solutions: Vec<String>,
+    pub projects: Vec<String>,
 }
 
 /// Probes whether the server for a language is on PATH. Called before the
 /// first file of that language opens, so the editor never waits on a spawn
 /// that cannot succeed.
 #[tauri::command]
-pub async fn lsp_availability(language_id: String) -> Result<Option<ServerAvailability>, String> {
+pub async fn lsp_availability(
+    app: AppHandle,
+    language_id: String,
+) -> Result<Option<ServerAvailability>, String> {
     let Some(spec) = spec_for(&language_id) else {
         return Ok(None);
     };
     let available = match spec.probe {
+        Probe::Archive => spec
+            .archive
+            .as_ref()
+            .is_some_and(|_| resolved_command(&app, spec).is_some()),
         Probe::OnPath => resolves_on_path(spec.command).await,
         Probe::VersionFlag => cli_command(spec.command, ["--version"])
             .output()
             .await
             .is_ok_and(|output| output.status.success()),
     };
+    // Only asked when it matters: a server that is already here needs no install.
+    let installable = if available {
+        true
+    } else {
+        match spec.install_hint.split_whitespace().next() {
+            Some(program) if !program.starts_with("http") => {
+                crate::environment::version_of(program).await.is_some()
+            }
+            _ => false,
+        }
+    };
     Ok(Some(ServerAvailability {
+        project_open: spec.project_open.map(|open| ProjectOpenMethods {
+            solution_method: open.solution_method.to_string(),
+            project_method: open.project_method.to_string(),
+        }),
+        downloadable: spec.archive.is_some(),
         language_id: spec.language_id.to_string(),
         command: spec.command.to_string(),
         available,
         install_hint: spec.install_hint.to_string(),
+        installable,
     }))
 }
 
@@ -275,13 +523,23 @@ pub async fn lsp_start(
 ) -> Result<u64, String> {
     let spec = spec_for(&language_id).ok_or_else(|| format!("No language server for {language_id}"))?;
 
-    let mut child = cli_command(spec.command, spec.args)
+    let program = resolved_command(&app, spec)
+        .ok_or_else(|| format!("LSP_MISSING::{}::not downloaded yet", spec.command))?;
+    let args = resolved_args(&app, spec)?;
+    // The long form of the path: measured, the Roslyn project loader throws
+    // ("Unexpected false - LanguageServerProjectLoader.cs line 193") when it is
+    // handed an 8.3 short path such as `C:\\Users\\LINHPH~1.STS`, which is exactly
+    // what a Windows temp folder looks like.
+    let root = dunce::canonicalize(&root)
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or(root);
+    let mut child = cli_command(&program, &args)
         .current_dir(&root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null()) // servers log verbosely; their JSON is what matters
         .spawn()
-        .map_err(|e| format!("LSP_MISSING::{}::{e}", spec.command))?;
+        .map_err(|e| format!("LSP_MISSING::{program}::{e}"))?;
 
     let mut stdin = child.stdin.take().ok_or("Failed to capture stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;

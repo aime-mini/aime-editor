@@ -1,21 +1,13 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
+import { Panel, PanelGroup, type ImperativePanelHandle } from "react-resizable-panels";
 import { Bot, PanelLeft, SquareTerminal } from "lucide-react";
 import { useT } from "../i18n";
 import { AiPanel } from "./AiPanel";
 import { BottomPanel } from "./BottomPanel";
 import { EditorPane } from "./EditorPane";
+import { ResizeHandle } from "./ResizeHandle";
 import { Sidebar } from "./Sidebar";
 import { useLayout } from "../stores/layout";
-
-/** Drag bar between panels — thin, highlighted on hover/drag. */
-function ResizeHandle({ horizontal = false }: { horizontal?: boolean }) {
-  return (
-    <PanelResizeHandle
-      className={`${horizontal ? "h-[3px]" : "w-[3px]"} shrink-0 bg-line transition-colors hover:bg-accent data-[resize-handle-state=drag]:bg-accent`}
-    />
-  );
-}
 
 /** Thin strip shown while a panel is collapsed — one click brings it back. */
 function CollapsedRail({

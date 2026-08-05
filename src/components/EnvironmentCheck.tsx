@@ -21,6 +21,8 @@ interface ToolStatus {
   signedIn: boolean | null;
   installHint: string;
   required: boolean;
+  /** Whether Aime could run the install here - see the Rust `ToolStatus`. */
+  installable: boolean;
 }
 
 type Readiness = "ready" | "attention" | "missing";
@@ -55,9 +57,10 @@ function ToolRow({ tool }: { tool: ToolStatus }) {
   const readiness = readinessOf(tool);
   const Icon = ICONS[readiness];
   const action = actionFor(tool);
-  // A signed-out CLI needs a person at a browser, and a documentation
-  // link is not a command - neither is something Aime can run.
-  const installable = !tool.installed && !tool.installHint.startsWith("http");
+  // The backend answers this now: a documentation link is not a command, and
+  // neither is an install whose own runtime is missing (`go install …` without
+  // Go). Offering a button that cannot work is worse than offering none.
+  const installable = tool.installable;
 
   useEffect(() => {
     if (!copied) return;

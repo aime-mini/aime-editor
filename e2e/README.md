@@ -37,3 +37,17 @@ npm run test:e2e       # in another
 `Open Folder` raises a native dialog that no WebDriver can click. The suite
 seeds a recent entry and clicks that instead - a path users take every day
 anyway - which is also why the app must never be reached only through dialogs.
+
+## Two ways a whole green suite turns red at once
+
+Both cost an afternoon once, so they are written down rather than rediscovered:
+
+1. **The dev server is not running.** The debug binary loads `http://localhost:1420`, so with Vite
+   down every spec fails at once - and the error is not "connection refused" but
+   `Failed to read the 'localStorage' property from 'Window': Access is denied for this document`,
+   because the webview is sitting on an error page. Start `npm run tauri dev` (or just `npm run dev`
+   if the debug binary already exists) before the suite.
+2. **The Rust binary is stale.** `npm run test:e2e` runs `src-tauri/target/debug/ai-mini-editor.exe`
+   and never builds it. `npm run tauri dev` rebuilds it while it is running; without that, a new
+   `#[tauri::command]` does not exist in the app and every test that reaches it fails with a command
+   error. Run `cargo build` in `src-tauri` after changing Rust, then the suite.

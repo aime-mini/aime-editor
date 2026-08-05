@@ -162,7 +162,7 @@ export function MemoryModal({ onClose }: { onClose: () => void }) {
           <button
             onClick={() => void save()}
             disabled={!dirty || saving || !activePath}
-            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
+            className="flex items-center gap-1.5 rounded-lg bg-accent-strong px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
           >
             {saving ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
             {t("memory.save")}

@@ -7,8 +7,8 @@ import { create } from "zustand";
  */
 export type SidebarView = "files" | "git" | "debug";
 
-/** The bottom panel hosts two things; only one is on screen at a time. */
-export type BottomView = "terminal" | "debug";
+/** The bottom panel hosts three things; only one is on screen at a time. */
+export type BottomView = "terminal" | "debug" | "plugins";
 
 interface LayoutState {
   /** false = collapsed to a thin rail (never fully hidden) */
@@ -49,6 +49,8 @@ interface LayoutState {
   showTerminal: () => void;
   /** Reveals the bottom panel with the Debug Console in it. */
   showDebugConsole: () => void;
+  /** Reveals the bottom panel with the plugins' own output in it. */
+  showPluginOutput: () => void;
   setHelpOpen: (open: boolean) => void;
   toggleHelp: () => void;
 }
@@ -122,6 +124,9 @@ export const useLayout = create<LayoutState>((set) => ({
   },
   showDebugConsole: () => {
     set((s) => withTerminalLatch(s, true, "debug"));
+  },
+  showPluginOutput: () => {
+    set((s) => withTerminalLatch(s, true, "plugins"));
   },
   setHelpOpen: (open) => {
     set({ helpOpen: open });

@@ -71,7 +71,7 @@ export function PromptModal({
           </button>
           <button
             onClick={submit}
-            className={`rounded px-3 py-1.5 font-medium text-white ${danger ? "bg-danger" : "bg-accent"} hover:opacity-90`}
+            className={`rounded px-3 py-1.5 font-medium text-white ${danger ? "bg-danger" : "bg-accent-strong"} hover:opacity-90`}
           >
             {t("common.ok")}
           </button>

@@ -17,9 +17,12 @@
 //!   `dap_start` and `dap_connect` are separate commands.
 
 pub mod catalog;
+pub mod learned;
+pub mod options;
+pub mod targets;
 
 use crate::wire::{frame, read_message};
-use catalog::{spec_for, Transport};
+use catalog::Transport;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -148,6 +151,34 @@ where
     command
 }
 
+/// Runs a command line the way a person typed it.
+///
+/// `raw_arg` on Windows, not `arg`: Rust quotes arguments by the C runtime's
+/// rules, and `cmd.exe` does not parse them that way - a command carrying its own
+/// quotes (`node -e "console.log(1)"`, `flutter devices --machine`) arrives
+/// mangled and fails for reasons that look like the tool's fault. Measured
+/// against a device query whose JSON simply never came back.
+pub(crate) fn shell_command(command: &str, cwd: Option<&str>) -> Command {
+    #[cfg(target_os = "windows")]
+    let mut process = {
+        // tokio's Command carries `raw_arg` itself on Windows; no extension trait.
+        let mut process = Command::new("cmd");
+        process.raw_arg(format!("/C {command}"));
+        process.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        process
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut process = {
+        let mut process = Command::new("sh");
+        process.arg("-c").arg(command);
+        process
+    };
+    if let Some(cwd) = cwd {
+        process.current_dir(cwd);
+    }
+    process
+}
+
 /// Reads the address a TCP adapter bound to out of one of its output lines.
 ///
 /// js-debug prints `Debug server listening at 127.0.0.1:52413`, so the rule is
@@ -205,31 +236,52 @@ async fn wait_for_address(child: &mut Child) -> Result<(SocketAddr, AdapterOutpu
 
 /// Starts the debug adapter for a language and opens the first DAP connection
 /// to it. Returns the ids used by every other command here.
+///
+/// `cwd` is the folder of the program being debugged, not the workspace root,
+/// and the difference is load-bearing: delve compiles the program in **its own**
+/// working directory and ignores the `cwd` of the launch request, so an adapter
+/// started at the root of a repository whose Go module lives in `services/api`
+/// fails with "go.mod file not found in current directory or any parent
+/// directory" (measured, 2026-08-04).
 #[tauri::command]
 pub async fn dap_start(
     app: AppHandle,
     window: Window,
     state: State<'_, DapState>,
     language_id: String,
-    root: String,
+    cwd: String,
+    root: Option<String>,
 ) -> Result<StartedAdapter, String> {
-    let spec = spec_for(&language_id).ok_or_else(|| format!("No debug adapter for {language_id}"))?;
+    // `root` only locates the project's own `.aime/debug-adapters.json`; the
+    // adapter still runs in `cwd`, which is the folder of the program.
+    let spec = catalog::resolve_spec(&app, root.as_ref().map(std::path::Path::new), &language_id)
+        .ok_or_else(|| format!("No debug adapter for {language_id}"))?;
     let command = spec.resolved_command(&app).await?;
 
     let mut child = adapter_command(&command.program, &command.args)
-        .current_dir(&root)
+        .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null()) // adapters log verbosely; their DAP traffic is what matters
         .spawn()
-        .map_err(|e| format!("DAP_MISSING::{}::{e}", spec.id))?;
+        .map_err(|e| format!("DAP_MISSING::{}::{e}", spec.id()))?;
 
     let adapter_id = ADAPTER_COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = window.label().to_string();
 
     // Until the reaper below is armed, nothing else would ever kill this
     // process — so a failure while reaching it has to clean up after itself.
-    let (address, connection_id) = match reach(&app, &label, adapter_id, spec.transport, &mut child).await {
+    let (address, connection_id) = match reach(
+        &app,
+        &label,
+        adapter_id,
+        spec.transport(),
+        spec.language_server_command(),
+        &cwd,
+        &mut child,
+    )
+    .await
+    {
         Ok(reached) => reached,
         Err(error) => {
             let _ = child.kill().await;
@@ -365,6 +417,8 @@ async fn reach(
     window_label: &str,
     adapter_id: u64,
     transport: Transport,
+    language_server_command: Option<&str>,
+    cwd: &str,
     child: &mut Child,
 ) -> Result<(Option<SocketAddr>, u64), String> {
     match transport {
@@ -375,6 +429,138 @@ async fn reach(
             relay_stdout(app, window_label, adapter_id, remaining);
             Ok((Some(address), connection_id))
         }
+        Transport::LanguageServer => {
+            let command = language_server_command.ok_or(
+                "This adapter is hosted by a language server but names no command to start a session",
+            )?;
+            let address = ask_language_server_for_a_port(command, cwd, child).await?;
+            let connection_id = open_tcp_connection(app, window_label, adapter_id, address).await?;
+            Ok((Some(address), connection_id))
+        }
+    }
+}
+
+/// Asks a language server to open a debug session, and answers with where it is.
+///
+/// The whole handshake, because an adapter that lives inside a language server
+/// cannot be reached any other way: LSP `initialize`, `initialized`, then
+/// `workspace/executeCommand` — and the command's result is the port. java-debug
+/// answers a bare number; nothing stops another from answering `"127.0.0.1:5005"`
+/// so both are accepted.
+///
+/// The framing is `wire.rs`, the same envelope the DAP side uses, which is why
+/// this is 60 lines rather than a second protocol client.
+async fn ask_language_server_for_a_port(
+    command: &str,
+    cwd: &str,
+    child: &mut Child,
+) -> Result<SocketAddr, String> {
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or("Failed to open the language server's stdin")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Failed to capture the language server's output")?;
+    let mut reader = BufReader::new(stdout);
+
+    let root = dunce::canonicalize(cwd).unwrap_or_else(|_| std::path::PathBuf::from(cwd));
+    let root_uri = format!("file:///{}", root.to_string_lossy().replace('\\', "/"));
+    let initialize = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "processId": std::process::id(), "rootUri": root_uri, "capabilities": {} }
+    });
+    send_json(&mut stdin, &initialize).await?;
+    // The response to `initialize` is the first thing to arrive that carries id 1;
+    // anything before it is the server logging or advertising progress.
+    wait_for_result(&mut reader, 1).await?;
+
+    let initialized = serde_json::json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} });
+    send_json(&mut stdin, &initialized).await?;
+
+    let execute = serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "workspace/executeCommand",
+        "params": { "command": command, "arguments": [] }
+    });
+    send_json(&mut stdin, &execute).await?;
+    let result = wait_for_result(&mut reader, 2).await?;
+
+    let address = match &result {
+        serde_json::Value::Number(port) => port
+            .as_u64()
+            .map(|port| format!("127.0.0.1:{port}"))
+            .ok_or_else(|| format!("{command} answered with a port that is not a number: {port}"))?,
+        serde_json::Value::String(text) if text.contains(':') => text.clone(),
+        serde_json::Value::String(text) => format!("127.0.0.1:{text}"),
+        other => return Err(format!("{command} answered {other}, not a port")),
+    };
+    let address = address
+        .parse()
+        .map_err(|e| format!("{command} answered {address}, which is not an address: {e}"))?;
+    keep_language_server_talking(stdin, reader);
+    Ok(address)
+}
+
+/// Holds a language server's pipes open, and drains what it keeps saying.
+///
+/// The port answer is not the end of the conversation. A real server talks on
+/// stdout for as long as it runs — JDT LS publishes a log message for every
+/// step of a debug session — and dropping the pipes here is how the first Java
+/// run froze: the debuggee VM launched, and the stop never arrived, because the
+/// server's next write had nowhere to go (measured with JDT LS 1.39.0 +
+/// java-debug 0.53.1; the toy e2e fixture never caught it because it says
+/// nothing after handing over its port). The messages themselves are discarded:
+/// they are the server's own diary, and it already keeps one in its workspace.
+fn keep_language_server_talking(
+    stdin: tokio::process::ChildStdin,
+    mut reader: BufReader<tokio::process::ChildStdout>,
+) {
+    tauri::async_runtime::spawn(async move {
+        while let Ok(Some(_)) = read_message(&mut reader).await {}
+        // Dropped only once the server stopped talking: an early EOF on its
+        // stdin is a shutdown signal to an LSP server.
+        drop(stdin);
+    });
+}
+
+async fn send_json(
+    stdin: &mut tokio::process::ChildStdin,
+    message: &serde_json::Value,
+) -> Result<(), String> {
+    stdin
+        .write_all(frame(&message.to_string()).as_bytes())
+        .await
+        .map_err(|e| format!("Could not write to the language server: {e}"))
+}
+
+/// Reads until the response to one request arrives, or the server gives up.
+async fn wait_for_result(
+    reader: &mut BufReader<tokio::process::ChildStdout>,
+    id: u64,
+) -> Result<serde_json::Value, String> {
+    let found = tokio::time::timeout(LISTEN_TIMEOUT, async {
+        while let Ok(Some(text)) = read_message(reader).await {
+            let Ok(message) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            if message.get("id").and_then(serde_json::Value::as_u64) != Some(id) {
+                continue; // a notification, or another request's answer
+            }
+            if let Some(error) = message.get("error") {
+                return Err(format!("The language server refused: {error}"));
+            }
+            return Ok(message.get("result").cloned().unwrap_or(serde_json::Value::Null));
+        }
+        Err("The language server stopped before it answered".to_string())
+    })
+    .await;
+    match found {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "The language server did not answer within {} s",
+            LISTEN_TIMEOUT.as_secs()
+        )),
     }
 }
 

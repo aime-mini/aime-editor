@@ -125,27 +125,127 @@ fn parse_porcelain_v2(text: &str) -> GitStatus {
     status
 }
 
+/// `--untracked-files=all` is what makes a new folder show its files. Git's
+/// default collapses an untracked directory into one record ending in `/`, so a
+/// feature branch that adds a whole folder arrives as a single unopenable row -
+/// no diff, and discarding it asks `remove_file` to delete a directory.
 #[tauri::command]
 pub async fn git_status(root: String) -> Result<GitStatus, String> {
-    match run_git(&root, &["status", "--porcelain=v2", "--branch", "-z"]).await {
+    match run_git(
+        &root,
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "-z",
+            "--untracked-files=all",
+        ],
+    )
+    .await
+    {
         Ok(out) => Ok(parse_porcelain_v2(&out)),
         Err(err) if err.contains("not a git repository") => Ok(GitStatus::default()),
         Err(err) => Err(err),
     }
 }
 
+/// Characters of paths one git call may carry. Windows refuses to start a
+/// process whose command line passes 32 767 characters ("The filename or
+/// extension is too long"), and staging a newly added folder is measured in
+/// thousands of paths - 2 000 of them come to 96 000 characters.
+const PATH_ARGUMENT_BUDGET: usize = 24_000;
+
+/// Splits paths into runs that fit one command line. A path longer than the
+/// whole budget still gets a call of its own: dropping it would lose a file.
+fn batches(paths: &[String]) -> Vec<&[String]> {
+    let mut batches = Vec::new();
+    let mut start = 0;
+    let mut length = 0;
+    for (index, path) in paths.iter().enumerate() {
+        // `length > 0` is what guarantees progress: the first path of a batch
+        // is always taken, however long it is.
+        if length > 0 && length + path.len() + 1 > PATH_ARGUMENT_BUDGET {
+            batches.push(&paths[start..index]);
+            start = index;
+            length = 0;
+        }
+        length += path.len() + 1;
+    }
+    if start < paths.len() {
+        batches.push(&paths[start..]);
+    }
+    batches
+}
+
+/// Runs one git subcommand over every path, in as few calls as fit.
+async fn run_git_over_paths(root: &str, subcommand: &[&str], paths: &[String]) -> Result<(), String> {
+    for batch in batches(paths) {
+        let mut args = subcommand.to_vec();
+        args.extend(batch.iter().map(String::as_str));
+        run_git(root, &args).await?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn git_stage(root: String, paths: Vec<String>) -> Result<(), String> {
-    let mut args = vec!["add", "--"];
-    args.extend(paths.iter().map(String::as_str));
-    run_git(&root, &args).await.map(|_| ())
+    run_git_over_paths(&root, &["add", "--"], &paths).await
 }
 
 #[tauri::command]
 pub async fn git_unstage(root: String, paths: Vec<String>) -> Result<(), String> {
-    let mut args = vec!["restore", "--staged", "--"];
-    args.extend(paths.iter().map(String::as_str));
-    run_git(&root, &args).await.map(|_| ())
+    run_git_over_paths(&root, &["restore", "--staged", "--"], &paths).await
+}
+
+/// Turns a repo-relative path into a pattern that matches that path and nothing
+/// else. The leading `/` anchors it to the repository root - without it, a name
+/// like `debug.log` would ignore every `debug.log` in the project, and a file
+/// whose name starts with `#` or `!` would read as a comment or a negation. The
+/// backslashes keep the glob characters of a real file name (`page[id].tsx`)
+/// literal.
+fn ignore_pattern(path: &str) -> String {
+    let mut pattern = String::from("/");
+    for character in path.chars() {
+        if matches!(character, '\\' | '*' | '?' | '[') {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern
+}
+
+/// Appends the patterns a `.gitignore` does not already carry, leaving what is
+/// there untouched - it is the user's file, and often reviewed by their team.
+fn with_patterns(existing: &str, patterns: &[String]) -> String {
+    let known: Vec<&str> = existing.lines().map(str::trim).collect();
+    let mut text = existing.to_string();
+    for pattern in patterns.iter().filter(|p| !known.contains(&p.as_str())) {
+        // A file that does not end in a newline would otherwise glue the first
+        // new pattern onto its last line.
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(pattern);
+        text.push('\n');
+    }
+    text
+}
+
+/// Adds paths to the project's `.gitignore` (created when missing).
+#[tauri::command]
+pub async fn git_ignore(root: String, paths: Vec<String>) -> Result<(), String> {
+    let file = std::path::Path::new(&root).join(".gitignore");
+    let existing = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(format!("could not read .gitignore: {err}")),
+    };
+    let patterns: Vec<String> = paths.iter().map(|path| ignore_pattern(path)).collect();
+    let updated = with_patterns(&existing, &patterns);
+    if updated == existing {
+        return Ok(()); // every path was already ignored
+    }
+    std::fs::write(&file, updated).map_err(|err| format!("could not write .gitignore: {err}"))
 }
 
 /// Discards worktree changes. Untracked files are deleted instead (git can't restore them).
@@ -236,10 +336,33 @@ pub async fn git_push(root: String) -> Result<String, String> {
     }
 }
 
+/// The byte order mark, as the character it decodes to (see `fs_cmds::read_file`).
+const BOM: char = '\u{feff}';
+
+/// Text for a read-only view, with the byte order mark taken out.
+///
+/// git hands back the bytes a file really has, and most .cs files of a Visual
+/// Studio solution begin with a BOM. The editor already hides it, so leaving it
+/// in these strings drew the character on screen again - and worse, made line 1
+/// of every such file look changed in the diff view, whose left side comes from
+/// git while its right side comes from the editor.
+///
+/// Removed wherever it appears rather than only at the front, because in a patch
+/// the mark sits *after* the line's `+` or leading space - measured against real
+/// git output, not assumed. Nothing here is ever written back to disk, so nothing
+/// can be lost by dropping it; `fs_cmds::write_file` is what keeps the mark.
+fn without_bom(text: String) -> String {
+    if text.contains(BOM) {
+        text.replace(BOM, "")
+    } else {
+        text
+    }
+}
+
 /// Unstaged worktree diff — fallback input for AI commit messages.
 #[tauri::command]
 pub async fn git_worktree_diff(root: String) -> Result<String, String> {
-    run_git(&root, &["diff"]).await
+    run_git(&root, &["diff"]).await.map(without_bom)
 }
 
 #[tauri::command]
@@ -256,7 +379,7 @@ pub async fn git_init(root: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn git_show_head(root: String, path: String) -> Result<String, String> {
     match run_git(&root, &["show", &format!("HEAD:{path}")]).await {
-        Ok(content) => Ok(content),
+        Ok(content) => Ok(without_bom(content)),
         Err(_) => Ok(String::new()),
     }
 }
@@ -264,14 +387,14 @@ pub async fn git_show_head(root: String, path: String) -> Result<String, String>
 /// Unstaged staged diff of everything in the index — input for AI commit messages.
 #[tauri::command]
 pub async fn git_staged_diff(root: String) -> Result<String, String> {
-    run_git(&root, &["diff", "--cached"]).await
+    run_git(&root, &["diff", "--cached"]).await.map(without_bom)
 }
 
 /// Zero-context unified diff of one file vs HEAD — parsed for editor gutter marks.
 #[tauri::command]
 pub async fn git_file_diff(root: String, path: String) -> Result<String, String> {
     match run_git(&root, &["diff", "-U0", "HEAD", "--", &path]).await {
-        Ok(diff) => Ok(diff),
+        Ok(diff) => Ok(without_bom(diff)),
         Err(_) => Ok(String::new()), // no HEAD yet (fresh repo) → no gutter marks
     }
 }
@@ -324,7 +447,9 @@ pub async fn git_log(root: String, limit: u32) -> Result<Vec<GitLogEntry>, Strin
 /// Full patch of one commit (stat + diff) for the read-only commit view.
 #[tauri::command]
 pub async fn git_show_commit(root: String, hash: String) -> Result<String, String> {
-    run_git(&root, &["show", "--stat", "--patch", &hash]).await
+    run_git(&root, &["show", "--stat", "--patch", &hash])
+        .await
+        .map(without_bom)
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -557,6 +682,102 @@ mod tests {
         assert_eq!(status.ahead, 2);
         assert_eq!(status.behind, 1);
         assert!(status.files.is_empty());
+    }
+
+    #[test]
+    fn short_path_lists_go_to_git_in_one_call() {
+        let paths = vec!["src/main.rs".to_string(), "README.md".to_string()];
+        assert_eq!(batches(&paths), vec![&paths[..]]);
+        assert!(batches(&[]).is_empty());
+    }
+
+    /// Staging a newly added folder is the case that used to fail to spawn.
+    #[test]
+    fn a_folder_worth_of_paths_is_split_and_nothing_is_lost() {
+        let paths: Vec<String> = (0..2000)
+            .map(|n| format!("vendor/lib/module_with_a_realistic_name_{n:04}.ts"))
+            .collect();
+        let batches = batches(&paths);
+
+        assert!(
+            batches.len() > 1,
+            "96 000 characters cannot travel as one command line"
+        );
+        for batch in &batches {
+            let width: usize = batch.iter().map(|p| p.len() + 1).sum();
+            assert!(width <= PATH_ARGUMENT_BUDGET, "a batch was too wide: {width}");
+        }
+        let carried: Vec<&String> = batches.iter().flat_map(|b| b.iter()).collect();
+        assert_eq!(carried, paths.iter().collect::<Vec<_>>());
+    }
+
+    /// Every case here was put to git itself (`git check-ignore -v` on a real
+    /// repository): `/debug.log` leaves `sub/debug.log` alone, the escaped `[`
+    /// stops the name from also matching `pageXid].tsx`, and the leading `/` is
+    /// what keeps `#notes.md` from being read as a comment. A closing `]` needs
+    /// no escape - outside a bracket expression it is already literal.
+    #[test]
+    fn ignore_patterns_are_anchored_and_literal() {
+        assert_eq!(ignore_pattern("debug.log"), "/debug.log");
+        assert_eq!(ignore_pattern("src/app/page[id].tsx"), "/src/app/page\\[id].tsx");
+        assert_eq!(ignore_pattern("#notes.md"), "/#notes.md");
+        assert_eq!(ignore_pattern("!important.txt"), "/!important.txt");
+    }
+
+    #[test]
+    fn patterns_are_appended_without_disturbing_the_file() {
+        let existing = "# build output\nnode_modules/\n";
+        let updated = with_patterns(existing, &["/dist".to_string()]);
+        assert_eq!(updated, "# build output\nnode_modules/\n/dist\n");
+    }
+
+    /// Both strings below are real git output, printed by a probe on a repository
+    /// whose `Program.cs` carries a mark: `show HEAD:path` puts it first, while in
+    /// a patch it lands *after* the line's leading space or `+`. That is why the
+    /// mark is removed wherever it sits rather than only at the front.
+    #[test]
+    fn the_byte_order_mark_is_taken_out_of_file_text_and_of_patches() {
+        assert_eq!(
+            without_bom("\u{feff}class Program\n".to_string()),
+            "class Program\n"
+        );
+        assert_eq!(
+            without_bom(" \u{feff}class Program\n {\n-    static void Main() {}\n".to_string()),
+            " class Program\n {\n-    static void Main() {}\n"
+        );
+    }
+
+    #[test]
+    fn text_without_a_mark_comes_back_unchanged() {
+        let patch = "@@ -1,4 +1,4 @@\n+    static void Main() { Run(); }\n".to_string();
+        assert_eq!(without_bom(patch.clone()), patch);
+    }
+
+    /// A file people edit by hand often has no closing newline.
+    #[test]
+    fn a_file_without_a_trailing_newline_does_not_glue_the_next_pattern_on() {
+        let updated = with_patterns("node_modules/", &["/dist".to_string()]);
+        assert_eq!(updated, "node_modules/\n/dist\n");
+    }
+
+    #[test]
+    fn a_pattern_already_there_is_not_written_twice() {
+        let existing = "/dist\n";
+        assert_eq!(
+            with_patterns(existing, &["/dist".to_string(), "/coverage".to_string()]),
+            "/dist\n/coverage\n"
+        );
+        assert_eq!(with_patterns(existing, &["/dist".to_string()]), existing);
+    }
+
+    /// One path over the budget is still a file the user asked to stage.
+    #[test]
+    fn a_single_oversized_path_travels_alone() {
+        let paths = vec!["a".repeat(PATH_ARGUMENT_BUDGET + 10), "b.txt".to_string()];
+        let batches = batches(&paths);
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0], &paths[0..1]);
+        assert_eq!(batches[1], &paths[1..2]);
     }
 
     #[test]

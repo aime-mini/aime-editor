@@ -1,8 +1,19 @@
 import { useEffect } from "react";
 import { editor as monacoEditor, Range as MonacoRange, type editor as MonacoEditor } from "monaco-editor";
-import { displayLine } from "../lib/dap/launch";
+import { displayLine, hasRule, type EditorBreakpoint } from "../lib/dap/launch";
 import { samePath } from "../lib/dap/paths";
 import { useDebug } from "../stores/debug";
+
+/** The rules, as the gutter's hover shows them. */
+function ruleText(breakpoint: EditorBreakpoint): string {
+  return [
+    breakpoint.condition === undefined ? null : `when \`${breakpoint.condition}\``,
+    breakpoint.hitCondition === undefined ? null : `hits \`${breakpoint.hitCondition}\``,
+    breakpoint.logMessage === undefined ? null : `logs \`${breakpoint.logMessage}\``,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(", ");
+}
 
 /** Same list, same order — the cheap way to know a sync would change nothing. */
 function sameLines(a: number[], b: number[]): boolean {
@@ -36,12 +47,17 @@ export function useDebugGutter(
     const linesInStore = (): number[] =>
       (useDebug.getState().breakpoints[openFilePath] ?? []).map(displayLine);
 
+    const inStore = (): EditorBreakpoint[] => useDebug.getState().breakpoints[openFilePath] ?? [];
+
     const draw = (): void => {
       breakpointDecorations.set(
-        linesInStore().map((line) => ({
-          range: new MonacoRange(line, 1, line, 1),
+        inStore().map((breakpoint) => ({
+          range: new MonacoRange(displayLine(breakpoint), 1, displayLine(breakpoint), 1),
           options: {
-            glyphMarginClassName: "debug-breakpoint",
+            // A conditional breakpoint that looks identical to a plain one is how
+            // people lose an afternoon wondering why the program did not stop.
+            glyphMarginClassName: hasRule(breakpoint) ? "debug-breakpoint-rule" : "debug-breakpoint",
+            glyphMarginHoverMessage: hasRule(breakpoint) ? { value: ruleText(breakpoint) } : undefined,
             // A breakpoint belongs to the line, and stays there while the line
             // is edited rather than stretching over what is typed next to it.
             stickiness: 1, // NeverGrowsWhenTypingAtEdges
@@ -79,7 +95,10 @@ export function useDebugGutter(
     // A click in the glyph margin is the one gesture every editor shares.
     const clicks = editor.onMouseDown((event) => {
       if (event.target.type !== monacoEditor.MouseTargetType.GUTTER_GLYPH_MARGIN) return;
-      useDebug.getState().toggleBreakpoint(openFilePath, event.target.position.lineNumber);
+      // The store decides whether this file can hold a breakpoint at all; the
+      // margin itself stays put, because one that came and went per file would
+      // shift the text sideways every time the tab changed.
+      void useDebug.getState().toggleBreakpoint(openFilePath, event.target.position.lineNumber);
     });
 
     const edits = editor.onDidChangeModelContent(() => {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
+  Puzzle,
   AppWindow,
   Bot,
   Brain,
@@ -28,6 +29,7 @@ import { projectFiles } from "../lib/projectFiles";
 import { useAi } from "../stores/ai";
 import { useDebug } from "../stores/debug";
 import { useLayout } from "../stores/layout";
+import { usePlugins } from "../stores/plugins";
 import { useTasks } from "../stores/tasks";
 import { useTerminals } from "../stores/terminals";
 import { useTheme } from "../stores/theme";
@@ -67,6 +69,8 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   const newSession = useAi((s) => s.newSession);
   const toggleTheme = useTheme((s) => s.toggle);
   const theme = useTheme((s) => s.theme);
+  const pluginCommands = usePlugins((s) => s.commands);
+  const runPluginCommand = usePlugins((s) => s.runCommand);
   const { locale, setLocale } = useI18n();
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
@@ -252,6 +256,15 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       });
       // Starting and stopping are mutually exclusive, and offering the one
       // that cannot work is how a palette becomes noise.
+      for (const command of pluginCommands) {
+        items.push({
+          id: `plugin-${command.pluginId}-${command.commandId}`,
+          title: command.title,
+          icon: <Puzzle size={14} />,
+          hint: command.pluginId,
+          run: () => void runPluginCommand(command.pluginId, command.commandId),
+        });
+      }
       items.push(
         debugging
           ? {
@@ -294,6 +307,8 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
     debugging,
     startDebug,
     stopDebug,
+    pluginCommands,
+    runPluginCommand,
     openFile,
     newSession,
     tasks,

@@ -6,8 +6,10 @@ import {
   pathToUri,
   toLspPosition,
   toMonacoRange,
+  toOutline,
   uriToPath,
   type LspRange,
+  type OutlineSymbol,
 } from "./convert";
 
 /** LSP DiagnosticSeverity: 1 Error, 2 Warning, 3 Information, 4 Hint. */
@@ -63,6 +65,34 @@ function toCompletionKind(kind: number | undefined): monaco.languages.Completion
   return (kind && COMPLETION_KINDS[kind]) ?? monaco.languages.CompletionItemKind.Text;
 }
 
+/**
+ * LSP SymbolKind → Monaco's. No table this time: the two enums name the same
+ * kinds in the same order and differ only in where they start, checked against
+ * monaco-editor's own `editor.api.d.ts` (File 1 → 0 … TypeParameter 26 → 25).
+ * A kind outside that range comes from a newer specification than this build
+ * knows, and shows as a variable rather than as a random icon.
+ */
+const FIRST_SYMBOL_KIND: number = monaco.languages.SymbolKind.File;
+const LAST_SYMBOL_KIND: number = monaco.languages.SymbolKind.TypeParameter;
+
+function toSymbolKind(kind: number | undefined): monaco.languages.SymbolKind {
+  const shifted = (kind ?? 0) - 1;
+  const known = shifted >= FIRST_SYMBOL_KIND && shifted <= LAST_SYMBOL_KIND;
+  return known ? shifted : monaco.languages.SymbolKind.Variable;
+}
+
+function toMonacoSymbol(symbol: OutlineSymbol): monaco.languages.DocumentSymbol {
+  return {
+    name: symbol.name,
+    detail: symbol.detail,
+    kind: toSymbolKind(symbol.kind),
+    tags: [],
+    range: symbol.range,
+    selectionRange: symbol.selectionRange,
+    children: symbol.children.map(toMonacoSymbol),
+  };
+}
+
 /** Shapes of the few LSP results Aime consumes; every field is optional by design. */
 interface LspDiagnostic {
   range: LspRange;
@@ -114,39 +144,98 @@ const MARKER_OWNER = "aime-lsp";
  * which the specification allows whichever sync kind the server declared. It
  * costs a string copy per keystroke and removes a whole class of desync bugs.
  */
+/** Mirror of the Rust `ProjectOpenMethods` (lsp/mod.rs). */
+export interface ProjectOpenMethods {
+  solutionMethod: string;
+  projectMethod: string;
+}
+
+/** What the project holds, as `lsp_project_files` answers. */
+interface ProjectFiles {
+  solutions: string[];
+  projects: string[];
+}
+
+/**
+ * Tells a server which project it is looking at.
+ *
+ * A solution wins when the repository has one - it is the unit the toolchain
+ * itself works in, and the server loads every project inside it. Measured
+ * against Roslyn: the two methods are not interchangeable, since handing a
+ * `.csproj` to `solution/open` throws `InvalidProjectFileException` inside
+ * MSBuild, and sending neither leaves the workspace empty for ever.
+ */
+async function openProject(client: LspClient, root: string, methods: ProjectOpenMethods): Promise<void> {
+  const files = await invoke<ProjectFiles>("lsp_project_files", { root });
+  if (files.solutions.length > 0) {
+    const [solution] = files.solutions;
+    client.notify(methods.solutionMethod, { solution: pathToUri(solution) });
+    return;
+  }
+  if (files.projects.length > 0) {
+    client.notify(methods.projectMethod, { projects: files.projects.map(pathToUri) });
+  }
+}
+
 export class LanguageSession {
   private readonly openDocuments = new Map<string, { version: number; disposables: monaco.IDisposable[] }>();
+  /**
+   * Whether the server answers `textDocument/documentSymbol`, taken from its own
+   * `initialize` reply. Asked because an outline is not decoration: sticky scroll
+   * only turns on for a language that has one (see EditorPane).
+   */
+  private outline = false;
 
   private constructor(
     readonly languageId: string,
     private readonly client: LspClient,
   ) {}
 
-  static async start(languageId: string, root: string, onExit: () => void): Promise<LanguageSession> {
+  get providesOutline(): boolean {
+    return this.outline;
+  }
+
+  static async start(
+    languageId: string,
+    root: string,
+    onExit: () => void,
+    /** The two method names this server accepts a project through, if any. */
+    projectOpen?: ProjectOpenMethods,
+  ): Promise<LanguageSession> {
     const client = await LspClient.start(languageId, root, onExit);
     const session = new LanguageSession(languageId, client);
     client.onNotification = (method, params) => {
       if (method === "textDocument/publishDiagnostics") session.publishDiagnostics(params);
     };
 
-    await client.request("initialize", {
-      processId: null,
-      rootUri: pathToUri(root),
-      workspaceFolders: [{ uri: pathToUri(root), name: root.split(/[\\/]/).pop() ?? root }],
-      capabilities: {
-        textDocument: {
-          synchronization: { didSave: false },
-          publishDiagnostics: {},
-          completion: {
-            completionItem: { snippetSupport: true, documentationFormat: ["markdown", "plaintext"] },
+    const answer = await client.request<{ capabilities?: { documentSymbolProvider?: unknown } } | null>(
+      "initialize",
+      {
+        processId: null,
+        rootUri: pathToUri(root),
+        workspaceFolders: [{ uri: pathToUri(root), name: root.split(/[\\/]/).pop() ?? root }],
+        capabilities: {
+          textDocument: {
+            synchronization: { didSave: false },
+            publishDiagnostics: {},
+            completion: {
+              completionItem: { snippetSupport: true, documentationFormat: ["markdown", "plaintext"] },
+            },
+            hover: { contentFormat: ["markdown", "plaintext"] },
+            definition: { linkSupport: true },
+            signatureHelp: { signatureInformation: { documentationFormat: ["markdown", "plaintext"] } },
+            documentSymbol: { hierarchicalDocumentSymbolSupport: true },
           },
-          hover: { contentFormat: ["markdown", "plaintext"] },
-          definition: { linkSupport: true },
-          signatureHelp: { signatureInformation: { documentationFormat: ["markdown", "plaintext"] } },
         },
       },
-    });
+    );
+    // Servers answer this as `true` or as an options object; both mean yes.
+    session.outline = Boolean(answer?.capabilities?.documentSymbolProvider);
     client.notify("initialized", {});
+    // Some servers do nothing at all until they are told which project this is.
+    // Measured against Roslyn: without it every completion answers nothing, and
+    // the server never says why.
+    if (projectOpen) await openProject(client, root, projectOpen);
     return session;
   }
 
@@ -301,6 +390,21 @@ export class LanguageSession {
       value: answer,
       dispose: () => undefined,
     };
+  }
+
+  /**
+   * The file's outline: what Ctrl+Shift+O lists and what sticky scroll pins.
+   *
+   * Empty when the server does not do outlines, rather than an error: Monaco asks
+   * every provider on every edit, and a server that never answers this must not
+   * fill the console with rejections.
+   */
+  async documentSymbols(model: monaco.editor.ITextModel): Promise<monaco.languages.DocumentSymbol[]> {
+    if (!this.outline) return [];
+    const answer = await this.client.request<unknown>("textDocument/documentSymbol", {
+      textDocument: { uri: pathToUri(model.uri.fsPath || model.uri.path) },
+    });
+    return toOutline(answer).map(toMonacoSymbol);
   }
 
   async references(

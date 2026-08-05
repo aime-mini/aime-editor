@@ -71,7 +71,7 @@ export function UpdateNotice() {
       <button
         onClick={() => void install()}
         disabled={phase === "downloading"}
-        className="flex shrink-0 items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-60"
+        className="flex shrink-0 items-center gap-1.5 rounded-md bg-accent-strong px-2.5 py-1 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-60"
       >
         {phase === "downloading" && <Loader2 size={11} className="animate-spin" />}
         {phase === "downloading" ? t("update.installing") : t("update.install")}

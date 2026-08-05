@@ -30,6 +30,7 @@ import { useAi } from "../stores/ai";
 import { useGit } from "../stores/git";
 import { useLayout } from "../stores/layout";
 import { useLsp } from "../stores/lsp";
+import { useSetup } from "../stores/setup";
 import { useTasks, type TaskKind } from "../stores/tasks";
 import { useInlineAi } from "../stores/inlineAi";
 import { INLINE_AI_MODES, useSettings } from "../stores/settings";
@@ -95,6 +96,8 @@ export function StatusBar() {
   const gitStatus = useGit((s) => s.status);
   const openFilePath = useWorkspace((s) => s.openFilePath);
   const lspLanguages = useLsp((s) => s.languages);
+  const setupRunning = useSetup((s) => s.running);
+  const setupLanguage = useSetup((s) => s.languageId);
   const t = useT();
 
   // Code intelligence for the file in front of the user: silent when it just
@@ -201,6 +204,20 @@ export function StatusBar() {
           <span className="flex items-center gap-1 text-accent">
             <Loader2 size={11} className="animate-spin" /> {t("status.aiRunning")}
           </span>
+        )}
+        {/* A setup run outlives its modal - closing that window backgrounds the
+            work, so this is how it is found again. */}
+        {setupRunning && (
+          <button
+            onClick={() => {
+              useSetup.setState({ open: true });
+            }}
+            title={t("setup.progressHint")}
+            className="flex items-center gap-1 text-accent"
+          >
+            <Loader2 size={11} className="animate-spin" />
+            {t("setup.progressTitle", { language: setupLanguage ?? "" })}
+          </button>
         )}
         {sessionId && (
           <span title={`Session ${sessionId}`}>

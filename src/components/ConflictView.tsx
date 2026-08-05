@@ -359,7 +359,7 @@ export function ConflictView({ relativePath }: { relativePath: string }) {
         <button
           onClick={() => void save()}
           disabled={remaining > 0 || saving}
-          className="rounded-md bg-accent px-2.5 py-0.5 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+          className="rounded-md bg-accent-strong px-2.5 py-0.5 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
         >
           {remaining > 0 ? t("git.remaining", { n: remaining }) : t("git.saveResolved")}
         </button>

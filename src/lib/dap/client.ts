@@ -47,9 +47,14 @@ export interface ConnectionHandlers {
   onClosed: () => void;
 }
 
-/** Starts the adapter for a language and opens the first session on it. */
-export function startAdapter(languageId: string, root: string): Promise<StartedAdapter> {
-  return invoke<StartedAdapter>("dap_start", { languageId, root });
+/**
+ * Starts the adapter for a language, in the folder its program lives in.
+ *
+ * `root` is not where it runs — it is where Aime looks for the project's own
+ * taught adapters (`.aime/debug-adapters.json`).
+ */
+export function startAdapter(languageId: string, cwd: string, root: string): Promise<StartedAdapter> {
+  return invoke<StartedAdapter>("dap_start", { languageId, cwd, root });
 }
 
 /** Opens one more session on a running adapter — what `startDebugging` asks for. */

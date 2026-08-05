@@ -10,6 +10,7 @@ import {
 import { toSourceBreakpoints, type EditorBreakpoint } from "./launch";
 import type {
   AdapterBreakpoint,
+  ExceptionBreakpointFilter,
   BreakpointEventBody,
   Capabilities,
   ExitedEventBody,
@@ -42,15 +43,40 @@ export interface SessionCallbacks {
   onBreakpointChanged: (path: string, changed: AdapterBreakpoint) => void;
   onEnded: (exitCode: number | null) => void;
   onError: (reason: string) => void;
+  /**
+   * What this adapter can stop on, as it reported in `initialize`.
+   *
+   * The only place those filters exist: an adapter is asked once per session and
+   * the list is its own (js-debug offers "all" and "uncaught", debugpy
+   * "raised"/"uncaught"/"userUnhandled"). Aime remembers them so the checkboxes
+   * are there before the next run instead of only during one.
+   */
+  onExceptionFilters: (filters: ExceptionBreakpointFilter[]) => void;
 }
 
 export interface LaunchOptions {
   languageId: string;
+  /**
+   * The folder the adapter itself is started in — the target's folder, not the
+   * workspace root. Measured: delve compiles the program in its own working
+   * directory and ignores the `cwd` of the launch request, so a monorepo whose
+   * Go module sits in `services/api` fails to build when the adapter was
+   * started at the repository root.
+   */
+  cwd: string;
+  /** The project root, which is where a taught adapter's entry is looked up. */
   root: string;
-  /** The launch configuration, already built for this adapter. */
+  /** The launch or attach configuration, already built for this adapter. */
   configuration: Record<string, unknown>;
+  /**
+   * Which request starts the run. `attach` reaches a program that is already
+   * running, and the adapter must not be told to start a second one.
+   */
+  request?: "launch" | "attach";
   /** Breakpoints by absolute file path, as the editor holds them. */
   breakpoints: Map<string, EditorBreakpoint[]>;
+  /** Which of the adapter's exception filters to switch on for this run. */
+  exceptionFilters: string[];
   callbacks: SessionCallbacks;
 }
 
@@ -95,7 +121,7 @@ export class DebugSession {
   ) {}
 
   static async launch(options: LaunchOptions): Promise<DebugSession> {
-    const started = await startAdapter(options.languageId, options.root);
+    const started = await startAdapter(options.languageId, options.cwd, options.root);
     const session = new DebugSession(started.adapterId, options);
     session.unlisteners.push(
       await onAdapterExit(started.adapterId, () => {
@@ -109,7 +135,7 @@ export class DebugSession {
 
     try {
       const parent = await session.openSession(started.connectionId);
-      await session.configure(parent, options.configuration, "launch");
+      await session.configure(parent, options.configuration, options.request ?? "launch");
     } catch (err: unknown) {
       await session.stop();
       throw err;
@@ -167,14 +193,24 @@ export class DebugSession {
     return body.variables ?? [];
   }
 
-  /** Evaluates an expression in the selected frame (the Debug Console's input). */
-  async evaluate(expression: string, frameId: number | null): Promise<string> {
+  /**
+   * Evaluates an expression in the selected frame.
+   *
+   * `context` is part of the protocol and adapters honour it: "repl" is the
+   * console's input, "watch" is a value being displayed - debugpy, for one,
+   * formats them differently and suppresses side effects in a watch.
+   */
+  async evaluate(
+    expression: string,
+    frameId: number | null,
+    context: "repl" | "watch" = "repl",
+  ): Promise<string> {
     const connection = this.stoppedConnection();
     if (!connection) throw new Error("nothing is paused");
     const body = await connection.request<{ result?: string }>("evaluate", {
       expression,
       frameId: frameId ?? undefined,
-      context: "repl",
+      context,
     });
     return body.result ?? "";
   }
@@ -258,6 +294,10 @@ export class DebugSession {
       supportsStartDebuggingRequest: true,
     });
 
+    if (capabilities.exceptionBreakpointFilters) {
+      this.options.callbacks.onExceptionFilters(capabilities.exceptionBreakpointFilters);
+    }
+
     this.runners.add(state.connection.connectionId);
     const running = state.connection.request(request, configuration);
 
@@ -267,10 +307,31 @@ export class DebugSession {
         this.sendBreakpoints(state, path, breakpoints),
       ),
     );
+    // Before configurationDone, like source breakpoints: after it the program is
+    // already on its way and may throw before the filters arrive.
+    await this.sendExceptionFilters(state);
     if (capabilities.supportsConfigurationDoneRequest === true) {
       await state.connection.request("configurationDone");
     }
     await running;
+  }
+
+  /** Re-sends the exception filters to every live session. */
+  async syncExceptionFilters(filters: string[]): Promise<void> {
+    this.options.exceptionFilters = filters;
+    await Promise.all([...this.states.values()].map((state) => this.sendExceptionFilters(state)));
+  }
+
+  private async sendExceptionFilters(state: ConnectionState): Promise<void> {
+    try {
+      await state.connection.request("setExceptionBreakpoints", {
+        filters: this.options.exceptionFilters,
+      });
+    } catch (err: unknown) {
+      // An adapter that offers no filters may still refuse the request; that is
+      // not a reason to abandon a run whose breakpoints are already in place.
+      console.error("setExceptionBreakpoints failed:", err);
+    }
   }
 
   private async sendBreakpoints(

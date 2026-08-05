@@ -11,8 +11,10 @@
 //! debugger" ARCHITECTURE.md §5 refuses to ship. Node, Python and Go have been;
 //! .NET, C++ and Java join them as each one is.
 
+use super::learned::{self, LearnedAdapter, LearnedTransport};
+use super::targets::DebugTarget;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 /// How Aime reaches an adapter once it is running.
@@ -24,6 +26,9 @@ pub enum Transport {
     /// The adapter is a server: it prints the address it bound to and every
     /// session is a connection to it.
     TcpServer,
+    /// The adapter is hosted by a language server, which is asked over LSP for
+    /// a port. Only taught adapters use this today (`learned.rs`).
+    LanguageServer,
 }
 
 /// Where an archive lives, which depends on the adapter's shape.
@@ -210,6 +215,163 @@ pub fn spec_for(language_id: &str) -> Option<&'static AdapterSpec> {
         .find(|spec| spec.language_ids.contains(&language_id))
 }
 
+/// The adapter Aime will use for a language: one it measured, or one it was
+/// taught (`learned.rs`). A built-in always wins — a measured adapter is never
+/// overridden by a guess, however well-written the guess is.
+pub enum Spec {
+    Builtin(&'static AdapterSpec),
+    /// Boxed: a taught adapter carries its whole entry, and a 300-byte variant
+    /// next to a pointer would make every `Spec` that big.
+    Learned(Box<LearnedAdapter>),
+}
+
+pub fn resolve_spec(app: &AppHandle, root: Option<&Path>, language_id: &str) -> Option<Spec> {
+    if let Some(builtin) = spec_for(language_id) {
+        return Some(Spec::Builtin(builtin));
+    }
+    learned::adapters_for(app, root, language_id).map(|adapter| Spec::Learned(Box::new(adapter)))
+}
+
+/// Everything the rest of the code needs, whichever kind of adapter it is.
+impl Spec {
+    pub fn id(&self) -> &str {
+        match self {
+            Spec::Builtin(spec) => spec.id,
+            Spec::Learned(adapter) => &adapter.id,
+        }
+    }
+
+    pub fn config_type(&self) -> &str {
+        match self {
+            Spec::Builtin(spec) => spec.config_type,
+            Spec::Learned(adapter) => &adapter.config_type,
+        }
+    }
+
+    /// The LSP command that opens a debug session, for the one transport that
+    /// needs one.
+    pub fn language_server_command(&self) -> Option<&str> {
+        match self {
+            Spec::Builtin(_) => None,
+            Spec::Learned(adapter) => adapter.language_server_command.as_deref(),
+        }
+    }
+
+    pub fn transport(&self) -> Transport {
+        match self {
+            Spec::Builtin(spec) => spec.transport,
+            Spec::Learned(adapter) => match adapter.transport {
+                LearnedTransport::Stdio => Transport::Stdio,
+                LearnedTransport::TcpServer => Transport::TcpServer,
+                LearnedTransport::LanguageServer => Transport::LanguageServer,
+            },
+        }
+    }
+
+    fn install_hint(&self) -> String {
+        match self {
+            Spec::Builtin(spec) => spec.install_hint.to_string(),
+            Spec::Learned(adapter) => adapter.install_hint.clone(),
+        }
+    }
+
+    /// Whether a run has to build something before the debugger sees it.
+    fn builds_first(&self) -> bool {
+        match self {
+            Spec::Builtin(spec) => spec.prepare != Prepare::Nothing,
+            Spec::Learned(adapter) => adapter.prepare.is_some(),
+        }
+    }
+
+    /// Aime fetches its own archives; a taught adapter is installed by the agent
+    /// that taught it, so there is nothing here to download.
+    fn downloadable(&self) -> bool {
+        matches!(self, Spec::Builtin(spec) if spec.archive.is_some())
+    }
+
+    /// A built-in was driven before it was written down. A taught one counts only
+    /// once Aime has watched it stop on a breakpoint here.
+    fn verified(&self) -> bool {
+        match self {
+            Spec::Builtin(_) => true,
+            Spec::Learned(adapter) => adapter.verified.is_some(),
+        }
+    }
+
+    /// Extra launch-configuration fields this adapter requires.
+    fn launch_extra(&self) -> serde_json::Map<String, serde_json::Value> {
+        match self {
+            Spec::Builtin(_) => serde_json::Map::new(),
+            Spec::Learned(adapter) => adapter.launch.clone(),
+        }
+    }
+
+    async fn is_present(&self, app: &AppHandle) -> bool {
+        match self {
+            Spec::Builtin(spec) => spec.is_present(app).await,
+            Spec::Learned(adapter) => learned_program(adapter).await.is_some(),
+        }
+    }
+
+    pub async fn resolved_command(&self, app: &AppHandle) -> Result<ResolvedCommand, String> {
+        match self {
+            Spec::Builtin(spec) => spec.resolved_command(app).await,
+            Spec::Learned(adapter) => Ok(ResolvedCommand {
+                program: learned_program(adapter).await.ok_or_else(|| {
+                    format!(
+                        "DAP_MISSING::{}::{} is not installed",
+                        adapter.id, adapter.program
+                    )
+                })?,
+                args: adapter.args.clone(),
+            }),
+        }
+    }
+}
+
+/// Whether a taught adapter's program is here, and under what name.
+///
+/// With probe arguments the program is run, which is the only way to tell a
+/// runtime from the adapter inside it. Without them it is only *looked for* on
+/// PATH: running an adapter with no arguments starts the adapter, and one that
+/// waits on stdin for a DAP message would hang the probe forever.
+async fn learned_program(adapter: &LearnedAdapter) -> Option<String> {
+    if adapter.probe_args.is_empty() {
+        return on_path(&adapter.program).then(|| adapter.program.clone());
+    }
+    let args: Vec<&str> = adapter.probe_args.iter().map(String::as_str).collect();
+    runs(&adapter.program, &args)
+        .await
+        .then(|| adapter.program.clone())
+}
+
+/// Looks for an executable the way a shell would, without running it.
+fn on_path(program: &str) -> bool {
+    let candidate = Path::new(program);
+    if candidate.is_absolute() || program.contains('/') || program.contains('\\') {
+        return candidate.is_file();
+    }
+    // On Windows a bare name may be `.exe`, `.cmd` (every npm-installed tool) or
+    // `.bat`; PATHEXT is the list the shell itself uses.
+    let extensions: Vec<String> = std::env::var("PATHEXT")
+        .unwrap_or_default()
+        .split(';')
+        .filter(|extension| !extension.is_empty())
+        .map(|extension| extension.to_lowercase())
+        .collect();
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|dir| {
+                let base = dir.join(program);
+                base.is_file()
+                    || extensions
+                        .iter()
+                        .any(|extension| dir.join(format!("{program}{extension}")).is_file())
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// A command line ready to spawn.
 pub struct ResolvedCommand {
     pub program: String,
@@ -348,28 +510,57 @@ pub struct AdapterAvailability {
     /// than one that reports what it is doing.
     pub builds_first: bool,
     pub install_hint: String,
+    /// True when this adapter was taught to Aime rather than shipped with it.
+    pub learned: bool,
+    /// False only for a taught adapter Aime has not yet watched stop somewhere.
+    pub verified: bool,
+    /// Launch-configuration fields this adapter requires, merged by the frontend
+    /// on top of the ones every adapter gets.
+    pub launch_extra: serde_json::Map<String, serde_json::Value>,
+    /// The program and line a taught adapter says it can be checked against.
+    pub verify_with: Option<learned::VerifyWith>,
+    /// The launch field a chosen device id goes into; set only when the adapter
+    /// runs programs on a device rather than on this machine.
+    pub device_field: Option<String>,
 }
 
 /// Reports whether a language can be debugged, and how to fix it if not.
 #[tauri::command]
-pub async fn dap_availability(app: AppHandle, language_id: String) -> Option<AdapterAvailability> {
-    let spec = spec_for(&language_id)?;
+pub async fn dap_availability(
+    app: AppHandle,
+    language_id: String,
+    root: Option<String>,
+) -> Option<AdapterAvailability> {
+    let spec = resolve_spec(&app, root.as_ref().map(Path::new), &language_id)?;
     let available = spec.is_present(&app).await;
     Some(AdapterAvailability {
-        adapter_id: spec.id.to_string(),
+        adapter_id: spec.id().to_string(),
         language_id,
-        config_type: spec.config_type.to_string(),
+        config_type: spec.config_type().to_string(),
         available,
-        downloadable: spec.archive.is_some(),
-        builds_first: spec.prepare != Prepare::Nothing,
-        install_hint: spec.install_hint.to_string(),
+        downloadable: spec.downloadable(),
+        builds_first: spec.builds_first(),
+        install_hint: spec.install_hint(),
+        learned: matches!(spec, Spec::Learned(_)),
+        verified: spec.verified(),
+        launch_extra: spec.launch_extra(),
+        verify_with: match &spec {
+            Spec::Builtin(_) => None,
+            Spec::Learned(adapter) => adapter.verify_with.clone(),
+        },
+        device_field: match &spec {
+            Spec::Builtin(_) => None,
+            Spec::Learned(adapter) => adapter
+                .device_query
+                .as_ref()
+                .map(|query| query.device_field.clone()),
+        },
     })
 }
 
 /// Downloads and unpacks the adapter's archive, if it has one and it is not
-/// already there. Uses the `curl` and `tar` that ship with Windows 10+, macOS
-/// and every Linux distribution Aime targets, so fetching one archive does not
-/// pull an HTTP stack and an unpacker into the binary.
+/// already there. The fetching itself is `archive.rs`, shared with the language
+/// servers that are distributed the same way.
 #[tauri::command]
 pub async fn dap_download(app: AppHandle, language_id: String) -> Result<(), String> {
     let spec = spec_for(&language_id).ok_or_else(|| format!("No debug adapter for {language_id}"))?;
@@ -381,115 +572,101 @@ pub async fn dap_download(app: AppHandle, language_id: String) -> Result<(), Str
         .url
         .for_this_machine()
         .ok_or_else(|| format!("{} has no build for {}", spec.id, std::env::consts::OS))?;
-    let dir = adapters_dir(&app)?;
-    if dir.join(archive.unpacks_to).is_dir() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-
-    // Into a temporary name first: an interrupted download that left a
-    // half-written archive behind would look downloaded forever.
-    let partial = dir.join(format!("{}.part", spec.id));
-    run(
-        "curl",
-        &[
-            "--fail",
-            "--location",
-            "--silent",
-            "--show-error",
-            "--output",
-            &partial.to_string_lossy(),
-            url,
-        ],
-    )
-    .await
-    .map_err(|e| format!("Could not download the {} debug adapter: {e}", spec.id))?;
-
-    // `-xf`, not `-xzf`: one flag set reads both .tar.gz and .zip, and the
-    // adapters need both. The tool matters more than the flags — see `unpacker`.
-    let extracted = run(
-        &unpacker(),
-        &["-xf", &partial.to_string_lossy(), "-C", &dir.to_string_lossy()],
-    )
-    .await;
-    let _ = std::fs::remove_file(&partial);
-    extracted.map_err(|e| format!("Could not unpack the {} debug adapter: {e}", spec.id))?;
-
-    if !dir.join(archive.unpacks_to).is_dir() {
-        return Err(format!(
-            "The {} archive did not contain {}",
-            spec.id, archive.unpacks_to
-        ));
-    }
-    Ok(())
+    crate::archive::fetch_and_unpack(url, &adapters_dir(&app)?, archive.unpacks_to, spec.id, |_| ()).await
 }
 
-/// The archiver to unpack with.
-///
-/// Windows ships bsdtar as the `tar.exe` in its System32 folder, and bsdtar
-/// reads zip as happily as tar.gz. Plain `tar` on PATH is not necessarily that
-/// one: Git for Windows puts GNU tar there, and GNU tar cannot read a zip at
-/// all ("This does not look like a tar archive" — measured against
-/// netcoredbg's own asset). So on Windows the system copy is named outright;
-/// elsewhere `tar` is bsdtar on macOS and GNU tar on Linux, and every asset
-/// Aime fetches for those is a tarball.
-fn unpacker() -> String {
-    #[cfg(target_os = "windows")]
-    {
-        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
-        format!(r"{root}\System32\tar.exe")
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        "tar".to_string()
-    }
+/// Whether a path names a .NET project rather than a source file.
+fn is_dotnet_project(path: &str) -> bool {
+    let lowered = path.to_lowercase();
+    [".csproj", ".fsproj", ".sln"]
+        .iter()
+        .any(|extension| lowered.ends_with(extension))
 }
 
 /// What the debugger should actually be pointed at.
 ///
-/// For most adapters that is the file in front of the user. netcoredbg attaches
-/// to an assembly, so for .NET the project is built first and the artifact is
-/// what gets debugged — `dotnet msbuild -t:Build -getProperty:TargetPath` does
-/// both in one call and prints the exact path, which beats guessing at
-/// `bin/Debug/<framework>/`.
+/// Most adapters take the target as it stands. netcoredbg attaches to an
+/// assembly, so a .NET target is built first and the artifact is what gets
+/// debugged — one call both builds and prints the exact path, which beats
+/// guessing at `bin/Debug/<framework>/`.
+///
+/// `dotnet build`, not `dotnet msbuild -t:Build`: measured, both print the same
+/// `TargetPath`, but msbuild does not restore, so a freshly cloned project fails
+/// with NETSDK1004 ("Assets file … not found. Run a NuGet package restore")
+/// before it ever reaches the debugger. The exit code still has to be checked —
+/// the path is printed even when the build failed.
 #[tauri::command]
-pub async fn dap_program(language_id: String, root: String, file: String) -> Result<String, String> {
-    let spec = spec_for(&language_id).ok_or_else(|| format!("No debug adapter for {language_id}"))?;
-    match spec.prepare {
-        Prepare::Nothing => Ok(file),
-        Prepare::DotnetBuild => {
-            let output = super::adapter_command(
-                "dotnet",
-                [
-                    "msbuild",
-                    "-t:Build",
-                    "-getProperty:TargetPath",
-                    "-v:q",
-                    "-nologo",
-                ],
-            )
-            .current_dir(&root)
-            .output()
-            .await
-            .map_err(|e| format!("dotnet is not available: {e}"))?;
-
-            if !output.status.success() {
-                // The build log is the useful part of a failed build.
-                let reason = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!(
-                    "The build failed.
-{}",
-                    pick_message(&reason, &stderr)
-                ));
+pub async fn dap_program(
+    app: AppHandle,
+    target: DebugTarget,
+    root: Option<String>,
+) -> Result<String, String> {
+    let spec = resolve_spec(&app, root.as_ref().map(Path::new), &target.language_id)
+        .ok_or_else(|| format!("No debug adapter for {}", target.language_id))?;
+    match spec {
+        Spec::Builtin(builtin) => match builtin.prepare {
+            Prepare::Nothing => Ok(target.program),
+            Prepare::DotnetBuild => dotnet_assembly(&target).await,
+        },
+        Spec::Learned(adapter) => {
+            if let Some(prepare) = &adapter.prepare {
+                run_prepare(&prepare.command, &target.cwd).await?;
             }
-            let target = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if target.is_empty() {
-                return Err("The build produced no assembly to debug.".to_string());
-            }
-            Ok(target)
+            Ok(target.program)
         }
     }
+}
+
+/// Runs a taught adapter's build step, in the target's own folder.
+///
+/// Through the shell on purpose: what an agent writes here is a command line a
+/// person could have typed (`javac -d out src/App.java`, `./gradlew assemble`),
+/// and the failure the user needs to see is the compiler's, not a spawn error.
+async fn run_prepare(command: &str, cwd: &str) -> Result<(), String> {
+    let output = super::shell_command(command, Some(cwd))
+        .output()
+        .await
+        .map_err(|e| format!("Could not run `{command}`: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!("`{command}` failed.\n{}", pick_message(&stdout, &stderr)))
+}
+
+/// Builds a .NET target and answers with the assembly to attach to.
+async fn dotnet_assembly(target: &DebugTarget) -> Result<String, String> {
+    let mut args = vec!["build".to_string()];
+    // A project file is named outright. Anything else — a lone `.cs` file the
+    // user asked to debug — leaves the SDK to find the one project in the
+    // folder, which is what it does when given no project at all.
+    if is_dotnet_project(&target.program) {
+        args.push(target.program.clone());
+    }
+    args.extend(
+        ["-getProperty:TargetPath", "-v:q", "-nologo"]
+            .iter()
+            .map(|arg| (*arg).to_string()),
+    );
+
+    let output = super::adapter_command("dotnet", &args)
+        .current_dir(&target.cwd)
+        .output()
+        .await
+        .map_err(|e| format!("dotnet is not available: {e}"))?;
+
+    if !output.status.success() {
+        // The build log is the useful part of a failed build.
+        let reason = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("The build failed.\n{}", pick_message(&reason, &stderr)));
+    }
+    let assembly = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if assembly.is_empty() {
+        return Err("The build produced no assembly to debug.".to_string());
+    }
+    Ok(assembly)
 }
 
 /// Whichever stream the tool explained itself on.
@@ -500,24 +677,6 @@ fn pick_message(stdout: &str, stderr: &str) -> String {
     } else {
         trimmed.to_string()
     }
-}
-
-/// Runs a helper program, turning a non-zero exit into its own message —
-/// `curl` and `tar` both explain themselves on stderr.
-async fn run(program: &str, args: &[&str]) -> Result<(), String> {
-    let output = super::adapter_command(program, args)
-        .output()
-        .await
-        .map_err(|e| format!("{program} is not available: {e}"))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Err(if reason.is_empty() {
-        format!("{program} failed")
-    } else {
-        reason
-    })
 }
 
 #[cfg(test)]

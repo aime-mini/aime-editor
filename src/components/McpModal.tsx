@@ -374,7 +374,7 @@ export function McpModal({ onClose }: { onClose: () => void }) {
             <button
               onClick={() => void add()}
               disabled={!form.name.trim() || !form.target.trim() || adding}
-              className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded-lg bg-accent-strong px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
             >
               {adding ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
               {t("mcp.add")}

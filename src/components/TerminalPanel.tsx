@@ -65,7 +65,7 @@ export function TerminalPanel() {
               fixWithAi(activeTab);
             }}
             disabled={aiRunning}
-            className="flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 text-white hover:opacity-90 disabled:opacity-40"
+            className="flex items-center gap-1.5 rounded-md bg-accent-strong px-2.5 py-1 text-white hover:opacity-90 disabled:opacity-40"
           >
             <Sparkles size={12} /> {t("tasks.fixWithAi")}
           </button>

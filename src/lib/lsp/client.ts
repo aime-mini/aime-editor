@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { answerToServerRequest } from "./convert";
 
 /** Mirrors the Rust payloads of `lsp:message` / `lsp:exit` (lsp/mod.rs). */
 interface MessagePayload {
@@ -107,12 +108,12 @@ export class LspClient {
       return;
     }
     if (message.id !== undefined && message.method !== undefined) {
-      // Server-to-client request. Aime registers no dynamic capabilities and
-      // holds no settings, but the server blocks until it gets an answer.
+      // Server-to-client request: the server blocks until it gets an answer,
+      // and the shape of that answer is load-bearing (see `answerToServerRequest`).
       this.send({
         jsonrpc: "2.0",
         id: message.id,
-        result: message.method === "workspace/configuration" ? [null] : null,
+        result: answerToServerRequest(message.method, message.params),
       });
       return;
     }

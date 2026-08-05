@@ -3,7 +3,9 @@ import {
   applyBreakpointAnswer,
   applyBreakpointEvent,
   displayLine,
+  hasRule,
   launchConfig,
+  toSourceBreakpoints,
   newBreakpoint,
 } from "./launch";
 
@@ -120,5 +122,39 @@ describe("applyBreakpointEvent", () => {
     expect(applyBreakpointEvent(breakpoints, { id: 99, verified: true, line: 5 })).toBe(breakpoints);
     // An event with no id at all identifies nothing and must not match id: null.
     expect(applyBreakpointEvent(breakpoints, { verified: true })).toBe(breakpoints);
+  });
+});
+
+describe("breakpoint rules", () => {
+  it("sends a condition, a hit count and a log message with the line", () => {
+    const breakpoints = [newBreakpoint(7, { condition: "i === 3", hitCondition: "> 5", logMessage: "here" })];
+    expect(toSourceBreakpoints(breakpoints)).toEqual([
+      { line: 7, condition: "i === 3", hitCondition: "> 5", logMessage: "here" },
+    ]);
+  });
+
+  it("treats an empty or blank expression as no rule at all", () => {
+    // Sending `condition: ""` is not the same as sending nothing: adapters
+    // evaluate it, and an empty expression is an error in most languages.
+    const blank = newBreakpoint(7, { condition: "   ", hitCondition: "", logMessage: undefined });
+    expect(hasRule(blank)).toBe(false);
+    expect(toSourceBreakpoints([blank])).toEqual([{ line: 7 }]);
+  });
+
+  it("keeps the rules when the adapter answers, because they are the editor's", () => {
+    const requested = [newBreakpoint(7, { condition: "i === 3" })];
+    const answered = applyBreakpointAnswer(requested, [{ id: 1, verified: true, line: 8 }]);
+    expect(answered[0].condition).toBe("i === 3");
+    expect(answered[0].actualLine).toBe(8);
+  });
+
+  it("keeps the rules when an adapter revises a breakpoint later", () => {
+    const [answered] = applyBreakpointAnswer(
+      [newBreakpoint(7, { condition: "i === 3" })],
+      [{ id: 4, verified: false }],
+    );
+    const [updated] = applyBreakpointEvent([answered], { id: 4, verified: true, line: 9 });
+    expect(updated.condition).toBe("i === 3");
+    expect(updated.verified).toBe(true);
   });
 });

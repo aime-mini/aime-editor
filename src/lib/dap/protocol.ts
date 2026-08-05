@@ -39,12 +39,29 @@ export interface Capabilities {
   supportsTerminateRequest?: boolean;
   supportsStepBack?: boolean;
   supportsRestartRequest?: boolean;
+  supportsExceptionFilterOptions?: boolean;
+  /** What this adapter can stop on: "uncaught", "raised", "assert"… */
+  exceptionBreakpointFilters?: ExceptionBreakpointFilter[];
+}
+
+/** One kind of exception an adapter can be asked to stop on. */
+export interface ExceptionBreakpointFilter {
+  filter: string;
+  label: string;
+  description?: string;
+  /** Whether Aime should start with it on - the adapter's own recommendation. */
+  default?: boolean;
 }
 
 /** A breakpoint as Aime asks for it. */
 export interface SourceBreakpoint {
   line: number;
+  /** An expression that has to be true for the adapter to stop. */
   condition?: string;
+  /** How many hits before it counts, as the adapter's own expression ("> 5"). */
+  hitCondition?: string;
+  /** Set to log instead of stopping - a logpoint. */
+  logMessage?: string;
 }
 
 /** A breakpoint as the adapter answers — the line may not be the one asked for. */

@@ -9,13 +9,29 @@ import type { AdapterBreakpoint, SourceBreakpoint } from "./protocol";
  * report the program's output over the protocol instead of opening a console
  * window the editor cannot read.
  */
-export function launchConfig(configType: string, program: string, cwd: string): Record<string, unknown> {
+export function launchConfig(
+  configType: string,
+  program: string,
+  cwd: string,
+  /**
+   * Fields a taught adapter declared it needs (`mainClass`, `classPaths`, …).
+   * Merged last: an adapter Aime never measured knows its own requirements
+   * better than this function does.
+   */
+  extra: Record<string, unknown> = {},
+  /** What this target passes to its program (`.aime/launch.json`). */
+  options: { args?: string[]; env?: Record<string, string> } = {},
+): Record<string, unknown> {
   const common = {
     type: configType,
     request: "launch",
     name: "Aime",
     program,
     cwd,
+    // Both are protocol fields every adapter reads; empty ones are left out so a
+    // configuration says only what it means.
+    ...(options.args && options.args.length > 0 ? { args: options.args } : {}),
+    ...(options.env && Object.keys(options.env).length > 0 ? { env: options.env } : {}),
     // Output comes back as `output` events. Any other console setting hands the
     // program to a terminal Aime does not own, and the Debug Console stays empty.
     console: "internalConsole",
@@ -29,19 +45,60 @@ export function launchConfig(configType: string, program: string, cwd: string): 
       // steps into them looks broken.
       skipFiles: ["<node_internals>/**"],
       sourceMaps: true,
+      ...extra,
     };
   }
   if (configType === "python") {
-    return { ...common, justMyCode: true };
+    return { ...common, justMyCode: true, ...extra };
   }
   if (configType === "go") {
     // delve compiles the program before running it, and `mode` is how its
     // launch request is told to: without it there is nothing to debug. "debug"
     // is `dlv debug` — build this source, then run the binary under the
     // debugger — which is what pressing F5 on a .go file means.
-    return { ...common, mode: "debug" };
+    return { ...common, mode: "debug", ...extra };
   }
-  return common;
+  return { ...common, ...extra };
+}
+
+/** Where a program that is already running can be reached. */
+export interface AttachTarget {
+  host: string;
+  port: number;
+}
+
+/**
+ * The configuration for attaching to a program that is already running.
+ *
+ * Every adapter spells this differently and there is no way around knowing
+ * which: js-debug takes a flat `port`, debugpy expects a `connect` object, and
+ * anything Aime was taught brings its own fields. The shared half - the request
+ * kind and where source is - is still shared.
+ */
+export function attachConfig(
+  configType: string,
+  target: AttachTarget,
+  cwd: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const common = { type: configType, request: "attach", name: "Aime", cwd };
+
+  if (configType === "pwa-node") {
+    // js-debug attaches to a Node inspector port (`node --inspect`), and its own
+    // frames are as much noise here as in a launch.
+    return {
+      ...common,
+      address: target.host,
+      port: target.port,
+      skipFiles: ["<node_internals>/**"],
+      ...extra,
+    };
+  }
+  if (configType === "python") {
+    // debugpy listens with `python -m debugpy --listen`, and the client connects.
+    return { ...common, connect: { host: target.host, port: target.port }, justMyCode: true, ...extra };
+  }
+  return { ...common, host: target.host, port: target.port, ...extra };
 }
 
 /** A breakpoint in the editor: what was asked for, and what the adapter made of it. */
@@ -67,10 +124,47 @@ export interface EditorBreakpoint {
    * it - the reason is the only thing that distinguishes the two.
    */
   message: string | null;
+  /**
+   * What makes this breakpoint fire, all three optional and all three the
+   * adapter's job rather than Aime's: an expression that has to be true, a hit
+   * count expression ("> 5"), and a message to log instead of stopping.
+   *
+   * A logpoint is the one that changes the nature of the breakpoint - the
+   * program does not stop, the message goes to the Debug Console - and adapters
+   * that do not support one simply stop instead, which is why the marker says
+   * which kind it is.
+   */
+  condition?: string;
+  hitCondition?: string;
+  logMessage?: string;
 }
 
-export function newBreakpoint(line: number): EditorBreakpoint {
-  return { line, actualLine: null, verified: false, id: null, message: null };
+/** Everything about a breakpoint except where it is. */
+export type BreakpointRule = Pick<EditorBreakpoint, "condition" | "hitCondition" | "logMessage">;
+
+export function newBreakpoint(line: number, rule: BreakpointRule = {}): EditorBreakpoint {
+  return {
+    line,
+    actualLine: null,
+    verified: false,
+    id: null,
+    message: null,
+    ...stripEmpty(rule),
+  };
+}
+
+/** An empty expression is not a rule; storing it would send `condition: ""`. */
+export function stripEmpty(rule: BreakpointRule): BreakpointRule {
+  const kept: BreakpointRule = {};
+  if (rule.condition?.trim()) kept.condition = rule.condition.trim();
+  if (rule.hitCondition?.trim()) kept.hitCondition = rule.hitCondition.trim();
+  if (rule.logMessage?.trim()) kept.logMessage = rule.logMessage.trim();
+  return kept;
+}
+
+/** Whether anything makes this breakpoint conditional, for the marker to say so. */
+export function hasRule(breakpoint: EditorBreakpoint): boolean {
+  return Boolean(breakpoint.condition ?? breakpoint.hitCondition ?? breakpoint.logMessage);
 }
 
 /** The line to draw the marker on: what the adapter said, or what was asked. */
@@ -79,7 +173,13 @@ export function displayLine(breakpoint: EditorBreakpoint): number {
 }
 
 export function toSourceBreakpoints(breakpoints: EditorBreakpoint[]): SourceBreakpoint[] {
-  return breakpoints.map((breakpoint) => ({ line: breakpoint.line }));
+  // The rules travel with the line, and the adapter enforces them: evaluating a
+  // condition here would mean stopping the program to ask, then resuming it,
+  // which is precisely the overhead the protocol exists to avoid.
+  return breakpoints.map((breakpoint) => ({
+    line: breakpoint.line,
+    ...stripEmpty(breakpoint),
+  }));
 }
 
 /**
@@ -101,6 +201,8 @@ export function applyBreakpointAnswer(
     const answer = answered[index] as AdapterBreakpoint | undefined;
     if (!answer) return { ...breakpoint, actualLine: null, verified: false, id: null, message: null };
     return {
+      // Spread first: the rules the user set are the editor's, not the answer's.
+      ...breakpoint,
       line: breakpoint.line,
       // A provisional answer carries no line; the requested one is the best
       // guess until the adapter says otherwise in a `breakpoint` event.

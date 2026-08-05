@@ -17,6 +17,9 @@ import { EnvironmentCheck } from "./components/EnvironmentCheck";
 import { CommandPalette } from "./components/CommandPalette";
 import { HelpModal } from "./components/HelpModal";
 import { InstallerModal } from "./components/InstallerModal";
+import { SetupProgressModal } from "./components/SetupProgressModal";
+import { BreakpointRuleModal } from "./components/BreakpointRuleModal";
+import { LaunchArgumentsModal } from "./components/LaunchArgumentsModal";
 import { McpModal } from "./components/McpModal";
 import { MemoryModal } from "./components/MemoryModal";
 import { PromptModal } from "./components/PromptModal";
@@ -26,6 +29,7 @@ import { UpdateNotice } from "./components/UpdateNotice";
 import { useAi } from "./stores/ai";
 import { useDebug } from "./stores/debug";
 import { useLayout } from "./stores/layout";
+import { usePlugins } from "./stores/plugins";
 import { useRecent } from "./stores/recent";
 import { useWorkspace } from "./stores/workspace";
 
@@ -119,7 +123,7 @@ function WelcomeScreen() {
               <div className="mt-3 flex flex-col gap-2">
                 <button
                   onClick={() => void openFolder()}
-                  className="flex w-full items-center gap-2 rounded-lg bg-accent px-4 py-2 font-medium text-white hover:opacity-90"
+                  className="flex w-full items-center gap-2 rounded-lg bg-accent-strong px-4 py-2 font-medium text-white hover:opacity-90"
                 >
                   <FolderOpen size={16} /> {t("welcome.openFolder")}
                 </button>
@@ -239,6 +243,11 @@ export default function App() {
         }
       })
       .catch(console.error);
+  }, []);
+
+  // Plugins the user switched on, started once per window.
+  useEffect(() => {
+    void usePlugins.getState().refresh();
   }, []);
 
   // Bind the AI store to the workspace: restores this project's saved sessions.
@@ -369,6 +378,11 @@ export default function App() {
           }}
         />
       )}
+      {/* Mounted always: it decides for itself whether a setup run is worth
+          showing, and the run outlives the file that started it. */}
+      <SetupProgressModal />
+      <BreakpointRuleModal />
+      <LaunchArgumentsModal />
     </div>
   );
 }
