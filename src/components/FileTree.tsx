@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   ExternalLink,
+  EyeOff,
   File,
   FileClock,
   FilePlus,
@@ -22,7 +23,8 @@ import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { PromptModal } from "./PromptModal";
 import type { DirEntry } from "../lib/types";
 
-type MenuTarget = { entry: DirEntry; x: number; y: number };
+/** `ignored` travels with the target: only the row itself knows it inherited it. */
+type MenuTarget = { entry: DirEntry; ignored: boolean; x: number; y: number };
 type ModalAction =
   | { kind: "new-file" | "new-folder"; dirPath: string }
   | { kind: "rename"; entry: DirEntry }
@@ -61,16 +63,22 @@ function TreeNode({
   onMenu,
   dnd,
   badges,
+  ignoredPaths,
+  ignored,
 }: {
   entry: DirEntry;
   depth: number;
   onMenu: (target: MenuTarget) => void;
   dnd: TreeDnd;
   badges: GitBadges;
+  ignoredPaths: ReadonlySet<string>;
+  /** Already decided by the parent: an ignored folder ignores everything in it. */
+  ignored: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<DirEntry[] | null>(null);
   const { openFile, openFilePath, treeVersion } = useWorkspace();
+  const t = useT();
 
   // Loads on first expand and reloads while expanded whenever the workspace
   // changes, so nested levels stay fresh without collapsing the tree.
@@ -104,7 +112,7 @@ function TreeNode({
         onClick={toggle}
         onContextMenu={(e) => {
           e.preventDefault();
-          onMenu({ entry, x: e.clientX, y: e.clientY });
+          onMenu({ entry, ignored, x: e.clientX, y: e.clientY });
         }}
         draggable
         onDragStart={(e) => {
@@ -131,8 +139,9 @@ function TreeNode({
           dnd.onDropInto(source, entry);
           dnd.onHover(null);
         }}
+        title={ignored ? t("tree.ignored") : undefined}
         className={`flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left hover:bg-elevated ${
-          active ? "bg-accent-soft text-accent" : "text-fg"
+          active ? "bg-accent-soft text-accent" : ignored ? "text-muted" : "text-fg"
         } ${isDropTarget ? "bg-accent-soft outline-1 outline-accent" : ""}`}
         style={{ paddingLeft: depth * 12 + 6 }}
       >
@@ -143,10 +152,12 @@ function TreeNode({
             ) : (
               <ChevronRight size={13} className="shrink-0 text-muted" />
             )}
+            {/* The folder icon carries the accent, so it has to dim too - a
+                bright folder over a grey name reads as a rendering slip. */}
             {expanded ? (
-              <FolderOpen size={14} className="shrink-0 text-accent" />
+              <FolderOpen size={14} className={`shrink-0 ${ignored ? "text-muted" : "text-accent"}`} />
             ) : (
-              <Folder size={14} className="shrink-0 text-accent" />
+              <Folder size={14} className={`shrink-0 ${ignored ? "text-muted" : "text-accent"}`} />
             )}
           </>
         ) : (
@@ -164,7 +175,16 @@ function TreeNode({
       </button>
       {expanded &&
         children?.map((c) => (
-          <TreeNode key={c.path} entry={c} depth={depth + 1} onMenu={onMenu} dnd={dnd} badges={badges} />
+          <TreeNode
+            key={c.path}
+            entry={c}
+            depth={depth + 1}
+            onMenu={onMenu}
+            dnd={dnd}
+            badges={badges}
+            ignoredPaths={ignoredPaths}
+            ignored={ignored || ignoredPaths.has(pathKey(c.path))}
+          />
         ))}
     </div>
   );
@@ -213,6 +233,7 @@ export function FileTree() {
   };
 
   const gitFiles = useGit((s) => s.status?.files);
+  const ignored = useGit((s) => s.ignored);
   const badges: GitBadges = useMemo(() => {
     const map: GitBadges = new Map();
     if (!gitFiles || !rootPath) return map;
@@ -235,6 +256,33 @@ export function FileTree() {
       }
     }
     return map;
+  }, [gitFiles, rootPath]);
+
+  /**
+   * Absolute paths git ignores, as the tree keys them.
+   *
+   * Grey rather than hidden, which is the choice VS Code made and the right one
+   * here too: `.env`, `dist/` and a build log are files people open on purpose,
+   * and a tree that pretends they do not exist sends them to Explorer. The
+   * colour is the whole message - this is not part of the repository.
+   */
+  const ignoredPaths: ReadonlySet<string> = useMemo(() => {
+    if (!rootPath) return new Set<string>();
+    return new Set(ignored.map((path) => pathKey(`${rootPath}\\${path}`)));
+  }, [ignored, rootPath]);
+
+  /**
+   * Absolute paths git has never been told about.
+   *
+   * `git_status` runs with `--untracked-files=all`, so every untracked file is
+   * a record of its own here - which is what makes "would ignoring this do
+   * anything?" answerable without asking git a second question.
+   */
+  const untrackedPaths: string[] = useMemo(() => {
+    if (!rootPath) return [];
+    return (gitFiles ?? [])
+      .filter((file) => file.unstaged === "?")
+      .map((file) => pathKey(`${rootPath}\\${file.path}`));
   }, [gitFiles, rootPath]);
 
   useEffect(() => {
@@ -275,6 +323,22 @@ export function FileTree() {
   );
 
   if (!rootPath) return null;
+
+  /**
+   * Whether adding this entry to `.gitignore` would change anything.
+   *
+   * Git ignores only what it is not already tracking, so the entry is offered
+   * for an untracked file - and for a folder that holds one, which is the case
+   * ignoring a folder exists for. Something already ignored is grey on screen
+   * and needs no second pattern.
+   */
+  const canIgnore = (target: MenuTarget): boolean => {
+    if (!isRepo || target.ignored || target.entry.path === rootPath) return false;
+    const key = pathKey(target.entry.path);
+    return target.entry.is_dir
+      ? untrackedPaths.some((path) => path.startsWith(`${key}\\`))
+      : untrackedPaths.includes(key);
+  };
 
   const menuItems = (target: MenuTarget): MenuItem[] => {
     const items: MenuItem[] = [];
@@ -323,6 +387,15 @@ export function FileTree() {
         },
       );
     }
+    if (canIgnore(target)) {
+      items.push({
+        label: t("menu.gitIgnore"),
+        icon: <EyeOff size={14} />,
+        onClick: () => {
+          void useGit.getState().ignore([target.entry.path.slice(rootPath.length + 1).replaceAll("\\", "/")]);
+        },
+      });
+    }
     if (target.entry.path === rootPath) {
       // The workspace root can be switched or closed — never renamed/deleted from here.
       items.push(
@@ -369,7 +442,12 @@ export function FileTree() {
         }`}
         onContextMenu={(e) => {
           e.preventDefault();
-          setMenu({ entry: { name: "", path: rootPath, is_dir: true }, x: e.clientX, y: e.clientY });
+          setMenu({
+            entry: { name: "", path: rootPath, is_dir: true },
+            ignored: false,
+            x: e.clientX,
+            y: e.clientY,
+          });
         }}
         onDragOver={(e) => {
           if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
@@ -405,7 +483,16 @@ export function FileTree() {
         </button>
       </div>
       {entries.map((e) => (
-        <TreeNode key={e.path} entry={e} depth={0} onMenu={setMenu} dnd={dnd} badges={badges} />
+        <TreeNode
+          key={e.path}
+          entry={e}
+          depth={0}
+          onMenu={setMenu}
+          dnd={dnd}
+          badges={badges}
+          ignoredPaths={ignoredPaths}
+          ignored={ignoredPaths.has(pathKey(e.path))}
+        />
       ))}
 
       {menu && (

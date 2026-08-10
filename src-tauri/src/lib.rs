@@ -102,6 +102,7 @@ pub fn run() {
             git::git_staged_diff,
             git::git_worktree_diff,
             git::git_file_diff,
+            git::git_ignored,
             git::git_log,
             git::git_show_commit,
             git::git_branches,

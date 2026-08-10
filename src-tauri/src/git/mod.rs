@@ -202,14 +202,18 @@ pub async fn git_unstage(root: String, paths: Vec<String>) -> Result<(), String>
 /// like `debug.log` would ignore every `debug.log` in the project, and a file
 /// whose name starts with `#` or `!` would read as a comment or a negation. The
 /// backslashes keep the glob characters of a real file name (`page[id].tsx`)
-/// literal.
-fn ignore_pattern(path: &str) -> String {
+/// literal. A trailing `/` is what tells git the pattern is a directory, so a
+/// file called `build` later on is not swept up with the folder called `build`.
+fn ignore_pattern(path: &str, is_dir: bool) -> String {
     let mut pattern = String::from("/");
     for character in path.chars() {
         if matches!(character, '\\' | '*' | '?' | '[') {
             pattern.push('\\');
         }
         pattern.push(character);
+    }
+    if is_dir {
+        pattern.push('/');
     }
     pattern
 }
@@ -240,7 +244,13 @@ pub async fn git_ignore(root: String, paths: Vec<String>) -> Result<(), String> 
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(err) => return Err(format!("could not read .gitignore: {err}")),
     };
-    let patterns: Vec<String> = paths.iter().map(|path| ignore_pattern(path)).collect();
+    // Whether a path is a directory is read off the disk rather than passed in:
+    // the caller is a menu, and the answer belongs to the filesystem.
+    let root_path = std::path::Path::new(&root);
+    let patterns: Vec<String> = paths
+        .iter()
+        .map(|path| ignore_pattern(path, root_path.join(path).is_dir()))
+        .collect();
     let updated = with_patterns(&existing, &patterns);
     if updated == existing {
         return Ok(()); // every path was already ignored
@@ -397,6 +407,42 @@ pub async fn git_file_diff(root: String, path: String) -> Result<String, String>
         Ok(diff) => Ok(without_bom(diff)),
         Err(_) => Ok(String::new()), // no HEAD yet (fresh repo) → no gutter marks
     }
+}
+
+/// Paths git ignores, a fully ignored directory collapsed into one entry.
+///
+/// `--directory` is the design of this call rather than a flag on it: measured
+/// on this repository it answers 12 paths in 65 ms where the expanded list is
+/// 33 590 paths in 541 ms. The file tree only needs to know where an ignored
+/// region begins - everything below it inherits - so `node_modules/` never has
+/// to be enumerated to be greyed out.
+#[tauri::command]
+pub async fn git_ignored(root: String) -> Result<Vec<String>, String> {
+    match run_git(
+        &root,
+        &[
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ],
+    )
+    .await
+    {
+        Ok(out) => Ok(parse_ignored(&out)),
+        Err(_) => Ok(Vec::new()), // not a repository → nothing is ignored
+    }
+}
+
+/// Splits `-z` output into repo-relative paths, dropping the trailing slash git
+/// puts on a directory so that a directory and a file are keyed the same way.
+fn parse_ignored(text: &str) -> Vec<String> {
+    text.split('\0')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| entry.trim_end_matches('/').to_string())
+        .collect()
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -715,13 +761,37 @@ mod tests {
     /// repository): `/debug.log` leaves `sub/debug.log` alone, the escaped `[`
     /// stops the name from also matching `pageXid].tsx`, and the leading `/` is
     /// what keeps `#notes.md` from being read as a comment. A closing `]` needs
-    /// no escape - outside a bracket expression it is already literal.
+    /// no escape - outside a bracket expression it is already literal. The
+    /// trailing `/` on a folder is git's own way of saying "a directory called
+    /// this", which leaves a file of the same name tracked.
+    #[test]
+    fn a_folder_is_ignored_as_a_folder() {
+        assert_eq!(ignore_pattern("build", true), "/build/");
+        assert_eq!(ignore_pattern("src/generated", true), "/src/generated/");
+    }
+
     #[test]
     fn ignore_patterns_are_anchored_and_literal() {
-        assert_eq!(ignore_pattern("debug.log"), "/debug.log");
-        assert_eq!(ignore_pattern("src/app/page[id].tsx"), "/src/app/page\\[id].tsx");
-        assert_eq!(ignore_pattern("#notes.md"), "/#notes.md");
-        assert_eq!(ignore_pattern("!important.txt"), "/!important.txt");
+        assert_eq!(ignore_pattern("debug.log", false), "/debug.log");
+        assert_eq!(
+            ignore_pattern("src/app/page[id].tsx", false),
+            "/src/app/page\\[id].tsx"
+        );
+        assert_eq!(ignore_pattern("#notes.md", false), "/#notes.md");
+        assert_eq!(ignore_pattern("!important.txt", false), "/!important.txt");
+    }
+
+    /// Real output of `ls-files --others --ignored --exclude-standard --directory -z`
+    /// on this repository: a directory arrives with a trailing slash and a file
+    /// without one, and the tree looks both up by the same key.
+    #[test]
+    fn ignored_directories_and_files_are_keyed_alike() {
+        let text = "node_modules/\0STATUS.md\0src-tauri/target/\0";
+        assert_eq!(
+            parse_ignored(text),
+            vec!["node_modules", "STATUS.md", "src-tauri/target"]
+        );
+        assert!(parse_ignored("").is_empty());
     }
 
     #[test]

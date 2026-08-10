@@ -10,7 +10,19 @@ pub struct DirEntry {
     pub is_dir: bool,
 }
 
-/// Directories hidden from the file tree and ignored by the workspace watcher.
+/// Directories the file tree never shows.
+///
+/// Version-control metadata and nothing else, which is what VS Code hides by
+/// default as well (`files.exclude`, read from the installed copy: `.git`,
+/// `.svn`, `.hg`, `.DS_Store`, `Thumbs.db`). Everything a project merely
+/// ignores - `node_modules`, `dist`, `target` - is shown and greyed out
+/// instead: those hold files people open on purpose, and a tree that pretends
+/// they do not exist sends the user to Explorer. Hiding them by name also hid
+/// `bin/` and `obj/` in projects where those are tracked source.
+const HIDDEN_DIRS: &[&str] = &[".git", ".svn", ".hg"];
+
+/// Directories kept out of the workspace watcher and the quick-open index,
+/// where their cost is real and their contents are somebody else's code.
 pub const IGNORED_DIRS: &[&str] = &[
     "node_modules",
     ".git",
@@ -21,7 +33,7 @@ pub const IGNORED_DIRS: &[&str] = &[
     "__pycache__",
 ];
 
-/// Lists one directory level — folders first, then files; noisy directories are skipped.
+/// Lists one directory level — folders first, then files; only VCS metadata is skipped.
 #[tauri::command]
 pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     let mut entries: Vec<DirEntry> = fs::read_dir(&path)
@@ -30,7 +42,7 @@ pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
             let is_dir = e.file_type().ok()?.is_dir();
-            if is_dir && IGNORED_DIRS.contains(&name.as_str()) {
+            if is_dir && HIDDEN_DIRS.contains(&name.as_str()) {
                 return None;
             }
             Some(DirEntry {

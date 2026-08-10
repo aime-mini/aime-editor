@@ -24,6 +24,16 @@ interface JsonRpcMessage {
 const REQUEST_TIMEOUT_MS = 15_000;
 
 /**
+ * `initialize` gets its own deadline, because it is not like the others: the
+ * server boots, reads the project and builds an index before it replies.
+ * Measured 2026-08-06 - JDT LS takes 5 s on a warm machine for a folder holding
+ * one file, and the first start after a download has no OSGi cache to reuse. The
+ * ordinary fifteen seconds would turn that into a failed chip on a server that
+ * was working, so the wait is long and the status bar says "starting" throughout.
+ */
+export const STARTUP_TIMEOUT_MS = 90_000;
+
+/**
  * A minimal JSON-RPC 2.0 client for one language server.
  *
  * Deliberately hand-written rather than `monaco-languageclient`: that library
@@ -65,14 +75,14 @@ export class LspClient {
     return client;
   }
 
-  request<T>(method: string, params: unknown): Promise<T> {
+  request<T>(method: string, params: unknown, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<T> {
     if (this.stopped) return Promise.reject(new Error(`${method}: language server stopped`));
     const id = this.nextRequestId++;
     return new Promise<T>((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${method}: language server did not answer`));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
       this.send({ jsonrpc: "2.0", id, method, params });
     });

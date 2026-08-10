@@ -59,6 +59,12 @@ interface GitState {
   logLimit: number;
   loadMoreLog: () => Promise<void>;
   stashes: GitStashEntry[];
+  /**
+   * Repo-relative paths git ignores, a fully ignored directory collapsed into
+   * one entry. The file tree greys them out; everything under such a directory
+   * inherits, which is why the list stays a dozen entries instead of thousands.
+   */
+  ignored: string[];
   busy: boolean;
   lastError: string | null;
   commitMessage: string;
@@ -154,6 +160,7 @@ export const useGit = create<GitState>((set, get) => ({
   log: [],
   logLimit: LOG_PAGE,
   stashes: [],
+  ignored: [],
   busy: false,
   lastError: null,
   commitMessage: "",
@@ -173,12 +180,13 @@ export const useGit = create<GitState>((set, get) => ({
       return;
     }
     try {
-      const [status, log, stashes] = await Promise.all([
+      const [status, log, stashes, ignored] = await Promise.all([
         invoke<GitStatus>("git_status", { root }),
         invoke<GitLogEntry[]>("git_log", { root, limit: get().logLimit }),
         invoke<GitStashEntry[]>("git_stash_list", { root }),
+        invoke<string[]>("git_ignored", { root }),
       ]);
-      set({ status, log, stashes });
+      set({ status, log, stashes, ignored });
     } catch (err: unknown) {
       set({ lastError: String(err) });
     }
@@ -452,6 +460,7 @@ export const useGit = create<GitState>((set, get) => ({
       log: [],
       logLimit: LOG_PAGE,
       stashes: [],
+      ignored: [],
       commitMessage: "",
       amend: false,
       lastError: null,

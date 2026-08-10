@@ -16,6 +16,18 @@ const project = path.resolve(__dirname, "..");
 const application = path.join(project, "src-tauri", "target", "debug", "ai-mini-editor.exe");
 const nativeDriver = process.env.AIME_EDGE_DRIVER ?? path.join(os.homedir(), ".aime-e2e", "msedgedriver.exe");
 
+/**
+ * The Edge driver gives every WebView2 it starts a scratch profile in the system
+ * temp folder and never takes it back: one `scoped_dir*` per spec, 10-90 MB
+ * each, which is how 57 of them came to be sitting there by the ninth session.
+ * `onComplete` removes the ones this run created - hence the timestamp.
+ */
+const startedAt = Date.now();
+const DRIVER_PROFILE_PREFIX = "scoped_dir";
+/** The profile is only released once the WebView2 process behind it has exited. */
+const PROFILE_ATTEMPTS = 3;
+const PROFILE_RETRY_MS = 400;
+
 /** A throwaway project, so the tests never depend on what is on this machine. */
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "aime-e2e-"));
 fs.writeFileSync(path.join(workspace, "hello.ts"), 'export const greeting = "hello";\n');
@@ -45,6 +57,22 @@ fs.writeFileSync(
   ].join("\n"),
 );
 
+// Java, for the code intelligence test: a plain folder with no Maven and no
+// Gradle, which is the case JDT LS has to build an "invisible project" for before
+// it can answer anything about `greeting`.
+fs.writeFileSync(
+  path.join(workspace, "App.java"),
+  [
+    "public class App {",
+    "    public static void main(String[] args) {",
+    '        String greeting = "hello";',
+    "        System.out.println(greeting.length());",
+    "    }",
+    "}",
+    "",
+  ].join("\n"),
+);
+
 // The same shape in a language Monaco has no outline of its own for, so anything
 // sticky scroll pins here came from a real language server answering
 // textDocument/documentSymbol.
@@ -68,6 +96,53 @@ function tauriDriverPath() {
     path.join(os.homedir(), ".cargo", "bin", "tauri-driver"),
   ];
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? "tauri-driver";
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Driver profiles this run is responsible for.
+ *
+ * Only what was created after the run started: the prefix belongs to every
+ * Chromium-based process on the machine, so a sweep of the whole pattern could
+ * delete the profile of a WebView2 application the user has open right now.
+ */
+function driverProfilesOfThisRun() {
+  return fs
+    .readdirSync(os.tmpdir())
+    .filter((name) => name.startsWith(DRIVER_PROFILE_PREFIX))
+    .map((name) => path.join(os.tmpdir(), name))
+    .filter((profile) => {
+      const stats = fs.statSync(profile, { throwIfNoEntry: false });
+      // birthtime reads as 0 on filesystems that do not record one; these
+      // folders are written as they are created, so mtime is then the same fact.
+      return stats ? (stats.birthtimeMs || stats.mtimeMs) >= startedAt : false;
+    });
+}
+
+async function removeDriverProfiles() {
+  const profiles = driverProfilesOfThisRun();
+  if (profiles.length === 0) return;
+
+  let removed = 0;
+  for (const profile of profiles) {
+    for (let attempt = 1; attempt <= PROFILE_ATTEMPTS; attempt += 1) {
+      try {
+        fs.rmSync(profile, { recursive: true, force: true });
+        removed += 1;
+        break;
+      } catch (error) {
+        // Still open. Worth waiting for, not worth failing a green run over:
+        // the report says what was left behind and where.
+        if (attempt === PROFILE_ATTEMPTS) {
+          process.stdout.write(`[e2e] ${profile} still locked: ${error.message}\n`);
+        } else {
+          await sleep(PROFILE_RETRY_MS);
+        }
+      }
+    }
+  }
+  process.stdout.write(`[e2e] removed ${removed} of ${profiles.length} driver profiles in ${os.tmpdir()}\n`);
 }
 
 let tauriDriver;
@@ -106,9 +181,10 @@ exports.config = {
     });
   },
 
-  onComplete: () => {
+  onComplete: async () => {
     tauriDriver?.kill();
     fs.rmSync(workspace, { recursive: true, force: true });
+    await removeDriverProfiles();
   },
 };
 

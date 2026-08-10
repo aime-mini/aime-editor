@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { monaco } from "../monaco";
-import { LspClient } from "./client";
+import { LspClient, STARTUP_TIMEOUT_MS } from "./client";
 import {
   hoverToMarkdown,
+  modelPath,
   pathToUri,
   toLspPosition,
   toMonacoRange,
@@ -228,6 +229,7 @@ export class LanguageSession {
           },
         },
       },
+      STARTUP_TIMEOUT_MS,
     );
     // Servers answer this as `true` or as an options object; both mean yes.
     session.outline = Boolean(answer?.capabilities?.documentSymbolProvider);
@@ -241,7 +243,7 @@ export class LanguageSession {
 
   /** Starts syncing a model and keeps syncing it until the model is disposed. */
   openModel(model: monaco.editor.ITextModel): void {
-    const uri = pathToUri(model.uri.fsPath || model.uri.path);
+    const uri = pathToUri(modelPath(model));
     if (this.openDocuments.has(uri)) return;
 
     const entry = { version: 1, disposables: [] as monaco.IDisposable[] };
@@ -277,9 +279,7 @@ export class LanguageSession {
   private publishDiagnostics(params: unknown): void {
     const { uri, diagnostics } = (params ?? {}) as { uri?: string; diagnostics?: LspDiagnostic[] };
     if (!uri) return;
-    const model = monaco.editor
-      .getModels()
-      .find((candidate) => pathToUri(candidate.uri.fsPath || candidate.uri.path) === uri);
+    const model = monaco.editor.getModels().find((candidate) => pathToUri(modelPath(candidate)) === uri);
     if (!model) return;
 
     monaco.editor.setModelMarkers(
@@ -297,7 +297,7 @@ export class LanguageSession {
 
   private documentPosition(model: monaco.editor.ITextModel, position: monaco.IPosition) {
     return {
-      textDocument: { uri: pathToUri(model.uri.fsPath || model.uri.path) },
+      textDocument: { uri: pathToUri(modelPath(model)) },
       position: toLspPosition(position),
     };
   }
@@ -402,7 +402,7 @@ export class LanguageSession {
   async documentSymbols(model: monaco.editor.ITextModel): Promise<monaco.languages.DocumentSymbol[]> {
     if (!this.outline) return [];
     const answer = await this.client.request<unknown>("textDocument/documentSymbol", {
-      textDocument: { uri: pathToUri(model.uri.fsPath || model.uri.path) },
+      textDocument: { uri: pathToUri(modelPath(model)) },
     });
     return toOutline(answer).map(toMonacoSymbol);
   }
@@ -448,9 +448,7 @@ export class LanguageSession {
     }
 
     const openModels = new Map(
-      monaco.editor
-        .getModels()
-        .map((candidate) => [pathToUri(candidate.uri.fsPath || candidate.uri.path), candidate]),
+      monaco.editor.getModels().map((candidate) => [pathToUri(modelPath(candidate)), candidate]),
     );
     const edits: monaco.languages.IWorkspaceTextEdit[] = [];
     const onDisk: Promise<unknown>[] = [];

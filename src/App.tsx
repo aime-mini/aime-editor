@@ -13,6 +13,7 @@ import logo from "./assets/logo.svg";
  */
 const Workbench = lazy(() => import("./components/Workbench"));
 import { useT } from "./i18n";
+import { startAutoSave } from "./lib/autoSave";
 import { EnvironmentCheck } from "./components/EnvironmentCheck";
 import { CommandPalette } from "./components/CommandPalette";
 import { HelpModal } from "./components/HelpModal";
@@ -249,6 +250,10 @@ export default function App() {
   useEffect(() => {
     void usePlugins.getState().refresh();
   }, []);
+
+  // Auto save listens to the workspace, not to a component: the file being
+  // edited outlives every view that shows it.
+  useEffect(() => startAutoSave(), []);
 
   // Bind the AI store to the workspace: restores this project's saved sessions.
   useEffect(() => {

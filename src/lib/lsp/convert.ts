@@ -124,6 +124,22 @@ export function hoverToMarkdown(contents: unknown): string {
   return "";
 }
 
+/**
+ * The file a Monaco model stands for.
+ *
+ * Not `model.uri.fsPath`, which is wrong here: `@monaco-editor/react` builds the
+ * model's URI with `Uri.parse(path)`, and a Windows path parses as a URI whose
+ * *scheme* is the drive letter. Measured against the real window 2026-08-06 -
+ * `C:\…\App.java` arrives as scheme `C`, path `\…\App.java` - so every URI Aime
+ * sent a language server was missing its drive. Servers that answer from the text
+ * they were handed never noticed (pyright, typescript-language-server); JDT LS
+ * opens the file on disk, answered nothing at all, and is what exposed it.
+ */
+export function modelPath(model: { uri: { scheme: string; path: string; fsPath: string } }): string {
+  const { scheme, path, fsPath } = model.uri;
+  return /^[a-zA-Z]$/.test(scheme) ? `${scheme}:${path}` : fsPath || path;
+}
+
 /** `file:///c%3A/path/file.ts` ↔ the OS path Aime works with. */
 export function pathToUri(path: string): string {
   const normalized = path.replaceAll("\\", "/");

@@ -33,18 +33,35 @@ pub struct ToolStatus {
     pub installable: bool,
 }
 
-/// Whether a hint is something Aime could run right now.
-async fn can_run_install(installed: bool, install_hint: &str) -> bool {
-    if installed {
-        return false;
-    }
-    // A download Aime performs itself is always runnable.
-    if install_hint.contains("Aime downloads it") {
-        return true;
+/// What can be done about a missing tool, read from its hint alone.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum InstallRoute {
+    /// Aime fetches it itself (`archive.rs`), so nothing else has to be present.
+    Download,
+    /// A command line, named by the program that would run it.
+    Command(String),
+    /// A page for a person to read: a JDK, Git, LLVM. Not something to run.
+    Documentation,
+}
+
+pub(crate) fn install_route(install_hint: &str) -> InstallRoute {
+    if install_hint.contains(crate::lsp::AIME_DOWNLOADS) {
+        return InstallRoute::Download;
     }
     match install_hint.split_whitespace().next() {
-        Some(program) if !program.starts_with("http") => version_of(program).await.is_some(),
-        _ => false,
+        Some(program) if !program.starts_with("http") => InstallRoute::Command(program.to_string()),
+        _ => InstallRoute::Documentation,
+    }
+}
+
+/// Whether Aime could run this install right now. One rule for the environment
+/// rows, the language chips and the banner in the editor, so the three can never
+/// disagree about whether a button would work.
+pub(crate) async fn can_run_install(install_hint: &str) -> bool {
+    match install_route(install_hint) {
+        InstallRoute::Download => true,
+        InstallRoute::Command(program) => version_of(&program).await.is_some(),
+        InstallRoute::Documentation => false,
     }
 }
 
@@ -90,7 +107,7 @@ pub async fn environment_report() -> Vec<ToolStatus> {
             installed,
             version: health.as_ref().and_then(|h| h.version.clone()),
             signed_in: health.as_ref().and_then(|h| h.signed_in),
-            installable: can_run_install(installed, install_hint).await,
+            installable: !installed && can_run_install(install_hint).await,
             install_hint: install_hint.to_string(),
             // AI is optional by design (ARCHITECTURE.md §1.6).
             required: false,
@@ -106,7 +123,7 @@ pub async fn environment_report() -> Vec<ToolStatus> {
             installed,
             version,
             signed_in: None,
-            installable: can_run_install(installed, install_hint).await,
+            installable: !installed && can_run_install(install_hint).await,
             install_hint: install_hint.to_string(),
             required,
         });
@@ -334,7 +351,30 @@ pub async fn install_tool(app: AppHandle, tool_id: String) -> Result<i32, String
 
 #[cfg(test)]
 mod tests {
-    use super::UNATTENDED_SERVERS;
+    use super::{install_route, InstallRoute, UNATTENDED_SERVERS};
+
+    /// The three shapes a hint comes in, since which button the UI shows hangs on
+    /// this one function: a download Aime performs needs no package manager, a
+    /// command needs its own runtime checked, and a link is for a person to read.
+    #[test]
+    fn a_hint_is_read_as_a_download_a_command_or_a_page() {
+        assert_eq!(
+            install_route("Eclipse JDT LS (45 MB, Aime downloads it)"),
+            InstallRoute::Download
+        );
+        assert_eq!(
+            install_route("npm install -g pyright"),
+            InstallRoute::Command("npm".to_string())
+        );
+        assert_eq!(
+            install_route("go install golang.org/x/tools/gopls@latest"),
+            InstallRoute::Command("go".to_string())
+        );
+        assert_eq!(
+            install_route("https://git-scm.com/downloads"),
+            InstallRoute::Documentation
+        );
+    }
 
     /// Every language Aime installs for itself must have a command in the LSP
     /// table, and that command must be the one its declared runtime runs -

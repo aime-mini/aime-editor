@@ -180,6 +180,14 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               }}
             />
           </Row>
+          <Row label={t("settings.autoSave")} hint={t("settings.autoSaveHint")}>
+            <Toggle
+              on={settings.autoSave}
+              onChange={(autoSave) => {
+                settings.update({ autoSave });
+              }}
+            />
+          </Row>
           <Row label={t("settings.tabSize")}>
             <Choice
               options={[2, 4, 8].map((size) => ({ value: size, label: String(size) }))}

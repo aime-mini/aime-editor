@@ -15,14 +15,32 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { workspace } = require("../wdio.conf.cjs");
 
-/** Whether the Python server Aime installs on first launch is on this machine. */
-function hasPyright() {
+/** Whether the operating system can find a program at all. */
+function onPath(command) {
   try {
-    execFileSync("where", ["pyright-langserver"], { stdio: "ignore" });
+    execFileSync("where", [command], { stdio: "ignore" });
     return true;
   } catch {
     return false;
   }
+}
+
+/** Whether the Python server Aime installs on first launch is on this machine. */
+function hasPyright() {
+  return onPath("pyright-langserver");
+}
+
+/**
+ * Whether Java code intelligence can run here: a JVM, and a JDT LS in either of
+ * the two folders Aime looks in - the one a download of its own lands in, and the
+ * one the Java debug adapter host already lives in.
+ */
+function hasJavaIntelligence() {
+  if (!onPath("java")) return false;
+  const data = path.join(process.env.APPDATA ?? "", "com.iodm.aiminieditor");
+  return ["language-servers", "debug-adapters"].some((folder) =>
+    fs.existsSync(path.join(data, folder, "jdtls", "plugins")),
+  );
 }
 
 /** Waits for text to appear anywhere in the window. */
@@ -173,6 +191,87 @@ describe("Aime", () => {
       rows.some((line) => line.includes("def outer")),
       `the pinned rows should name the enclosing function: ${JSON.stringify(rows)}`,
     );
+  });
+
+  /**
+   * Java completions, which until now were the one language on the user's list
+   * with no code intelligence at all: JDT LS is a set of OSGi jars rather than a
+   * program, so this is the whole runtime-hosted path being exercised - `java` as
+   * the command, the launcher jar found by name, the release's configuration
+   * directory shared read-only, and a workspace of this project's own.
+   *
+   * The assertion asks for a member of String that appears nowhere in the file, so
+   * Monaco's word-based suggestions cannot fake it: only a server that resolved
+   * `greeting` to a String knows about `toUpperCase`.
+   */
+  it("completes a Java expression from the language server Aime starts on the JVM", async () => {
+    if (!hasJavaIntelligence()) {
+      console.log("[smoke.e2e] SKIPPED: this machine has no JDK or no JDT LS for Aime to run.");
+      return;
+    }
+    await (await $("span=App.java")).click();
+    await waitForText("String greeting", "the Java file never opened");
+
+    /** The status bar's language chip turns green once the server is running. */
+    const serverRunning = () =>
+      browser.execute(() =>
+        [...document.querySelectorAll("button")].some(
+          (node) => node.textContent.trim() === "java" && node.className.includes("text-ok"),
+        ),
+      );
+    // A hard failure rather than a skip, unlike the Python case above: the guard
+    // has already established that this machine has everything Aime needs, so a
+    // chip that never turns green is Aime failing to start what is right there.
+    // JDT LS boots a JVM and indexes the folder first; measured at 5-10 s here.
+    await browser.waitUntil(serverRunning, {
+      timeout: 120_000,
+      timeoutMsg: "the java chip never turned green, so Aime could not start the JDT LS it found",
+    });
+
+    // A member access the file does not contain, typed *inside* the method: at
+    // the end of the file it would sit outside the class, where a Java server
+    // rightly knows nothing and the empty list would say nothing about Aime.
+    await (await $(".monaco-editor .view-lines")).click();
+    await browser.keys(["Control", "Home"]);
+    await browser.keys(["ArrowDown", "ArrowDown", "End"]); // after `String greeting = "hello";`
+    await browser.keys(["Enter"]);
+    // With the prefix, because Monaco renders only the visible rows of the list:
+    // the unfiltered answer opens on `charAt` and `toUpperCase` is fifty rows
+    // below, present in the answer but absent from the DOM.
+    await browser.keys("greeting.toUpper".split(""));
+
+    // Monaco pads its rows with non-breaking spaces, so whitespace is collapsed
+    // rather than matched literally - a NBSP written into a test file survives
+    // no round trip through a tool that normalises it.
+    const suggestions = () =>
+      browser.execute(() =>
+        [...document.querySelectorAll(".suggest-widget .monaco-list-row")]
+          .map((node) => node.textContent.replace(/\s+/g, " ").trim())
+          .filter(Boolean),
+      );
+
+    // Asking again rather than watching the widget: a completion request that
+    // arrived while JDT LS was still indexing is answered empty, and Monaco then
+    // closes the list instead of retrying. Measured, the wait is ~4 s after the
+    // chip turns green.
+    let offered = [];
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline && !offered.some((row) => row.includes("toUpperCase"))) {
+      await browser.keys(["Control", "Space"]);
+      await browser.pause(1_000);
+      offered = await suggestions();
+    }
+    console.log(`[smoke.e2e] JDT LS offered: ${JSON.stringify(offered.slice(0, 5))}`);
+    assert.ok(
+      offered.some((row) => row.includes("toUpperCase")),
+      // What did arrive is the diagnosis: Monaco's own word-based list reads as
+      // the file's identifiers, an empty one means no session answered at all.
+      `the server is running but offered no String member of its own: ${JSON.stringify(offered)}`,
+    );
+
+    // Leave the file as it was found: the buffer is shared with the rest of the run.
+    await browser.keys(["Escape"]);
+    for (let undo = 0; undo < 4; undo += 1) await browser.keys(["Control", "z"]);
   });
 
   /**

@@ -342,12 +342,43 @@ function parseHunks(diff: string): GutterRange[] {
   return ranges;
 }
 
-/** Read-only side-by-side diff of one file vs HEAD (opened from the Git panel). */
+/**
+ * The two sides of a diff, tagged with the file they were read for.
+ *
+ * The tag is what keeps a slow answer for the file that was open a moment ago
+ * from being painted under the name of the one that is open now.
+ */
+interface DiffSides {
+  path: string;
+  head: string;
+  working: string;
+}
+
+/**
+ * Read-only side-by-side diff of one file vs HEAD (opened from the Git panel).
+ *
+ * Three things here exist so that a change git listed is a change the user can
+ * actually see, which is not what a plain diff editor gives you:
+ *
+ * - It re-reads when the worktree or HEAD moves, not only when another file is
+ *   picked. Without that, editing the file and coming back showed the snapshot
+ *   taken the first time - and clicking the same row again changed nothing,
+ *   because nothing about the view's inputs had changed.
+ * - `ignoreTrimWhitespace` is off. Monaco defaults it to on, which hides a
+ *   change that only moved indentation - while the panel next to it keeps
+ *   listing the file as modified.
+ * - It scrolls to the first difference. A long file opens on two identical
+ *   panes otherwise, and the overview ruler is left on as the map of the rest.
+ */
 function DiffView({ relativePath }: { relativePath: string }) {
-  const { rootPath, closeDiff } = useWorkspace();
+  const { rootPath, closeDiff, treeVersion } = useWorkspace();
   const theme = useTheme((s) => s.theme);
-  const [original, setOriginal] = useState<string | null>(null);
-  const [modified, setModified] = useState<string | null>(null);
+  // The worktree side goes stale with any file change (treeVersion), the HEAD
+  // side when the last commit moves - together they are "is this still true?".
+  const headCommit = useGit((s) => s.log[0]?.hash);
+  const [sides, setSides] = useState<DiffSides | null>(null);
+  const [sameText, setSameText] = useState(false);
+  const diffRef = useRef<MonacoEditor.IStandaloneDiffEditor | null>(null);
   const t = useT();
 
   useEffect(() => {
@@ -358,34 +389,53 @@ function DiffView({ relativePath }: { relativePath: string }) {
       invoke<string>("git_show_head", { root: rootPath, path: relativePath }),
       invoke<string>("read_file", { path: absolute }).catch(() => ""), // deleted in worktree
     ]).then(([head, working]) => {
-      if (!stale) {
-        setOriginal(head);
-        setModified(working);
-      }
+      if (!stale) setSides({ path: relativePath, head, working });
     });
     return () => {
       stale = true;
     };
-  }, [rootPath, relativePath]);
+  }, [rootPath, relativePath, treeVersion, headCommit]);
+
+  // New content means a new diff to land on. `revealFirstDiff` waits for the
+  // computation itself, so this is safe the moment the sides arrive.
+  useEffect(() => {
+    if (sides) diffRef.current?.revealFirstDiff();
+  }, [sides]);
+
+  const shown = sides?.path === relativePath ? sides : null;
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b border-line bg-panel px-3 py-1.5 text-xs">
         <span className="truncate text-muted">{relativePath}</span>
         <span className="rounded bg-elevated px-1.5 text-[10px] text-muted">{t("git.diffLabel")}</span>
+        {/* Git listed this file, so an empty diff is a question the view has to
+            answer rather than leave the user hunting for a change on screen. */}
+        {shown !== null && sameText && (
+          <span title={t("git.diffSameHint")} className="rounded bg-elevated px-1.5 text-[10px] text-warn">
+            {t("git.diffSame")}
+          </span>
+        )}
         <span className="flex-1" />
         <button onClick={closeDiff} className="rounded p-0.5 text-muted hover:bg-elevated hover:text-fg">
           <X size={13} />
         </button>
       </div>
       <div className="min-h-0 flex-1">
-        {original !== null && modified !== null && (
+        {shown !== null && (
           <DiffEditor
-            original={original}
-            modified={modified}
+            original={shown.head}
+            modified={shown.working}
             language={languageOf(relativePath)}
             theme={monacoThemeOf(theme)}
-            options={{ ...EDITOR_OPTIONS, readOnly: true, renderOverviewRuler: false }}
+            onMount={(editor) => {
+              diffRef.current = editor;
+              editor.onDidUpdateDiff(() => {
+                setSameText((editor.getLineChanges() ?? []).length === 0);
+              });
+              editor.revealFirstDiff();
+            }}
+            options={{ ...EDITOR_OPTIONS, readOnly: true, ignoreTrimWhitespace: false }}
           />
         )}
       </div>

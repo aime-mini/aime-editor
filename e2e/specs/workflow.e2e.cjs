@@ -153,6 +153,110 @@ function repositoryWithNoise() {
   return dir;
 }
 
+/** Where the one change lives - far enough down that line 1 shows nothing of it. */
+const DEEP_CHANGE_LINE = 150;
+
+/**
+ * A repository whose only change sits deep in a long file.
+ *
+ * This is the shape that makes a diff look empty: open it at line 1 and both
+ * sides read the same for a screenful, with the change 150 rows below.
+ */
+function repositoryWithADeepChange() {
+  const dir = project("deepdiff");
+  git(dir, "init", "-b", "main");
+  git(dir, "config", "user.name", "E2E");
+  git(dir, "config", "user.email", "e2e@example.com");
+  const lines = Array.from({ length: 200 }, (_, n) => `const value${String(n)} = ${String(n)};`);
+  const file = path.join(dir, "long.ts");
+  fs.writeFileSync(file, `${lines.join("\n")}\n`);
+  git(dir, "add", ".");
+  git(dir, "commit", "-m", "base");
+
+  lines[DEEP_CHANGE_LINE - 1] = "const valueDeep = 999;";
+  fs.writeFileSync(file, `${lines.join("\n")}\n`);
+  return dir;
+}
+
+/**
+ * Two files git calls changed that a diff editor is happy to draw as unchanged:
+ * one whose change only moved whitespace, and one whose change is in the index
+ * while the worktree matches HEAD exactly.
+ */
+function repositoryWithInvisibleChanges() {
+  const dir = project("invisible");
+  git(dir, "init", "-b", "main");
+  git(dir, "config", "user.name", "E2E");
+  git(dir, "config", "user.email", "e2e@example.com");
+  fs.writeFileSync(path.join(dir, "indent.js"), "function run() {\nreturn 1;\n}\n");
+  fs.writeFileSync(path.join(dir, "staged.txt"), "one\n");
+  git(dir, "add", ".");
+  git(dir, "commit", "-m", "base");
+
+  fs.writeFileSync(path.join(dir, "indent.js"), "function run() {\n    return 1;\n}\n");
+  fs.writeFileSync(path.join(dir, "staged.txt"), "two\n");
+  git(dir, "add", "staged.txt");
+  fs.writeFileSync(path.join(dir, "staged.txt"), "one\n");
+  return dir;
+}
+
+/**
+ * A repository with one tracked file, one untracked file and a whole untracked
+ * folder - the three answers the tree's ignore entry has to give.
+ */
+function repositoryWithThingsToIgnore() {
+  const dir = project("toignore");
+  git(dir, "init", "-b", "main");
+  git(dir, "config", "user.name", "E2E");
+  git(dir, "config", "user.email", "e2e@example.com");
+  fs.writeFileSync(path.join(dir, "README.md"), "base\n");
+  git(dir, "add", ".");
+  git(dir, "commit", "-m", "base");
+
+  fs.writeFileSync(path.join(dir, "debug.log"), "noise\n");
+  fs.mkdirSync(path.join(dir, "build"));
+  fs.writeFileSync(path.join(dir, "build", "out.js"), "built\n");
+  return dir;
+}
+
+/** A repository with a whole ignored folder and one ignored file beside it. */
+function repositoryWithIgnoredFiles() {
+  const dir = project("ignored");
+  git(dir, "init", "-b", "main");
+  git(dir, "config", "user.name", "E2E");
+  git(dir, "config", "user.email", "e2e@example.com");
+  fs.writeFileSync(path.join(dir, ".gitignore"), "dist/\nsecret.log\n");
+  fs.writeFileSync(path.join(dir, "README.md"), "base\n");
+  git(dir, "add", ".");
+  git(dir, "commit", "-m", "base");
+
+  fs.mkdirSync(path.join(dir, "dist"));
+  fs.writeFileSync(path.join(dir, "dist", "bundle.js"), "built\n");
+  fs.writeFileSync(path.join(dir, "secret.log"), "noise\n");
+  return dir;
+}
+
+/** A repository whose work is on the shelf rather than in the worktree. */
+function repositoryWithAStash() {
+  const dir = project("stash");
+  git(dir, "init", "-b", "main");
+  git(dir, "config", "user.name", "E2E");
+  git(dir, "config", "user.email", "e2e@example.com");
+  fs.writeFileSync(path.join(dir, "greeting.txt"), "hello\n");
+  git(dir, "add", ".");
+  git(dir, "commit", "-m", "base");
+
+  fs.writeFileSync(path.join(dir, "greeting.txt"), "hello again\n");
+  git(dir, "stash", "push", "-m", "shelved greeting");
+  return dir;
+}
+
+/** `#8b919d` as the browser reports it, so a colour can be compared at all. */
+function rgbOf(hex) {
+  const [, r, g, b] = /^#(\w\w)(\w\w)(\w\w)$/.exec(hex.trim());
+  return `rgb(${String(parseInt(r, 16))}, ${String(parseInt(g, 16))}, ${String(parseInt(b, 16))})`;
+}
+
 /** Height of the History section, 0 when a long Changes list has squeezed it out. */
 const historyHeight = () =>
   browser.execute(() => {
@@ -161,6 +265,23 @@ const historyHeight = () =>
     );
     return header ? Math.round(header.parentElement.getBoundingClientRect().height) : 0;
   });
+
+/**
+ * Whether a context menu is on screen. It lays a sheet over the whole window to
+ * catch the click that dismisses it, and that sheet swallows the next
+ * right-click - so both tests below have to wait for it in both directions.
+ */
+const menuIsOpen = () => browser.execute(() => Boolean(document.querySelector(".fixed.inset-0.z-50")));
+
+/**
+ * Clicks the menu's .gitignore entry, scoped to the menu itself: as soon as one
+ * pattern has been written the file tree has a row called `.gitignore` too, and
+ * that row is what a window-wide text match finds.
+ */
+async function clickIgnoreEntry() {
+  const menu = await $(".fixed.inset-0.z-50");
+  await (await menu.$("button*=.gitignore")).click();
+}
 
 async function waitForText(text, message) {
   const needle = text.toLowerCase();
@@ -448,7 +569,7 @@ describe("Workflows", () => {
     const row = await $('button[title="debug.log"]');
     await row.waitForExist({ timeout: 30_000, timeoutMsg: "the untracked file never reached Changes" });
     await row.click({ button: "right" });
-    await (await $("button*=.gitignore")).click();
+    await clickIgnoreEntry();
 
     // The project's own file, with a pattern anchored to that exact path.
     await browser.waitUntil(
@@ -467,6 +588,339 @@ describe("Workflows", () => {
       },
       { timeout: 20_000, timeoutMsg: "the ignored file stayed in the Changes list" },
     );
+  });
+
+  /**
+   * The complaint this came from was "sometimes I click a change and there is no
+   * change on screen". Two halves, both here: a diff that opens where the change
+   * is, and a diff that is still true a minute later.
+   */
+  it("opens a diff on the change, and keeps up with the file while it is open", async () => {
+    const dir = repositoryWithADeepChange();
+    await open(dir);
+    await (await $('button[title="Git"]')).click();
+    const row = await $('button[title="long.ts"]');
+    await row.waitForExist({ timeout: 30_000, timeoutMsg: "the changed file never reached Changes" });
+    await row.click();
+
+    /**
+     * Line numbers the worktree side is showing. Asking for the range rather
+     * than for a scroll position is what makes this stable: the editor scrolls
+     * smoothly, so any single reading can land mid-flight.
+     */
+    const visibleLines = () =>
+      browser.execute(() => {
+        const pane = document.querySelector(".modified-in-monaco-diff-editor");
+        return pane
+          ? [...pane.querySelectorAll(".line-numbers")]
+              .map((node) => Number(node.textContent))
+              .filter((line) => line > 0)
+          : [];
+      });
+
+    await browser.waitUntil(async () => (await visibleLines()).includes(DEEP_CHANGE_LINE), {
+      timeout: 30_000,
+      // Without `revealFirstDiff` this is exactly what fails: the view sits on
+      // line 1 with 149 identical rows between it and the change.
+      timeoutMsg: `the change on line ${DEEP_CHANGE_LINE} never came on screen`,
+    });
+    const shown = await visibleLines();
+    console.log(
+      `[workflow.e2e] the diff came to rest on lines ${Math.min(...shown)}-${Math.max(...shown)}; the change is on ${DEEP_CHANGE_LINE}`,
+    );
+
+    // The file moves on under the open diff - which is what editing it does, and
+    // what the agent writing to it does.
+    const later = fs
+      .readFileSync(path.join(dir, "long.ts"), "utf8")
+      .replace("const valueDeep = 999;", "const valueDeep = 777;");
+    fs.writeFileSync(path.join(dir, "long.ts"), later);
+    await browser.waitUntil(
+      async () =>
+        (
+          await browser.execute(
+            () => document.querySelector(".modified-in-monaco-diff-editor")?.textContent ?? "",
+          )
+        ).includes("777"),
+      { timeout: 30_000, timeoutMsg: "the open diff still showed the file as it was when it opened" },
+    );
+  });
+
+  /**
+   * The other half of "no change on screen": changes a diff editor draws as
+   * nothing at all. Monaco ignores trimmed whitespace by default, so the
+   * re-indented file below comes out clean unless it is told otherwise - and
+   * when the two sides really are identical, the view has to say so rather than
+   * leave the user looking for a change that is not on the screen.
+   */
+  it("shows a change that only moved whitespace, and admits when there is none", async () => {
+    const dir = repositoryWithInvisibleChanges();
+    await open(dir);
+    await (await $('button[title="Git"]')).click();
+
+    const indent = await $('button[title="indent.js"]');
+    await indent.waitForExist({ timeout: 30_000, timeoutMsg: "the re-indented file never reached Changes" });
+    await indent.click();
+
+    /** Lines Monaco has marked as changed on the worktree side. */
+    const markedLines = () =>
+      browser.execute(() => document.querySelectorAll(".modified-in-monaco-diff-editor .line-insert").length);
+    await browser.waitUntil(async () => (await markedLines()) > 0, {
+      timeout: 30_000,
+      timeoutMsg: "the diff hid a change that only moved whitespace",
+    });
+    assert.ok(
+      !(await $("body").getText()).toLowerCase().includes("same text as head"),
+      "a file with a real change was reported as identical to HEAD",
+    );
+
+    // And the file whose change is in the index: the two sides are the same text,
+    // and saying so is the point - the alternative is two identical panes.
+    await (await $('button[title="staged.txt"]')).click();
+    await waitForText("same text as head", "an empty diff said nothing about being empty");
+  });
+
+  it("greys out what git ignores, a whole folder at a time", async () => {
+    const dir = repositoryWithIgnoredFiles();
+    await open(dir);
+    await waitForText("secret.log", "the tree never listed the ignored file");
+
+    /** The colour the tree draws one row in, by the name on that row. */
+    const colourOf = (name) =>
+      browser.execute((label) => {
+        const row = [...document.querySelectorAll("button")].find(
+          (button) => button.querySelector("span")?.textContent === label,
+        );
+        return row ? getComputedStyle(row).color : null;
+      }, name);
+
+    const muted = rgbOf(
+      await browser.execute(() =>
+        getComputedStyle(document.documentElement).getPropertyValue("--text-muted"),
+      ),
+    );
+    await browser.waitUntil(async () => (await colourOf("secret.log")) === muted, {
+      timeout: 30_000,
+      timeoutMsg: `the ignored file was not drawn in the muted colour (${muted})`,
+    });
+    const tracked = await colourOf("README.md");
+    assert.notEqual(tracked, muted, "a tracked file was greyed out along with the ignored ones");
+    assert.equal(await colourOf("dist"), muted, "an ignored folder kept the colour of a real one");
+
+    // What is inside an ignored folder is ignored too, and git never listed those
+    // files - the folder was collapsed into one entry, and the row inherits.
+    await (await $("span=dist")).click();
+    await waitForText("bundle.js", "the ignored folder never opened");
+    assert.equal(
+      await colourOf("bundle.js"),
+      muted,
+      "a file inside an ignored folder was drawn as part of the repository",
+    );
+  });
+
+  /**
+   * Ignoring from the tree, where a folder is something you can actually click -
+   * the Changes list only ever shows files. The entry has to know what it would
+   * accomplish: git ignores nothing it already tracks, so a tracked file must
+   * not be offered a button that does nothing.
+   */
+  it("adds a file or a whole folder to .gitignore from the tree", async () => {
+    const dir = repositoryWithThingsToIgnore();
+    const gitignore = () => {
+      const file = path.join(dir, ".gitignore");
+      return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+    };
+    await open(dir);
+    await waitForText("debug.log", "the tree never listed the untracked file");
+
+    const closeMenu = async () => {
+      await browser.keys(["Escape"]);
+      await browser.waitUntil(async () => !(await menuIsOpen()), {
+        timeout: 10_000,
+        timeoutMsg: "the context menu would not close",
+      });
+    };
+    const menuFor = async (name) => {
+      await (await $(`span=${name}`)).click({ button: "right" });
+      await browser.waitUntil(menuIsOpen, {
+        timeout: 10_000,
+        timeoutMsg: `right-clicking ${name} opened no menu`,
+      });
+      return browser.execute(() =>
+        [...document.querySelectorAll(".fixed.inset-0.z-50 button")].map((button) =>
+          button.textContent.trim(),
+        ),
+      );
+    };
+
+    // A tracked file: ignoring it would change nothing, so it is not offered.
+    const tracked = await menuFor("README.md");
+    assert.ok(
+      !tracked.some((label) => label.includes(".gitignore")),
+      `a tracked file was offered .gitignore: ${JSON.stringify(tracked)}`,
+    );
+    await closeMenu();
+
+    // The untracked file.
+    await menuFor("debug.log");
+    await clickIgnoreEntry();
+    await browser.waitUntil(async () => !(await menuIsOpen()), {
+      timeout: 10_000,
+      timeoutMsg: "the menu stayed open after its entry was clicked",
+    });
+    await browser.waitUntil(() => gitignore().includes("/debug.log"), {
+      timeout: 20_000,
+      timeoutMsg: "the file never reached .gitignore",
+    });
+
+    // And the folder, which is the case the Changes list could never offer.
+    await menuFor("build");
+    await clickIgnoreEntry();
+    await browser.waitUntil(async () => !(await menuIsOpen()), {
+      timeout: 10_000,
+      timeoutMsg: "the menu stayed open after the folder's entry was clicked",
+    });
+    await browser.waitUntil(() => gitignore().includes("/build/"), {
+      timeout: 20_000,
+      // The trailing slash is git's own way of saying "the directory called
+      // this", and it is what leaves a file named `build` tracked.
+      timeoutMsg: `the folder never reached .gitignore as a folder: ${JSON.stringify(gitignore())}`,
+    });
+
+    // git agrees, which is the only opinion that counts here.
+    const ignored = git(dir, "check-ignore", "-v", "debug.log", "build/out.js");
+    assert.ok(ignored.includes("debug.log"), `git does not ignore the file: ${ignored}`);
+    assert.ok(ignored.includes("build/out.js"), `git does not ignore the folder's contents: ${ignored}`);
+
+    // And the tree says so without being asked again: both rows are grey now.
+    const colourOf = (name) =>
+      browser.execute((label) => {
+        const row = [...document.querySelectorAll("button")].find(
+          (button) => button.querySelector("span")?.textContent === label,
+        );
+        return row ? getComputedStyle(row).color : null;
+      }, name);
+    const muted = rgbOf(
+      await browser.execute(() =>
+        getComputedStyle(document.documentElement).getPropertyValue("--text-muted"),
+      ),
+    );
+    await browser.waitUntil(async () => (await colourOf("debug.log")) === muted, {
+      timeout: 20_000,
+      timeoutMsg: "the file stayed black after being ignored",
+    });
+    assert.equal(await colourOf("build"), muted, "the folder stayed black after being ignored");
+  });
+
+  it("gives the stash a height of its own, draggable and foldable", async () => {
+    await open(repositoryWithAStash());
+    await (await $('button[title="Git"]')).click();
+    await waitForText("shelved greeting", "the stash never appeared in the Git panel");
+
+    /**
+     * The stash section and the divider that sizes it.
+     *
+     * Found through the panel's own id rather than by counting dividers: the
+     * workbench has four of its own, and which of the six on screen belongs to
+     * the Git panel is not something a global query can say.
+     */
+    const stashSection = () =>
+      browser.execute(() => {
+        const panel = document.querySelector('[data-panel-id="git-stash"]');
+        const bar = panel?.previousElementSibling;
+        const grip = bar?.getBoundingClientRect();
+        return {
+          height: panel ? Math.round(panel.getBoundingClientRect().height) : 0,
+          hasDivider: Boolean(bar?.hasAttribute("data-panel-resize-handle-id")),
+          grip: grip
+            ? { x: Math.round(grip.x + grip.width / 2), y: Math.round(grip.y + grip.height / 2) }
+            : null,
+        };
+      });
+
+    const before = await stashSection();
+    assert.ok(before.height > 0, "the stash never got a section of its own");
+    assert.ok(
+      before.hasDivider,
+      "the stash section has no divider above it, so its height cannot be dragged",
+    );
+
+    await browser
+      .action("pointer")
+      .move({ x: before.grip.x, y: before.grip.y })
+      .down()
+      .move({ x: before.grip.x, y: before.grip.y - 120, duration: 100 })
+      .up()
+      .perform();
+
+    await browser.waitUntil(async () => (await stashSection()).height > before.height + 60, {
+      timeout: 10_000,
+      timeoutMsg: `dragging the divider above the stash did not make it taller (it was ${before.height}px)`,
+    });
+    console.log(
+      `[workflow.e2e] the stash went from ${before.height}px to ${(await stashSection()).height}px`,
+    );
+
+    // And it folds, so a shelf of old work costs one line when it is not wanted.
+    await (await $("button*=Stash (1)")).click();
+    await browser.waitUntil(async () => !(await $("body").getText()).includes("shelved greeting"), {
+      timeout: 10_000,
+      timeoutMsg: "folding the stash heading left the list on screen",
+    });
+    // Folded it is a heading under the panels rather than a panel of its own, so
+    // the divider that used to size it goes with it.
+    assert.equal((await stashSection()).height, 0, "a folded stash kept the panel it no longer fills");
+    await (await $("button*=Stash (1)")).click();
+    await waitForText("shelved greeting", "the stash list never came back");
+  });
+
+  /**
+   * Auto save, both ways round in one test: the second half is the negative
+   * control, and it has to be, because "the file was written" proves nothing
+   * unless not writing it is also observable.
+   */
+  it("saves a file a second after the typing stops, and stops when told to", async () => {
+    const dir = project("autosave");
+    const file = path.join(dir, "greeting.txt");
+    fs.writeFileSync(file, "hello\n");
+    await open(dir);
+    await (await $("span=greeting.txt")).click();
+    await waitForText("hello", "the file never opened");
+
+    // Ctrl+End lands after the file's own trailing newline, so what is typed
+    // becomes a line of its own - the words are what this checks, not the shape.
+    await (await $(".monaco-editor .view-lines")).click();
+    await browser.keys(["Control", "End"]);
+    await browser.keys("world".split(""));
+    await browser.waitUntil(() => fs.readFileSync(file, "utf8").includes("world"), {
+      timeout: 15_000,
+      timeoutMsg: "auto save never wrote the file",
+    });
+
+    // Switched off, the same keystrokes must reach the disk only on Ctrl+S.
+    await browser.execute(() => {
+      localStorage.setItem("aime.settings", JSON.stringify({ autoSave: false }));
+    });
+    await browser.refresh();
+    await waitForText("RECENT", "the welcome screen never came back");
+    await (await $(`span=${path.basename(dir)}`)).click();
+    await (await $("span=greeting.txt")).click();
+    await waitForText("world", "the file never reopened");
+
+    await (await $(".monaco-editor .view-lines")).click();
+    await browser.keys(["Control", "End"]);
+    await browser.keys("again".split(""));
+    await browser.pause(4_000); // four times the delay auto save would have used
+    assert.ok(
+      !fs.readFileSync(file, "utf8").includes("again"),
+      "the file was saved with auto save switched off",
+    );
+
+    await browser.keys(["Control", "s"]);
+    await browser.waitUntil(() => fs.readFileSync(file, "utf8").includes("again"), {
+      timeout: 10_000,
+      timeoutMsg: "Ctrl+S no longer saves",
+    });
   });
 
   // Go, because its server is the one Aime cannot install quietly (it needs

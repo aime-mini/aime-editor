@@ -10,7 +10,7 @@ use crate::providers::cli_command;
 use crate::wire::{frame, read_message};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -64,10 +64,23 @@ pub struct ServerArchive {
     /// A folder the archive must create inside that one - how "downloaded" is
     /// told from "not yet".
     pub contains: &'static str,
-    /// The executable, relative to the servers directory.
-    pub binary: &'static str,
+    /// What the unpacked archive gives Aime to start.
+    pub binary: ServerBinary,
     /// Roughly how big the download is, for the sentence shown before it runs.
     pub size_hint: &'static str,
+}
+
+/// The two shapes an archive comes in.
+pub enum ServerBinary {
+    /// An executable of its own, at this path under the servers directory: the
+    /// Roslyn server is one, and the file being there is what proves the unpack.
+    Executable(&'static str),
+    /// No executable at all. The archive is code for the runtime named by
+    /// `ServerSpec::command`, which has to be on the machine already and no older
+    /// than this major version: JDT LS is a set of OSGi jars, so the program is
+    /// the JVM and the jars reach it through the arguments. Aime does not install
+    /// runtimes - a machine without a JDK is the agent's job, not a bare command.
+    ForRuntime { least_major_version: u32 },
 }
 
 /// How a server is told which project to analyse. Two methods because the
@@ -112,6 +125,66 @@ const ROSLYN_PACKAGE_URL: &str = "https://api.nuget.org/v3-flatcontainer/microso
 /// Where the executable lands, relative to Aime's servers directory. The nupkg
 /// unpacks into `content/`, so the folder Aime watches for is that.
 const ROSLYN_BINARY: &str = "roslyn/content/LanguageServer/win-x64/Microsoft.CodeAnalysis.LanguageServer.exe";
+
+/// Eclipse JDT LS, pinned for the same reason Roslyn is.
+///
+/// 1.39.0 and not the newest: 1.40 and later require a JVM of 21 or newer, while
+/// 1.39.0 asks only for 17 - so this build serves the widest set of machines, and
+/// it is the one measured against this project's Java debugging (ARCHITECTURE §5).
+const JDTLS_URL: &str =
+    "https://download.eclipse.org/jdtls/milestones/1.39.0/jdt-language-server-1.39.0-202408291433.tar.gz";
+
+/// Folder the tarball is unpacked into, under Aime's servers directory.
+const JDTLS_FOLDER: &str = "jdtls";
+
+/// The oldest JVM that can run it, which its own launcher script enforces too.
+const JDTLS_LEAST_JAVA: u32 = 17;
+
+/// The release ships one configuration directory per platform.
+#[cfg(target_os = "windows")]
+const JDTLS_CONFIG_DIR: &str = "config_win";
+#[cfg(target_os = "macos")]
+const JDTLS_CONFIG_DIR: &str = "config_mac";
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+const JDTLS_CONFIG_DIR: &str = "config_linux";
+
+/// How JDT LS is started - read from the launcher script the release ships
+/// (`bin/jdtls.py`) rather than invented, because none of it is a matter of taste.
+///
+/// The OSGi properties are the part worth knowing: the configuration directory
+/// inside the release is *shared and read-only*, and each instance keeps its own
+/// writable copy under `-data`. So Aime never writes into the install, and the
+/// second JDT LS on this machine - the one that hosts the Java debug adapter
+/// (§5) - cannot collide with the one serving completions.
+const JDTLS_ARGS: &[&str] = &[
+    "-Declipse.application=org.eclipse.jdt.ls.core.id1",
+    "-Dosgi.bundles.defaultStartLevel=4",
+    "-Declipse.product=org.eclipse.jdt.ls.core.product",
+    "-Dosgi.checkConfiguration=true",
+    "-Dosgi.sharedConfiguration.area={jdtlsConfig}",
+    "-Dosgi.sharedConfiguration.area.readOnly=true",
+    "-Dosgi.configuration.cascaded=true",
+    "-Xms1G",
+    "--add-modules=ALL-SYSTEM",
+    "--add-opens",
+    "java.base/java.util=ALL-UNNAMED",
+    "--add-opens",
+    "java.base/java.lang=ALL-UNNAMED",
+    "-jar",
+    "{jdtlsLauncher}",
+    "-data",
+    "{jdtlsWorkspace}",
+];
+
+/// Placeholders `resolved_args` fills in, each only when an argument names it.
+const LOG_DIR: &str = "{logDir}";
+const JDTLS_CONFIG: &str = "{jdtlsConfig}";
+const JDTLS_LAUNCHER: &str = "{jdtlsLauncher}";
+const JDTLS_WORKSPACE: &str = "{jdtlsWorkspace}";
+
+/// The phrase that marks a hint Aime can act on by itself (`environment.rs`
+/// reads it, and a test keeps every archive's hint saying it).
+pub(crate) const AIME_DOWNLOADS: &str = "Aime downloads it";
 
 /// Every server Aime knows how to start, verified to exist (npm and NuGet
 /// checked 2026-08-02). Servers that need a toolchain rather than a package -
@@ -187,7 +260,7 @@ const SERVERS: &[ServerSpec] = &[
             url: ROSLYN_PACKAGE_URL,
             folder: "roslyn",
             contains: "content",
-            binary: ROSLYN_BINARY,
+            binary: ServerBinary::Executable(ROSLYN_BINARY),
             size_hint: "65 MB",
         }),
         project_open: Some(ProjectOpen {
@@ -259,16 +332,27 @@ const SERVERS: &[ServerSpec] = &[
         archive: None,
         project_open: None,
     },
-    // Eclipse JDT LS is published as an archive, not a package: there is no
-    // command Aime could run, so the user gets the download page instead of a
-    // button that would only fail.
+    // Eclipse JDT LS is published as an archive and runs on the JVM, so `java` is
+    // the program and the jars are arguments. Measured 2026-08-06: handed nothing
+    // but Aime's own `initialize`, it answers 44 completions for `System.out.`
+    // and 50 for a String in a folder with no Maven or Gradle in sight - it builds
+    // an "invisible project" for loose sources - which is why no `project_open` is
+    // needed here and no settings are sent.
     ServerSpec {
         language_id: "java",
-        command: "jdtls",
-        args: &[],
-        install_hint: "https://download.eclipse.org/jdtls/snapshots/",
-        probe: Probe::OnPath,
-        archive: None,
+        command: "java",
+        args: JDTLS_ARGS,
+        install_hint: "Eclipse JDT LS (45 MB, Aime downloads it)",
+        probe: Probe::Archive,
+        archive: Some(ServerArchive {
+            url: JDTLS_URL,
+            folder: JDTLS_FOLDER,
+            contains: "plugins",
+            binary: ServerBinary::ForRuntime {
+                least_major_version: JDTLS_LEAST_JAVA,
+            },
+            size_hint: "45 MB",
+        }),
         project_open: None,
     },
 ];
@@ -358,28 +442,131 @@ fn server_log_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// The command that starts a server on this machine: the name on PATH, or the
-/// executable Aime unpacked. `None` means a downloadable server is not here yet.
+/// The command that starts a server on this machine: the name on PATH, the
+/// executable Aime unpacked, or the runtime that loads what Aime unpacked.
+/// `None` means a downloadable server is not on this machine yet.
 fn resolved_command(app: &AppHandle, spec: &ServerSpec) -> Option<String> {
     let Some(archive) = &spec.archive else {
         return Some(spec.command.to_string());
     };
-    let binary = servers_dir(app).ok()?.join(archive.binary);
-    binary.is_file().then(|| binary.to_string_lossy().to_string())
+    match archive.binary {
+        ServerBinary::Executable(binary) => {
+            let path = servers_dir(app).ok()?.join(binary);
+            path.is_file().then(|| path.to_string_lossy().to_string())
+        }
+        // The runtime is the program; the archive only has to be somewhere.
+        ServerBinary::ForRuntime { .. } => unpacked_home(app, archive).map(|_| spec.command.to_string()),
+    }
 }
 
-/// Fills the one placeholder a server's arguments may carry.
-fn resolved_args(app: &AppHandle, spec: &ServerSpec) -> Result<Vec<String>, String> {
-    let log_dir = if spec.args.iter().any(|arg| arg.contains("{logDir}")) {
-        server_log_dir(app)?.to_string_lossy().to_string()
-    } else {
-        String::new()
+/// Where an archive is unpacked on this machine, if it is here at all.
+///
+/// Two folders, both Aime's own: where a download of its own lands, and where the
+/// debug adapters live. The second one is not a guess - one program can hold both
+/// jobs. JDT LS is the Java language server *and* the process the java-debug
+/// bundle runs inside (ARCHITECTURE §5), so a machine already set up for Java
+/// debugging has these 68 MB, and fetching a second copy of them would be Aime
+/// wasting the user's disk.
+fn unpacked_home(app: &AppHandle, archive: &ServerArchive) -> Option<PathBuf> {
+    [
+        servers_dir(app).ok()?,
+        crate::dap::catalog::adapters_dir(app).ok()?,
+    ]
+    .into_iter()
+    .map(|dir| dir.join(archive.folder))
+    .find(|home| home.join(archive.contains).is_dir())
+}
+
+/// The Equinox launcher jar inside a JDT LS install.
+///
+/// Found rather than named, exactly as the release's own launcher script does it:
+/// the file carries its own version (`org.eclipse.equinox.launcher_1.6.900…jar`),
+/// and the install Aime reuses may be a different JDT LS build than the pinned one.
+fn jdtls_launcher(home: &Path) -> Result<PathBuf, String> {
+    let plugins = home.join("plugins");
+    let mut jars: Vec<PathBuf> = std::fs::read_dir(&plugins)
+        .map_err(|e| format!("Could not read {}: {e}", plugins.display()))?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            name.starts_with("org.eclipse.equinox.launcher_") && name.ends_with(".jar")
+        })
+        .collect();
+    // Sorted, so a folder holding two builds always starts the same one.
+    jars.sort();
+    jars.pop()
+        .ok_or_else(|| format!("No Equinox launcher in {}", plugins.display()))
+}
+
+/// One JDT LS workspace per project, created on demand.
+///
+/// Per project because the workspace is that project's index: sharing one would
+/// make two projects fight over the same lock, and JDT LS's own launcher derives
+/// it from the working directory for the same reason. The name keeps the folder
+/// recognisable and adds a digest of the full path, so two checkouts called
+/// `api` never land in one workspace.
+fn jdtls_workspace(app: &AppHandle, root: &str) -> Result<PathBuf, String> {
+    let name = root
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or("project");
+    let readable: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let dir = servers_dir(app)?
+        .join("jdtls-workspaces")
+        .join(format!("{readable}-{:x}", path_digest(root)));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+/// A stable digest of a project path.
+///
+/// FNV-1a, written out rather than taken from `DefaultHasher`, whose output the
+/// standard library is free to change between Rust releases: that would silently
+/// orphan every workspace Aime had already built. Case is folded because Windows
+/// hands out the same directory under more than one spelling.
+fn path_digest(path: &str) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    path.to_lowercase()
+        .bytes()
+        .fold(OFFSET, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(PRIME))
+}
+
+/// Fills the placeholders a server's arguments carry.
+///
+/// Each value is worked out only when an argument names it: two of them create a
+/// directory, and a server that never mentions them must not pay for that.
+fn resolved_args(app: &AppHandle, spec: &ServerSpec, root: &str) -> Result<Vec<String>, String> {
+    let jdtls_home = || {
+        spec.archive
+            .as_ref()
+            .and_then(|archive| unpacked_home(app, archive))
+            .ok_or_else(|| format!("{} is not on this machine", spec.command))
     };
-    Ok(spec
-        .args
-        .iter()
-        .map(|arg| arg.replace("{logDir}", &log_dir))
-        .collect())
+    let mut args = Vec::with_capacity(spec.args.len());
+    for arg in spec.args {
+        let filled = if arg.contains(LOG_DIR) {
+            arg.replace(LOG_DIR, &path_text(server_log_dir(app)?))
+        } else if arg.contains(JDTLS_CONFIG) {
+            arg.replace(JDTLS_CONFIG, &path_text(jdtls_home()?.join(JDTLS_CONFIG_DIR)))
+        } else if arg.contains(JDTLS_LAUNCHER) {
+            arg.replace(JDTLS_LAUNCHER, &path_text(jdtls_launcher(&jdtls_home()?)?))
+        } else if arg.contains(JDTLS_WORKSPACE) {
+            arg.replace(JDTLS_WORKSPACE, &path_text(jdtls_workspace(app, root)?))
+        } else {
+            (*arg).to_string()
+        };
+        args.push(filled);
+    }
+    Ok(args)
+}
+
+fn path_text(path: PathBuf) -> String {
+    path.to_string_lossy().to_string()
 }
 
 /// Downloads a server that has no package to install, reporting every step.
@@ -461,11 +648,13 @@ pub async fn lsp_availability(
     let Some(spec) = spec_for(&language_id) else {
         return Ok(None);
     };
+    // A runtime-hosted server needs its runtime as much as its own files, so both
+    // questions decide every answer below: without a JDK, 45 MB of JDT LS jars
+    // cannot serve one completion, and offering that download would be a promise
+    // Aime could not keep.
+    let runtime = runtime_ready(spec).await;
     let available = match spec.probe {
-        Probe::Archive => spec
-            .archive
-            .as_ref()
-            .is_some_and(|_| resolved_command(&app, spec).is_some()),
+        Probe::Archive => runtime && resolved_command(&app, spec).is_some(),
         Probe::OnPath => resolves_on_path(spec.command).await,
         Probe::VersionFlag => cli_command(spec.command, ["--version"])
             .output()
@@ -473,28 +662,64 @@ pub async fn lsp_availability(
             .is_ok_and(|output| output.status.success()),
     };
     // Only asked when it matters: a server that is already here needs no install.
-    let installable = if available {
-        true
-    } else {
-        match spec.install_hint.split_whitespace().next() {
-            Some(program) if !program.starts_with("http") => {
-                crate::environment::version_of(program).await.is_some()
-            }
-            _ => false,
-        }
-    };
+    let installable = available || (runtime && crate::environment::can_run_install(spec.install_hint).await);
     Ok(Some(ServerAvailability {
         project_open: spec.project_open.map(|open| ProjectOpenMethods {
             solution_method: open.solution_method.to_string(),
             project_method: open.project_method.to_string(),
         }),
-        downloadable: spec.archive.is_some(),
+        downloadable: spec.archive.is_some() && runtime,
         language_id: spec.language_id.to_string(),
         command: spec.command.to_string(),
         available,
         install_hint: spec.install_hint.to_string(),
         installable,
     }))
+}
+
+/// Whether a server that runs on a runtime has one it can run on.
+///
+/// True for every other server: they either are the executable or bring it. The
+/// only runtime today is a JVM, so that is the one version string read; a second
+/// one would need its own reading of what it prints about itself.
+async fn runtime_ready(spec: &ServerSpec) -> bool {
+    let Some(ServerBinary::ForRuntime { least_major_version }) =
+        spec.archive.as_ref().map(|archive| &archive.binary)
+    else {
+        return true;
+    };
+    java_major_version(spec.command)
+        .await
+        .is_some_and(|major| major >= *least_major_version)
+}
+
+/// The major version of a JVM, from what it says about itself.
+///
+/// Measured 2026-08-06: `java -version` writes `java version "20.0.1" …` to
+/// **stderr**, which every JDK has done since 1.0, while `java --version` on
+/// stdout only exists from 9 onwards - so the old form is the one that answers
+/// for all of them, and both streams are read because a wrapper may relay either.
+async fn java_major_version(command: &str) -> Option<u32> {
+    let output = cli_command(command, ["-version"]).output().await.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    java_major_of(&format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    ))
+}
+
+/// Reads the major version out of a JVM's own version line. Every JDK quotes it,
+/// and `1.8.0_401` means 8 rather than 1 - the old naming for Java 8 and older.
+fn java_major_of(spoken: &str) -> Option<u32> {
+    let mut parts = spoken.split('"').nth(1)?.split('.');
+    let first = parts.next()?.parse::<u32>().ok()?;
+    if first == 1 {
+        return parts.next()?.parse::<u32>().ok();
+    }
+    Some(first)
 }
 
 /// Whether the operating system can find this executable at all.
@@ -525,14 +750,15 @@ pub async fn lsp_start(
 
     let program = resolved_command(&app, spec)
         .ok_or_else(|| format!("LSP_MISSING::{}::not downloaded yet", spec.command))?;
-    let args = resolved_args(&app, spec)?;
     // The long form of the path: measured, the Roslyn project loader throws
     // ("Unexpected false - LanguageServerProjectLoader.cs line 193") when it is
     // handed an 8.3 short path such as `C:\\Users\\LINHPH~1.STS`, which is exactly
-    // what a Windows temp folder looks like.
+    // what a Windows temp folder looks like. Resolved before the arguments are,
+    // so a per-project workspace is named after the path the server will see.
     let root = dunce::canonicalize(&root)
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or(root);
+    let args = resolved_args(&app, spec, &root)?;
     let mut child = cli_command(&program, &args)
         .current_dir(&root)
         .stdin(Stdio::piped())
@@ -639,7 +865,10 @@ pub fn stop_for_window(window: &Window) {
 
 #[cfg(test)]
 mod tests {
-    use super::{spec_for, Probe};
+    use super::{
+        java_major_of, path_digest, spec_for, Probe, ServerBinary, AIME_DOWNLOADS, JDTLS_ARGS, JDTLS_CONFIG,
+        JDTLS_LAUNCHER, JDTLS_LEAST_JAVA, JDTLS_WORKSPACE, SERVERS,
+    };
 
     #[test]
     fn detection_matches_how_each_server_actually_behaves() {
@@ -675,6 +904,58 @@ mod tests {
             let covered = spec_for(language).is_some() || matches!(language, "html" | "css");
             assert!(covered, "{language} has no code intelligence path");
         }
+    }
+
+    /// The phrase is the contract between the table and `environment.rs`: a
+    /// download whose hint forgot to say it offers no button anywhere in the UI,
+    /// because every install button asks `can_run_install` first.
+    #[test]
+    fn every_server_aime_downloads_says_so_in_its_hint() {
+        for spec in SERVERS.iter().filter(|spec| spec.archive.is_some()) {
+            assert!(
+                spec.install_hint.contains(AIME_DOWNLOADS),
+                "{} is downloaded by Aime but its hint does not say so: {}",
+                spec.language_id,
+                spec.install_hint
+            );
+        }
+    }
+
+    /// JDT LS is the one server that is not a program: `java` runs it, and every
+    /// path it needs arrives as a placeholder. A missing one would be passed to
+    /// the JVM verbatim, which fails with an Equinox error nobody can read.
+    #[test]
+    fn java_is_started_by_the_jvm_with_every_path_it_needs() {
+        let java = spec_for("java").expect("java is served");
+        assert_eq!(java.command, "java");
+        assert!(matches!(
+            java.archive.as_ref().map(|archive| &archive.binary),
+            Some(ServerBinary::ForRuntime { least_major_version }) if *least_major_version == JDTLS_LEAST_JAVA
+        ));
+        for placeholder in [JDTLS_CONFIG, JDTLS_LAUNCHER, JDTLS_WORKSPACE] {
+            assert!(
+                JDTLS_ARGS.iter().any(|arg| arg.contains(placeholder)),
+                "JDT LS is started without {placeholder}"
+            );
+        }
+    }
+
+    /// Measured strings, one per JDK generation, because the shape changed at 9.
+    #[test]
+    fn a_jvm_version_line_is_read_the_way_every_jdk_writes_it() {
+        assert_eq!(java_major_of("java version \"20.0.1\" 2023-04-18"), Some(20));
+        assert_eq!(java_major_of("openjdk version \"21.0.3\" 2024-04-16"), Some(21));
+        // Java 8 and older name themselves 1.x; the major version is the second part.
+        assert_eq!(java_major_of("java version \"1.8.0_401\""), Some(8));
+        assert_eq!(java_major_of("bash: java: command not found"), None);
+    }
+
+    /// The digest names a workspace folder, so it has to be stable for the same
+    /// project and different for another - including the same name elsewhere.
+    #[test]
+    fn a_project_workspace_is_named_the_same_way_every_time() {
+        assert_eq!(path_digest(r"C:\Projects\api"), path_digest(r"c:\projects\API"));
+        assert_ne!(path_digest(r"C:\Projects\api"), path_digest(r"C:\Work\api"));
     }
 
     #[test]

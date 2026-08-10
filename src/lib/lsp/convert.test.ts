@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  modelPath,
   hoverToMarkdown,
   pathToUri,
   toLspPosition,
@@ -115,6 +116,35 @@ describe("path and uri conversion", () => {
 
   it("encodes characters that would otherwise break the URI", () => {
     expect(pathToUri("/tmp/a b#c.ts")).toBe("file:///tmp/a%20b%23c.ts");
+  });
+});
+
+describe("modelPath", () => {
+  /**
+   * The measured shape from the real window: `@monaco-editor/react` parses the
+   * file path as a URI, so a Windows drive letter lands in `scheme` and `fsPath`
+   * comes back without it. Reading `fsPath` sent every server a path that does
+   * not exist - which is exactly why this has a test of its own.
+   */
+  it("puts the drive letter back when it became the URI scheme", () => {
+    const model = {
+      uri: { scheme: "C", path: "\\Projects\\app\\App.java", fsPath: "\\Projects\\app\\App.java" },
+    };
+    expect(modelPath(model)).toBe("C:\\Projects\\app\\App.java");
+    expect(pathToUri(modelPath(model))).toBe("file:///C%3A/Projects/app/App.java");
+  });
+
+  it("leaves a real file URI alone", () => {
+    const model = {
+      uri: { scheme: "file", path: "/home/linh/app/main.py", fsPath: "/home/linh/app/main.py" },
+    };
+    expect(modelPath(model)).toBe("/home/linh/app/main.py");
+  });
+
+  /** An in-memory model (a diff view, a scratch buffer) has no drive to restore. */
+  it("keeps a scheme that is not a drive letter out of the path", () => {
+    const model = { uri: { scheme: "inmemory", path: "/model/1", fsPath: "/model/1" } };
+    expect(modelPath(model)).toBe("/model/1");
   });
 });
 

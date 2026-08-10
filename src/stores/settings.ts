@@ -24,6 +24,12 @@ export interface EditorSettings {
   /** Lines the editor keeps visible above and below the cursor. */
   tabSize: number;
   /**
+   * On by default: an AI editor writes to the files the agent is reading, and a
+   * buffer only the window knows about is a file the agent cannot see. Losing
+   * work to a forgotten Ctrl+S is the other half of the reason.
+   */
+  autoSave: boolean;
+  /**
    * Manual by default: each suggestion spawns a CLI and costs a moment and a
    * fraction of a cent, so asking on every pause is the user's decision to
    * make, not Aime's to assume.
@@ -40,6 +46,7 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   wordWrap: false,
   minimap: false,
   tabSize: 2,
+  autoSave: true,
   inlineAi: "manual",
   updateChannel: "stable",
 };
@@ -61,6 +68,7 @@ export function sanitize(stored: unknown): EditorSettings {
     wordWrap: typeof raw.wordWrap === "boolean" ? raw.wordWrap : DEFAULT_SETTINGS.wordWrap,
     minimap: typeof raw.minimap === "boolean" ? raw.minimap : DEFAULT_SETTINGS.minimap,
     tabSize: clamp(Number(raw.tabSize), TAB_SIZE_RANGE, DEFAULT_SETTINGS.tabSize),
+    autoSave: typeof raw.autoSave === "boolean" ? raw.autoSave : DEFAULT_SETTINGS.autoSave,
     inlineAi: INLINE_AI_MODES.includes(raw.inlineAi as InlineAiMode)
       ? (raw.inlineAi as InlineAiMode)
       : DEFAULT_SETTINGS.inlineAi,

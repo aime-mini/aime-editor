@@ -224,7 +224,6 @@ const NOTHING_SELECTED: ReadonlySet<string> = new Set();
  */
 const ChangeList = memo(function ChangeList() {
   const files = useGit((s) => s.status?.files);
-  const stashes = useGit((s) => s.stashes);
   const openDiff = useWorkspace((s) => s.openDiff);
   const openConflict = useWorkspace((s) => s.openConflict);
   const t = useT();
@@ -436,46 +435,6 @@ const ChangeList = memo(function ChangeList() {
             />
           ))}
         </section>
-
-        {stashes.length > 0 && (
-          <section>
-            <div className="flex items-center gap-1.5 px-1 py-1 text-[11px] font-semibold tracking-wider text-muted uppercase">
-              <Archive size={11} /> {t("git.stash")} ({stashes.length})
-            </div>
-            {stashes.map((stash) => (
-              <div
-                key={stash.index}
-                className="group flex items-center gap-1.5 rounded px-1.5 py-0.5 hover:bg-elevated"
-              >
-                <span className="shrink-0 font-mono text-[10px] text-muted">{`{${String(stash.index)}}`}</span>
-                <span className="min-w-0 flex-1 truncate" title={stash.message}>
-                  {stash.message}
-                </span>
-                <button
-                  onClick={() => void useGit.getState().stashPop(stash.index)}
-                  title={t("git.stashPop")}
-                  className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-panel hover:text-accent"
-                >
-                  <ArchiveRestore size={12} />
-                </button>
-                <button
-                  onClick={() => void useGit.getState().stashApply(stash.index)}
-                  title={t("git.stashApply")}
-                  className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-panel hover:text-ok"
-                >
-                  <Plus size={12} />
-                </button>
-                <button
-                  onClick={() => void useGit.getState().stashDrop(stash.index)}
-                  title={t("git.stashDrop")}
-                  className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-panel hover:text-danger"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            ))}
-          </section>
-        )}
       </div>
 
       {fileMenu && (
@@ -507,6 +466,69 @@ const ChangeList = memo(function ChangeList() {
   );
 });
 
+/**
+ * The shelf of stashed work, the third section of the panel.
+ *
+ * It used to sit at the end of the Changes list, where a handful of stashes
+ * pushed the files being worked on out of view - the panel's busiest half
+ * paying for its quietest one. Now it is a section like the other two: its own
+ * height, its own divider to drag, folding to a single row when it is not
+ * wanted, and absent entirely when there is nothing on the shelf.
+ */
+const StashList = memo(function StashList({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const stashes = useGit((s) => s.stashes);
+  const t = useT();
+  if (stashes.length === 0) return null;
+
+  return (
+    <section className={open ? "flex min-h-0 flex-1 flex-col" : "shrink-0"}>
+      <button
+        onClick={onToggle}
+        className="flex w-full shrink-0 items-center gap-1.5 rounded px-1 py-1 text-[11px] font-semibold tracking-wider text-muted uppercase hover:text-fg"
+      >
+        {open ? <ChevronDown size={11} /> : <Archive size={11} />}
+        {t("git.stash")} ({stashes.length})
+      </button>
+      {open && (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {stashes.map((stash) => (
+            <div
+              key={stash.index}
+              className="group flex items-center gap-1.5 rounded px-1.5 py-0.5 hover:bg-elevated"
+            >
+              <span className="shrink-0 font-mono text-[10px] text-muted">{`{${String(stash.index)}}`}</span>
+              <span className="min-w-0 flex-1 truncate" title={stash.message}>
+                {stash.message}
+              </span>
+              <button
+                onClick={() => void useGit.getState().stashPop(stash.index)}
+                title={t("git.stashPop")}
+                className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-panel hover:text-accent"
+              >
+                <ArchiveRestore size={12} />
+              </button>
+              <button
+                onClick={() => void useGit.getState().stashApply(stash.index)}
+                title={t("git.stashApply")}
+                className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-panel hover:text-ok"
+              >
+                <Plus size={12} />
+              </button>
+              <button
+                onClick={() => void useGit.getState().stashDrop(stash.index)}
+                title={t("git.stashDrop")}
+                className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-panel hover:text-danger"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+});
+
 export function GitPanel() {
   const git = useGit();
   const providerHealth = useAi((s) => s.providerHealth);
@@ -518,8 +540,16 @@ export function GitPanel() {
    * only one dialog is ever open, and each carries exactly what it acts on.
    */
   const [dialog, setDialog] = useState<GitDialog | null>(null);
-  // History has its own scroll area so a long log never shrinks the panel scrollbar.
+  // History and Stash each have their own scroll area, so a long log or a deep
+  // shelf never shrinks the panel's own scrollbar. Both fold; folded, they are a
+  // heading below the panels, which is also what keeps the order on screen the
+  // same whether they are open or not.
   const [historyOpen, setHistoryOpen] = useState(true);
+  const [stashOpen, setStashOpen] = useState(true);
+  // Stable, so folding the shelf is the only thing that re-renders its rows.
+  const toggleStash = useCallback(() => {
+    setStashOpen((open) => !open);
+  }, []);
   const t = useT();
 
   const showBranchMenu = async (x: number, y: number) => {
@@ -956,15 +986,20 @@ export function GitPanel() {
 
   return (
     <div className="flex h-full flex-col gap-2 p-2 select-none">
-      {historyOpen ? (
-        /*
-         * Two panels with a divider, because a long Changes list used to push
-         * History out of the panel entirely - forty changed files were enough.
-         * Sizes belong to the panel library (stores/layout.ts deliberately
-         * keeps none), so where the user drags this is remembered like every
-         * other divider in the app.
-         */
-        <PanelGroup direction="vertical" autoSaveId="aime-git-panel">
+      {/* The panels get everything the stash strip below does not need. Their
+          own height has to come from this box rather than from the window, or
+          the library's `height: 100%` would push that strip off the bottom. */}
+      <div className="flex min-h-0 flex-1 flex-col">
+        {/*
+         * One divider per open section, because a long Changes list used to push
+         * History out of the panel entirely - forty changed files were enough -
+         * and a shelf of stashes then did the same to History. Sizes belong to
+         * the panel library (stores/layout.ts deliberately keeps none), so where
+         * the user drags these is remembered like every other divider in the app.
+         * v2: the id had to change when Stash became a panel of its own, or a
+         * layout saved for two panels would be restored into three.
+         */}
+        <PanelGroup direction="vertical" autoSaveId="aime-git-panel-v2">
           {/*
            * 30% is the floor for Changes because the commit form above the list
            * does not scroll: the panel has to stay tall enough to show it whole,
@@ -973,24 +1008,42 @@ export function GitPanel() {
           <Panel id="git-changes" order={1} minSize={30} className="flex flex-col">
             {changes}
           </Panel>
-          <ResizeHandle horizontal />
-          <Panel
-            id="git-history"
-            order={2}
-            minSize={10}
-            maxSize={70}
-            defaultSize={35}
-            className="flex flex-col"
-          >
-            {history}
-          </Panel>
+          {historyOpen && (
+            <>
+              <ResizeHandle horizontal />
+              <Panel
+                id="git-history"
+                order={2}
+                minSize={10}
+                maxSize={70}
+                defaultSize={35}
+                className="flex flex-col"
+              >
+                {history}
+              </Panel>
+            </>
+          )}
+          {stashOpen && git.stashes.length > 0 && (
+            <>
+              <ResizeHandle horizontal />
+              <Panel
+                id="git-stash"
+                order={3}
+                minSize={8}
+                maxSize={50}
+                defaultSize={15}
+                className="flex flex-col"
+              >
+                <StashList open onToggle={toggleStash} />
+              </Panel>
+            </>
+          )}
         </PanelGroup>
-      ) : (
-        <>
-          {changes}
-          {history}
-        </>
-      )}
+      </div>
+      {/* Folded, a section is one heading under the panels - the same order on
+          screen as when it is open, and no panel paying for it. */}
+      {!historyOpen && history}
+      {!stashOpen && <StashList open={false} onToggle={toggleStash} />}
 
       {branchMenu && (
         <ContextMenu

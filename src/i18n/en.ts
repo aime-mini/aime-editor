@@ -249,6 +249,8 @@ export const en = {
   "settings.wordWrap": "Wrap long lines",
   "settings.wordWrapHint": "Fold lines that run past the edge instead of scrolling sideways",
   "settings.minimap": "Minimap",
+  "settings.autoSave": "Auto save",
+  "settings.autoSaveHint": "Saves a second after you stop typing - Ctrl+S still saves right away",
   "settings.tabSize": "Indent size",
   "settings.permission": "What the AI may do",
   "settings.permission.full": "Everything",
@@ -264,11 +266,14 @@ export const en = {
   "settings.off": "Off",
   "settings.footer": "Changes apply immediately and are remembered on this machine. Ctrl+, opens this page.",
 
+  "tree.ignored": "Ignored by git (.gitignore) - it is not part of the repository",
+
   "menu.newFile": "New File…",
   "menu.newFolder": "New Folder…",
   "menu.open": "Open",
   "menu.revealExplorer": "Reveal in File Explorer",
   "menu.gitBlame": "Git Blame",
+  "menu.gitIgnore": "Add to .gitignore",
   "menu.closeFolder": "Close Folder",
   "menu.rename": "Rename…",
   "menu.delete": "Delete",
@@ -404,6 +409,9 @@ export const en = {
   "git.nothingStaged": "Nothing staged - stage some changes first.",
   "git.clean": "No changes.",
   "git.diffLabel": "diff vs HEAD",
+  "git.diffSame": "same text as HEAD",
+  "git.diffSameHint":
+    "Not a single character differs. What git listed is a staged change, a line-ending change, or a file mode change.",
   "git.review": "Review",
   "git.reviewHint": "Ask the AI to look over these changes before you commit - it never blocks the commit",
   "git.reviewClean": "The AI found nothing worth raising.",

@@ -250,6 +250,8 @@ export const vi: Record<TranslationKey, string> = {
   "settings.wordWrap": "Xuống dòng tự động",
   "settings.wordWrapHint": "Dòng dài sẽ gập xuống thay vì phải cuộn ngang",
   "settings.minimap": "Bản đồ thu nhỏ",
+  "settings.autoSave": "Tự động lưu",
+  "settings.autoSaveHint": "Lưu sau khi ngừng gõ một giây - Ctrl+S vẫn lưu ngay lập tức",
   "settings.tabSize": "Độ thụt dòng",
   "settings.permission": "AI được làm gì",
   "settings.permission.full": "Toàn quyền",
@@ -265,11 +267,14 @@ export const vi: Record<TranslationKey, string> = {
   "settings.off": "Tắt",
   "settings.footer": "Thay đổi có hiệu lực ngay và được nhớ trên máy này. Ctrl+, mở lại trang này.",
 
+  "tree.ignored": "Git bỏ qua file này (.gitignore) - nó không nằm trong repo",
+
   "menu.newFile": "Tạo file…",
   "menu.newFolder": "Tạo thư mục…",
   "menu.open": "Mở",
   "menu.revealExplorer": "Mở trong File Explorer",
   "menu.gitBlame": "Git Blame",
+  "menu.gitIgnore": "Thêm vào .gitignore",
   "menu.closeFolder": "Đóng thư mục",
   "menu.rename": "Đổi tên…",
   "menu.delete": "Xóa",
@@ -405,6 +410,9 @@ export const vi: Record<TranslationKey, string> = {
   "git.nothingStaged": "Chưa stage gì - hãy stage thay đổi trước.",
   "git.clean": "Không có thay đổi.",
   "git.diffLabel": "diff với HEAD",
+  "git.diffSame": "chữ giống hệt HEAD",
+  "git.diffSameHint":
+    "Không lệch một ký tự nào. Cái git liệt kê là thay đổi đã stage, thay đổi kiểu xuống dòng, hoặc đổi quyền file.",
   "git.review": "Soát lại",
   "git.reviewHint": "Nhờ AI xem qua thay đổi trước khi commit - nó không bao giờ chặn commit",
   "git.reviewClean": "AI không thấy gì đáng nói.",

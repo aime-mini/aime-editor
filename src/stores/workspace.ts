@@ -54,6 +54,13 @@ interface WorkspaceState {
   openBlame: (relativePath: string) => void;
   setContent: (content: string) => void;
   saveFile: () => Promise<void>;
+  /**
+   * Writes one open file, whether its text is the live buffer or parked behind
+   * another tab. Auto save needs the parked case: a save armed a second ago is
+   * about the file it was armed for, not about whatever is on screen when it
+   * finally fires.
+   */
+  saveBuffer: (path: string) => Promise<void>;
   reloadOpenFile: () => Promise<void>;
   refreshTree: () => void;
   /** Keeps the editor consistent after fs operations from the file tree. */
@@ -261,10 +268,22 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     },
 
     saveFile: async () => {
-      const { openFilePath, fileContent } = get();
-      if (!openFilePath) return;
-      await invoke("write_file", { path: openFilePath, content: fileContent });
-      set({ savedContent: fileContent, dirty: false });
+      const { openFilePath } = get();
+      if (openFilePath) await get().saveBuffer(openFilePath);
+    },
+
+    saveBuffer: async (path: string) => {
+      const state = get();
+      const content = state.openFilePath === path ? state.fileContent : state.buffers[path]?.content;
+      if (content === undefined) return; // the tab was closed while the save waited
+      await invoke("write_file", { path, content });
+      set((s) => {
+        // Comparing against the text that reached the disk, not clearing a flag:
+        // anything typed while the write was in flight is still unsaved.
+        if (s.openFilePath === path) return { savedContent: content, dirty: s.fileContent !== content };
+        const buffer = s.buffers[path];
+        return buffer ? { buffers: { ...s.buffers, [path]: { ...buffer, savedContent: content } } } : {};
+      });
     },
 
     reloadOpenFile: async () => {
