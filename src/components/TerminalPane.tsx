@@ -17,56 +17,76 @@ interface TermExitPayload {
 }
 
 /**
- * xterm palette matching the app palettes in index.css. The 16 ANSI colors
- * must be set per theme too — xterm's built-in ANSI palette targets dark
- * backgrounds, so on a light background yellow/white output is unreadable.
+ * xterm palette: the app's own surfaces, VS Code's ANSI colors.
+ *
+ * The surface and the text are Aime's (`index.css`) so the terminal belongs to
+ * the window it sits in. The 16 ANSI slots are VS Code's defaults, copied from
+ * the installed build (`workbench.desktop.main.js`, terminal color registry) —
+ * they are what every CLI on this machine was coloured against, and a palette
+ * invented here made `git status` and PowerShell error text read differently
+ * from the same output one window over.
+ *
+ * The cursor follows the text colour rather than the accent: a saturated block
+ * one cell tall is the loudest thing on screen, which is not what a caret is
+ * for. VS Code paints it `#bfbfbf` / `#202020` for the same reason.
  */
 function xtermThemeOf(theme: Theme): ITheme {
   return theme === "dark"
     ? {
         background: "#1c1f26",
         foreground: "#d7dae0",
-        cursor: "#6c8cff",
+        cursor: "#d7dae0",
+        cursorAccent: "#1c1f26",
         selectionBackground: "rgba(108, 140, 255, 0.30)",
-        black: "#23272f",
-        red: "#e5534b",
-        green: "#57ab5a",
-        yellow: "#c69026",
-        blue: "#6c8cff",
-        magenta: "#b083f0",
-        cyan: "#39c5cf",
-        white: "#8b919d",
-        brightBlack: "#545d68",
-        brightRed: "#f47067",
-        brightGreen: "#6bc46d",
-        brightYellow: "#daaa3f",
-        brightBlue: "#8cb0ff",
-        brightMagenta: "#c8a1f7",
-        brightCyan: "#56d4dd",
-        brightWhite: "#d7dae0",
+        black: "#000000",
+        red: "#cd3131",
+        green: "#0dbc79",
+        yellow: "#e5e510",
+        blue: "#2472c8",
+        magenta: "#bc3fbc",
+        cyan: "#11a8cd",
+        white: "#e5e5e5",
+        brightBlack: "#666666",
+        brightRed: "#f14c4c",
+        brightGreen: "#23d18b",
+        brightYellow: "#f5f543",
+        brightBlue: "#3b8eea",
+        brightMagenta: "#d670d6",
+        brightCyan: "#29b8db",
+        brightWhite: "#e5e5e5",
       }
     : {
         background: "#ffffff",
         foreground: "#24292f",
-        cursor: "#4f6ef2",
+        cursor: "#24292f",
+        cursorAccent: "#ffffff",
         selectionBackground: "rgba(79, 110, 242, 0.25)",
-        black: "#24292f",
-        red: "#cf222e",
-        green: "#1a7f37",
-        yellow: "#9a6700",
-        blue: "#0969da",
-        magenta: "#8250df",
-        cyan: "#1b7c83",
-        white: "#6e7781",
-        brightBlack: "#57606a",
-        brightRed: "#a40e26",
-        brightGreen: "#2da44e",
-        brightYellow: "#bf8700",
-        brightBlue: "#218bff",
-        brightMagenta: "#a475f9",
-        brightCyan: "#3192aa",
-        brightWhite: "#57606a",
+        black: "#000000",
+        red: "#cd3131",
+        green: "#107c10",
+        yellow: "#949800",
+        blue: "#0451a5",
+        magenta: "#bc05bc",
+        cyan: "#0598bc",
+        white: "#555555",
+        brightBlack: "#666666",
+        brightRed: "#cd3131",
+        brightGreen: "#14ce14",
+        brightYellow: "#b5ba00",
+        brightBlue: "#0451a5",
+        brightMagenta: "#bc05bc",
+        brightCyan: "#0598bc",
+        brightWhite: "#a5a5a5",
       };
+}
+
+/** A promise together with the handle that settles it. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }
 
 /**
@@ -106,30 +126,54 @@ export function TerminalPane({
     const term = new Terminal({
       fontFamily: '"JetBrains Mono", Consolas, monospace',
       fontSize: 13,
-      cursorBlink: true,
+      // A caret marks a position; it does not need to cover the cell to do it.
+      // Measured against VS Code before choosing: its block is one cell, and at
+      // its default 14px that is 7.7x16.5 against our 7.15x15.33 - so this is
+      // not about size but about weight, and a solid block is the heaviest mark
+      // on the screen. A bar is also what Windows Terminal opens with.
+      cursorStyle: "bar",
+      cursorWidth: 2,
+      // Off, as in VS Code (`terminal.integrated.cursorBlinking` defaults to
+      // false): a caret that pulses is movement in the corner of the eye all
+      // day, and the shell can still ask for blink through DECSCUSR.
+      cursorBlink: false,
       theme: xtermThemeOf(useTheme.getState().theme),
       // Auto-adjusts ANY output color (incl. PSReadLine's own RGB colors)
       // to stay readable against the background — critical on light theme.
+      // 4.5 is also VS Code's `terminal.integrated.minimumContrastRatio`.
       minimumContrastRatio: 4.5,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
-    fit.fit();
     termRef.current = term;
 
     let termId: number | null = null;
-    let disposed = false;
     const cleanups: (() => void)[] = [];
+    const sized = deferred();
+    // Everything below can be in flight when the pane goes away; this is the
+    // one signal that says so, and it survives an await where a boolean does
+    // not (the compiler cannot see a closure reassign one).
+    const closed = new AbortController();
+    /** Asked, never remembered: an awaited answer goes stale in a variable. */
+    const paneIsGone = () => closed.signal.aborted;
 
     const connect = async () => {
+      // The pane is laid out by a parent panel whose effects run after this
+      // component's, so the box is still 0x0 right now. A shell spawned here
+      // is told it has xterm's 12x6 fallback grid, prints its first prompt
+      // into twelve columns, and is then resized out from under that prompt —
+      // measured, and the reason the first terminal of a session came up blank.
+      await sized.promise;
+      if (paneIsGone()) return;
+
       const id = await invoke<number>("term_create", {
         cwd: rootPath,
         cols: term.cols,
         rows: term.rows,
       });
-      // The effect may have been cleaned up while term_create was in flight.
-      if (disposed) {
+      // The pane may have gone away while term_create was in flight.
+      if (paneIsGone()) {
         await invoke("term_kill", { termId: id });
         return;
       }
@@ -161,10 +205,12 @@ export function TerminalPane({
       term.write(`\x1b[31mFailed to start shell: ${String(err)}\x1b[0m\r\n`);
     });
 
-    // Refit on any container size change (panel drag, expand from the rail).
+    // Fires once on observe() and on every size change after (panel drag,
+    // expand from the rail) — which is also how the shell learns it may start.
     const observer = new ResizeObserver(() => {
       if (container.clientWidth === 0 || container.clientHeight === 0) return;
       fit.fit();
+      sized.resolve();
       if (termId !== null) {
         void invoke("term_resize", { termId, cols: term.cols, rows: term.rows });
       }
@@ -172,12 +218,19 @@ export function TerminalPane({
     observer.observe(container);
 
     return () => {
-      disposed = true;
+      closed.abort();
       observer.disconnect();
       cleanups.forEach((dispose) => {
         dispose();
       });
-      if (termId !== null) void invoke("term_kill", { termId });
+      const shell = termId;
+      if (shell !== null) {
+        invoke("term_kill", { termId: shell }).catch((err: unknown) => {
+          // The pane is going away, so there is nowhere left to show this —
+          // but a shell that outlives its tab is worth a line in the log.
+          console.error("[terminal] could not kill shell", shell, err);
+        });
+      }
       term.dispose();
       termRef.current = null;
     };

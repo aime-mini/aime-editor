@@ -162,13 +162,28 @@ pub fn term_resize(
         .map_err(|e| e.to_string())
 }
 
+/// Whether a kill that reported failure actually succeeded.
+///
+/// `portable-pty` 0.9 inverts `TerminateProcess`'s success test on Windows
+/// (`src/win/mod.rs:74`): the call returns non-zero when it worked, and the
+/// crate turns exactly that case into `Err(last_os_error())` — which is
+/// `ERROR_SUCCESS`, printed as "The operation completed successfully".
+/// A zero error code therefore means the shell was killed, not that it wasn't.
+fn kill_actually_succeeded(err: &std::io::Error) -> bool {
+    err.raw_os_error() == Some(0)
+}
+
 /// Kills the shell; the reader thread then observes EOF and emits `term:exit`.
 #[tauri::command]
 pub fn term_kill(state: State<'_, TerminalState>, term_id: u64) -> Result<(), String> {
-    if let Some(mut session) = state.sessions().remove(&term_id) {
-        session.killer.kill().map_err(|e| e.to_string())?;
+    let Some(mut session) = state.sessions().remove(&term_id) else {
+        return Ok(()); // already gone: the shell exited on its own
+    };
+    match session.killer.kill() {
+        Ok(()) => Ok(()),
+        Err(err) if kill_actually_succeeded(&err) => Ok(()),
+        Err(err) => Err(err.to_string()),
     }
-    Ok(())
 }
 
 /// Stops every terminal owned by a window; called when that window is destroyed.
@@ -183,4 +198,27 @@ pub fn kill_for_window(window: &Window) {
             true
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kill_actually_succeeded;
+    use std::io::Error;
+
+    #[test]
+    fn error_success_is_not_a_failure() {
+        // What `portable-pty` hands back after a kill that worked on Windows.
+        assert!(kill_actually_succeeded(&Error::from_raw_os_error(0)));
+    }
+
+    #[test]
+    fn a_real_os_error_stays_a_failure() {
+        // ERROR_ACCESS_DENIED — a kill that genuinely did not happen.
+        assert!(!kill_actually_succeeded(&Error::from_raw_os_error(5)));
+    }
+
+    #[test]
+    fn an_error_without_an_os_code_stays_a_failure() {
+        assert!(!kill_actually_succeeded(&Error::other("no code")));
+    }
 }

@@ -23,6 +23,10 @@ STATUS.md
 ARCHITECTURE.md
 ROADMAP.md
 
+# Bug reports dropped here while using the app - notes and screenshots of this
+# machine, and a queue rather than a record: what comes out of it is the fix.
+bugs/
+
 # Updater signing keys - losing control of these means signing fake updates.
 *.key
 *.key.pub

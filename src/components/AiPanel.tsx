@@ -283,7 +283,10 @@ function MessageBubble({ message, index }: { message: ChatMessage; index: number
   return (
     <div className={`flex flex-col gap-1.5 ${isUser ? "items-end" : "items-start"}`}>
       <div
-        className={`max-w-[92%] rounded-lg px-3 py-2 leading-relaxed whitespace-pre-wrap ${
+        // `break-words` because what the AI quotes back is often a path or a
+        // URL with no space in it, and a bubble capped at 92% cannot wrap what
+        // has no break in it — it just draws past the panel.
+        className={`max-w-[92%] rounded-lg px-3 py-2 leading-relaxed break-words whitespace-pre-wrap ${
           isUser ? "bg-accent-soft text-fg" : "bg-elevated text-fg"
         }`}
       >
@@ -294,14 +297,19 @@ function MessageBubble({ message, index }: { message: ChatMessage; index: number
           part.kind === "text" ? (
             <span key={i}>{part.text}</span>
           ) : (
+            // A tool call is one line that must fit the bubble: the tool's
+            // name always, then as much of the command as there is room for.
+            // A fixed cap (it was 13rem) is a width the panel never agreed to
+            // — narrow the panel and the chip kept its size and drew over the
+            // edge, which is how `cd C:\Projects\…` ran off the screen.
             <span
               key={i}
-              className="my-1 flex w-fit items-center gap-1.5 rounded-md border border-line bg-panel px-2 py-0.5 font-mono text-[11px] text-muted"
+              className="my-1 flex w-fit max-w-full items-center gap-1.5 rounded-md border border-line bg-panel px-2 py-0.5 font-mono text-[11px] text-muted"
               title={part.detail}
             >
               <Wrench size={11} className="shrink-0 text-accent" />
-              {part.name}
-              {part.detail && <span className="max-w-52 truncate">· {part.detail}</span>}
+              <span className="shrink-0">{part.name}</span>
+              {part.detail && <span className="min-w-0 truncate">· {part.detail}</span>}
             </span>
           ),
         )}
