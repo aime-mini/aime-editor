@@ -188,6 +188,8 @@ export const en = {
   "setup.failed": "The AI stopped with code {code}. Nothing was verified.",
   "setup.succeeded": "Done - Aime looked again for what it was missing.",
   "lsp.running": "Code intelligence active for {language}",
+  "lsp.restoring":
+    "Fetching packages for {language} (dotnet restore) - completions fill in when it finishes. The first time can take minutes.",
   "lsp.missing":
     "{command} is not installed - completions and diagnostics are off for this file. Install it with: {install}",
   "lsp.failed": "Language server stopped: {reason}. Reopen the file to try again.",

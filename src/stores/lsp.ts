@@ -60,8 +60,8 @@ function registerProviders(languageId: string): void {
 
   monaco.languages.registerCompletionItemProvider(languageId, {
     triggerCharacters: TRIGGER_CHARACTERS,
-    provideCompletionItems: (model, position) =>
-      session()?.completion(model, position) ?? { suggestions: [] },
+    provideCompletionItems: (model, position, context) =>
+      session()?.completion(model, position, context) ?? { suggestions: [] },
   });
   monaco.languages.registerHoverProvider(languageId, {
     provideHover: (model, position) => session()?.hover(model, position) ?? null,
@@ -89,6 +89,13 @@ function registerProviders(languageId: string): void {
 interface LspStoreState {
   /** What Aime can say about each language it has been asked about. */
   languages: Record<string, LanguageState | undefined>;
+  /**
+   * Languages whose server has Aime fetching packages (`dotnet restore`) right
+   * now. A layer over `running`, not a state of its own: the session keeps
+   * serving while it restores, and completions are just thin until it is done -
+   * which is exactly what the status bar owes the user an explanation for.
+   */
+  restoring: Record<string, boolean | undefined>;
   /** Starts the server for a language if it is installed and not running yet. */
   ensure: (languageId: string) => Promise<void>;
   /** Stops every server (workspace closed or app shutting down). */
@@ -99,6 +106,7 @@ interface LspStoreState {
 
 export const useLsp = create<LspStoreState>((set, get) => ({
   languages: {},
+  restoring: {},
 
   ensure: async (languageId) => {
     const { rootPath } = useWorkspace.getState();
@@ -146,6 +154,9 @@ export const useLsp = create<LspStoreState>((set, get) => ({
       );
       sessions.set(languageId, session);
       registerProviders(languageId);
+      session.onRestore = (running) => {
+        set((s) => ({ restoring: { ...s.restoring, [languageId]: running } }));
+      };
       set((s) => ({
         languages: {
           ...s.languages,
@@ -164,13 +175,16 @@ export const useLsp = create<LspStoreState>((set, get) => ({
   },
 
   forget: (languageId) => {
-    set((s) => ({ languages: { ...s.languages, [languageId]: undefined } }));
+    set((s) => ({
+      languages: { ...s.languages, [languageId]: undefined },
+      restoring: { ...s.restoring, [languageId]: undefined },
+    }));
   },
 
   stopAll: async () => {
     const running = [...sessions.values()];
     sessions.clear();
-    set({ languages: {} });
+    set({ languages: {}, restoring: {} });
     await Promise.all(running.map((session) => session.dispose()));
   },
 }));

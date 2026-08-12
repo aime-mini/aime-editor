@@ -141,6 +141,7 @@ pub fn run() {
             lsp::lsp_availability,
             lsp::lsp_download,
             lsp::lsp_project_files,
+            lsp::lsp_restore,
             lsp::lsp_start,
             lsp::lsp_send,
             lsp::lsp_stop,

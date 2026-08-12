@@ -4,6 +4,7 @@ import {
   hoverToMarkdown,
   pathToUri,
   toLspPosition,
+  toLspRange,
   toMonacoRange,
   toOutline,
   uriToPath,
@@ -39,6 +40,16 @@ describe("position and range conversion", () => {
     });
     expect(asRange.startLineNumber).toBe(monacoPosition.lineNumber);
     expect(asRange.startColumn).toBe(monacoPosition.column);
+  });
+
+  /** Incremental didChange sends Monaco edit ranges; toLspRange is that path. */
+  it("round-trips a range through toLspRange and toMonacoRange", () => {
+    const monacoRange = { startLineNumber: 280, startColumn: 29, endLineNumber: 280, endColumn: 43 };
+    expect(toLspRange(monacoRange)).toEqual({
+      start: { line: 279, character: 28 },
+      end: { line: 279, character: 42 },
+    });
+    expect(toMonacoRange(toLspRange(monacoRange))).toEqual(monacoRange);
   });
 });
 
@@ -106,8 +117,20 @@ describe("path and uri conversion", () => {
   it("round-trips a Windows path", () => {
     const path = "C:\\Projects\\my app\\src\\main.rs";
     const uri = pathToUri(path);
-    expect(uri.startsWith("file:///C%3A/")).toBe(true);
+    expect(uri).toBe("file:///C:/Projects/my%20app/src/main.rs");
     expect(uriToPath(uri)).toBe("C:/Projects/my app/src/main.rs");
+  });
+
+  /**
+   * The drive colon must NOT be percent-encoded. Measured 2026-08-12 against
+   * the Roslyn language server (5.0.0-1.25277): .NET turns `file:///C%3A/…`
+   * into the relative-looking LocalPath `/C:/…`, its absolute-path assertion
+   * fires, and `project/open` is dropped - zero completions, no error shown.
+   */
+  it("keeps the drive colon literal, which Roslyn's URI parsing requires", () => {
+    expect(pathToUri("C:\\Projects\\IODM\\Backend\\IODM.Connect.sln")).toBe(
+      "file:///C:/Projects/IODM/Backend/IODM.Connect.sln",
+    );
   });
 
   it("round-trips a POSIX path", () => {
@@ -131,7 +154,7 @@ describe("modelPath", () => {
       uri: { scheme: "C", path: "\\Projects\\app\\App.java", fsPath: "\\Projects\\app\\App.java" },
     };
     expect(modelPath(model)).toBe("C:\\Projects\\app\\App.java");
-    expect(pathToUri(modelPath(model))).toBe("file:///C%3A/Projects/app/App.java");
+    expect(pathToUri(modelPath(model))).toBe("file:///C:/Projects/app/App.java");
   });
 
   it("leaves a real file URI alone", () => {

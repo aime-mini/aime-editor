@@ -55,6 +55,13 @@ export class LspClient {
    */
   onNotification: (method: string, params: unknown) => void = () => undefined;
 
+  /**
+   * Set by the session for the server-to-client requests that need real work
+   * done before answering (package restore). `undefined` means "not mine",
+   * and the generic empty answer from `answerToServerRequest` applies.
+   */
+  onRequest: (method: string, params: unknown) => Promise<unknown> | undefined = () => undefined;
+
   private constructor(
     private readonly serverId: number,
     private readonly onExit: () => void,
@@ -120,14 +127,31 @@ export class LspClient {
     if (message.id !== undefined && message.method !== undefined) {
       // Server-to-client request: the server blocks until it gets an answer,
       // and the shape of that answer is load-bearing (see `answerToServerRequest`).
-      this.send({
-        jsonrpc: "2.0",
-        id: message.id,
-        result: answerToServerRequest(message.method, message.params),
-      });
+      this.answerRequest(message.id, message.method, message.params);
       return;
     }
     if (message.method) this.onNotification(message.method, message.params);
+  }
+
+  /**
+   * Answers a server-to-client request, asynchronously when the session has
+   * real work behind it. A failed handler still answers - a server left
+   * waiting on a reply stops serving everything else.
+   */
+  private answerRequest(id: number | string, method: string, params: unknown): void {
+    const work = this.onRequest(method, params);
+    if (work === undefined) {
+      this.send({ jsonrpc: "2.0", id, result: answerToServerRequest(method, params) });
+      return;
+    }
+    void work
+      .catch((err: unknown) => {
+        console.error(`${method}: handler failed`, err);
+        return null;
+      })
+      .then((result) => {
+        if (!this.stopped) this.send({ jsonrpc: "2.0", id, result });
+      });
   }
 
   private settle(message: JsonRpcMessage): void {

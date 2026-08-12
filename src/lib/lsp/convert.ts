@@ -20,6 +20,13 @@ export function toLspPosition(position: IPosition): LspPosition {
   return { line: position.lineNumber - 1, character: position.column - 1 };
 }
 
+export function toLspRange(range: IRange): LspRange {
+  return {
+    start: { line: range.startLineNumber - 1, character: range.startColumn - 1 },
+    end: { line: range.endLineNumber - 1, character: range.endColumn - 1 },
+  };
+}
+
 export function toMonacoRange(range: LspRange): IRange {
   return {
     startLineNumber: range.start.line + 1,
@@ -140,11 +147,22 @@ export function modelPath(model: { uri: { scheme: string; path: string; fsPath: 
   return /^[a-zA-Z]$/.test(scheme) ? `${scheme}:${path}` : fsPath || path;
 }
 
-/** `file:///c%3A/path/file.ts` ↔ the OS path Aime works with. */
+/**
+ * `file:///C:/path/file.ts` ↔ the OS path Aime works with.
+ *
+ * The drive colon stays literal - a `:` is legal inside a URI path segment
+ * (RFC 3986 pchar), and encoding it broke C# on Windows outright. Measured
+ * 2026-08-12 against Roslyn 5.0.0-1.25277: .NET parses `file:///C%3A/x.csproj`
+ * to the LocalPath `/C:/x.csproj`, which fails the server's own absolute-path
+ * assertion (`Unexpected false - LanguageServerProjectLoader.cs line 193`), so
+ * every `project/open` was silently dropped and every completion answered
+ * nothing. Servers that decode the URI themselves accept both spellings.
+ */
 export function pathToUri(path: string): string {
   const normalized = path.replaceAll("\\", "/");
   const withRoot = normalized.startsWith("/") ? normalized : `/${normalized}`;
-  return `file://${withRoot.split("/").map(encodeURIComponent).join("/")}`;
+  const segments = withRoot.split("/").map((segment) => encodeURIComponent(segment).replaceAll("%3A", ":"));
+  return `file://${segments.join("/")}`;
 }
 
 export function uriToPath(uri: string): string {

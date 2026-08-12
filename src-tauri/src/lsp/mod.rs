@@ -581,6 +581,36 @@ pub async fn lsp_download(app: AppHandle, language_id: String) -> Result<(), Str
     crate::archive::fetch_and_unpack(archive.url, &dir, archive.contains, archive.folder, |_| ()).await
 }
 
+/// Restores NuGet packages for the solution or projects a language server
+/// asked the client to fetch (`workspace/_roslyn_projectNeedsRestore`).
+///
+/// Roslyn never restores on its own — that is the client's job, exactly as in
+/// VS Code. Without it a project loads with every reference missing (measured
+/// 2026-08-12 on a project with no `project.assets.json`: 132× CS0234, member
+/// completions empty while keyword completions work). Paths run one at a time
+/// because two restores fight over NuGet's own locks.
+#[tauri::command]
+pub async fn lsp_restore(paths: Vec<String>) -> Result<(), String> {
+    for path in &paths {
+        let output = cli_command("dotnet", ["restore", path])
+            .output()
+            .await
+            .map_err(|e| format!("Could not run dotnet restore: {e}"))?;
+        if !output.status.success() {
+            // NuGet writes its verdict to stdout; stderr is often empty.
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = if stderr.trim().is_empty() { stdout } else { stderr };
+            let last_line = detail.lines().rev().find(|line| !line.trim().is_empty());
+            return Err(format!(
+                "dotnet restore failed for {path}: {}",
+                last_line.unwrap_or("no output").trim()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The solution or projects a server should be told to open.
 ///
 /// A solution wins when there is one: it is what the toolchain itself considers
@@ -964,5 +994,22 @@ mod tests {
         let js = spec_for("javascript").expect("javascript is served");
         assert_eq!(ts.command, js.command);
         assert!(spec_for("cobol").is_none());
+    }
+
+    /// Nothing asked for means nothing to run - and no `dotnet` spawned to say so.
+    #[tokio::test]
+    async fn restoring_nothing_succeeds_without_running_anything() {
+        assert_eq!(super::lsp_restore(Vec::new()).await, Ok(()));
+    }
+
+    /// The error carries NuGet's own last line, which is the part worth reading.
+    /// (Runs the real `dotnet`; the machine this repo develops on has it.)
+    #[tokio::test]
+    async fn a_failed_restore_reports_which_project_and_why() {
+        let missing = r"C:\does\not\exist\Nope.csproj";
+        let error = super::lsp_restore(vec![missing.to_string()])
+            .await
+            .expect_err("restoring a project that does not exist must fail");
+        assert!(error.contains("Nope.csproj"), "error names the project: {error}");
     }
 }

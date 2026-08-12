@@ -6,6 +6,7 @@ import {
   modelPath,
   pathToUri,
   toLspPosition,
+  toLspRange,
   toMonacoRange,
   toOutline,
   uriToPath,
@@ -141,9 +142,11 @@ const MARKER_OWNER = "aime-lsp";
 /**
  * One language server, driven for one workspace.
  *
- * Document sync is always a full replacement (a change event without a range),
- * which the specification allows whichever sync kind the server declared. It
- * costs a string copy per keystroke and removes a whole class of desync bugs.
+ * Document sync follows the kind the server declared in `initialize`: a server
+ * asking for incremental sync gets Monaco's own edit ranges, everything else a
+ * full replacement. The old reading - "a rangeless full text is always
+ * acceptable" - was measured wrong on 2026-08-12: Roslyn dies on it (see
+ * `incrementalSync`), it merely happened to be tolerated by the others.
  */
 /** Mirror of the Rust `ProjectOpenMethods` (lsp/mod.rs). */
 export interface ProjectOpenMethods {
@@ -158,7 +161,9 @@ interface ProjectFiles {
 }
 
 /**
- * Tells a server which project it is looking at.
+ * Tells a server which project it is looking at, and answers with what it told:
+ * the solution path when one was opened, `null` otherwise. A later package
+ * restore targets that same solution - one restore covers all of its projects.
  *
  * A solution wins when the repository has one - it is the unit the toolchain
  * itself works in, and the server loads every project inside it. Measured
@@ -166,16 +171,41 @@ interface ProjectFiles {
  * `.csproj` to `solution/open` throws `InvalidProjectFileException` inside
  * MSBuild, and sending neither leaves the workspace empty for ever.
  */
-async function openProject(client: LspClient, root: string, methods: ProjectOpenMethods): Promise<void> {
+async function openProject(
+  client: LspClient,
+  root: string,
+  methods: ProjectOpenMethods,
+): Promise<string | null> {
   const files = await invoke<ProjectFiles>("lsp_project_files", { root });
   if (files.solutions.length > 0) {
     const [solution] = files.solutions;
     client.notify(methods.solutionMethod, { solution: pathToUri(solution) });
-    return;
+    return solution;
   }
   if (files.projects.length > 0) {
     client.notify(methods.projectMethod, { projects: files.projects.map(pathToUri) });
   }
+  return null;
+}
+
+/**
+ * The one server-to-client request that needs real work before it is answered:
+ * Roslyn asking the client to fetch NuGet packages. Restoring is the client's
+ * job by design - VS Code does the same - and skipping it loads every project
+ * with its references missing (measured: 132× CS0234 in one file, member
+ * completions empty while keyword completions work).
+ */
+const NEEDS_RESTORE_METHOD = "workspace/_roslyn_projectNeedsRestore";
+
+/** LSP TextDocumentSyncKind.Incremental. */
+const INCREMENTAL_SYNC = 2;
+
+/** `initialize` answers the sync kind as a bare number or inside options. */
+interface InitializeAnswer {
+  capabilities?: {
+    documentSymbolProvider?: unknown;
+    textDocumentSync?: number | { change?: number };
+  };
 }
 
 export class LanguageSession {
@@ -186,6 +216,30 @@ export class LanguageSession {
    * only turns on for a language that has one (see EditorPane).
    */
   private outline = false;
+
+  /**
+   * Whether the server asked for edits as ranges rather than whole documents.
+   * This is the server's call, not a client convenience: Roslyn declares
+   * incremental sync and throws `NullReferenceException` inside
+   * `ProtocolConversions.RangeToTextSpan` on a change without a range - the
+   * server dies on the user's first keystroke (measured 2026-08-12).
+   */
+  private incrementalSync = false;
+
+  /** The solution `openProject` announced, which is what a restore targets. */
+  private solution: string | null = null;
+
+  /** Restores in flight by target list, so a repeated ask joins the running one. */
+  private readonly restores = new Map<string, Promise<null>>();
+
+  /** The tail of the restore queue: restores run one at a time (NuGet locks). */
+  private restoreTurn: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Fires with `true` while the session has a package restore running, so the
+   * UI can say why completions have not arrived yet. Set by the lsp store.
+   */
+  onRestore: (running: boolean) => void = () => undefined;
 
   private constructor(
     readonly languageId: string,
@@ -208,8 +262,10 @@ export class LanguageSession {
     client.onNotification = (method, params) => {
       if (method === "textDocument/publishDiagnostics") session.publishDiagnostics(params);
     };
+    client.onRequest = (method, params) =>
+      method === NEEDS_RESTORE_METHOD ? session.restore(params) : undefined;
 
-    const answer = await client.request<{ capabilities?: { documentSymbolProvider?: unknown } } | null>(
+    const answer = await client.request<InitializeAnswer | null>(
       "initialize",
       {
         processId: null,
@@ -233,12 +289,56 @@ export class LanguageSession {
     );
     // Servers answer this as `true` or as an options object; both mean yes.
     session.outline = Boolean(answer?.capabilities?.documentSymbolProvider);
+    const sync = answer?.capabilities?.textDocumentSync;
+    session.incrementalSync = (typeof sync === "number" ? sync : sync?.change) === INCREMENTAL_SYNC;
     client.notify("initialized", {});
     // Some servers do nothing at all until they are told which project this is.
     // Measured against Roslyn: without it every completion answers nothing, and
     // the server never says why.
-    if (projectOpen) await openProject(client, root, projectOpen);
+    if (projectOpen) session.solution = await openProject(client, root, projectOpen);
     return session;
+  }
+
+  /**
+   * Runs `dotnet restore` for what the server asked, answering when it is done.
+   *
+   * The target is the opened solution when there is one - one restore covers
+   * every project in it, where restoring 791 projects one by one (a real
+   * repository) would not finish. Identical asks join the run already going;
+   * different ones queue behind it, because parallel restores fight over
+   * NuGet's own locks. The answer is always `null`: a failed restore is logged
+   * and the server is answered anyway, since leaving it waiting stops every
+   * other request it would serve.
+   */
+  private restore(params: unknown): Promise<null> {
+    const asked = ((params ?? {}) as { projectFilePaths?: string[] }).projectFilePaths ?? [];
+    const targets = this.solution !== null ? [this.solution] : asked;
+    if (targets.length === 0) return Promise.resolve(null);
+
+    const key = targets.join(";");
+    const joined = this.restores.get(key);
+    if (joined) return joined;
+
+    const run = this.restoreTurn
+      .then(async () => {
+        this.onRestore(true);
+        try {
+          await invoke("lsp_restore", { paths: targets });
+        } finally {
+          this.onRestore(false);
+        }
+        return null;
+      })
+      .catch((err: unknown) => {
+        console.error("package restore failed:", err);
+        return null;
+      })
+      .finally(() => {
+        this.restores.delete(key);
+      });
+    this.restores.set(key, run);
+    this.restoreTurn = run;
+    return run;
   }
 
   /** Starts syncing a model and keeps syncing it until the model is disposed. */
@@ -253,11 +353,19 @@ export class LanguageSession {
     });
 
     entry.disposables.push(
-      model.onDidChangeContent(() => {
+      model.onDidChangeContent((event) => {
         entry.version += 1;
+        // A server that declared incremental sync gets Monaco's own edits.
+        // Monaco reports them against the pre-change document, sorted from the
+        // end of the file backwards, so applying them in array order is sound -
+        // an earlier-in-file edit never shifts what a later one refers to
+        // (the same convention vscode-languageclient forwards verbatim).
+        const contentChanges = this.incrementalSync
+          ? event.changes.map((change) => ({ range: toLspRange(change.range), text: change.text }))
+          : [{ text: model.getValue() }];
         this.client.notify("textDocument/didChange", {
           textDocument: { uri, version: entry.version },
-          contentChanges: [{ text: model.getValue() }],
+          contentChanges,
         });
       }),
       model.onWillDispose(() => {
@@ -305,11 +413,19 @@ export class LanguageSession {
   async completion(
     model: monaco.editor.ITextModel,
     position: monaco.IPosition,
+    context?: monaco.languages.CompletionContext,
   ): Promise<monaco.languages.CompletionList> {
-    const answer = await this.client.request<unknown>(
-      "textDocument/completion",
-      this.documentPosition(model, position),
-    );
+    const answer = await this.client.request<unknown>("textDocument/completion", {
+      ...this.documentPosition(model, position),
+      // Monaco's trigger kinds are LSP's shifted by one (Invoke 0 → Invoked 1),
+      // checked against both declarations. The context is not decoration:
+      // measured 2026-08-12 against Roslyn, one member-access position answers
+      // 0 items without it and the full member list with it.
+      context: {
+        triggerKind: (context?.triggerKind ?? monaco.languages.CompletionTriggerKind.Invoke) + 1,
+        ...(context?.triggerCharacter === undefined ? {} : { triggerCharacter: context.triggerCharacter }),
+      },
+    });
     const items = Array.isArray(answer)
       ? (answer as LspCompletionItem[])
       : (((answer ?? {}) as { items?: LspCompletionItem[] }).items ?? []);

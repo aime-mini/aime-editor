@@ -189,6 +189,8 @@ export const vi: Record<TranslationKey, string> = {
   "setup.failed": "AI dừng với mã {code}. Chưa có gì được kiểm chứng.",
   "setup.succeeded": "Xong - Aime đã dò lại thứ nó còn thiếu.",
   "lsp.running": "Code intelligence đang chạy cho {language}",
+  "lsp.restoring":
+    "Đang tải package cho {language} (dotnet restore) - xong thì gợi ý mới đầy đủ. Lần đầu có thể mất vài phút.",
   "lsp.missing": "Chưa cài {command} - file này không có gợi ý và báo lỗi. Cài bằng: {install}",
   "lsp.failed": "Language server đã dừng: {reason}. Mở lại file để thử lại.",
 

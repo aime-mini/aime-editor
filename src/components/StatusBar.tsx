@@ -104,6 +104,7 @@ export function StatusBar() {
   // works, and explicit about what to install when it cannot.
   const openLanguage = openFilePath ? languageOf(openFilePath) : null;
   const lsp = openLanguage ? lspLanguages[openLanguage] : undefined;
+  const lspRestoring = useLsp((s) => (openLanguage !== null ? (s.restoring[openLanguage] ?? false) : false));
 
   const taskItems: MenuItem[] =
     tasks.length === 0
@@ -236,10 +237,12 @@ export function StatusBar() {
                 ? t("lsp.missing", { command: lsp.command, install: lsp.installHint })
                 : lsp.kind === "failed"
                   ? t("lsp.failed", { reason: lsp.reason })
-                  : t("lsp.running", { language: openLanguage })
+                  : lspRestoring
+                    ? t("lsp.restoring", { language: openLanguage })
+                    : t("lsp.running", { language: openLanguage })
             }
           >
-            <Braces size={11} />
+            {lspRestoring ? <Loader2 size={11} className="animate-spin" /> : <Braces size={11} />}
             {openLanguage}
           </button>
         )}
