@@ -155,25 +155,30 @@ useWorkspace.subscribe((state, prev) => {
   }
 });
 
-export const useGit = create<GitState>((set, get) => ({
-  status: null,
-  log: [],
-  logLimit: LOG_PAGE,
-  stashes: [],
-  ignored: [],
-  busy: false,
-  lastError: null,
-  commitMessage: "",
-  amend: false,
-  generating: false,
-  reviewing: false,
-  review: null,
+export const useGit = create<GitState>((set, get) => {
+  /**
+   * One repo read at a time, latecomers folded into a single trailing pass.
+   *
+   * Every trigger lands on refresh(): the watcher fires several debounced
+   * bursts while a checkout is still rewriting the worktree, and runOp adds
+   * its own call when the command returns. Uncoalesced, each call was four
+   * more git processes racing the others for .git/index.lock on a large
+   * repository — the loser skips its index write, so the index stayed stale
+   * and every later status paid the full re-stat again ("git got slow"), and
+   * when the last pass was the loser the panel kept showing the old branch
+   * until the app was restarted. The trailing pass reads the final state, so
+   * whoever asked last still gets the truth.
+   */
+  let inFlight: Promise<void> | null = null;
+  let queued = false;
+  /** Asked, never remembered: the compiler narrows a boolean across an await. */
+  const takeQueued = () => {
+    const was = queued;
+    queued = false;
+    return was;
+  };
 
-  setAmend: (amend) => {
-    set({ amend });
-  },
-
-  refresh: async () => {
+  const readRepo = async () => {
     const root = useWorkspace.getState().rootPath;
     if (!root) {
       set({ status: null, log: [] });
@@ -190,280 +195,316 @@ export const useGit = create<GitState>((set, get) => ({
     } catch (err: unknown) {
       set({ lastError: String(err) });
     }
-  },
+  };
 
-  loadMoreLog: async () => {
-    set((s) => ({ logLimit: s.logLimit + LOG_PAGE }));
-    await get().refresh();
-  },
+  return {
+    status: null,
+    log: [],
+    logLimit: LOG_PAGE,
+    stashes: [],
+    ignored: [],
+    busy: false,
+    lastError: null,
+    commitMessage: "",
+    amend: false,
+    generating: false,
+    reviewing: false,
+    review: null,
 
-  stage: async (paths) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_stage", { root, paths }));
-  },
+    setAmend: (amend) => {
+      set({ amend });
+    },
 
-  unstage: async (paths) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_unstage", { root, paths }));
-  },
-
-  discard: async (file) => {
-    const root = useWorkspace.getState().rootPath;
-    if (!root) return;
-    await runOp(set, () =>
-      invoke("git_discard", { root, path: file.path, untracked: file.unstaged === "?" }),
-    );
-  },
-
-  discardMany: async (files) => {
-    const root = useWorkspace.getState().rootPath;
-    if (!root || files.length === 0) return;
-    await runOp(set, async () => {
-      for (const file of files) {
-        await invoke("git_discard", { root, path: file.path, untracked: file.unstaged === "?" });
+    refresh: async () => {
+      if (inFlight) {
+        queued = true;
+        return inFlight;
       }
-    });
-  },
-
-  ignore: async (paths) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_ignore", { root, paths }));
-  },
-
-  commit: async () => {
-    const root = useWorkspace.getState().rootPath;
-    const message = get().commitMessage.trim();
-    if (!root || (!message && !get().amend)) return; // amend may reuse the old message
-    await runOp(set, async () => {
-      // Smart commit (VS Code parity): nothing staged → stage all changes first.
-      const files = get().status?.files ?? [];
-      if (!files.some(isStaged)) {
-        const everything = files.filter(isUnstaged).map((f) => f.path);
-        if (everything.length > 0) await invoke("git_stage", { root, paths: everything });
+      inFlight = (async () => {
+        do {
+          await readRepo();
+        } while (takeQueued());
+      })();
+      try {
+        await inFlight;
+      } finally {
+        inFlight = null;
       }
-      await invoke("git_commit", { root, message, amend: get().amend });
-      set({ commitMessage: "", amend: false });
-    });
-  },
+    },
 
-  push: async () => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_push", { root }));
-  },
-
-  pull: async () => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_pull", { root }));
-  },
-
-  init: async () => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_init", { root }));
-  },
-
-  stashPush: async (message) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_stash_push", { root, message }));
-  },
-
-  stashApply: async (index) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_stash_apply", { root, index }));
-  },
-
-  stashPop: async (index) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_stash_pop", { root, index }));
-  },
-
-  stashDrop: async (index) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_stash_drop", { root, index }));
-  },
-
-  listBranches: async () => {
-    const root = useWorkspace.getState().rootPath;
-    if (!root) return [];
-    try {
-      return await invoke<GitBranch[]>("git_branches", { root });
-    } catch (err: unknown) {
-      set({ lastError: String(err) });
-      return [];
-    }
-  },
-
-  checkout: async (name) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_checkout", { root, name }));
-  },
-
-  createBranch: async (name) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_create_branch", { root, name }));
-  },
-
-  renameBranch: async (from, to) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_rename_branch", { root, from, to }));
-  },
-
-  deleteBranch: async (name, force = false) => {
-    const root = useWorkspace.getState().rootPath;
-    if (!root) return "failed";
-    set({ busy: true, lastError: null });
-    try {
-      await invoke("git_delete_branch", { root, name, force });
-      return "deleted";
-    } catch (err: unknown) {
-      const message = String(err);
-      // git's own wording; the panel turns it into an explicit "delete anyway"
-      // rather than force-deleting behind the user's back.
-      if (/not fully merged/i.test(message)) return "unmerged";
-      set({ lastError: message });
-      return "failed";
-    } finally {
-      set({ busy: false });
+    loadMoreLog: async () => {
+      set((s) => ({ logLimit: s.logLimit + LOG_PAGE }));
       await get().refresh();
-    }
-  },
+    },
 
-  mergeBranch: async (name) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_merge_branch", { root, name }));
-  },
+    stage: async (paths) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_stage", { root, paths }));
+    },
 
-  fetch: async () => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_fetch", { root }));
-  },
+    unstage: async (paths) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_unstage", { root, paths }));
+    },
 
-  listRemotes: async () => {
-    const root = useWorkspace.getState().rootPath;
-    if (!root) return [];
-    try {
-      return await invoke<GitRemote[]>("git_remotes", { root });
-    } catch (err: unknown) {
-      set({ lastError: String(err) });
-      return [];
-    }
-  },
-
-  setRemote: async (name, url) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_set_remote", { root, name, url }));
-  },
-
-  listTags: async () => {
-    const root = useWorkspace.getState().rootPath;
-    if (!root) return [];
-    try {
-      return await invoke<string[]>("git_tags", { root });
-    } catch (err: unknown) {
-      set({ lastError: String(err) });
-      return [];
-    }
-  },
-
-  createTag: async (name, message) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_create_tag", { root, name, message }));
-  },
-
-  deleteTag: async (name) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_delete_tag", { root, name }));
-  },
-
-  pushTags: async () => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_push_tags", { root }));
-  },
-
-  revertCommit: async (sha) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_revert_commit", { root, sha }));
-  },
-
-  cherryPick: async (sha) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_cherry_pick", { root, sha }));
-  },
-
-  resetTo: async (sha, mode) => {
-    const root = useWorkspace.getState().rootPath;
-    if (root) await runOp(set, () => invoke("git_reset_to", { root, sha, mode }));
-  },
-
-  reviewChanges: async () => {
-    const root = useWorkspace.getState().rootPath;
-    if (!root || get().reviewing) return;
-    set({ reviewing: true, lastError: null, review: null });
-    try {
-      // Staged changes are what a commit will contain; with nothing staged,
-      // the worktree is what the user is about to stage anyway.
-      let diff = await invoke<string>("git_staged_diff", { root });
-      if (!diff.trim()) diff = await invoke<string>("git_worktree_diff", { root });
-      if (!diff.trim()) {
-        set({ lastError: translate("git.clean") });
-        return;
-      }
-      const clipped =
-        diff.length > DIFF_PROMPT_LIMIT ? `${diff.slice(0, DIFF_PROMPT_LIMIT)}\n[diff truncated]` : diff;
-      set({ review: parseReview(await aiOneshot(REVIEW_PROMPT + clipped, root)) });
-    } catch (err: unknown) {
-      set({ lastError: String(err) });
-    } finally {
-      set({ reviewing: false });
-    }
-  },
-
-  dismissReview: () => {
-    set({ review: null });
-  },
-
-  setCommitMessage: (message) => {
-    set({ commitMessage: message });
-  },
-
-  generateCommitMessage: async () => {
-    const root = useWorkspace.getState().rootPath;
-    if (!root || get().generating) return;
-    set({ generating: true, lastError: null });
-    try {
-      // Prefer the staged diff; fall back to unstaged changes (smart commit
-      // will stage them anyway when the user commits with nothing staged).
-      let diff = await invoke<string>("git_staged_diff", { root });
-      if (!diff.trim()) diff = await invoke<string>("git_worktree_diff", { root });
-      if (!diff.trim()) {
-        set({ lastError: translate("git.nothingStaged") });
-        return;
-      }
-      const clipped =
-        diff.length > DIFF_PROMPT_LIMIT ? `${diff.slice(0, DIFF_PROMPT_LIMIT)}\n[diff truncated]` : diff;
-      const message = await aiOneshot(
-        "Write a git commit message for the staged diff below. Output ONLY the message - no quotes, no code fences. Imperative subject line under 72 characters; add a short body only when the change needs explanation.\n\n" +
-          clipped,
-        root,
-        true,
+    discard: async (file) => {
+      const root = useWorkspace.getState().rootPath;
+      if (!root) return;
+      await runOp(set, () =>
+        invoke("git_discard", { root, path: file.path, untracked: file.unstaged === "?" }),
       );
-      set({ commitMessage: message });
-    } catch (err: unknown) {
-      set({ lastError: String(err) });
-    } finally {
-      set({ generating: false });
-    }
-  },
+    },
 
-  clear: () => {
-    set({
-      status: null,
-      log: [],
-      logLimit: LOG_PAGE,
-      stashes: [],
-      ignored: [],
-      commitMessage: "",
-      amend: false,
-      lastError: null,
-    });
-  },
-}));
+    discardMany: async (files) => {
+      const root = useWorkspace.getState().rootPath;
+      if (!root || files.length === 0) return;
+      await runOp(set, async () => {
+        for (const file of files) {
+          await invoke("git_discard", { root, path: file.path, untracked: file.unstaged === "?" });
+        }
+      });
+    },
+
+    ignore: async (paths) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_ignore", { root, paths }));
+    },
+
+    commit: async () => {
+      const root = useWorkspace.getState().rootPath;
+      const message = get().commitMessage.trim();
+      if (!root || (!message && !get().amend)) return; // amend may reuse the old message
+      await runOp(set, async () => {
+        // Smart commit (VS Code parity): nothing staged → stage all changes first.
+        const files = get().status?.files ?? [];
+        if (!files.some(isStaged)) {
+          const everything = files.filter(isUnstaged).map((f) => f.path);
+          if (everything.length > 0) await invoke("git_stage", { root, paths: everything });
+        }
+        await invoke("git_commit", { root, message, amend: get().amend });
+        set({ commitMessage: "", amend: false });
+      });
+    },
+
+    push: async () => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_push", { root }));
+    },
+
+    pull: async () => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_pull", { root }));
+    },
+
+    init: async () => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_init", { root }));
+    },
+
+    stashPush: async (message) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_stash_push", { root, message }));
+    },
+
+    stashApply: async (index) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_stash_apply", { root, index }));
+    },
+
+    stashPop: async (index) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_stash_pop", { root, index }));
+    },
+
+    stashDrop: async (index) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_stash_drop", { root, index }));
+    },
+
+    listBranches: async () => {
+      const root = useWorkspace.getState().rootPath;
+      if (!root) return [];
+      try {
+        return await invoke<GitBranch[]>("git_branches", { root });
+      } catch (err: unknown) {
+        set({ lastError: String(err) });
+        return [];
+      }
+    },
+
+    checkout: async (name) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_checkout", { root, name }));
+    },
+
+    createBranch: async (name) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_create_branch", { root, name }));
+    },
+
+    renameBranch: async (from, to) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_rename_branch", { root, from, to }));
+    },
+
+    deleteBranch: async (name, force = false) => {
+      const root = useWorkspace.getState().rootPath;
+      if (!root) return "failed";
+      set({ busy: true, lastError: null });
+      try {
+        await invoke("git_delete_branch", { root, name, force });
+        return "deleted";
+      } catch (err: unknown) {
+        const message = String(err);
+        // git's own wording; the panel turns it into an explicit "delete anyway"
+        // rather than force-deleting behind the user's back.
+        if (/not fully merged/i.test(message)) return "unmerged";
+        set({ lastError: message });
+        return "failed";
+      } finally {
+        set({ busy: false });
+        await get().refresh();
+      }
+    },
+
+    mergeBranch: async (name) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_merge_branch", { root, name }));
+    },
+
+    fetch: async () => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_fetch", { root }));
+    },
+
+    listRemotes: async () => {
+      const root = useWorkspace.getState().rootPath;
+      if (!root) return [];
+      try {
+        return await invoke<GitRemote[]>("git_remotes", { root });
+      } catch (err: unknown) {
+        set({ lastError: String(err) });
+        return [];
+      }
+    },
+
+    setRemote: async (name, url) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_set_remote", { root, name, url }));
+    },
+
+    listTags: async () => {
+      const root = useWorkspace.getState().rootPath;
+      if (!root) return [];
+      try {
+        return await invoke<string[]>("git_tags", { root });
+      } catch (err: unknown) {
+        set({ lastError: String(err) });
+        return [];
+      }
+    },
+
+    createTag: async (name, message) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_create_tag", { root, name, message }));
+    },
+
+    deleteTag: async (name) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_delete_tag", { root, name }));
+    },
+
+    pushTags: async () => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_push_tags", { root }));
+    },
+
+    revertCommit: async (sha) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_revert_commit", { root, sha }));
+    },
+
+    cherryPick: async (sha) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_cherry_pick", { root, sha }));
+    },
+
+    resetTo: async (sha, mode) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_reset_to", { root, sha, mode }));
+    },
+
+    reviewChanges: async () => {
+      const root = useWorkspace.getState().rootPath;
+      if (!root || get().reviewing) return;
+      set({ reviewing: true, lastError: null, review: null });
+      try {
+        // Staged changes are what a commit will contain; with nothing staged,
+        // the worktree is what the user is about to stage anyway.
+        let diff = await invoke<string>("git_staged_diff", { root });
+        if (!diff.trim()) diff = await invoke<string>("git_worktree_diff", { root });
+        if (!diff.trim()) {
+          set({ lastError: translate("git.clean") });
+          return;
+        }
+        const clipped =
+          diff.length > DIFF_PROMPT_LIMIT ? `${diff.slice(0, DIFF_PROMPT_LIMIT)}\n[diff truncated]` : diff;
+        set({ review: parseReview(await aiOneshot(REVIEW_PROMPT + clipped, root)) });
+      } catch (err: unknown) {
+        set({ lastError: String(err) });
+      } finally {
+        set({ reviewing: false });
+      }
+    },
+
+    dismissReview: () => {
+      set({ review: null });
+    },
+
+    setCommitMessage: (message) => {
+      set({ commitMessage: message });
+    },
+
+    generateCommitMessage: async () => {
+      const root = useWorkspace.getState().rootPath;
+      if (!root || get().generating) return;
+      set({ generating: true, lastError: null });
+      try {
+        // Prefer the staged diff; fall back to unstaged changes (smart commit
+        // will stage them anyway when the user commits with nothing staged).
+        let diff = await invoke<string>("git_staged_diff", { root });
+        if (!diff.trim()) diff = await invoke<string>("git_worktree_diff", { root });
+        if (!diff.trim()) {
+          set({ lastError: translate("git.nothingStaged") });
+          return;
+        }
+        const clipped =
+          diff.length > DIFF_PROMPT_LIMIT ? `${diff.slice(0, DIFF_PROMPT_LIMIT)}\n[diff truncated]` : diff;
+        const message = await aiOneshot(
+          "Write a git commit message for the staged diff below. Output ONLY the message - no quotes, no code fences. Imperative subject line under 72 characters; add a short body only when the change needs explanation.\n\n" +
+            clipped,
+          root,
+          true,
+        );
+        set({ commitMessage: message });
+      } catch (err: unknown) {
+        set({ lastError: String(err) });
+      } finally {
+        set({ generating: false });
+      }
+    },
+
+    clear: () => {
+      set({
+        status: null,
+        log: [],
+        logLimit: LOG_PAGE,
+        stashes: [],
+        ignored: [],
+        commitMessage: "",
+        amend: false,
+        lastError: null,
+      });
+    },
+  };
+});

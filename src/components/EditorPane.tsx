@@ -290,7 +290,11 @@ function registerAiActions(editor: MonacoEditor.IStandaloneCodeEditor) {
 /** Everything that is not a user preference. */
 const EDITOR_OPTIONS = {
   fontFamily: "JetBrains Mono, Consolas, monospace",
-  smoothScrolling: true,
+  // Off, as in VS Code (`editor.smoothScrolling` defaults to false): the
+  // animation smears every wheel tick over ~125ms of repaints, which hides
+  // nothing on a fast machine and turns dropped frames into visible judder on
+  // a loaded one — scrolling should land where the hand put it, immediately.
+  smoothScrolling: false,
   automaticLayout: true,
   scrollBeyondLastLine: false,
   padding: { top: 8 },

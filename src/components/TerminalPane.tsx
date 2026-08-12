@@ -167,39 +167,59 @@ export function TerminalPane({
       await sized.promise;
       if (paneIsGone()) return;
 
-      const id = await invoke<number>("term_create", {
+      // The shell starts talking the instant it is spawned, and a Tauri event
+      // with no listener yet is dropped, not queued. A warm PowerShell prints
+      // its whole prompt within milliseconds of term_create returning — before
+      // a listener registered afterwards exists — and then sits silent, which
+      // painted the terminal blank on every reopen of a busy workspace. So:
+      // listen first, hold what arrives until the id is known, then replay.
+      let id: number | null = null;
+      const backlog: TermDataPayload[] = [];
+      // One decoder per pane: multibyte characters may straddle two chunks.
+      const decoder = new TextDecoder();
+      const deliver = (payload: TermDataPayload) => {
+        const bytes = new Uint8Array(payload.data);
+        term.write(bytes);
+        onOutputRef.current?.(decoder.decode(bytes, { stream: true }));
+      };
+      cleanups.push(
+        await listen<TermDataPayload>("term:data", ({ payload }) => {
+          if (id === null) {
+            backlog.push(payload);
+            return;
+          }
+          if (payload.term_id === id) deliver(payload);
+        }),
+        await listen<TermExitPayload>("term:exit", ({ payload }) => {
+          if (payload.term_id === id) term.write("\r\n\x1b[2m[process exited]\x1b[0m\r\n");
+        }),
+      );
+
+      const created = await invoke<number>("term_create", {
         cwd: rootPath,
         cols: term.cols,
         rows: term.rows,
       });
       // The pane may have gone away while term_create was in flight.
       if (paneIsGone()) {
-        await invoke("term_kill", { termId: id });
+        await invoke("term_kill", { termId: created });
         return;
       }
-      termId = id;
-      // One decoder per pane: multibyte characters may straddle two chunks.
-      const decoder = new TextDecoder();
-      cleanups.push(
-        await listen<TermDataPayload>("term:data", ({ payload }) => {
-          if (payload.term_id !== id) return;
-          const bytes = new Uint8Array(payload.data);
-          term.write(bytes);
-          onOutputRef.current?.(decoder.decode(bytes, { stream: true }));
-        }),
-        await listen<TermExitPayload>("term:exit", ({ payload }) => {
-          if (payload.term_id === id) term.write("\r\n\x1b[2m[process exited]\x1b[0m\r\n");
-        }),
-      );
+      termId = created;
+      id = created;
+      // Replayed synchronously right after the id lands, so nothing the live
+      // listener delivers from here on can slip in front of the backlog.
+      backlog.filter((payload) => payload.term_id === created).forEach(deliver);
+      backlog.length = 0;
       const input = term.onData((data) => {
-        void invoke("term_write", { termId: id, data });
+        void invoke("term_write", { termId: created, data });
       });
       cleanups.push(() => {
         input.dispose();
       });
       // The shell buffers stdin, so this is safe before the first prompt paints.
       const command = initialCommandRef.current;
-      if (command) await invoke("term_write", { termId: id, data: `${command}\r` });
+      if (command) await invoke("term_write", { termId: created, data: `${command}\r` });
     };
     connect().catch((err: unknown) => {
       term.write(`\x1b[31mFailed to start shell: ${String(err)}\x1b[0m\r\n`);
