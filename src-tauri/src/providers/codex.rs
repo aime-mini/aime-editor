@@ -1,7 +1,9 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-use super::adapter::{explicit, Adapter, Invocation, Permission, TurnRequest, PROGRESS_MEMORY_PROMPT};
+use super::adapter::{
+    explicit, Adapter, ApiKeyRoute, Invocation, Permission, TurnRequest, PROGRESS_MEMORY_PROMPT,
+};
 use crate::mcp::{tokenize_command, McpServer, McpServerSpec};
 
 /// Adapter for the OpenAI Codex CLI, verified against codex-cli 0.146.0:
@@ -88,7 +90,7 @@ fn parse_mcp_list(stdout: &str) -> Vec<McpServer> {
 }
 
 impl Adapter for CodexAdapter {
-    fn command(&self) -> &'static str {
+    fn command(&self) -> &str {
         COMMAND
     }
 
@@ -164,8 +166,28 @@ impl Adapter for CodexAdapter {
         Some(&["login", "status"])
     }
 
-    fn login_command(&self) -> &'static str {
-        "codex login"
+    /// Codex ignores `OPENAI_API_KEY` while it has a stored login (measured
+    /// 2026-08-16: `codex exec` answered from the ChatGPT login with an invalid
+    /// key in the environment), so the only key Aime can hand it is one the CLI
+    /// stores itself. Aime keeps no copy of it.
+    fn api_key_route(&self) -> Option<ApiKeyRoute> {
+        Some(ApiKeyRoute::CliLogin {
+            args: vec!["login".into(), "--with-api-key".into()],
+        })
+    }
+
+    /// `codex login status` names the credential in use — "Logged in using an
+    /// API key - sk-proj-***" versus "Logged in using ChatGPT" (both captured
+    /// from the real CLI, 2026-08-17).
+    fn probe_sees_api_key(&self, stdout: &str) -> Option<bool> {
+        if !stdout.contains("Logged in") {
+            return None; // signed out, or a message Aime does not know
+        }
+        Some(stdout.contains("API key"))
+    }
+
+    fn login_command(&self) -> String {
+        "codex login".into()
     }
 
     fn global_memory_path(&self, home: &Path) -> PathBuf {
@@ -207,16 +229,35 @@ impl Adapter for CodexAdapter {
 
 #[cfg(test)]
 mod tests {
-    use super::super::adapter::{Adapter, TurnRequest};
+    use super::super::adapter::{Adapter, ApiKeyRoute, TurnRequest};
     use super::{CodexAdapter, McpServerSpec, Permission};
 
     #[test]
-    fn no_api_key_is_ever_injected_for_codex() {
+    fn codex_takes_a_key_only_through_its_own_login() {
         // Measured (2026-08-16): `codex exec` with an invalid OPENAI_API_KEY in
         // the environment still answered from the ChatGPT login - the variable
         // is ignored, so injecting it would only pretend to authenticate.
-        // Codex takes keys through its own `codex login --with-api-key`.
-        assert_eq!(CodexAdapter.api_key_env(), None);
+        assert_eq!(
+            CodexAdapter.api_key_route(),
+            Some(ApiKeyRoute::CliLogin {
+                args: vec!["login".into(), "--with-api-key".into()]
+            })
+        );
+    }
+
+    #[test]
+    fn the_login_status_names_the_credential_in_use() {
+        // Three real outputs (2026-08-17), including the one that follows
+        // `codex login --with-api-key`.
+        assert_eq!(
+            CodexAdapter.probe_sees_api_key("Logged in using an API key - sk-proj-***ement"),
+            Some(true)
+        );
+        assert_eq!(
+            CodexAdapter.probe_sees_api_key("Logged in using ChatGPT"),
+            Some(false)
+        );
+        assert_eq!(CodexAdapter.probe_sees_api_key("Not logged in"), None);
     }
 
     fn turn(session_id: Option<&'static str>, permission: Permission) -> TurnRequest<'static> {

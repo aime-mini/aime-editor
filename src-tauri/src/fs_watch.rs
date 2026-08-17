@@ -73,6 +73,50 @@ pub fn watch_workspace(
     Ok(())
 }
 
+/// Event announcing that `providers.json` changed and has been re-read.
+const PROVIDERS_EVENT: &str = "providers:changed";
+
+/// The one file in the config folder worth reacting to.
+const PROVIDERS_FILE: &str = "providers.json";
+
+/// Watches Aime's own config folder for `providers.json`, re-reads it on every
+/// change and tells the frontend to refresh its provider list.
+///
+/// Not recursive on purpose: the same folder holds the session store, which
+/// Aime writes to constantly, and none of that is a provider change. The
+/// watcher lives for the whole process, so it is deliberately leaked rather
+/// than parked in a state object nothing would ever take it out of.
+pub fn watch_providers_config(app: &AppHandle, config_dir: &Path) {
+    if let Err(err) = std::fs::create_dir_all(config_dir) {
+        eprintln!("[fs_watch] no config folder to watch: {err}");
+        return;
+    }
+    let app = app.clone();
+    let path = config_dir.join(PROVIDERS_FILE);
+
+    let debouncer = new_debouncer(DEBOUNCE, move |result: DebounceEventResult| {
+        let Ok(events) = result else { return };
+        if !events.iter().any(|event| event.path == path) {
+            return;
+        }
+        crate::providers::generic::install(crate::providers::generic::load(&path));
+        if let Err(err) = app.emit(PROVIDERS_EVENT, ()) {
+            eprintln!("[fs_watch] failed to emit {PROVIDERS_EVENT}: {err}");
+        }
+    })
+    .and_then(|mut debouncer| {
+        debouncer
+            .watcher()
+            .watch(config_dir, RecursiveMode::NonRecursive)?;
+        Ok(debouncer)
+    });
+
+    match debouncer {
+        Ok(debouncer) => std::mem::forget(debouncer),
+        Err(err) => eprintln!("[fs_watch] could not watch {PROVIDERS_FILE}: {err}"),
+    }
+}
+
 /// Stops watching the calling window's workspace (user closed the folder).
 #[tauri::command]
 pub fn unwatch_workspace(window: Window, state: State<'_, WatcherState>) -> Result<(), String> {

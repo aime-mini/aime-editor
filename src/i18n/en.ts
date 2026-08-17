@@ -181,8 +181,8 @@ export const en = {
   "setup.debuggerOnly":
     "{language} runs here, but its debugger is not installed - the AI can work out what this machine needs and set it up.",
   "lsp.offerDismiss": "Not for this language",
-  "setup.progressTitle": "Setting up {language}",
-  "setup.working": "Asking the AI to work out what this machine needs for {language}…",
+  "setup.progressTitle": "Setting up {subject}",
+  "setup.working": "Asking the AI to work out what this machine needs for {subject}…",
   "setup.starting": "Starting the AI…",
   "setup.progressHint": "This can take several minutes. Close this and it keeps going.",
   "setup.background": "Keep it running in the background",
@@ -260,9 +260,24 @@ export const en = {
   "settings.apiKey": "API key",
   "settings.apiKeyHint":
     "Stored on this machine only, sent as {env} to Aime's own runs - it takes precedence over the CLI's login there. Your terminals never see it.",
+  "settings.apiKeyHintCli":
+    "This CLI stores keys itself, so Aime hands the key over once and keeps no copy - which replaces what the CLI is signed in with. Sign back in with {command} to undo it.",
   "settings.apiKeySave": "Save",
+  "settings.apiKeyReplace": "Replace the login",
+  "settings.apiKeyReplaceWarning":
+    "This signs the CLI out of its current account and signs it in with this key instead. Click again to go ahead.",
   "settings.apiKeySaved": "Saved",
   "settings.apiKeyClear": "Remove",
+  "settings.addProvider": "Add an AI CLI",
+  "settings.addProviderHint":
+    "Name any headless AI CLI and the agent works out how to drive it - it reads that CLI's own help, tries it once and writes the entry. It appears in the list above without a restart.",
+  "settings.addProviderNeedsFolder": "Open a project folder first - the agent needs somewhere to work.",
+  "settings.addProviderPlaceholder": "gemini",
+  "settings.apiKeyConfirmed": "The CLI confirms it is now using this API key.",
+  "settings.apiKeyNotSeen":
+    "The CLI answered, and it is not using an API key - it never received this one. Check the variable name in providers.json.",
+  "settings.apiKeyUnverified":
+    "Saved. This CLI reports nothing about API keys, so Aime cannot confirm it arrived - the first answer will tell you.",
   "settings.permission": "What the AI may do",
   "settings.permission.full": "Everything",
   "settings.permission.edits": "Edit files",
@@ -285,12 +300,16 @@ export const en = {
   "menu.revealExplorer": "Reveal in File Explorer",
   "menu.gitBlame": "Git Blame",
   "menu.gitIgnore": "Add to .gitignore",
+  "menu.gitUntrack": "Stop tracking and ignore",
   "menu.closeFolder": "Close Folder",
   "menu.rename": "Rename…",
   "menu.delete": "Delete",
   "modal.newFileTitle": "New file name",
   "modal.newFolderTitle": "New folder name",
   "modal.renameTitle": "New name",
+  "modal.untrackTitle": "Stop tracking {name}?",
+  "modal.untrackHint":
+    "Git already tracks this, so .gitignore alone would do nothing. Aime removes it from git and adds the pattern - the file stays on your disk, but your next commit deletes it for everyone else.",
   "modal.deleteTitle": "Delete '{name}'?",
   "modal.deleteHint": "This cannot be undone.",
   "modal.newProjectTitle": "New project name",

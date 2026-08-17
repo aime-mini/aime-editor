@@ -688,7 +688,7 @@ export function AiPanel() {
                   </button>
                   {/* The other door in: an API key pasted in Settings works
                       without any browser round-trip (providers that take one). */}
-                  {providers.find((p) => p.id === providerId)?.apiKeyEnv != null && (
+                  {providers.find((p) => p.id === providerId)?.apiKeyRoute != null && (
                     <button
                       onClick={() => {
                         useLayout.getState().setSettingsOpen(true);

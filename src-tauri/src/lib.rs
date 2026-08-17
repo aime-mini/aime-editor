@@ -41,10 +41,13 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 window_cmds::fit_and_maximize(&window);
             }
-            // User-defined AI CLIs, read once: a bad file costs its own
-            // providers, never the built-in ones.
+            // User-defined AI CLIs: a bad file costs its own providers, never
+            // the built-in ones. Watched from here on, so a CLI added while
+            // Aime runs - by the user or by the agent doing it for them -
+            // appears without a restart.
             if let Ok(config_dir) = app.path().app_config_dir() {
                 providers::generic::install(providers::generic::load(&config_dir.join("providers.json")));
+                fs_watch::watch_providers_config(app.handle(), &config_dir);
             }
             Ok(())
         })
@@ -89,12 +92,14 @@ pub fn run() {
             providers::provider_health,
             providers::provider_set_api_key,
             providers::list_providers,
+            providers::providers_reload,
             providers::providers_config_path,
             git::git_status,
             git::git_stage,
             git::git_unstage,
             git::git_discard,
             git::git_ignore,
+            git::git_untrack_and_ignore,
             git::git_commit,
             git::git_push,
             git::git_pull,

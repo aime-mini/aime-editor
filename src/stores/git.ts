@@ -83,6 +83,8 @@ interface GitState {
   discard: (file: GitFile) => Promise<void>;
   discardMany: (files: GitFile[]) => Promise<void>;
   ignore: (paths: string[]) => Promise<void>;
+  /** Drops paths git already tracks out of the index, then ignores them. */
+  untrackAndIgnore: (paths: string[]) => Promise<void>;
   commit: () => Promise<void>;
   push: () => Promise<void>;
   pull: () => Promise<void>;
@@ -268,6 +270,11 @@ export const useGit = create<GitState>((set, get) => {
     ignore: async (paths) => {
       const root = useWorkspace.getState().rootPath;
       if (root) await runOp(set, () => invoke("git_ignore", { root, paths }));
+    },
+
+    untrackAndIgnore: async (paths) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_untrack_and_ignore", { root, paths }));
     },
 
     commit: async () => {

@@ -62,7 +62,7 @@ describe("useSetup", () => {
     useWorkspace.setState({ rootPath: ROOT });
     useSetup.setState({
       running: false,
-      languageId: null,
+      subject: null,
       lines: [],
       exitCode: null,
       cancelled: false,
@@ -155,6 +155,21 @@ describe("useSetup", () => {
     expect(useSetup.getState().running).toBe(false);
   });
 
+  it("re-probes what the job was about, and only when the job worked", async () => {
+    // A job owns what to do afterwards - closing a language gap re-probes the
+    // server, adding a provider re-reads providers.json - so the store must run
+    // it on success and leave it alone on failure.
+    const done = vi.fn();
+    await useSetup.getState().startJob({ subject: "Gemini CLI", prompt: "add it", onSuccess: done });
+    exit(RUN_ID, 1);
+    expect(done).not.toHaveBeenCalled();
+
+    await useSetup.getState().startJob({ subject: "Gemini CLI", prompt: "add it", onSuccess: done });
+    exit(RUN_ID, 0);
+    expect(done).toHaveBeenCalledTimes(1);
+    expect(useSetup.getState().subject).toBe("Gemini CLI");
+  });
+
   it("never starts a second agent on the same machine, and shows the first instead", async () => {
     await useSetup.getState().start(request);
     useSetup.getState().close();
@@ -163,7 +178,7 @@ describe("useSetup", () => {
     await useSetup.getState().start({ ...request, languageId: "php" });
 
     expect(invoked).toHaveLength(0);
-    expect(useSetup.getState().languageId).toBe("ruby");
+    expect(useSetup.getState().subject).toBe("ruby");
     expect(useSetup.getState().open).toBe(true);
   });
 });

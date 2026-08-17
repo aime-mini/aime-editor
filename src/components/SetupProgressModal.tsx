@@ -21,7 +21,7 @@ const LINE_CLASS: Record<SetupLine["kind"], string> = {
  * afterthought — closing puts the run in the background, Cancel ends it.
  */
 export function SetupProgressModal() {
-  const { open, running, languageId, lines, exitCode, cancelled, error, cancel, close } = useSetup();
+  const { open, running, subject, lines, exitCode, cancelled, error, cancel, close } = useSetup();
   const logRef = useRef<HTMLDivElement>(null);
   const t = useT();
 
@@ -44,7 +44,7 @@ export function SetupProgressModal() {
         <div className="flex items-center gap-2 border-b border-line px-3 py-2">
           <Sparkles size={15} className="shrink-0 text-accent" />
           <span className="flex-1 text-xs font-semibold">
-            {t("setup.progressTitle", { language: languageId ?? "" })}
+            {t("setup.progressTitle", { subject: subject ?? "" })}
           </span>
           <button
             onClick={close}

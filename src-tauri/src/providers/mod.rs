@@ -4,10 +4,11 @@ pub mod codex;
 pub mod generic;
 pub mod keys;
 
-use adapter::{adapter_for, Adapter, Invocation, Permission, TurnRequest};
+use adapter::{adapter_for, Adapter, ApiKeyRoute, Invocation, Permission, TurnRequest};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -77,36 +78,56 @@ where
     }
 }
 
-/// Puts the provider's API key into one spawn's environment, when the user
-/// configured one and the adapter authenticates that way (`api_key_env`).
+/// Aime's own config folder, where `providers.json` and `api-keys.json` live.
+fn config_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map_err(|e| format!("Could not locate the config folder: {e}"))
+}
+
+/// The key Aime stores for a provider, for the one route where Aime stores it.
+fn stored_key(app: &AppHandle, provider_id: &str) -> Option<String> {
+    match config_dir(app) {
+        Ok(dir) => keys::api_key(&dir, provider_id),
+        Err(err) => {
+            eprintln!("[providers] no config dir, so no API key for {provider_id}: {err}");
+            None
+        }
+    }
+}
+
+/// Puts the provider's API key into one spawn's environment, for CLIs that
+/// authenticate that way (`ApiKeyRoute::Env`).
 ///
 /// Only Aime's own spawns get the key: the user's terminals never see it, and
 /// with no key configured nothing changes about the CLI's own login. Measured
 /// (2026-08-16): `claude -p` honours `ANTHROPIC_API_KEY`, and the CLI itself
 /// says the key takes precedence over the claude.ai login for that process.
 fn apply_api_key(cmd: &mut Command, app: &AppHandle, adapter: &dyn Adapter, provider_id: &str) {
-    let Some(env_name) = adapter.api_key_env() else {
-        return;
+    let Some(ApiKeyRoute::Env { variable }) = adapter.api_key_route() else {
+        return; // no key route, or one whose key the CLI stores itself
     };
-    let dir = match app.path().app_config_dir() {
-        Ok(dir) => dir,
-        Err(err) => {
-            eprintln!("[providers] no config dir, so no API key for {provider_id}: {err}");
-            return;
-        }
-    };
-    if let Some(key) = keys::api_key(&dir, provider_id) {
-        cmd.env(env_name, key);
+    if let Some(key) = stored_key(app, provider_id) {
+        cmd.env(variable, key);
     }
 }
 
-/// Whether this provider has an API key configured in Aime.
+/// Whether Aime holds a key for this provider. False for a CLI that stores its
+/// own key — that credential is the CLI's, and its status probe reports it.
 fn api_key_configured(app: &AppHandle, adapter: &dyn Adapter, provider_id: &str) -> bool {
-    adapter.api_key_env().is_some()
-        && app
-            .path()
-            .app_config_dir()
-            .is_ok_and(|dir| keys::api_key(&dir, provider_id).is_some())
+    matches!(adapter.api_key_route(), Some(ApiKeyRoute::Env { .. })) && stored_key(app, provider_id).is_some()
+}
+
+/// Runs the CLI's auth probe the way Aime's own turns run — with the API key
+/// in the environment, when there is one. Probing a different environment from
+/// the one the next turn will use is how a health chip ends up lying.
+async fn probe_auth(app: &AppHandle, adapter: &dyn Adapter, provider_id: &str) -> Option<(bool, String)> {
+    let probe = adapter.auth_probe_args()?;
+    let mut cmd = cli_command(adapter.command(), probe);
+    apply_api_key(&mut cmd, app, adapter, provider_id);
+    let output = cmd.output().await.ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Some((output.status.success(), stdout))
 }
 
 /// Whether the child needs a writable stdin, given how its prompt travels.
@@ -160,7 +181,7 @@ pub async fn ai_send_prompt(
         permission: options.permission,
     });
     let mut cmd = cli_command(adapter.command(), &invocation.args);
-    apply_api_key(&mut cmd, &app, adapter, &provider_id);
+    apply_api_key(&mut cmd, &app, adapter.as_ref(), &provider_id);
     cmd.current_dir(&cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -270,7 +291,7 @@ pub async fn ai_oneshot(
     let adapter = adapter_for(&provider_id)?;
     let invocation = adapter.oneshot_invocation(&prompt, model.as_deref());
     let mut cmd = cli_command(adapter.command(), &invocation.args);
-    apply_api_key(&mut cmd, &app, adapter, &provider_id);
+    apply_api_key(&mut cmd, &app, adapter.as_ref(), &provider_id);
     let mut child = cmd
         .current_dir(&cwd)
         .stdin(stdin_for(&invocation))
@@ -309,10 +330,10 @@ pub struct ProviderSummary {
     pub parser: String,
     /// For jsonl: the field carrying assistant text.
     pub text_field: String,
-    /// Environment variable an API key rides on Aime's spawns, when this
-    /// provider takes one that way (`Adapter::api_key_env`). `None` hides the
-    /// key field in Settings — Codex, whose CLI stores keys itself.
-    pub api_key_env: Option<String>,
+    /// How this provider takes an API key, if it does. `None` hides the key
+    /// field in Settings; the two routes are worded differently there, because
+    /// one is Aime's secret to keep and the other replaces the CLI's login.
+    pub api_key_route: Option<ApiKeyRoute>,
 }
 
 /// Every provider Aime can talk to right now.
@@ -326,7 +347,7 @@ pub fn list_providers() -> Vec<ProviderSummary> {
             install_command: "npm install -g @anthropic-ai/claude-code".into(),
             parser: "claude".into(),
             text_field: String::new(),
-            api_key_env: claude::ClaudeAdapter.api_key_env().map(str::to_string),
+            api_key_route: claude::ClaudeAdapter.api_key_route(),
         },
         ProviderSummary {
             id: "codex".into(),
@@ -335,7 +356,7 @@ pub fn list_providers() -> Vec<ProviderSummary> {
             install_command: "npm install -g @openai/codex".into(),
             parser: "codex".into(),
             text_field: String::new(),
-            api_key_env: codex::CodexAdapter.api_key_env().map(str::to_string),
+            api_key_route: codex::CodexAdapter.api_key_route(),
         },
     ];
     providers.extend(generic::configured().iter().map(|adapter| ProviderSummary {
@@ -348,7 +369,7 @@ pub fn list_providers() -> Vec<ProviderSummary> {
             generic::ParserKind::Jsonl => "jsonl".into(),
         },
         text_field: adapter.config.text_field.clone(),
-        api_key_env: adapter.api_key_env().map(str::to_string),
+        api_key_route: adapter.api_key_route(),
     }));
     providers
 }
@@ -397,9 +418,8 @@ pub struct ProviderHealth {
     pub signed_in: Option<bool>,
     /// Command that signs the user in, offered as a one-click terminal action.
     pub login_command: String,
-    /// True when an API key is configured in Aime for this provider — the
-    /// credential the CLI's own status probe cannot see (measured: `codex
-    /// login status` reports its stored login and ignores environment keys).
+    /// True when Aime holds a key for this provider (the `Env` route). A CLI
+    /// that stores its own key reports that through `signed_in` instead.
     pub api_key: bool,
 }
 
@@ -409,8 +429,8 @@ pub struct ProviderHealth {
 #[tauri::command]
 pub async fn provider_health(app: AppHandle, provider_id: String) -> Result<ProviderHealth, String> {
     let adapter = adapter_for(&provider_id)?;
-    let login_command = adapter.login_command().to_string();
-    let api_key = api_key_configured(&app, adapter, &provider_id);
+    let login_command = adapter.login_command();
+    let api_key = api_key_configured(&app, adapter.as_ref(), &provider_id);
 
     let version = match cli_command(adapter.command(), ["--version"]).output().await {
         Ok(output) if output.status.success() => {
@@ -429,18 +449,15 @@ pub async fn provider_health(app: AppHandle, provider_id: String) -> Result<Prov
         });
     }
 
-    // A configured key IS the credential for every spawn Aime makes, and it is
-    // one the status probe cannot judge - the probe answers about the CLI's own
-    // stored login. An invalid key surfaces as the turn's own error, the same
-    // way an expired login does.
-    let mut signed_in = if api_key { Some(true) } else { None };
-    if signed_in.is_none() {
-        if let Some(probe) = adapter.auth_probe_args() {
-            if let Ok(output) = cli_command(adapter.command(), probe).output().await {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                signed_in = Some(adapter.is_signed_in(output.status.success(), stdout.trim()));
-            }
-        }
+    // The probe runs with the key injected, so it answers about the environment
+    // the next turn will actually get.
+    let mut signed_in = probe_auth(&app, adapter.as_ref(), &provider_id)
+        .await
+        .map(|(exit_ok, stdout)| adapter.is_signed_in(exit_ok, &stdout));
+    // No probe at all (every configured CLI): then the stored key is the only
+    // credential Aime knows of, and it is a real one.
+    if signed_in.is_none() && api_key {
+        signed_in = Some(true);
     }
 
     Ok(ProviderHealth {
@@ -452,17 +469,183 @@ pub async fn provider_health(app: AppHandle, provider_id: String) -> Result<Prov
     })
 }
 
-/// Stores the API key for one provider; an empty key clears it. Write-only by
-/// design: the frontend may ask whether a key exists (`ProviderHealth`), never
-/// what it is.
+/// What Aime can honestly say about a key it has just accepted.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyOutcome {
+    /// `Some(true)`: the CLI itself now reports it is using an API key.
+    /// `Some(false)`: it answered, and it is not using one — the key never
+    /// arrived, which is what a mistyped variable name looks like.
+    /// `None`: this CLI says nothing about keys, so Aime claims nothing.
+    pub cli_confirmed: Option<bool>,
+}
+
+/// Takes an API key for one provider through whichever door its CLI has, then
+/// asks that CLI what it now thinks — the closest thing to verification that
+/// exists, since no CLI validates a key at the moment it is handed one
+/// (measured: `codex login --with-api-key` stored a plainly invalid key and
+/// exited 0, and `claude -p` with a bad key retries for minutes before saying
+/// anything at all).
+///
+/// The stored route is write-only by design: the frontend may ask *whether* a
+/// key exists (`ProviderHealth::api_key`), never what it is.
 #[tauri::command]
-pub fn provider_set_api_key(app: AppHandle, provider_id: String, key: String) -> Result<(), String> {
+pub async fn provider_set_api_key(
+    app: AppHandle,
+    provider_id: String,
+    key: String,
+) -> Result<ApiKeyOutcome, String> {
     let adapter = adapter_for(&provider_id)?;
-    if adapter.api_key_env().is_none() {
-        // Storing a key nothing would ever read is a silent lie - Codex, for
-        // one, takes keys only through its own `codex login --with-api-key`.
-        return Err(format!("{provider_id} does not take an API key through Aime"));
+    let route = adapter
+        .api_key_route()
+        // Storing a key nothing would ever read is a silent lie.
+        .ok_or_else(|| format!("{provider_id} does not take an API key through Aime"))?;
+
+    match route {
+        ApiKeyRoute::Env { .. } => keys::set_api_key(&config_dir(&app)?, &provider_id, &key)?,
+        ApiKeyRoute::CliLogin { args } => {
+            if key.trim().is_empty() {
+                // This key belongs to the CLI, so only the CLI can drop it.
+                return Err(format!(
+                    "This key is stored by the CLI itself - sign out with `{}`",
+                    adapter.login_command()
+                ));
+            }
+            hand_key_to_cli(adapter.as_ref(), &args, key.trim()).await?;
+        }
     }
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    keys::set_api_key(&dir, &provider_id, &key)
+
+    Ok(ApiKeyOutcome {
+        cli_confirmed: match probe_auth(&app, adapter.as_ref(), &provider_id).await {
+            Some((_, stdout)) => adapter.probe_sees_api_key(&stdout),
+            None => None,
+        },
+    })
+}
+
+/// Hands a key to a CLI that stores keys itself, on its stdin — never as an
+/// argument, which would put the secret in the process list.
+async fn hand_key_to_cli(adapter: &dyn Adapter, args: &[String], key: &str) -> Result<(), String> {
+    let mut child = cli_command(adapter.command(), args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Could not run `{} {}`: {e}", adapter.command(), args.join(" ")))?;
+    {
+        // The pipe closes when this handle drops, and only then - `shutdown`
+        // alone leaves the CLI waiting on stdin forever (measured: the command
+        // never returned until this scope was added). EOF is what tells it the
+        // key is complete.
+        let mut stdin = child.stdin.take().ok_or("Failed to open the CLI's stdin")?;
+        stdin
+            .write_all(key.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to hand the key over: {e}"))?;
+        stdin
+            .shutdown()
+            .await
+            .map_err(|e| format!("Failed to finish handing the key over: {e}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("The CLI did not finish: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    // The CLI's own refusal is the useful half; its stdout is usually empty here.
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if stderr.is_empty() {
+        format!("`{}` refused the key", adapter.command())
+    } else {
+        stderr
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use generic::{GenericAdapter, ProviderConfig};
+
+    /// A configured "CLI" that stores the key it is handed: node, writing its
+    /// stdin to a file. The script is a file rather than `node -e …` because on
+    /// Windows every argument crosses `cmd /C`, which mangles quotes.
+    fn key_sink_adapter(name: &str) -> (GenericAdapter, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("aime-login-route-{name}"));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let sink = dir.join("key.txt");
+        let script = dir.join("login.cjs");
+        std::fs::write(
+            &script,
+            format!(
+                "const fs=require(\"node:fs\");fs.writeFileSync({},fs.readFileSync(0,\"utf8\"));",
+                serde_json::to_string(&sink.to_string_lossy()).expect("path as json")
+            ),
+        )
+        .expect("script");
+
+        let config = ProviderConfig {
+            id: name.into(),
+            display_name: name.into(),
+            command: "node".into(),
+            args: vec![],
+            resume_args: vec![],
+            parser: generic::ParserKind::Plain,
+            text_field: String::new(),
+            login: String::new(),
+            install: String::new(),
+            memory: generic::MemoryStrategy::default(),
+            memory_file: String::new(),
+            prompt_stdin: false,
+            api_key_env: String::new(),
+            api_key_login_args: vec![script.to_string_lossy().to_string()],
+        };
+        (GenericAdapter { config }, sink)
+    }
+
+    #[tokio::test]
+    async fn a_key_reaches_the_clis_own_login_command_on_its_stdin() {
+        let (adapter, sink) = key_sink_adapter("ok");
+        let _ = std::fs::remove_file(&sink);
+        let args = vec![adapter.config.api_key_login_args[0].clone()];
+
+        hand_key_to_cli(&adapter, &args, "sk-handed-over")
+            .await
+            .expect("hand over");
+
+        assert_eq!(
+            std::fs::read_to_string(&sink).expect("the CLI never wrote the key"),
+            "sk-handed-over"
+        );
+        let _ = std::fs::remove_dir_all(sink.parent().expect("dir"));
+    }
+
+    #[tokio::test]
+    async fn a_cli_that_refuses_the_key_says_so_in_its_own_words() {
+        let (adapter, sink) = key_sink_adapter("refuses");
+        let dir = sink.parent().expect("dir").to_path_buf();
+        let script = dir.join("refuse.cjs");
+        std::fs::write(&script, "console.error(\"bad key\");process.exit(3);").expect("script");
+
+        let error = hand_key_to_cli(&adapter, &[script.to_string_lossy().to_string()], "sk-bad")
+            .await
+            .expect_err("a refusing CLI must not report success");
+
+        assert!(
+            error.contains("bad key"),
+            "the CLI's own refusal was lost: {error}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// Re-reads `providers.json` and publishes it, so a CLI added while Aime runs
+/// shows up without a restart. Returns the new list in the same round trip.
+#[tauri::command]
+pub fn providers_reload(app: AppHandle) -> Result<Vec<ProviderSummary>, String> {
+    let path = config_dir(&app)?.join("providers.json");
+    generic::install(generic::load(&path));
+    Ok(list_providers())
 }

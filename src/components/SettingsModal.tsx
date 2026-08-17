@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, Cpu, Eye, Monitor, Settings2, Shield, ShieldOff, X } from "lucide-react";
+import { Check, Cpu, Eye, Monitor, Settings2, Shield, ShieldOff, Sparkles, X } from "lucide-react";
 import { useI18n, useT } from "../i18n";
 import { errorLogPath } from "../lib/diagnostics";
+import { buildAddProviderPrompt } from "../lib/aiProvider";
 import { capabilitiesOf, effortsOf } from "../lib/providers";
 import { PERMISSION_ORDER, type Permission } from "../lib/types";
 import { PluginsSection } from "./PluginsSection";
-import { useAi } from "../stores/ai";
+import { useAi, type ApiKeyRoute } from "../stores/ai";
 import { INLINE_AI_MODES, UPDATE_CHANNELS, useSettings } from "../stores/settings";
+import { useSetup } from "../stores/setup";
 import { useTheme } from "../stores/theme";
 import { useWorkspace } from "../stores/workspace";
 
@@ -72,36 +74,83 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (on: boolean) => void
 }
 
 /**
+ * What Aime knows about the key it just handed over: nothing yet (`idle`), not
+ * yet answered (`pending`), or the CLI's own answer — it is using a key, it is
+ * not, or it does not say.
+ */
+type Verdict = "idle" | "pending" | "confirmed" | "notSeen" | "unknown";
+
+/** `ApiKeyOutcome.cliConfirmed` stringified — true / false / null. */
+const VERDICT_OF: Record<string, Verdict> = {
+  true: "confirmed",
+  false: "notSeen",
+  null: "unknown",
+};
+
+const VERDICT_MESSAGE = {
+  confirmed: "settings.apiKeyConfirmed",
+  notSeen: "settings.apiKeyNotSeen",
+  unknown: "settings.apiKeyUnverified",
+} as const;
+
+const VERDICT_TONE = {
+  confirmed: "text-ok",
+  notSeen: "text-warn",
+  unknown: "text-muted",
+} as const;
+
+/**
  * The API key for the current provider, write-only.
  *
  * The key goes to Rust and never comes back: this row only ever learns
  * *whether* one is stored (`apiKeyConfigured`, from the health probe), so a
- * saved key cannot be read out of the settings page or the store. It appears
- * only for providers whose CLI takes a key from the environment — Codex keeps
- * its own keys (`codex login --with-api-key`), so it gets no field here.
+ * saved key cannot be read out of the settings page or the store.
+ *
+ * The two routes are not the same offer and are not worded as one. On the `env`
+ * route Aime keeps the key and passes it to its own runs, leaving the CLI's own
+ * login alone — that is reversible with Remove. On the `cliLogin` route the key
+ * goes into the CLI's own credential store and **replaces** what it was signed
+ * in with (measured on Codex: a ChatGPT login became an API-key login), so it is
+ * confirmed first and only the CLI can undo it.
  */
-function ApiKeyRow({ envName }: { envName: string }) {
+function ApiKeyRow({ route }: { route: ApiKeyRoute }) {
   const apiKeyConfigured = useAi((s) => s.apiKeyConfigured);
+  const loginCommand = useAi((s) => s.loginCommand);
   const setApiKey = useAi((s) => s.setApiKey);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [verdict, setVerdict] = useState<Verdict>("idle");
   const t = useT();
+  const placeholder = route.kind === "env" ? route.variable : t("settings.apiKey");
 
   const submit = (key: string) => {
     setError(null);
+    setConfirming(false);
+    setVerdict("pending");
     setApiKey(key)
-      .then(() => {
+      .then((outcome) => {
         setDraft("");
+        // Removing a key is not a claim about anything — only a key that was
+        // handed over gets a verdict.
+        setVerdict(key.trim() ? VERDICT_OF[String(outcome.cliConfirmed)] : "idle");
       })
       .catch((err: unknown) => {
+        setVerdict("idle");
         setError(String(err));
       });
   };
 
+  const stored = route.kind === "env" && apiKeyConfigured;
+  const hint =
+    route.kind === "env"
+      ? t("settings.apiKeyHint", { env: route.variable })
+      : t("settings.apiKeyHintCli", { command: loginCommand });
+
   return (
     <>
-      <Row label={t("settings.apiKey")} hint={t("settings.apiKeyHint", { env: envName })}>
-        {apiKeyConfigured ? (
+      <Row label={t("settings.apiKey")} hint={hint}>
+        {stored ? (
           <>
             <span className="flex items-center gap-1 text-[11.5px] text-ok">
               <Check size={12} /> {t("settings.apiKeySaved")}
@@ -122,25 +171,102 @@ function ApiKeyRow({ envName }: { envName: string }) {
               value={draft}
               onChange={(e) => {
                 setDraft(e.target.value);
+                setConfirming(false);
               }}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && draft.trim()) submit(draft);
+                if (e.key !== "Enter" || !draft.trim()) return;
+                if (route.kind === "cliLogin" && !confirming) setConfirming(true);
+                else submit(draft);
               }}
-              placeholder={envName}
+              placeholder={placeholder}
               autoComplete="off"
               className="w-44 rounded-md border border-line bg-elevated px-2 py-1 text-[11.5px] outline-none focus:border-accent"
             />
             <button
               onClick={() => {
-                submit(draft);
+                // The CLI route overwrites a credential Aime does not own, so
+                // the first click asks and the second one does it.
+                if (route.kind === "cliLogin" && !confirming) setConfirming(true);
+                else submit(draft);
               }}
-              disabled={!draft.trim()}
+              disabled={!draft.trim() || verdict === "pending"}
               className="rounded-md bg-accent-strong px-2 py-1 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
             >
-              {t("settings.apiKeySave")}
+              {confirming ? t("settings.apiKeyReplace") : t("settings.apiKeySave")}
             </button>
           </>
         )}
+      </Row>
+      {confirming && <p className="pb-1 text-[11px] text-warn">{t("settings.apiKeyReplaceWarning")}</p>}
+      {verdict !== "idle" && verdict !== "pending" && (
+        <p className={`pb-1 text-[11px] ${VERDICT_TONE[verdict]}`}>{t(VERDICT_MESSAGE[verdict])}</p>
+      )}
+      {error && <p className="pb-1 text-[11px] text-danger">{error}</p>}
+    </>
+  );
+}
+
+/**
+ * Teaching Aime an AI CLI it has never heard of, without opening a JSON file.
+ *
+ * The user names the CLI; the agent probes the real binary and writes the entry
+ * (`buildAddProviderPrompt`), and Aime notices the file changing and re-reads it
+ * — so the new provider appears in the picker above with no restart. Editing
+ * `providers.json` by hand still works and is one click away, for anyone who
+ * would rather do it themselves.
+ */
+function AddProviderRow() {
+  const [wanted, setWanted] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const rootPath = useWorkspace((s) => s.rootPath);
+  const t = useT();
+
+  const submit = () => {
+    const name = wanted.trim();
+    if (!name || rootPath === null) return;
+    setError(null);
+    invoke<string>("providers_config_path")
+      .then((configPath) =>
+        useSetup.getState().startJob({
+          subject: name,
+          prompt: buildAddProviderPrompt({ wanted: name, configPath }),
+          // The config watcher reloads on its own; this covers the run that
+          // finished after a change the watcher had already coalesced.
+          onSuccess: () => void useAi.getState().loadProviders(),
+        }),
+      )
+      .then(() => {
+        setWanted("");
+      })
+      .catch((err: unknown) => {
+        setError(String(err));
+      });
+  };
+
+  return (
+    <>
+      <Row
+        label={t("settings.addProvider")}
+        hint={rootPath === null ? t("settings.addProviderNeedsFolder") : t("settings.addProviderHint")}
+      >
+        <input
+          value={wanted}
+          onChange={(e) => {
+            setWanted(e.target.value);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submit();
+          }}
+          placeholder={t("settings.addProviderPlaceholder")}
+          className="w-44 rounded-md border border-line bg-elevated px-2 py-1 text-[11.5px] outline-none focus:border-accent"
+        />
+        <button
+          onClick={submit}
+          disabled={!wanted.trim() || rootPath === null}
+          className="flex items-center gap-1 rounded-md bg-accent-strong px-2 py-1 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+        >
+          <Sparkles size={12} /> {t("setup.ai")}
+        </button>
       </Row>
       {error && <p className="pb-1 text-[11px] text-danger">{error}</p>}
     </>
@@ -182,7 +308,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   }, [onClose]);
 
   const capabilities = capabilitiesOf(providerId);
-  const apiKeyEnv = providers.find((provider) => provider.id === providerId)?.apiKeyEnv ?? null;
+  const apiKeyRoute = providers.find((provider) => provider.id === providerId)?.apiKeyRoute ?? null;
   const section =
     "mt-3 mb-1 flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-muted uppercase";
 
@@ -288,7 +414,8 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               onChange={setProvider}
             />
           </Row>
-          {apiKeyEnv !== null && <ApiKeyRow key={providerId} envName={apiKeyEnv} />}
+          {apiKeyRoute !== null && <ApiKeyRow key={providerId} route={apiKeyRoute} />}
+          <AddProviderRow />
           <Row label={t("ai.model")}>
             <select
               value={model}

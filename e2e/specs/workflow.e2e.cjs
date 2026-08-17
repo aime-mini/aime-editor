@@ -283,6 +283,26 @@ async function clickIgnoreEntry() {
   await (await menu.$("button*=.gitignore")).click();
 }
 
+/** Right-clicks a tree row and hands back the labels its menu offers. */
+async function menuFor(name) {
+  await (await $(`span=${name}`)).click({ button: "right" });
+  await browser.waitUntil(menuIsOpen, {
+    timeout: 10_000,
+    timeoutMsg: `right-clicking ${name} opened no menu`,
+  });
+  return browser.execute(() =>
+    [...document.querySelectorAll(".fixed.inset-0.z-50 button")].map((button) => button.textContent.trim()),
+  );
+}
+
+async function closeMenu() {
+  await browser.keys(["Escape"]);
+  await browser.waitUntil(async () => !(await menuIsOpen()), {
+    timeout: 10_000,
+    timeoutMsg: "the context menu would not close",
+  });
+}
+
 async function waitForText(text, message) {
   const needle = text.toLowerCase();
   await browser.waitUntil(async () => (await $("body").getText()).toLowerCase().includes(needle), {
@@ -733,26 +753,6 @@ describe("Workflows", () => {
     await open(dir);
     await waitForText("debug.log", "the tree never listed the untracked file");
 
-    const closeMenu = async () => {
-      await browser.keys(["Escape"]);
-      await browser.waitUntil(async () => !(await menuIsOpen()), {
-        timeout: 10_000,
-        timeoutMsg: "the context menu would not close",
-      });
-    };
-    const menuFor = async (name) => {
-      await (await $(`span=${name}`)).click({ button: "right" });
-      await browser.waitUntil(menuIsOpen, {
-        timeout: 10_000,
-        timeoutMsg: `right-clicking ${name} opened no menu`,
-      });
-      return browser.execute(() =>
-        [...document.querySelectorAll(".fixed.inset-0.z-50 button")].map((button) =>
-          button.textContent.trim(),
-        ),
-      );
-    };
-
     // A tracked file: ignoring it would change nothing, so it is not offered.
     const tracked = await menuFor("README.md");
     assert.ok(
@@ -810,6 +810,50 @@ describe("Workflows", () => {
       timeoutMsg: "the file stayed black after being ignored",
     });
     assert.equal(await colourOf("build"), muted, "the folder stayed black after being ignored");
+  });
+
+  /**
+   * The other half of the same wish. A file git already tracks cannot be ignored
+   * by a pattern alone - git reads it and skips it - so the tree offers to untrack
+   * it as well, and says what that costs: the file stays, the next commit deletes
+   * it for everyone else.
+   */
+  it("untracks a tracked file before ignoring it, and leaves it on disk", async () => {
+    const dir = repositoryWithThingsToIgnore();
+    await open(dir);
+    await waitForText("README.md", "the tree never listed the tracked file");
+
+    const labels = await menuFor("README.md");
+    assert.ok(
+      labels.some((label) => label.includes("Stop tracking")),
+      `a tracked file was offered no way to stop tracking it: ${JSON.stringify(labels)}`,
+    );
+    const menu = await $(".fixed.inset-0.z-50");
+    await (await menu.$("button*=Stop tracking")).click();
+
+    // Not silently: the consequence is spelled out before anything happens.
+    await waitForText("next commit deletes it", "no warning about what untracking costs");
+    assert.equal(
+      git(dir, "ls-files", "README.md").trim(),
+      "README.md",
+      "the file left the index before the warning was accepted",
+    );
+    await (await $("button=OK")).click();
+
+    // The pattern is the second half of the action, so it is what to wait for:
+    // the index entry is already gone by the time it is written.
+    const gitignore = path.join(dir, ".gitignore");
+    await browser.waitUntil(
+      () => fs.existsSync(gitignore) && fs.readFileSync(gitignore, "utf8").includes("/README.md"),
+      { timeout: 20_000, timeoutMsg: "the pattern never reached .gitignore" },
+    );
+    assert.equal(git(dir, "ls-files", "README.md").trim(), "", "git still tracks the file");
+    assert.ok(fs.existsSync(path.join(dir, "README.md")), "untracking deleted the user's file");
+    // And git agrees it is ignored now, which it would not be while tracked.
+    assert.ok(
+      git(dir, "check-ignore", "-v", "README.md").includes("README.md"),
+      "git does not ignore the file it just stopped tracking",
+    );
   });
 
   it("gives the stash a height of its own, draggable and foldable", async () => {

@@ -182,8 +182,8 @@ export const vi: Record<TranslationKey, string> = {
   "setup.debuggerOnly":
     "{language} chạy được ở đây, nhưng máy chưa cài trình gỡ lỗi - AI có thể tự tìm ra máy cần gì rồi cài.",
   "lsp.offerDismiss": "Bỏ qua ngôn ngữ này",
-  "setup.progressTitle": "Đang thiết lập {language}",
-  "setup.working": "Đang nhờ AI tìm ra máy này cần gì cho {language}…",
+  "setup.progressTitle": "Đang thiết lập {subject}",
+  "setup.working": "Đang nhờ AI tìm ra máy này cần gì cho {subject}…",
   "setup.starting": "Đang khởi động AI…",
   "setup.progressHint": "Việc này có thể mất vài phút. Đóng hộp thoại thì nó vẫn chạy tiếp.",
   "setup.background": "Cho chạy ngầm",
@@ -261,9 +261,24 @@ export const vi: Record<TranslationKey, string> = {
   "settings.apiKey": "API key",
   "settings.apiKeyHint":
     "Chỉ lưu trên máy này, truyền dạng {env} vào các lần Aime tự chạy CLI - ở đó key được ưu tiên hơn login của CLI. Terminal của anh không bao giờ thấy key.",
+  "settings.apiKeyHintCli":
+    "CLI này tự giữ key, nên Aime đưa key một lần rồi không giữ bản sao - và việc đó thay luôn tài khoản CLI đang đăng nhập. Muốn quay lại thì đăng nhập lại bằng {command}.",
   "settings.apiKeySave": "Lưu",
+  "settings.apiKeyReplace": "Thay đăng nhập",
+  "settings.apiKeyReplaceWarning":
+    "Thao tác này đăng xuất tài khoản CLI đang dùng và đăng nhập lại bằng key này. Bấm lần nữa để tiếp tục.",
   "settings.apiKeySaved": "Đã lưu",
   "settings.apiKeyClear": "Xoá",
+  "settings.addProvider": "Thêm AI CLI",
+  "settings.addProviderHint":
+    "Gõ tên bất kỳ AI CLI chạy headless nào, agent sẽ tự tìm cách điều khiển nó - đọc help của chính CLI đó, chạy thử một lần rồi ghi cấu hình. Xong là nó hiện ngay ở danh sách trên, không cần khởi động lại.",
+  "settings.addProviderNeedsFolder": "Mở một thư mục dự án trước - agent cần chỗ để làm việc.",
+  "settings.addProviderPlaceholder": "gemini",
+  "settings.apiKeyConfirmed": "CLI xác nhận đang dùng chính API key này.",
+  "settings.apiKeyNotSeen":
+    "CLI có trả lời, nhưng nó không dùng API key nào - key này chưa tới nơi. Kiểm tra lại tên biến trong providers.json.",
+  "settings.apiKeyUnverified":
+    "Đã lưu. CLI này không nói gì về API key nên Aime không xác nhận được key đã tới - câu trả lời đầu tiên sẽ cho biết.",
   "settings.permission": "AI được làm gì",
   "settings.permission.full": "Toàn quyền",
   "settings.permission.edits": "Sửa file",
@@ -286,12 +301,16 @@ export const vi: Record<TranslationKey, string> = {
   "menu.revealExplorer": "Mở trong File Explorer",
   "menu.gitBlame": "Git Blame",
   "menu.gitIgnore": "Thêm vào .gitignore",
+  "menu.gitUntrack": "Ngừng theo dõi và bỏ qua",
   "menu.closeFolder": "Đóng thư mục",
   "menu.rename": "Đổi tên…",
   "menu.delete": "Xóa",
   "modal.newFileTitle": "Tên file mới",
   "modal.newFolderTitle": "Tên thư mục mới",
   "modal.renameTitle": "Tên mới",
+  "modal.untrackTitle": "Ngừng theo dõi {name}?",
+  "modal.untrackHint":
+    "Git đang theo dõi file này nên chỉ thêm .gitignore thì không có tác dụng gì. Aime sẽ gỡ nó khỏi git rồi thêm pattern - file vẫn nằm nguyên trên máy anh, nhưng lần commit tới nó bị xoá đối với mọi người khác.",
   "modal.deleteTitle": "Xóa '{name}'?",
   "modal.deleteHint": "Không thể hoàn tác.",
   "modal.newProjectTitle": "Tên dự án mới",

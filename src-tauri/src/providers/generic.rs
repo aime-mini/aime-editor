@@ -5,14 +5,18 @@
 //! build - should not need a Rust change to be usable, so this adapter reads a
 //! description and drives the command it names (ARCHITECTURE.md §4, §7).
 //!
-//! Configs are loaded once and leaked deliberately: they live for the whole
-//! process anyway, and `Adapter` is handed out as `&'static dyn Adapter`.
+//! The file is re-read whenever it changes (`fs_watch::watch_providers_config`),
+//! so a CLI added while Aime runs is usable straight away. Adapters are shared
+//! `Arc`s for that reason: a turn already streaming keeps the adapter it started
+//! with, whatever the file says a moment later.
 
-use super::adapter::{explicit, Adapter, Invocation, Permission, TurnRequest, PROGRESS_MEMORY_PROMPT};
+use super::adapter::{
+    explicit, Adapter, ApiKeyRoute, Invocation, Permission, TurnRequest, PROGRESS_MEMORY_PROMPT,
+};
 use crate::mcp::{McpServer, McpServerSpec};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
 /// Placeholders Aime substitutes in the configured argument lists.
 const PROMPT_PLACEHOLDER: &str = "{prompt}";
@@ -79,6 +83,13 @@ pub struct ProviderConfig {
     /// `GEMINI_API_KEY`). Empty = the Settings page offers no key field for it.
     #[serde(default)]
     pub api_key_env: String,
+    /// Arguments of the CLI's own "take this key" command, for a CLI that
+    /// stores keys itself instead of reading a variable (e.g.
+    /// `["login", "--with-api-key"]`). Aime pipes the key to its stdin and
+    /// keeps no copy. `apiKeyEnv` wins if a config sets both, since a variable
+    /// costs nothing and changes nothing the CLI has stored.
+    #[serde(default)]
+    pub api_key_login_args: Vec<String>,
 }
 
 fn default_text_field() -> String {
@@ -134,9 +145,8 @@ impl GenericAdapter {
 }
 
 impl Adapter for GenericAdapter {
-    fn command(&self) -> &'static str {
-        // The config outlives the process; see the module comment.
-        Box::leak(self.config.command.clone().into_boxed_str())
+    fn command(&self) -> &str {
+        &self.config.command
     }
 
     fn chat_invocation(&self, req: &TurnRequest<'_>) -> Invocation {
@@ -201,12 +211,22 @@ impl Adapter for GenericAdapter {
         None // an unknown CLI has no probe Aime could trust
     }
 
-    fn api_key_env(&self) -> Option<&str> {
-        Some(self.config.api_key_env.as_str()).filter(|name| !name.is_empty())
+    fn api_key_route(&self) -> Option<ApiKeyRoute> {
+        if !self.config.api_key_env.is_empty() {
+            return Some(ApiKeyRoute::Env {
+                variable: self.config.api_key_env.clone(),
+            });
+        }
+        if !self.config.api_key_login_args.is_empty() {
+            return Some(ApiKeyRoute::CliLogin {
+                args: self.config.api_key_login_args.clone(),
+            });
+        }
+        None
     }
 
-    fn login_command(&self) -> &'static str {
-        Box::leak(self.config.login.clone().into_boxed_str())
+    fn login_command(&self) -> String {
+        self.config.login.clone()
     }
 
     fn global_memory_path(&self, home: &Path) -> PathBuf {
@@ -240,11 +260,17 @@ impl Adapter for GenericAdapter {
     }
 }
 
-static CONFIGURED: OnceLock<Vec<&'static GenericAdapter>> = OnceLock::new();
+/// The providers currently described by `providers.json`.
+///
+/// Replaceable, because the file is: the user (or the agent, on their behalf)
+/// adds a CLI while Aime is running and expects to see it. Adapters are handed
+/// out as `Arc`s so a turn that is already streaming keeps the adapter it
+/// started with even if the list is swapped underneath it.
+static CONFIGURED: RwLock<Vec<Arc<GenericAdapter>>> = RwLock::new(Vec::new());
 
 /// Reads `providers.json` next to the app's own config. A malformed file must
 /// not cost the user their built-in providers, so it degrades to none.
-pub fn load(path: &Path) -> Vec<&'static GenericAdapter> {
+pub fn load(path: &Path) -> Vec<Arc<GenericAdapter>> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -255,31 +281,38 @@ pub fn load(path: &Path) -> Vec<&'static GenericAdapter> {
     configs
         .into_iter()
         .filter(|config| !config.id.is_empty() && !config.command.is_empty())
-        .map(|config| &*Box::leak(Box::new(GenericAdapter { config })))
+        .map(|config| Arc::new(GenericAdapter { config }))
         .collect()
 }
 
-/// Installs the configured providers for the rest of the process. Called once
-/// at startup; later calls are ignored, which keeps `adapter_for` lock-free.
-pub fn install(adapters: Vec<&'static GenericAdapter>) {
-    let _ = CONFIGURED.set(adapters);
+/// Publishes a freshly read `providers.json`, replacing whatever was there.
+pub fn install(adapters: Vec<Arc<GenericAdapter>>) {
+    *guard() = adapters;
 }
 
-pub fn configured() -> &'static [&'static GenericAdapter] {
-    CONFIGURED.get().map(Vec::as_slice).unwrap_or(&[])
+pub fn configured() -> Vec<Arc<GenericAdapter>> {
+    guard().clone()
 }
 
-pub fn find(id: &str) -> Option<&'static GenericAdapter> {
-    configured()
+pub fn find(id: &str) -> Option<Arc<GenericAdapter>> {
+    guard()
         .iter()
-        .copied()
         .find(|adapter| adapter.config.id == id)
+        .map(Arc::clone)
+}
+
+/// A poisoned lock still holds a valid provider list — recovering it keeps the
+/// AI panel working, where panicking would take every provider down with it.
+fn guard() -> RwLockWriteGuard<'static, Vec<Arc<GenericAdapter>>> {
+    CONFIGURED
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{expand, GenericAdapter, MemoryStrategy, ParserKind, ProviderConfig};
-    use crate::providers::adapter::{Adapter, Permission, TurnRequest};
+    use crate::providers::adapter::{Adapter, ApiKeyRoute, Permission, TurnRequest};
 
     fn adapter(args: &[&str], resume: &[&str], parser: ParserKind) -> GenericAdapter {
         GenericAdapter {
@@ -297,21 +330,42 @@ mod tests {
                 memory_file: String::new(),
                 prompt_stdin: false,
                 api_key_env: String::new(),
+                api_key_login_args: Vec::new(),
             },
         }
     }
 
     #[test]
-    fn the_api_key_variable_comes_from_the_config_and_empty_means_none() {
-        let mut with = adapter(&["{prompt}"], &[], ParserKind::Plain);
-        with.config.api_key_env = "GEMINI_API_KEY".into();
-        assert_eq!(with.api_key_env(), Some("GEMINI_API_KEY"));
-
-        let without = adapter(&["{prompt}"], &[], ParserKind::Plain);
+    fn a_configured_cli_can_take_a_key_either_way_and_neither_by_default() {
+        let mut by_variable = adapter(&["{prompt}"], &[], ParserKind::Plain);
+        by_variable.config.api_key_env = "GEMINI_API_KEY".into();
         assert_eq!(
-            without.api_key_env(),
+            by_variable.api_key_route(),
+            Some(ApiKeyRoute::Env {
+                variable: "GEMINI_API_KEY".into()
+            })
+        );
+
+        let mut by_login = adapter(&["{prompt}"], &[], ParserKind::Plain);
+        by_login.config.api_key_login_args = vec!["login".into(), "--with-api-key".into()];
+        assert_eq!(
+            by_login.api_key_route(),
+            Some(ApiKeyRoute::CliLogin {
+                args: vec!["login".into(), "--with-api-key".into()]
+            })
+        );
+
+        // Both configured: the variable wins, because it changes nothing the
+        // CLI has stored.
+        let mut both = by_login;
+        both.config.api_key_env = "GEMINI_API_KEY".into();
+        assert!(matches!(both.api_key_route(), Some(ApiKeyRoute::Env { .. })));
+
+        let neither = adapter(&["{prompt}"], &[], ParserKind::Plain);
+        assert_eq!(
+            neither.api_key_route(),
             None,
-            "no variable configured, no key field offered"
+            "nothing configured, no key field offered"
         );
     }
 

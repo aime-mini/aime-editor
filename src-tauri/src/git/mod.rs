@@ -258,6 +258,23 @@ pub async fn git_ignore(root: String, paths: Vec<String>) -> Result<(), String> 
     std::fs::write(&file, updated).map_err(|err| format!("could not write .gitignore: {err}"))
 }
 
+/// Stops tracking a path, then ignores it.
+///
+/// `.gitignore` has no effect on a path git already tracks — the rule applies to
+/// untracked paths only — so for a tracked file the two steps are one action or
+/// nothing happens at all. `--cached` removes the path from the index and leaves
+/// it on disk untouched; the removal becomes real for everyone else at the next
+/// commit, which is what the UI has to say out loud before offering this.
+#[tauri::command]
+pub async fn git_untrack_and_ignore(root: String, paths: Vec<String>) -> Result<(), String> {
+    // `-r` because a folder is the case this exists for; `--` so a path that
+    // looks like an option is still a path.
+    let mut args: Vec<&str> = vec!["rm", "--cached", "-r", "--"];
+    args.extend(paths.iter().map(String::as_str));
+    run_git(&root, &args).await?;
+    git_ignore(root, paths).await
+}
+
 /// Discards worktree changes. Untracked files are deleted instead (git can't restore them).
 #[tauri::command]
 pub async fn git_discard(root: String, path: String, untracked: bool) -> Result<(), String> {

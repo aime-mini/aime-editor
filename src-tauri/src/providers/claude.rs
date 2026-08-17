@@ -1,13 +1,19 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-use super::adapter::{explicit, Adapter, Invocation, Permission, TurnRequest, PROGRESS_MEMORY_PROMPT};
+use super::adapter::{
+    explicit, Adapter, ApiKeyRoute, Invocation, Permission, TurnRequest, PROGRESS_MEMORY_PROMPT,
+};
 use crate::mcp::{tokenize_command, McpServer, McpServerSpec};
 
 /// Adapter for the Claude Code CLI (headless mode), verified against 2.1.220.
 pub struct ClaudeAdapter;
 
 pub const COMMAND: &str = "claude";
+
+/// The variable the CLI reads a key from, and the exact string it echoes back
+/// in `claude auth status` when it has picked one up.
+const API_KEY_VARIABLE: &str = "ANTHROPIC_API_KEY";
 
 /// One-shot calls (commit messages, ghost text, conflict merges) ask for one
 /// answer and can touch nothing, so the agent persona is dead weight in every
@@ -81,7 +87,7 @@ fn parse_mcp_list(stdout: &str) -> Vec<McpServer> {
 }
 
 impl Adapter for ClaudeAdapter {
-    fn command(&self) -> &'static str {
+    fn command(&self) -> &str {
         COMMAND
     }
 
@@ -137,12 +143,23 @@ impl Adapter for ClaudeAdapter {
     /// Documented in the CLI's own help, and verified against the real binary:
     /// with this variable set, `claude -p` answers from the key — printing
     /// "ANTHROPIC_API_KEY … takes precedence over your claude.ai login".
-    fn api_key_env(&self) -> Option<&str> {
-        Some("ANTHROPIC_API_KEY")
+    fn api_key_route(&self) -> Option<ApiKeyRoute> {
+        Some(ApiKeyRoute::Env {
+            variable: API_KEY_VARIABLE.into(),
+        })
     }
 
-    fn login_command(&self) -> &'static str {
-        "claude auth login"
+    /// The CLI names the key's source in its status, which is how Aime can show
+    /// that the variable it injects really did arrive (measured 2026-08-17:
+    /// `apiKeySource: "ANTHROPIC_API_KEY"` appears only when it is set).
+    /// It is not a validity check — no field of this status reports that.
+    fn probe_sees_api_key(&self, stdout: &str) -> Option<bool> {
+        let status: Value = serde_json::from_str(stdout).ok()?;
+        Some(status.get("apiKeySource").and_then(Value::as_str) == Some(API_KEY_VARIABLE))
+    }
+
+    fn login_command(&self) -> String {
+        "claude auth login".into()
     }
 
     fn global_memory_path(&self, home: &Path) -> PathBuf {
@@ -187,7 +204,7 @@ impl Adapter for ClaudeAdapter {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_args, Adapter, ClaudeAdapter, McpServerSpec, Permission};
+    use super::{build_args, Adapter, ApiKeyRoute, ClaudeAdapter, McpServerSpec, Permission};
 
     #[test]
     fn fresh_session_has_progress_memory_but_no_resume() {
@@ -334,6 +351,22 @@ mod tests {
     fn the_api_key_rides_the_variable_the_cli_documents() {
         // Verified against the real binary (2026-08-16): with this set,
         // `claude -p` answers from the key and says it overrides the login.
-        assert_eq!(ClaudeAdapter.api_key_env(), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(
+            ClaudeAdapter.api_key_route(),
+            Some(ApiKeyRoute::Env {
+                variable: "ANTHROPIC_API_KEY".into()
+            })
+        );
+    }
+
+    #[test]
+    fn the_status_says_whether_the_injected_key_arrived() {
+        // Both shapes captured from the real CLI (2026-08-17).
+        let with_key = r#"{"loggedIn":true,"authMethod":"claude.ai","apiKeySource":"ANTHROPIC_API_KEY"}"#;
+        let without = r#"{"loggedIn":true,"authMethod":"claude.ai","email":"a@b.c"}"#;
+        assert_eq!(ClaudeAdapter.probe_sees_api_key(with_key), Some(true));
+        assert_eq!(ClaudeAdapter.probe_sees_api_key(without), Some(false));
+        // Not JSON at all: the CLI told us nothing, so Aime claims nothing.
+        assert_eq!(ClaudeAdapter.probe_sees_api_key("command not found"), None);
     }
 }

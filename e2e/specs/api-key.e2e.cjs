@@ -9,10 +9,12 @@
  * proving it with an invalid key is unaffordable: measured, `claude -p`
  * retries an invalid ANTHROPIC_API_KEY for ~218 s before giving up.
  *
- * The provider list is read once, at app startup, so the probe entry is
- * written first and the session reloaded — tauri-driver then spawns a fresh
- * app that knows the probe. The user's own config files are restored on the
- * way out, including the case where they did not exist.
+ * The first probe is written before the session reloads, because the app under
+ * test must already know it. The second one is written with the app running on
+ * purpose — that is the point of its own test: Aime watches providers.json and
+ * re-reads it, so a CLI added mid-session needs no restart. The user's own
+ * config files are restored on the way out, including the case where they did
+ * not exist.
  */
 const { strict: assert } = require("node:assert");
 const fs = require("node:fs");
@@ -37,6 +39,34 @@ const PROBE_PROVIDER = [
     promptStdin: false,
   },
 ];
+
+/** Where the second probe drops the key it was handed, for the spec to read. */
+const SINK = path.join(os.tmpdir(), "aime-cli-login-key.txt");
+/** The "CLI" that stores its own key: a script that saves whatever stdin holds. */
+const LOGIN_SCRIPT = path.join(os.tmpdir(), "aime-login-probe.cjs");
+
+/**
+ * A provider on the other API key route: no variable, a login command of its
+ * own. It is a file rather than `node -e …` because the script needs quotes,
+ * and every argument here crosses `cmd /C`, which mangles them.
+ */
+function loginProvider() {
+  fs.rmSync(SINK, { force: true });
+  fs.writeFileSync(
+    LOGIN_SCRIPT,
+    `const fs = require("node:fs");\nfs.writeFileSync(${JSON.stringify(SINK)}, fs.readFileSync(0, "utf8"));\n`,
+  );
+  return {
+    id: "probe-login",
+    displayName: "Login Probe",
+    command: "node",
+    args: ["-e", "console.log(0)"],
+    parser: "plain",
+    login: "probe-login logout",
+    apiKeyLoginArgs: [LOGIN_SCRIPT],
+    promptStdin: false,
+  };
+}
 
 const backupOf = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null);
 const restore = (file, content) => {
@@ -117,6 +147,8 @@ describe("API keys", () => {
   after(() => {
     restore(providersFile, saved.providers);
     restore(keysFile, saved.keys);
+    fs.rmSync(SINK, { force: true });
+    fs.rmSync(LOGIN_SCRIPT, { force: true });
     for (const dir of projects) {
       try {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -183,5 +215,53 @@ describe("API keys", () => {
       () => !(JSON.parse(fs.readFileSync(keysFile, "utf8"))["probe-env"] ?? null),
       { timeout: 10_000, timeoutMsg: "Remove left the key on disk" },
     );
+  });
+
+  it("picks up a provider added to providers.json while it is running", async () => {
+    // The proof of the watcher: this entry is written with the app already up,
+    // and nothing here reloads, restarts or even clicks.
+    fs.writeFileSync(providersFile, JSON.stringify([...PROBE_PROVIDER, loginProvider()], null, 2));
+
+    await browser.waitUntil(
+      async () => {
+        const listed = await invoke("list_providers");
+        return listed.ok && listed.value.some((provider) => provider.id === "probe-login");
+      },
+      { timeout: 20_000, timeoutMsg: "the new provider never reached the backend" },
+    );
+    // And the UI hears about it too, without being asked.
+    await waitForText("Login Probe", "the settings page never listed the new provider");
+  });
+
+  it("hands the key to a CLI that stores its own, and keeps no copy", async () => {
+    const handed = await invoke("provider_set_api_key", { providerId: "probe-login", key: "cli-key-789" });
+    assert.equal(handed.ok, true, `the login route failed: ${handed.error}`);
+    assert.equal(fs.readFileSync(SINK, "utf8"), "cli-key-789", "the CLI received a different key");
+    fs.rmSync(SINK, { force: true });
+
+    await (await $("button=Login Probe")).click();
+    // No variable name to show: this CLI takes the key on its own stdin, and
+    // the hint says so by naming the command that undoes it.
+    await waitForText("probe-login logout", "the settings page never explained the CLI route");
+
+    const field = await $('input[placeholder="API key"]');
+    await field.setValue("cli-key-789");
+    await (await $("button=Save")).click();
+    // Replacing a CLI's login is not a click Aime makes on its own.
+    await waitForText("signs the cli out", "no warning before replacing the CLI's login");
+    assert.equal(fs.existsSync(SINK), false, "the key was handed over before the warning was accepted");
+
+    await (await $("button=Replace the login")).click();
+    await browser.waitUntil(() => fs.existsSync(SINK), {
+      timeout: 20_000,
+      timeoutMsg: `the key never reached the CLI's own login command; page said: ${await $("body").getText()}`,
+    });
+    assert.equal(fs.readFileSync(SINK, "utf8"), "cli-key-789", "the CLI received a different key");
+
+    // Aime stores nothing for this route: the CLI owns the credential now.
+    const onDisk = fs.existsSync(keysFile) ? JSON.parse(fs.readFileSync(keysFile, "utf8")) : {};
+    assert.equal(onDisk["probe-login"], undefined, "Aime kept a copy of a key it must not keep");
+    // This CLI reports nothing about keys, so Aime says exactly that.
+    await waitForText("reports nothing about api keys", "Aime claimed more than the CLI told it");
   });
 });

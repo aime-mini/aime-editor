@@ -1,6 +1,8 @@
 use super::{claude, codex, generic};
 use crate::mcp::{McpServer, McpServerSpec};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// How much the agent may do on its own. This is a setting rather than a
 /// per-call dialog by decision (session 3): an Allow/Deny popup needs a Node
@@ -61,13 +63,34 @@ impl Invocation {
     }
 }
 
+/// How a CLI can be authenticated with an API key. Both doors were measured
+/// against the real binaries (2026-08-17) rather than assumed, because they
+/// behave nothing alike.
+#[derive(Clone, Serialize, PartialEq, Eq, Debug)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ApiKeyRoute {
+    /// The CLI reads the key from this variable on every run. Aime stores the
+    /// key and injects it into its own spawns only; the CLI's stored login is
+    /// left untouched. `claude -p` works this way, and says so: with the
+    /// variable set, `claude auth status` reports `apiKeySource`.
+    Env { variable: String },
+    /// The CLI stores keys itself, so Aime hands the key over once, on the
+    /// CLI's own stdin, and keeps no copy — `codex login --with-api-key`.
+    ///
+    /// This door **replaces** whatever that CLI was signed in with (measured:
+    /// a ChatGPT login became "Logged in using an API key"), so the UI must
+    /// warn before using it. The CLI does not validate the key here — the same
+    /// measurement stored a plainly invalid one and exited 0.
+    CliLogin { args: Vec<String> },
+}
+
 /// One headless AI CLI. Adapters only build invocations and read the CLI's
 /// output shape — spawning, streaming and cancellation are shared (mod.rs),
 /// and normalizing events into the UI event set happens on the frontend
 /// (ARCHITECTURE.md §4).
 pub trait Adapter: Send + Sync {
     /// Executable name, resolved through PATH.
-    fn command(&self) -> &'static str;
+    fn command(&self) -> &str;
 
     /// One streaming chat turn.
     fn chat_invocation(&self, req: &TurnRequest<'_>) -> Invocation;
@@ -88,21 +111,27 @@ pub trait Adapter: Send + Sync {
         exit_ok
     }
 
-    /// The environment variable this CLI reads an API key from, when Aime can
-    /// authenticate it that way at all. `None` = Aime never injects a key for
-    /// this CLI. Measured before shipping (2026-08-16): `claude -p` honours
-    /// `ANTHROPIC_API_KEY` (and says so — the key takes precedence over the
-    /// claude.ai login for that process), while `codex exec` ignores
-    /// `OPENAI_API_KEY` when a ChatGPT login exists; Codex's supported route is
-    /// its own `codex login --with-api-key`, which stays the CLI's business.
-    fn api_key_env(&self) -> Option<&str> {
+    /// How this CLI takes an API key, if it takes one at all. `None` = Aime
+    /// offers no key field for it, because there is no door it could open.
+    fn api_key_route(&self) -> Option<ApiKeyRoute> {
+        None
+    }
+
+    /// Whether the auth probe's output shows the CLI is using an API key.
+    ///
+    /// This is the only honest verification Aime can offer: running a real turn
+    /// to test a key is unusable (measured — `claude -p` with an invalid key
+    /// retries for minutes before saying anything), and no CLI validates a key
+    /// at the moment it is handed one. `None` = this CLI says nothing about its
+    /// key, so the UI must claim nothing either.
+    fn probe_sees_api_key(&self, _stdout: &str) -> Option<bool> {
         None
     }
 
     /// Command that signs the user in. Every provider must be reachable this
     /// way — Aime runs it in an integrated terminal so the CLI keeps sole
     /// ownership of the credentials (user rule, session 3).
-    fn login_command(&self) -> &'static str;
+    fn login_command(&self) -> String;
 
     /// The CLI's own user-level memory file — the one it reads for every
     /// project of this user.
@@ -128,12 +157,16 @@ newest first. It must always allow a fresh session with no chat history to resum
 Keep it under 150 lines by compacting older entries.";
 
 /// Resolves a provider id to its adapter.
-pub fn adapter_for(provider_id: &str) -> Result<&'static dyn Adapter, String> {
+///
+/// Shared ownership rather than a borrow: a configured provider can be replaced
+/// while Aime runs (the user edits `providers.json`), and a turn already in
+/// flight must keep talking to the adapter it started with.
+pub fn adapter_for(provider_id: &str) -> Result<Arc<dyn Adapter>, String> {
     match provider_id {
-        "claude" => Ok(&claude::ClaudeAdapter),
-        "codex" => Ok(&codex::CodexAdapter),
+        "claude" => Ok(Arc::new(claude::ClaudeAdapter)),
+        "codex" => Ok(Arc::new(codex::CodexAdapter)),
         other => generic::find(other)
-            .map(|adapter| adapter as &'static dyn Adapter)
+            .map(|adapter| adapter as Arc<dyn Adapter>)
             .ok_or_else(|| format!("Unsupported provider: {other}")),
     }
 }

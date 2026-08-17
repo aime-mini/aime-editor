@@ -34,8 +34,24 @@ export interface ProviderSummary {
   installCommand: string;
   parser: string;
   textField: string;
-  /** Env variable an API key rides on Aime's spawns; null = no key field. */
-  apiKeyEnv: string | null;
+  /** How this CLI takes an API key; null = it takes none, so no key field. */
+  apiKeyRoute: ApiKeyRoute | null;
+}
+
+/**
+ * The two doors a CLI opens for an API key (Rust `ApiKeyRoute`).
+ *
+ * `env`: Aime keeps the key and passes it to its own runs — the CLI's own login
+ * is untouched. `cliLogin`: the CLI stores the key itself, so Aime hands it over
+ * once and keeps nothing — and that **replaces** whatever that CLI was signed in
+ * with, which is why the UI warns first.
+ */
+export type ApiKeyRoute = { kind: "env"; variable: string } | { kind: "cliLogin"; args: string[] };
+
+/** What Aime could confirm about a key it just accepted (Rust `ApiKeyOutcome`). */
+export interface ApiKeyOutcome {
+  /** null = this CLI reports nothing about keys, so nothing is claimed. */
+  cliConfirmed: boolean | null;
 }
 
 /** Mirror of the Rust `ProviderHealth` (providers/mod.rs). */
@@ -170,7 +186,7 @@ interface AiState {
   /** Whether an API key is stored in Aime for the current provider. */
   apiKeyConfigured: boolean;
   /** Stores an API key for the current provider; "" clears it. Write-only. */
-  setApiKey: (key: string) => Promise<void>;
+  setApiKey: (key: string) => Promise<ApiKeyOutcome>;
   checkHealth: () => Promise<void>;
   /** Re-probes until the sign-in the user just started lands (or times out). */
   watchSignIn: () => void;
@@ -224,6 +240,8 @@ let lastStderrLine = "";
 let activeParser: EventParser = () => [];
 /** Interval id of the sign-in watcher; at most one runs at a time. */
 let signInPollId: number | null = null;
+/** Whether the `providers.json` listener is up; it is registered once. */
+let providersWatched = false;
 
 function stopSignInWatch(): void {
   if (signInPollId !== null) {
@@ -408,6 +426,15 @@ export const useAi = create<AiState>((set, get) => {
       } catch (err: unknown) {
         console.error("failed to list providers:", err);
       }
+      // Rust re-reads providers.json whenever it changes and says so; picking
+      // that up here is what lets a newly configured CLI appear in the picker
+      // without a restart. Registered on the first load and kept for the
+      // session - there is exactly one provider list to keep fresh.
+      if (providersWatched) return;
+      providersWatched = true;
+      await listen("providers:changed", () => {
+        void get().loadProviders();
+      });
     },
 
     checkHealth: async () => {
@@ -580,8 +607,9 @@ export const useAi = create<AiState>((set, get) => {
       const providerId = get().providerId;
       // The key goes straight to Rust and never into this store: the health
       // re-probe is what tells the UI a key now exists (or no longer does).
-      await invoke("provider_set_api_key", { providerId, key });
+      const outcome = await invoke<ApiKeyOutcome>("provider_set_api_key", { providerId, key });
       await get().checkHealth();
+      return outcome;
     },
 
     setModel: (model) => {

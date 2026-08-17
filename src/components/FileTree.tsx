@@ -28,7 +28,8 @@ type MenuTarget = { entry: DirEntry; ignored: boolean; x: number; y: number };
 type ModalAction =
   | { kind: "new-file" | "new-folder"; dirPath: string }
   | { kind: "rename"; entry: DirEntry }
-  | { kind: "delete"; entry: DirEntry };
+  | { kind: "delete"; entry: DirEntry }
+  | { kind: "untrack"; entry: DirEntry };
 
 /** Custom MIME type so the tree only accepts drags that started inside it. */
 const DRAG_MIME = "application/x-aime-path";
@@ -311,6 +312,15 @@ export function FileTree() {
             await invoke("delete_path", { path: modal.entry.path });
             handlePathDeleted(modal.entry.path);
             break;
+          case "untrack": {
+            // Reachable only from inside a repository, but this runs above the
+            // component's own root guard, so it asks again rather than assume.
+            if (rootPath === null) break;
+            // The file stays where it is; only git stops carrying it.
+            const path = modal.entry.path.slice(rootPath.length + 1).replaceAll("\\", "/");
+            await useGit.getState().untrackAndIgnore([path]);
+            break;
+          }
         }
         refreshTree();
       } catch (err) {
@@ -319,7 +329,7 @@ export function FileTree() {
         setModal(null);
       }
     },
-    [modal, refreshTree, handlePathDeleted, handlePathRenamed],
+    [modal, refreshTree, handlePathDeleted, handlePathRenamed, rootPath],
   );
 
   if (!rootPath) return null;
@@ -333,12 +343,29 @@ export function FileTree() {
    * and needs no second pattern.
    */
   const canIgnore = (target: MenuTarget): boolean => {
-    if (!isRepo || target.ignored || target.entry.path === rootPath) return false;
+    if (!ignorable(target)) return false;
     const key = pathKey(target.entry.path);
     return target.entry.is_dir
       ? untrackedPaths.some((path) => path.startsWith(`${key}\\`))
       : untrackedPaths.includes(key);
   };
+
+  /**
+   * Whether this entry is git's business at all: inside a repository, not the
+   * repository itself, and not already grey.
+   */
+  const ignorable = (target: MenuTarget): boolean =>
+    isRepo && !target.ignored && target.entry.path !== rootPath;
+
+  /**
+   * The same wish for a path git already tracks, which `.gitignore` alone cannot
+   * grant - the pattern would be read and skipped. Untracking first is what
+   * makes it work, and it is a different promise: the file stays on disk, but
+   * the next commit deletes it for everyone else. So it is a separate entry,
+   * worded as what it does, rather than the same one quietly doing more.
+   */
+  const canUntrack = (target: MenuTarget): boolean =>
+    ignorable(target) && !canIgnore(target) && !untrackedPaths.includes(pathKey(target.entry.path));
 
   const menuItems = (target: MenuTarget): MenuItem[] => {
     const items: MenuItem[] = [];
@@ -387,12 +414,21 @@ export function FileTree() {
         },
       );
     }
+    const relative = () => target.entry.path.slice(rootPath.length + 1).replaceAll("\\", "/");
     if (canIgnore(target)) {
       items.push({
         label: t("menu.gitIgnore"),
         icon: <EyeOff size={14} />,
         onClick: () => {
-          void useGit.getState().ignore([target.entry.path.slice(rootPath.length + 1).replaceAll("\\", "/")]);
+          void useGit.getState().ignore([relative()]);
+        },
+      });
+    } else if (canUntrack(target)) {
+      items.push({
+        label: t("menu.gitUntrack"),
+        icon: <EyeOff size={14} />,
+        onClick: () => {
+          setModal({ kind: "untrack", entry: target.entry });
         },
       });
     }
@@ -505,7 +541,7 @@ export function FileTree() {
           }}
         />
       )}
-      {modal && modal.kind !== "delete" && (
+      {modal && modal.kind !== "delete" && modal.kind !== "untrack" && (
         <PromptModal
           title={
             modal.kind === "new-file"
@@ -517,6 +553,18 @@ export function FileTree() {
           initialValue={modal.kind === "rename" ? modal.entry.name : ""}
           onSubmit={(v) => {
             void runModalAction(v);
+          }}
+          onClose={() => {
+            setModal(null);
+          }}
+        />
+      )}
+      {modal && modal.kind === "untrack" && (
+        <PromptModal
+          title={t("modal.untrackTitle", { name: modal.entry.name })}
+          hint={t("modal.untrackHint")}
+          onSubmit={() => {
+            void runModalAction("");
           }}
           onClose={() => {
             setModal(null);

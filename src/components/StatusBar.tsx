@@ -97,7 +97,7 @@ export function StatusBar() {
   const openFilePath = useWorkspace((s) => s.openFilePath);
   const lspLanguages = useLsp((s) => s.languages);
   const setupRunning = useSetup((s) => s.running);
-  const setupLanguage = useSetup((s) => s.languageId);
+  const setupSubject = useSetup((s) => s.subject);
   const t = useT();
 
   // Code intelligence for the file in front of the user: silent when it just
@@ -217,7 +217,7 @@ export function StatusBar() {
             className="flex items-center gap-1 text-accent"
           >
             <Loader2 size={11} className="animate-spin" />
-            {t("setup.progressTitle", { language: setupLanguage ?? "" })}
+            {t("setup.progressTitle", { subject: setupSubject ?? "" })}
           </button>
         )}
         {sessionId && (

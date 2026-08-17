@@ -45,11 +45,27 @@ export interface SetupLine {
   text: string;
 }
 
+/**
+ * One job for the agent, in Aime's own progress window.
+ *
+ * Closing a toolchain gap was the first of these; teaching Aime a new AI CLI is
+ * another. What they share is the shape — one prompt, a progress log, a Cancel
+ * button, and something to re-probe once it worked — so the machinery is
+ * described here rather than duplicated per feature.
+ */
+export interface SetupJob {
+  /** What the window says it is working on ("python", "Gemini CLI"). */
+  subject: string;
+  prompt: string;
+  /** Runs after a successful exit: re-probe whatever the gap was. */
+  onSuccess?: () => void;
+}
+
 interface SetupState {
   /** True from the moment the CLI is asked until it exits. */
   running: boolean;
-  /** The language this run is for; kept after the run so the log still says so. */
-  languageId: string | null;
+  /** What this run is for; kept after the run so the log still says so. */
+  subject: string | null;
   lines: SetupLine[];
   /** The CLI's exit code, or null while running and when cancelled. */
   exitCode: number | null;
@@ -59,7 +75,10 @@ interface SetupState {
   /** Whether the progress modal is on screen. */
   open: boolean;
 
+  /** Closes a language's toolchain gap — the original job, and the common one. */
   start: (request: SetupRequest) => Promise<void>;
+  /** Any other job worth an agent and a progress window. */
+  startJob: (job: SetupJob) => Promise<void>;
   cancel: () => Promise<void>;
   close: () => void;
 }
@@ -70,6 +89,8 @@ let runId: string | null = null;
 let parser: EventParser = () => [];
 /** The CLI's last word on stderr — the useful half of a non-zero exit. */
 let lastStderrLine = "";
+/** What to re-probe once the running job succeeds; owned by the job, not the store. */
+let onSuccess: (() => void) | undefined;
 let listenersReady = false;
 
 /**
@@ -111,21 +132,15 @@ export const useSetup = create<SetupState>((set, get) => {
 
   /** What the run leaves behind: a verdict, and a re-probe of what was installed. */
   const finish = (code: number | null): void => {
-    const { languageId } = get();
     set({ running: false, exitCode: code, cancelled: code === null });
     runId = null;
-    if (code !== 0 || languageId === null) {
-      if (code !== null && code !== 0 && lastStderrLine) {
+    if (code !== 0) {
+      if (code !== null && lastStderrLine) {
         set((s) => ({ lines: [...s.lines, { kind: "error", text: lastStderrLine }] }));
       }
       return;
     }
-    // Whatever the agent installed, Aime has already decided this language was
-    // unsupported and cached that answer. Both caches are dropped and asked
-    // again here, which is what turns the chip green without a restart.
-    useLsp.getState().forget(languageId);
-    void useLsp.getState().ensure(languageId);
-    void useDebug.getState().probeAdapter(languageId, { force: true });
+    onSuccess?.();
   };
 
   const ensureListeners = async (): Promise<void> => {
@@ -149,7 +164,7 @@ export const useSetup = create<SetupState>((set, get) => {
 
   return {
     running: false,
-    languageId: null,
+    subject: null,
     lines: [],
     exitCode: null,
     cancelled: false,
@@ -157,6 +172,23 @@ export const useSetup = create<SetupState>((set, get) => {
     open: false,
 
     start: async (request) => {
+      const { languageId } = request;
+      await get().startJob({
+        subject: languageId,
+        prompt: buildSetupPrompt(request),
+        onSuccess: () => {
+          // Whatever the agent installed, Aime has already decided this
+          // language was unsupported and cached that answer. Both caches are
+          // dropped and asked again here, which is what turns the chip green
+          // without a restart.
+          useLsp.getState().forget(languageId);
+          void useLsp.getState().ensure(languageId);
+          void useDebug.getState().probeAdapter(languageId, { force: true });
+        },
+      });
+    },
+
+    startJob: async (job) => {
       // One machine, one agent installing on it: a second run would fight the
       // first over package managers and locks. The modal comes forward instead.
       if (get().running) {
@@ -174,21 +206,22 @@ export const useSetup = create<SetupState>((set, get) => {
         textField: provider?.textField,
       });
       lastStderrLine = "";
+      onSuccess = job.onSuccess;
       await ensureListeners();
 
       set({
         running: true,
         open: true,
-        languageId: request.languageId,
+        subject: job.subject,
         exitCode: null,
         cancelled: false,
         error: null,
-        lines: [{ kind: "note", text: translate("setup.working", { language: request.languageId }) }],
+        lines: [{ kind: "note", text: translate("setup.working", { subject: job.subject }) }],
       });
       try {
         runId = await invoke<string>("ai_send_prompt", {
           providerId: ai.providerId,
-          prompt: buildSetupPrompt(request),
+          prompt: job.prompt,
           cwd: rootPath,
           // No session id: this run must not join, resume or end up inside the
           // conversation the user is having.
