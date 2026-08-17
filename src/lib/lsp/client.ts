@@ -100,7 +100,9 @@ export class LspClient {
   }
 
   async stop(): Promise<void> {
-    this.handleExit();
+    // A stop Aime asked for is not a crash: clean up without `onExit`, so the
+    // store never records a deliberate shutdown as a failed server.
+    this.cleanup();
     await invoke("lsp_stop", { serverId: this.serverId });
   }
 
@@ -164,8 +166,15 @@ export class LspClient {
     else waiting.resolve(message.result);
   }
 
-  /** Fails everything in flight; a crashed server must not hang the editor. */
+  /** The server exited on its own; clean up and let the owner know. */
   private handleExit(): void {
+    if (this.stopped) return;
+    this.cleanup();
+    this.onExit();
+  }
+
+  /** Fails everything in flight; a crashed server must not hang the editor. */
+  private cleanup(): void {
     if (this.stopped) return;
     this.stopped = true;
     for (const [, waiting] of this.pending) {
@@ -177,6 +186,5 @@ export class LspClient {
       unlisten();
     });
     this.unlisteners.length = 0;
-    this.onExit();
   }
 }

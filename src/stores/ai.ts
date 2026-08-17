@@ -34,6 +34,8 @@ export interface ProviderSummary {
   installCommand: string;
   parser: string;
   textField: string;
+  /** Env variable an API key rides on Aime's spawns; null = no key field. */
+  apiKeyEnv: string | null;
 }
 
 /** Mirror of the Rust `ProviderHealth` (providers/mod.rs). */
@@ -42,6 +44,8 @@ interface ProviderHealth {
   version: string | null;
   signedIn: boolean | null;
   loginCommand: string;
+  /** An API key is configured in Aime for this provider. */
+  apiKey: boolean;
 }
 
 /** One chat session, persisted per project (schema is owned here, Rust just stores JSON). */
@@ -163,6 +167,10 @@ interface AiState {
   signedIn: boolean | null;
   /** Command that signs the user in, run in a terminal on request. */
   loginCommand: string;
+  /** Whether an API key is stored in Aime for the current provider. */
+  apiKeyConfigured: boolean;
+  /** Stores an API key for the current provider; "" clears it. Write-only. */
+  setApiKey: (key: string) => Promise<void>;
   checkHealth: () => Promise<void>;
   /** Re-probes until the sign-in the user just started lands (or times out). */
   watchSignIn: () => void;
@@ -354,6 +362,7 @@ export const useAi = create<AiState>((set, get) => {
     providerHealth: "unknown",
     signedIn: null,
     loginCommand: "",
+    apiKeyConfigured: false,
     sessionUsage: EMPTY_USAGE,
     history: [],
     projectRoot: null,
@@ -411,6 +420,7 @@ export const useAi = create<AiState>((set, get) => {
           providerHealth: health.installed ? "ok" : "missing",
           signedIn: health.signedIn,
           loginCommand: health.loginCommand,
+          apiKeyConfigured: health.apiKey,
         });
         if (health.signedIn === true) stopSignInWatch();
       } catch (err: unknown) {
@@ -562,7 +572,16 @@ export const useAi = create<AiState>((set, get) => {
         lastError: null,
         providerHealth: "unknown",
         signedIn: null,
+        apiKeyConfigured: false,
       });
+    },
+
+    setApiKey: async (key) => {
+      const providerId = get().providerId;
+      // The key goes straight to Rust and never into this store: the health
+      // re-probe is what tells the UI a key now exists (or no longer does).
+      await invoke("provider_set_api_key", { providerId, key });
+      await get().checkHealth();
     },
 
     setModel: (model) => {

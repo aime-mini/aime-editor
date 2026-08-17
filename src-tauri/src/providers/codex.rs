@@ -210,6 +210,15 @@ mod tests {
     use super::super::adapter::{Adapter, TurnRequest};
     use super::{CodexAdapter, McpServerSpec, Permission};
 
+    #[test]
+    fn no_api_key_is_ever_injected_for_codex() {
+        // Measured (2026-08-16): `codex exec` with an invalid OPENAI_API_KEY in
+        // the environment still answered from the ChatGPT login - the variable
+        // is ignored, so injecting it would only pretend to authenticate.
+        // Codex takes keys through its own `codex login --with-api-key`.
+        assert_eq!(CodexAdapter.api_key_env(), None);
+    }
+
     fn turn(session_id: Option<&'static str>, permission: Permission) -> TurnRequest<'static> {
         TurnRequest {
             prompt: "hello",

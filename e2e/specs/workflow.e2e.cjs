@@ -937,4 +937,62 @@ describe("Workflows", () => {
     await waitForText("no completions for go", "no server was offered for a Go file");
     await waitForText("gopls", "the offer did not name the server to install");
   });
+
+  /**
+   * The opposite gap: a server that IS installed and dies. Killing the running
+   * pyright from outside is a real crash as far as Aime can tell - the pipe
+   * closes with no shutdown request - and the banner has to go from silence to
+   * an offer, because "installed but broken" used to be the one case with
+   * nothing on screen at all.
+   */
+  it("offers AI when an installed language server stops working", async () => {
+    try {
+      execFileSync("where", ["pyright-langserver"], { stdio: "ignore" });
+    } catch {
+      console.log("[workflow.e2e] SKIPPED: the Python language server is not installed on this machine.");
+      return;
+    }
+    const dir = project("lsp-crash");
+    fs.writeFileSync(path.join(dir, "crash.py"), "value = 1\n");
+    await open(dir);
+    await waitForText("crash.py", "the project never opened");
+    await (await $("span=crash.py")).click();
+
+    // The cause first: the chip must be green before a kill proves anything.
+    // Skipping rather than failing if it never starts, as the smoke spec does:
+    // a server that cannot start here says nothing about the crash banner.
+    const serverRunning = () =>
+      browser.execute(() =>
+        [...document.querySelectorAll("button")].some(
+          (node) => node.textContent.trim() === "python" && node.className.includes("text-ok"),
+        ),
+      );
+    try {
+      await browser.waitUntil(serverRunning, { timeout: 90_000 });
+    } catch {
+      console.log("[workflow.e2e] SKIPPED: pyright never reached running on this machine.");
+      return;
+    }
+
+    // The crash itself. Measured, not assumed: the `pyright-langserver.cmd`
+    // shim runs `node …\node_modules\pyright\langserver.index.js`, so the node
+    // process that must die never has "pyright-langserver" on its command line
+    // - matching the shim's full name kills only the cmd.exe wrapper and the
+    // server sails on. "pyright" reaches both. $PID keeps the killer from
+    // matching its own command line.
+    execFileSync("powershell", [
+      "-NoProfile",
+      "-Command",
+      "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'pyright' " +
+        "-and $_.ProcessId -ne $PID } | ForEach-Object " +
+        "{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+    ]);
+
+    await waitForText(
+      "is installed but not working",
+      "a crashed language server never produced the offer banner",
+    );
+    await waitForText("pyright-langserver", "the offer did not name the server that died");
+    await waitForText("let ai set it up", "the banner offered no way forward");
+  });
 });

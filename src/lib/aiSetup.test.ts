@@ -10,6 +10,7 @@ const base: SetupRequest = {
   relativePath: "src/main.py",
   serverCommand: "pyright-langserver",
   serverInstallHint: "npm i -g pyright",
+  failedServer: null,
   missingDebugger: { adapterId: "debugpy", installHint: "pip install debugpy" },
   teachDebugger: false,
 };
@@ -88,6 +89,29 @@ describe("buildSetupPrompt", () => {
     expect(teachOnly).toContain("I drive no Debug Adapter Protocol adapter for this language");
     expect(teachOnly).toContain(".aime/debug-adapters.json");
     expect(teachOnly).not.toContain("Code intelligence");
+  });
+
+  it("hands over a failed server's own error, and does not claim it is missing", () => {
+    const failed = buildSetupPrompt({
+      ...base,
+      serverCommand: null,
+      serverInstallHint: null,
+      missingDebugger: null,
+      failedServer: {
+        command: "pyright-langserver",
+        reason: "Error: Cannot find module 'node:fs'",
+      },
+    });
+    // The agent gets the failure verbatim - that error is the whole brief.
+    expect(failed).toContain("Cannot find module 'node:fs'");
+    expect(failed).toContain("`pyright-langserver`");
+    expect(failed).toContain("installed here");
+    // A failed server is the opposite gap from a missing one: no PATH probe
+    // talk, and no invitation to reinstall what is already there.
+    expect(failed).not.toContain("PATH");
+    expect(failed).toContain("Diagnose the failure above before reinstalling");
+    // Aime retries by itself, and the agent should know that.
+    expect(failed).toContain("the next time a file of its language is opened");
   });
 
   it("tells the agent to stop rather than decide for the user", () => {

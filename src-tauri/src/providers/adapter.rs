@@ -88,6 +88,17 @@ pub trait Adapter: Send + Sync {
         exit_ok
     }
 
+    /// The environment variable this CLI reads an API key from, when Aime can
+    /// authenticate it that way at all. `None` = Aime never injects a key for
+    /// this CLI. Measured before shipping (2026-08-16): `claude -p` honours
+    /// `ANTHROPIC_API_KEY` (and says so — the key takes precedence over the
+    /// claude.ai login for that process), while `codex exec` ignores
+    /// `OPENAI_API_KEY` when a ChatGPT login exists; Codex's supported route is
+    /// its own `codex login --with-api-key`, which stays the CLI's business.
+    fn api_key_env(&self) -> Option<&str> {
+        None
+    }
+
     /// Command that signs the user in. Every provider must be reachable this
     /// way — Aime runs it in an integrated terminal so the CLI keeps sole
     /// ownership of the credentials (user rule, session 3).

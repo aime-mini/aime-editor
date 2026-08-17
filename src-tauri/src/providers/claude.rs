@@ -134,6 +134,13 @@ impl Adapter for ClaudeAdapter {
                 .unwrap_or(false)
     }
 
+    /// Documented in the CLI's own help, and verified against the real binary:
+    /// with this variable set, `claude -p` answers from the key — printing
+    /// "ANTHROPIC_API_KEY … takes precedence over your claude.ai login".
+    fn api_key_env(&self) -> Option<&str> {
+        Some("ANTHROPIC_API_KEY")
+    }
+
     fn login_command(&self) -> &'static str {
         "claude auth login"
     }
@@ -321,5 +328,12 @@ mod tests {
         assert!(!ClaudeAdapter.is_signed_in(true, r#"{"loggedIn":false}"#));
         assert!(!ClaudeAdapter.is_signed_in(false, r#"{"loggedIn":true}"#));
         assert!(!ClaudeAdapter.is_signed_in(true, "unexpected output"));
+    }
+
+    #[test]
+    fn the_api_key_rides_the_variable_the_cli_documents() {
+        // Verified against the real binary (2026-08-16): with this set,
+        // `claude -p` answers from the key and says it overrides the login.
+        assert_eq!(ClaudeAdapter.api_key_env(), Some("ANTHROPIC_API_KEY"));
     }
 }

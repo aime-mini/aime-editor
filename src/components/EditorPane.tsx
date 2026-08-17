@@ -26,8 +26,10 @@ import { useDebugGutter } from "./useDebugGutter";
 /**
  * Offers to close whatever gap this file's language has.
  *
- * Two kinds of gap, one banner: a language server that is not installed (no
- * completions, no types) and a debug adapter this machine has to provide (F5
+ * Three kinds of gap, one banner: a language server that is not installed (no
+ * completions, no types), one that is installed but failed to start (same
+ * symptom, and previously the one case with no offer at all — the user just
+ * typed into silence), and a debug adapter this machine has to provide (F5
  * does nothing). It appears exactly when the gap matters — the moment such a
  * file is open — and stays gone once dismissed for that language.
  *
@@ -56,16 +58,22 @@ function SetupOffer({ languageId, relativePath }: { languageId: string; relative
   }, [languageId, probeAdapter]);
 
   const serverMissing = server?.kind === "missing";
+  const serverFailed = server?.kind === "failed";
   const missingDebugger = installableDebugger(adapter);
-  if (dismissed.includes(languageId) || (!serverMissing && missingDebugger === null)) return null;
+  if (dismissed.includes(languageId) || (!serverMissing && !serverFailed && missingDebugger === null)) {
+    return null;
+  }
 
   // "Install it" only when the install could actually run: without Go on the
   // machine, `go install …` is a spawn failure dressed as an offer, and that gap
-  // is the agent's to close.
+  // is the agent's to close. A failed server never gets it — it is installed
+  // already, and reinstalling is the one fix known not to be the fix.
   const runnable = serverMissing && server.installable;
   const summary = serverMissing
     ? t("lsp.offer", { language: languageId, command: server.command })
-    : t("setup.debuggerOnly", { language: languageId });
+    : serverFailed
+      ? t("lsp.offerFailed", { language: languageId, command: server.command })
+      : t("setup.debuggerOnly", { language: languageId });
 
   return (
     <div className="flex items-center gap-2 border-b border-warn/40 bg-warn/10 px-3 py-1 text-[12px]">
@@ -81,6 +89,7 @@ function SetupOffer({ languageId, relativePath }: { languageId: string; relative
             relativePath,
             serverCommand: serverMissing ? server.command : null,
             serverInstallHint: serverMissing ? server.installHint : null,
+            failedServer: serverFailed ? { command: server.command, reason: server.reason } : null,
             missingDebugger,
             // No adapter at all: an install cannot help, but being taught one
             // can - so the agent gets the contract for writing it down.

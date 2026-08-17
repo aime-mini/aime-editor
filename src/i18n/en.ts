@@ -60,6 +60,7 @@ export const en = {
   "ai.signedInAlready": "Already signed in to {provider} - nothing to do.",
   "ai.signInRequired": "{provider} is installed but not signed in yet.",
   "ai.signInRecheck": "Check again",
+  "ai.useApiKey": "Use an API key instead",
   "ai.model": "Model",
   "ai.effort": "Reasoning effort",
   "ai.permission.full": "Permissions: FULL - the AI runs every tool unprompted. Click for a safer level.",
@@ -172,6 +173,8 @@ export const en = {
   "lsp.offer":
     "No completions for {language} yet - install {command} to get suggestions, types and go-to-definition.",
   "lsp.offerInstall": "Install it",
+  "lsp.offerFailed":
+    "The {language} language server ({command}) is installed but not working - the AI can read its error and fix the machine around it.",
   "setup.ai": "Let AI set it up",
   "setup.aiHint":
     "The AI reads this project, works out what this machine needs, installs it and verifies it - you watch it happen in the AI panel.",
@@ -254,6 +257,12 @@ export const en = {
   "settings.autoSave": "Auto save",
   "settings.autoSaveHint": "Saves a second after you stop typing - Ctrl+S still saves right away",
   "settings.tabSize": "Indent size",
+  "settings.apiKey": "API key",
+  "settings.apiKeyHint":
+    "Stored on this machine only, sent as {env} to Aime's own runs - it takes precedence over the CLI's login there. Your terminals never see it.",
+  "settings.apiKeySave": "Save",
+  "settings.apiKeySaved": "Saved",
+  "settings.apiKeyClear": "Remove",
   "settings.permission": "What the AI may do",
   "settings.permission.full": "Everything",
   "settings.permission.edits": "Edit files",

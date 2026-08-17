@@ -62,6 +62,7 @@ export const vi: Record<TranslationKey, string> = {
   "ai.signedInAlready": "{provider} đã đăng nhập rồi - không cần làm gì thêm.",
   "ai.signInRequired": "{provider} đã cài nhưng chưa đăng nhập.",
   "ai.signInRecheck": "Kiểm tra lại",
+  "ai.useApiKey": "Dùng API key thay thế",
   "ai.model": "Model",
   "ai.effort": "Mức suy luận",
   "ai.permission.full": "Quyền: TOÀN QUYỀN - AI chạy mọi tool không hỏi. Bấm để chuyển mức an toàn hơn.",
@@ -173,6 +174,8 @@ export const vi: Record<TranslationKey, string> = {
   "lsp.offer":
     "{language} chưa có gợi ý - cài {command} để có gợi ý khi gõ, xem kiểu và nhảy tới định nghĩa.",
   "lsp.offerInstall": "Cài ngay",
+  "lsp.offerFailed":
+    "Language server của {language} ({command}) đã cài nhưng không chạy được - AI có thể đọc lỗi của nó rồi sửa lại môi trường máy.",
   "setup.ai": "Để AI lo",
   "setup.aiHint":
     "AI đọc dự án này, tự tìm ra máy cần gì, cài rồi kiểm chứng lại - anh xem nó làm ngay trong panel AI.",
@@ -255,6 +258,12 @@ export const vi: Record<TranslationKey, string> = {
   "settings.autoSave": "Tự động lưu",
   "settings.autoSaveHint": "Lưu sau khi ngừng gõ một giây - Ctrl+S vẫn lưu ngay lập tức",
   "settings.tabSize": "Độ thụt dòng",
+  "settings.apiKey": "API key",
+  "settings.apiKeyHint":
+    "Chỉ lưu trên máy này, truyền dạng {env} vào các lần Aime tự chạy CLI - ở đó key được ưu tiên hơn login của CLI. Terminal của anh không bao giờ thấy key.",
+  "settings.apiKeySave": "Lưu",
+  "settings.apiKeySaved": "Đã lưu",
+  "settings.apiKeyClear": "Xoá",
   "settings.permission": "AI được làm gì",
   "settings.permission.full": "Toàn quyền",
   "settings.permission.edits": "Sửa file",

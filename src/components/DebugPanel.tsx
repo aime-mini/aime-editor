@@ -398,6 +398,7 @@ function StartRow() {
                 relativePath: openFilePath === null ? "" : fileNameOf(openFilePath),
                 serverCommand: null,
                 serverInstallHint: null,
+                failedServer: null,
                 missingDebugger: null,
                 teachDebugger: true,
               });
@@ -445,6 +446,7 @@ function StartRow() {
                   relativePath: openFilePath === null ? "" : fileNameOf(openFilePath),
                   serverCommand: null,
                   serverInstallHint: null,
+                  failedServer: null,
                   missingDebugger: null,
                   teachDebugger: true,
                   verifyFailure: verdict.detail,

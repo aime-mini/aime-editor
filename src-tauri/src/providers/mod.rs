@@ -2,8 +2,9 @@ pub mod adapter;
 pub mod claude;
 pub mod codex;
 pub mod generic;
+pub mod keys;
 
-use adapter::{adapter_for, Invocation, Permission, TurnRequest};
+use adapter::{adapter_for, Adapter, Invocation, Permission, TurnRequest};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -76,6 +77,38 @@ where
     }
 }
 
+/// Puts the provider's API key into one spawn's environment, when the user
+/// configured one and the adapter authenticates that way (`api_key_env`).
+///
+/// Only Aime's own spawns get the key: the user's terminals never see it, and
+/// with no key configured nothing changes about the CLI's own login. Measured
+/// (2026-08-16): `claude -p` honours `ANTHROPIC_API_KEY`, and the CLI itself
+/// says the key takes precedence over the claude.ai login for that process.
+fn apply_api_key(cmd: &mut Command, app: &AppHandle, adapter: &dyn Adapter, provider_id: &str) {
+    let Some(env_name) = adapter.api_key_env() else {
+        return;
+    };
+    let dir = match app.path().app_config_dir() {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("[providers] no config dir, so no API key for {provider_id}: {err}");
+            return;
+        }
+    };
+    if let Some(key) = keys::api_key(&dir, provider_id) {
+        cmd.env(env_name, key);
+    }
+}
+
+/// Whether this provider has an API key configured in Aime.
+fn api_key_configured(app: &AppHandle, adapter: &dyn Adapter, provider_id: &str) -> bool {
+    adapter.api_key_env().is_some()
+        && app
+            .path()
+            .app_config_dir()
+            .is_ok_and(|dir| keys::api_key(&dir, provider_id).is_some())
+}
+
 /// Whether the child needs a writable stdin, given how its prompt travels.
 fn stdin_for(invocation: &Invocation) -> Stdio {
     if invocation.stdin.is_some() {
@@ -127,6 +160,7 @@ pub async fn ai_send_prompt(
         permission: options.permission,
     });
     let mut cmd = cli_command(adapter.command(), &invocation.args);
+    apply_api_key(&mut cmd, &app, adapter, &provider_id);
     cmd.current_dir(&cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -227,6 +261,7 @@ pub fn ai_cancel(state: State<'_, ProviderState>, run_id: String) -> Result<(), 
 /// adapter so it cannot change anything on disk.
 #[tauri::command]
 pub async fn ai_oneshot(
+    app: AppHandle,
     provider_id: String,
     prompt: String,
     cwd: String,
@@ -234,7 +269,9 @@ pub async fn ai_oneshot(
 ) -> Result<String, String> {
     let adapter = adapter_for(&provider_id)?;
     let invocation = adapter.oneshot_invocation(&prompt, model.as_deref());
-    let mut child = cli_command(adapter.command(), &invocation.args)
+    let mut cmd = cli_command(adapter.command(), &invocation.args);
+    apply_api_key(&mut cmd, &app, adapter, &provider_id);
+    let mut child = cmd
         .current_dir(&cwd)
         .stdin(stdin_for(&invocation))
         .stdout(Stdio::piped())
@@ -272,6 +309,10 @@ pub struct ProviderSummary {
     pub parser: String,
     /// For jsonl: the field carrying assistant text.
     pub text_field: String,
+    /// Environment variable an API key rides on Aime's spawns, when this
+    /// provider takes one that way (`Adapter::api_key_env`). `None` hides the
+    /// key field in Settings — Codex, whose CLI stores keys itself.
+    pub api_key_env: Option<String>,
 }
 
 /// Every provider Aime can talk to right now.
@@ -285,6 +326,7 @@ pub fn list_providers() -> Vec<ProviderSummary> {
             install_command: "npm install -g @anthropic-ai/claude-code".into(),
             parser: "claude".into(),
             text_field: String::new(),
+            api_key_env: claude::ClaudeAdapter.api_key_env().map(str::to_string),
         },
         ProviderSummary {
             id: "codex".into(),
@@ -293,6 +335,7 @@ pub fn list_providers() -> Vec<ProviderSummary> {
             install_command: "npm install -g @openai/codex".into(),
             parser: "codex".into(),
             text_field: String::new(),
+            api_key_env: codex::CodexAdapter.api_key_env().map(str::to_string),
         },
     ];
     providers.extend(generic::configured().iter().map(|adapter| ProviderSummary {
@@ -305,6 +348,7 @@ pub fn list_providers() -> Vec<ProviderSummary> {
             generic::ParserKind::Jsonl => "jsonl".into(),
         },
         text_field: adapter.config.text_field.clone(),
+        api_key_env: adapter.api_key_env().map(str::to_string),
     }));
     providers
 }
@@ -322,6 +366,7 @@ const PROVIDERS_TEMPLATE: &str = r#"[
     "resumeArgs": [],
     "parser": "plain",
     "login": "gemini auth login",
+    "apiKeyEnv": "GEMINI_API_KEY",
     "install": "npm install -g @google/gemini-cli",
     "memory": "config-pointer",
     "memoryFile": ".gemini/GEMINI.md"
@@ -352,15 +397,20 @@ pub struct ProviderHealth {
     pub signed_in: Option<bool>,
     /// Command that signs the user in, offered as a one-click terminal action.
     pub login_command: String,
+    /// True when an API key is configured in Aime for this provider — the
+    /// credential the CLI's own status probe cannot see (measured: `codex
+    /// login status` reports its stored login and ignores environment keys).
+    pub api_key: bool,
 }
 
 /// Availability + sign-in probe (`<cli> --version`, then the adapter's auth
 /// check) so the UI can guide the user before the first prompt instead of
 /// failing mid-conversation.
 #[tauri::command]
-pub async fn provider_health(provider_id: String) -> Result<ProviderHealth, String> {
+pub async fn provider_health(app: AppHandle, provider_id: String) -> Result<ProviderHealth, String> {
     let adapter = adapter_for(&provider_id)?;
     let login_command = adapter.login_command().to_string();
+    let api_key = api_key_configured(&app, adapter, &provider_id);
 
     let version = match cli_command(adapter.command(), ["--version"]).output().await {
         Ok(output) if output.status.success() => {
@@ -369,19 +419,27 @@ pub async fn provider_health(provider_id: String) -> Result<ProviderHealth, Stri
         _ => None,
     };
     if version.is_none() {
+        // A key does not install a CLI: missing stays missing, key or not.
         return Ok(ProviderHealth {
             installed: false,
             version: None,
             signed_in: None,
             login_command,
+            api_key,
         });
     }
 
-    let mut signed_in = None;
-    if let Some(probe) = adapter.auth_probe_args() {
-        if let Ok(output) = cli_command(adapter.command(), probe).output().await {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            signed_in = Some(adapter.is_signed_in(output.status.success(), stdout.trim()));
+    // A configured key IS the credential for every spawn Aime makes, and it is
+    // one the status probe cannot judge - the probe answers about the CLI's own
+    // stored login. An invalid key surfaces as the turn's own error, the same
+    // way an expired login does.
+    let mut signed_in = if api_key { Some(true) } else { None };
+    if signed_in.is_none() {
+        if let Some(probe) = adapter.auth_probe_args() {
+            if let Ok(output) = cli_command(adapter.command(), probe).output().await {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                signed_in = Some(adapter.is_signed_in(output.status.success(), stdout.trim()));
+            }
         }
     }
 
@@ -390,5 +448,21 @@ pub async fn provider_health(provider_id: String) -> Result<ProviderHealth, Stri
         version,
         signed_in,
         login_command,
+        api_key,
     })
+}
+
+/// Stores the API key for one provider; an empty key clears it. Write-only by
+/// design: the frontend may ask whether a key exists (`ProviderHealth`), never
+/// what it is.
+#[tauri::command]
+pub fn provider_set_api_key(app: AppHandle, provider_id: String, key: String) -> Result<(), String> {
+    let adapter = adapter_for(&provider_id)?;
+    if adapter.api_key_env().is_none() {
+        // Storing a key nothing would ever read is a silent lie - Codex, for
+        // one, takes keys only through its own `codex login --with-api-key`.
+        return Err(format!("{provider_id} does not take an API key through Aime"));
+    }
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    keys::set_api_key(&dir, &provider_id, &key)
 }

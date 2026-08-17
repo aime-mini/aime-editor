@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Check, Cpu, Eye, Monitor, Settings2, Shield, ShieldOff, X } from "lucide-react";
 import { useI18n, useT } from "../i18n";
@@ -71,6 +71,82 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (on: boolean) => void
   );
 }
 
+/**
+ * The API key for the current provider, write-only.
+ *
+ * The key goes to Rust and never comes back: this row only ever learns
+ * *whether* one is stored (`apiKeyConfigured`, from the health probe), so a
+ * saved key cannot be read out of the settings page or the store. It appears
+ * only for providers whose CLI takes a key from the environment — Codex keeps
+ * its own keys (`codex login --with-api-key`), so it gets no field here.
+ */
+function ApiKeyRow({ envName }: { envName: string }) {
+  const apiKeyConfigured = useAi((s) => s.apiKeyConfigured);
+  const setApiKey = useAi((s) => s.setApiKey);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const t = useT();
+
+  const submit = (key: string) => {
+    setError(null);
+    setApiKey(key)
+      .then(() => {
+        setDraft("");
+      })
+      .catch((err: unknown) => {
+        setError(String(err));
+      });
+  };
+
+  return (
+    <>
+      <Row label={t("settings.apiKey")} hint={t("settings.apiKeyHint", { env: envName })}>
+        {apiKeyConfigured ? (
+          <>
+            <span className="flex items-center gap-1 text-[11.5px] text-ok">
+              <Check size={12} /> {t("settings.apiKeySaved")}
+            </span>
+            <button
+              onClick={() => {
+                submit("");
+              }}
+              className="rounded-md border border-line px-2 py-1 text-[11.5px] text-muted hover:text-fg"
+            >
+              {t("settings.apiKeyClear")}
+            </button>
+          </>
+        ) : (
+          <>
+            <input
+              type="password"
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && draft.trim()) submit(draft);
+              }}
+              placeholder={envName}
+              autoComplete="off"
+              className="w-44 rounded-md border border-line bg-elevated px-2 py-1 text-[11.5px] outline-none focus:border-accent"
+            />
+            <button
+              onClick={() => {
+                submit(draft);
+              }}
+              disabled={!draft.trim()}
+              className="rounded-md bg-accent-strong px-2 py-1 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+            >
+              {t("settings.apiKeySave")}
+            </button>
+          </>
+        )}
+      </Row>
+      {error && <p className="pb-1 text-[11px] text-danger">{error}</p>}
+    </>
+  );
+}
+
 const PERMISSION_LABELS: Record<Permission, string> = {
   full: "settings.permission.full",
   edits: "settings.permission.edits",
@@ -106,6 +182,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   }, [onClose]);
 
   const capabilities = capabilitiesOf(providerId);
+  const apiKeyEnv = providers.find((provider) => provider.id === providerId)?.apiKeyEnv ?? null;
   const section =
     "mt-3 mb-1 flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-muted uppercase";
 
@@ -211,6 +288,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               onChange={setProvider}
             />
           </Row>
+          {apiKeyEnv !== null && <ApiKeyRow key={providerId} envName={apiKeyEnv} />}
           <Row label={t("ai.model")}>
             <select
               value={model}

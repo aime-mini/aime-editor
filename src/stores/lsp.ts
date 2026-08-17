@@ -33,8 +33,12 @@ export type LanguageState =
    * Monaco's fallback reads indentation and pins bare braces instead.
    */
   | { kind: "running"; outline: boolean }
-  /** The server refused to start or crashed; `reason` is the CLI's own words. */
-  | { kind: "failed"; reason: string };
+  /**
+   * The server refused to start or crashed; `reason` is the CLI's own words.
+   * `command` names the binary that failed, so the offer banner can hand the
+   * agent a brief instead of a shrug.
+   */
+  | { kind: "failed"; reason: string; command: string };
 
 /** Live sessions by language; the providers below read this map. */
 const sessions = new Map<string, LanguageSession>();
@@ -147,7 +151,10 @@ export const useLsp = create<LspStoreState>((set, get) => ({
         () => {
           sessions.delete(languageId);
           set((s) => ({
-            languages: { ...s.languages, [languageId]: { kind: "failed", reason: "server stopped" } },
+            languages: {
+              ...s.languages,
+              [languageId]: { kind: "failed", reason: "server stopped", command: availability.command },
+            },
           }));
         },
         availability.projectOpen ?? undefined,
@@ -169,7 +176,10 @@ export const useLsp = create<LspStoreState>((set, get) => ({
       });
     } catch (err: unknown) {
       set((s) => ({
-        languages: { ...s.languages, [languageId]: { kind: "failed", reason: String(err) } },
+        languages: {
+          ...s.languages,
+          [languageId]: { kind: "failed", reason: String(err), command: availability.command },
+        },
       }));
     }
   },

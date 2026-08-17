@@ -32,6 +32,7 @@ const request = {
   relativePath: "app/models/user.rb",
   serverCommand: "solargraph",
   serverInstallHint: "gem install solargraph",
+  failedServer: null,
   missingDebugger: null,
   teachDebugger: false,
 };

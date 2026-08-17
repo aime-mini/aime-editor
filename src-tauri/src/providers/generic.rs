@@ -75,6 +75,10 @@ pub struct ProviderConfig {
     /// argument loses everything after its first line (see `Invocation`).
     #[serde(default)]
     pub prompt_stdin: bool,
+    /// Environment variable this CLI reads an API key from (e.g.
+    /// `GEMINI_API_KEY`). Empty = the Settings page offers no key field for it.
+    #[serde(default)]
+    pub api_key_env: String,
 }
 
 fn default_text_field() -> String {
@@ -197,6 +201,10 @@ impl Adapter for GenericAdapter {
         None // an unknown CLI has no probe Aime could trust
     }
 
+    fn api_key_env(&self) -> Option<&str> {
+        Some(self.config.api_key_env.as_str()).filter(|name| !name.is_empty())
+    }
+
     fn login_command(&self) -> &'static str {
         Box::leak(self.config.login.clone().into_boxed_str())
     }
@@ -288,8 +296,23 @@ mod tests {
                 memory: super::MemoryStrategy::default(),
                 memory_file: String::new(),
                 prompt_stdin: false,
+                api_key_env: String::new(),
             },
         }
+    }
+
+    #[test]
+    fn the_api_key_variable_comes_from_the_config_and_empty_means_none() {
+        let mut with = adapter(&["{prompt}"], &[], ParserKind::Plain);
+        with.config.api_key_env = "GEMINI_API_KEY".into();
+        assert_eq!(with.api_key_env(), Some("GEMINI_API_KEY"));
+
+        let without = adapter(&["{prompt}"], &[], ParserKind::Plain);
+        assert_eq!(
+            without.api_key_env(),
+            None,
+            "no variable configured, no key field offered"
+        );
     }
 
     fn turn<'a>(prompt: &'a str, session_id: Option<&'a str>) -> TurnRequest<'a> {

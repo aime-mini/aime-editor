@@ -94,12 +94,12 @@ pub(crate) async fn version_of(command: &str) -> Option<String> {
 /// Probes every tool Aime relies on. Never fails: a machine missing
 /// everything still gets a full report, which is the point.
 #[tauri::command]
-pub async fn environment_report() -> Vec<ToolStatus> {
+pub async fn environment_report(app: AppHandle) -> Vec<ToolStatus> {
     let mut report = Vec::new();
 
     for (id, label, install_hint) in PROVIDERS {
         // Reuse the AI panel's own probe, so the two can never disagree.
-        let health = provider_health(id.to_string()).await.ok();
+        let health = provider_health(app.clone(), id.to_string()).await.ok();
         let installed = health.as_ref().is_some_and(|h| h.installed);
         report.push(ToolStatus {
             id: id.to_string(),

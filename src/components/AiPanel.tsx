@@ -686,6 +686,18 @@ export function AiPanel() {
                   >
                     <KeyRound size={12} /> {t("ai.signIn")}
                   </button>
+                  {/* The other door in: an API key pasted in Settings works
+                      without any browser round-trip (providers that take one). */}
+                  {providers.find((p) => p.id === providerId)?.apiKeyEnv != null && (
+                    <button
+                      onClick={() => {
+                        useLayout.getState().setSettingsOpen(true);
+                      }}
+                      className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] text-muted hover:text-fg"
+                    >
+                      {t("ai.useApiKey")}
+                    </button>
+                  )}
                   {recheckButton}
                 </ProviderNotice>
               )}

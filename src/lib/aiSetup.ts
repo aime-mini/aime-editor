@@ -21,6 +21,14 @@ export interface MissingDebugger {
   installHint: string;
 }
 
+/** A language server that is on this machine but would not serve. */
+export interface FailedServer {
+  /** The command Aime ran — it refused to start, or started and then died. */
+  command: string;
+  /** The failure exactly as Aime saw it: the CLI's own words, unedited. */
+  reason: string;
+}
+
 export interface SetupRequest {
   /** Monaco's language id — the same one the whole app keys off. */
   languageId: string;
@@ -30,6 +38,12 @@ export interface SetupRequest {
   serverCommand: string | null;
   /** What Aime would run to install that server, when it knows. */
   serverInstallHint: string | null;
+  /**
+   * A server that is installed yet failed to run — the opposite gap from
+   * `serverCommand`, and one an install hint cannot close: the agent has to
+   * read the failure and fix the machine around the server.
+   */
+  failedServer: FailedServer | null;
   /**
    * The adapter Aime drives for this language when this machine has not got it.
    * Null whenever no install here would change anything — `lib/dap/availability.ts`
@@ -91,13 +105,19 @@ const TEACH_ADAPTER = [
 /** Long enough to be unambiguous, short enough that the agent reads all of it. */
 export function buildSetupPrompt(request: SetupRequest): string {
   const { languageId, relativePath, serverCommand, serverInstallHint, missingDebugger } = request;
-  const { teachDebugger } = request;
+  const { failedServer, teachDebugger } = request;
 
   const gaps: string[] = [];
   if (serverCommand !== null) {
     gaps.push(
       `- Code intelligence: I probe for \`${serverCommand}\` on PATH and it is not there.` +
         (serverInstallHint === null ? "" : ` My own hint for it is \`${serverInstallHint}\`.`),
+    );
+  }
+  if (failedServer !== null) {
+    gaps.push(
+      `- Code intelligence: \`${failedServer.command}\` is installed here, but it failed to serve. ` +
+        `What I saw, in its own words: ${failedServer.reason}`,
     );
   }
   if (missingDebugger !== null) {
@@ -136,6 +156,12 @@ export function buildSetupPrompt(request: SetupRequest): string {
       ? ""
       : `When you are done, \`${serverCommand}\` must be runnable from a new shell: that is exactly ` +
         "what I probe for, and until it is on PATH I will keep reporting the language as unsupported.",
+    failedServer === null
+      ? ""
+      : `When you are done, \`${failedServer.command}\` must start and keep running. Diagnose the ` +
+        "failure above before reinstalling anything - a server that dies on startup is usually " +
+        "missing a runtime, a dependency or a compatible version, not the package itself. I retry " +
+        "a failed server the next time a file of its language is opened, so no restart is needed.",
     missingDebugger === null
       ? ""
       : `For debugging, I look for \`${missingDebugger.adapterId}\` itself rather than for the runtime ` +

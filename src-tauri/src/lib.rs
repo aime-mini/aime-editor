@@ -87,6 +87,7 @@ pub fn run() {
             providers::ai_cancel,
             providers::ai_oneshot,
             providers::provider_health,
+            providers::provider_set_api_key,
             providers::list_providers,
             providers::providers_config_path,
             git::git_status,
