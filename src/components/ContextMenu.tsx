@@ -7,10 +7,13 @@ export interface MenuItem {
   onClick: () => void;
 }
 
+/** A line between two groups of entries that answer different questions. */
+export const SEPARATOR = "separator" as const;
+
 interface ContextMenuProps {
   x: number;
   y: number;
-  items: MenuItem[];
+  items: (MenuItem | typeof SEPARATOR)[];
   onClose: () => void;
 }
 
@@ -50,21 +53,25 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
         style={{ left: x, top: y }}
         className="absolute min-w-40 rounded-lg border border-line bg-elevated py-1 shadow-xl"
       >
-        {items.map((item) => (
-          <button
-            key={item.label}
-            onClick={() => {
-              onClose();
-              item.onClick();
-            }}
-            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent-soft ${
-              item.danger ? "text-danger" : "text-fg"
-            }`}
-          >
-            {item.icon}
-            {item.label}
-          </button>
-        ))}
+        {items.map((item, index) =>
+          item === SEPARATOR ? (
+            <hr key={`separator-${String(index)}`} className="my-1 border-line" />
+          ) : (
+            <button
+              key={item.label}
+              onClick={() => {
+                onClose();
+                item.onClick();
+              }}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent-soft ${
+                item.danger ? "text-danger" : "text-fg"
+              }`}
+            >
+              {item.icon}
+              {item.label}
+            </button>
+          ),
+        )}
       </div>
     </div>
   );

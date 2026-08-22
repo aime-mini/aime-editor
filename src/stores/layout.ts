@@ -5,7 +5,7 @@ import { create } from "zustand";
  * itself (autoSaveId); this store only tracks visibility so the status bar
  * and keyboard shortcuts can control panels from outside the PanelGroup.
  */
-export type SidebarView = "files" | "git" | "debug";
+export type SidebarView = "files" | "git" | "workItems" | "debug";
 
 /** The bottom panel hosts three things; only one is on screen at a time. */
 export type BottomView = "terminal" | "debug" | "plugins";

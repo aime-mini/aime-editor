@@ -13,6 +13,7 @@ import {
   FolderX,
   GitBranch,
   Languages,
+  ListChecks,
   Moon,
   PanelLeft,
   Play,
@@ -208,6 +209,14 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
           icon: <File size={14} />,
           run: () => {
             setSidebarView("files");
+          },
+        },
+        {
+          id: "open-work-items",
+          title: t("cmd.openWorkItems"),
+          icon: <ListChecks size={14} />,
+          run: () => {
+            setSidebarView("workItems");
           },
         },
         {

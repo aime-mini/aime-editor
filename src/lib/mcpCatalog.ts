@@ -25,6 +25,13 @@ export interface McpCatalogEntry {
   hint: TranslationKey;
   /** true when `{root}` must become the workspace path. */
   needsRoot?: boolean;
+  /**
+   * true when `{organization}` must become an Azure DevOps organization. Filled
+   * in from a connected board (Work items panel) when there is one, so the two
+   * halves of the same integration agree; otherwise the form shows a placeholder
+   * for the user to replace.
+   */
+  needsOrganization?: boolean;
   /** true when the server only works after an API key is set as an env variable. */
   needsKey?: boolean;
 }
@@ -67,6 +74,17 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     group: "boards",
     target: "https://mcp.monday.com/mcp",
     hint: "mcp.catalog.monday",
+  },
+  {
+    name: "azure-devops",
+    label: "Azure DevOps",
+    group: "boards",
+    // First-party: github.com/microsoft/azure-devops-mcp, verified on npm
+    // 2026-08-18 (v2.9.0). `--help` says the organization is a positional
+    // argument and sign-in is interactive unless told otherwise.
+    target: "npx -y @azure-devops/mcp {organization}",
+    hint: "mcp.catalog.azureDevOps",
+    needsOrganization: true,
   },
   {
     name: "github",
@@ -198,8 +216,23 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
   },
 ];
 
-/** Resolves `{root}` against the open workspace; quoted, because paths have spaces. */
-export function resolveTarget(entry: McpCatalogEntry, rootPath: string | null): string {
-  if (!entry.needsRoot) return entry.target;
-  return entry.target.replace("{root}", rootPath ? `"${rootPath}"` : ".");
+/**
+ * Fills the placeholders an entry declares: `{root}` from the open workspace
+ * (quoted, because paths have spaces) and `{organization}` from a connected
+ * board. What cannot be filled stays readable, since the picker only fills the
+ * form and the user edits it before adding.
+ */
+export function resolveTarget(
+  entry: McpCatalogEntry,
+  rootPath: string | null,
+  organization: string | null,
+): string {
+  let target = entry.target;
+  if (entry.needsRoot) {
+    target = target.replace("{root}", rootPath === null ? "." : `"${rootPath}"`);
+  }
+  if (entry.needsOrganization) {
+    target = target.replace("{organization}", organization ?? "your-organization");
+  }
+  return target;
 }

@@ -20,6 +20,7 @@ import { monacoThemeOf, useTheme } from "../stores/theme";
 import { useSettings } from "../stores/settings";
 import { useWorkspace } from "../stores/workspace";
 import { ConflictView } from "./ConflictView";
+import { WorkItemView } from "./WorkItemView";
 import { DebugToolbar } from "./DebugToolbar";
 import { useDebugGutter } from "./useDebugGutter";
 
@@ -599,6 +600,7 @@ export function EditorPane() {
     commitHash,
     conflictPath,
     blamePath,
+    workItemId,
     fileContent,
     dirty,
     rootPath,
@@ -726,6 +728,12 @@ export function EditorPane() {
       stale = true;
     };
   }, [openFilePath, rootPath, treeVersion, renderBlameForLine]);
+
+  if (workItemId) {
+    // Keyed by the item, so opening another one starts from a clean view
+    // instead of showing the previous item's text while the new one loads.
+    return <WorkItemView key={workItemId} itemId={workItemId} />;
+  }
 
   if (conflictPath) {
     return <ConflictView relativePath={conflictPath} />;

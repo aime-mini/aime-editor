@@ -16,6 +16,7 @@ mod providers;
 mod session;
 mod tasks;
 mod terminal;
+mod trackers;
 mod updates;
 mod window_cmds;
 mod wire;
@@ -164,6 +165,19 @@ pub fn run() {
             dap::dap_connect,
             dap::dap_send,
             dap::dap_stop,
+            trackers::tracker_kinds,
+            trackers::tracker_connections,
+            trackers::tracker_binding,
+            trackers::tracker_bind,
+            trackers::tracker_unbind,
+            trackers::tracker_connect,
+            trackers::tracker_disconnect,
+            trackers::tracker_work_items,
+            trackers::tracker_item_detail,
+            trackers::tracker_states,
+            trackers::tracker_comments,
+            trackers::tracker_add_comment,
+            trackers::tracker_set_state,
             plugins::plugin_list,
             plugins::plugin_source,
             plugins::plugins_folder,

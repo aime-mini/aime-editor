@@ -31,6 +31,13 @@ interface WorkspaceState {
   conflictPath: string | null;
   /** Repo-relative path open in the full-file blame view; null = normal editor. */
   blamePath: string | null;
+  /**
+   * The work item open in the editor area; null = normal editor. It lives here
+   * with the other views that take over the middle of the window, because that
+   * is what it is: a description worth reading is worth the room, and the
+   * sidebar has none.
+   */
+  workItemId: string | null;
   fileContent: string;
   /** Content as last loaded/saved — dirty is a comparison against this, so undoing back to it clears the flag. */
   savedContent: string;
@@ -52,6 +59,8 @@ interface WorkspaceState {
   openCommit: (hash: string) => void;
   openConflict: (relativePath: string) => void;
   openBlame: (relativePath: string) => void;
+  /** Shows one work item in the editor area (the panel hands over its id). */
+  openWorkItem: (id: string) => void;
   setContent: (content: string) => void;
   saveFile: () => Promise<void>;
   /**
@@ -128,6 +137,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     commitHash: null,
     conflictPath: null,
     blamePath: null,
+    workItemId: null,
     fileContent: "",
     savedContent: "",
     dirty: false,
@@ -244,23 +254,45 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     },
 
     openDiff: (relativePath: string) => {
-      set({ diffPath: relativePath, commitHash: null, conflictPath: null, blamePath: null });
+      set({
+        diffPath: relativePath,
+        commitHash: null,
+        conflictPath: null,
+        blamePath: null,
+        workItemId: null,
+      });
     },
 
     closeDiff: () => {
-      set({ diffPath: null, commitHash: null, conflictPath: null, blamePath: null });
+      set({ diffPath: null, commitHash: null, conflictPath: null, blamePath: null, workItemId: null });
     },
 
     openCommit: (hash: string) => {
-      set({ commitHash: hash, diffPath: null, conflictPath: null, blamePath: null });
+      set({ commitHash: hash, diffPath: null, conflictPath: null, blamePath: null, workItemId: null });
     },
 
     openConflict: (relativePath: string) => {
-      set({ conflictPath: relativePath, diffPath: null, commitHash: null, blamePath: null });
+      set({
+        conflictPath: relativePath,
+        diffPath: null,
+        commitHash: null,
+        blamePath: null,
+        workItemId: null,
+      });
     },
 
     openBlame: (relativePath: string) => {
-      set({ blamePath: relativePath, diffPath: null, commitHash: null, conflictPath: null });
+      set({
+        blamePath: relativePath,
+        diffPath: null,
+        commitHash: null,
+        conflictPath: null,
+        workItemId: null,
+      });
+    },
+
+    openWorkItem: (id: string) => {
+      set({ workItemId: id, diffPath: null, commitHash: null, conflictPath: null, blamePath: null });
     },
 
     setContent: (content: string) => {

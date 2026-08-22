@@ -7,6 +7,7 @@ import { searchMcpServers, type McpSearchResult } from "../lib/mcpRegistry";
 import { capabilitiesOf } from "../lib/providers";
 import { useAi } from "../stores/ai";
 import { runInTerminal } from "../stores/terminals";
+import { useTrackers } from "../stores/trackers";
 import { useWorkspace } from "../stores/workspace";
 
 /** Mirror of the Rust `McpServer` (mcp.rs). */
@@ -29,6 +30,12 @@ const SEARCH_DEBOUNCE_MS = 350;
 export function McpModal({ onClose }: { onClose: () => void }) {
   const rootPath = useWorkspace((s) => s.rootPath);
   const providerId = useAi((s) => s.providerId);
+  // A connected board (Work items panel) knows the organization this machine
+  // works in, so the catalog does not have to ask for it twice. Reading the list
+  // costs no network call.
+  const connectedOrganization = useTrackers(
+    (s) => s.connections.map((connection) => connection.settings.organization).find((name) => name) ?? null,
+  );
   const [servers, setServers] = useState<McpServer[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyName, setBusyName] = useState<string | null>(null);
@@ -64,6 +71,12 @@ export function McpModal({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Which board is connected only decides a placeholder, and reading it costs
+  // no network call.
+  useEffect(() => {
+    void useTrackers.getState().loadConnections();
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -230,7 +243,7 @@ export function McpModal({ onClose }: { onClose: () => void }) {
                         <button
                           key={entry.name}
                           onClick={() => {
-                            fillForm(entry.name, resolveTarget(entry, rootPath));
+                            fillForm(entry.name, resolveTarget(entry, rootPath, connectedOrganization));
                           }}
                           title={`${t(entry.hint)}${entry.needsKey ? ` - ${t("mcp.needsKey")}` : ""}`}
                           className="rounded-md border border-line px-2 py-1 text-[11.5px] text-muted hover:border-accent hover:text-fg"

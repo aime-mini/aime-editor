@@ -34,4 +34,21 @@ dunce = "1.0.5"
 portable-pty = "0.9.0"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+# Work trackers (trackers/) talk HTTP from here, not from the webview: their
+# APIs send no CORS headers, and a token the frontend never receives cannot
+# leak from it.
+#
+# The feature list is the updater plugin's, deliberately: that plugin already
+# builds this exact reqwest (rustls without a bundled provider) plus rustls on
+# `ring`, so Aime links one TLS stack instead of two. Taking reqwest's defaults
+# instead pulled in a second provider (aws-lc-rs), which needs cmake and a C
+# compiler to build - a price nobody cloning this repo should pay for six REST
+# calls. The provider is installed at first use (trackers/http.rs).
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "rustls-no-provider",
+  "system-proxy",
+] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+async-trait = "0.1"
 
