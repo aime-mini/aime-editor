@@ -5,6 +5,7 @@ mod cli;
 mod dap;
 mod diagnostics;
 mod environment;
+mod exec;
 mod fs_cmds;
 mod fs_watch;
 mod git;
@@ -36,6 +37,7 @@ pub fn run() {
         .manage(terminal::TerminalState::default())
         .manage(lsp::LspState::default())
         .manage(dap::DapState::default())
+        .manage(exec::ExecState::default())
         .setup(|app| {
             // The main window is configured hidden; size it to the real
             // monitor work area, maximize and show (see fit_and_maximize).
@@ -140,6 +142,8 @@ pub fn run() {
             memory::memory_paths,
             memory::ensure_memory_bridge,
             tasks::detect_tasks,
+            exec::exec_run,
+            exec::exec_cancel,
             tasks::task_command_line,
             mcp::mcp_list,
             mcp::mcp_add,
