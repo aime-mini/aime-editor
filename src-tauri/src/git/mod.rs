@@ -507,10 +507,112 @@ pub async fn git_log(root: String, limit: u32) -> Result<Vec<GitLogEntry>, Strin
     }
 }
 
-/// Full patch of one commit (stat + diff) for the read-only commit view.
+/// One file a commit touched.
+#[derive(Serialize, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitFile {
+    /// Path relative to the repo root, forward slashes (as git reports).
+    pub path: String,
+    /// Where a renamed or copied file came from.
+    pub orig_path: Option<String>,
+    /// `A`, `M`, `D`, `R`, `C`, `T` — the letter without git's similarity score.
+    pub status: String,
+    pub added: u32,
+    pub removed: u32,
+    /// Binary files have no line counts; the two above are then meaningless.
+    pub binary: bool,
+}
+
+/// A commit as the reader needs it: who, when, why, and what it touched.
+#[derive(Serialize, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDetail {
+    pub hash: String,
+    pub subject: String,
+    /// The message past its first line, empty when there is none.
+    pub body: String,
+    pub author: String,
+    /// Seconds since the epoch, formatted where it is shown.
+    pub when: i64,
+    pub files: Vec<CommitFile>,
+}
+
+/// Everything about one commit except the patches themselves.
+///
+/// The files come back as a list rather than inside one long patch because a
+/// commit touching twenty files is unreadable as a wall of text: the reader
+/// wants to see what moved and then open the one file they care about. The
+/// patch for that file is a separate call ([`git_show_commit_file`]), so a
+/// hundred-file commit costs nothing until something is opened.
 #[tauri::command]
-pub async fn git_show_commit(root: String, hash: String) -> Result<String, String> {
-    run_git(&root, &["show", "--stat", "--patch", &hash])
+pub async fn git_commit_detail(root: String, hash: String) -> Result<CommitDetail, String> {
+    // `%x00` separates the fields; the body comes last because it is the only
+    // one that can itself contain newlines.
+    let header = run_git(
+        &root,
+        &["show", "-s", "--format=%H%x00%an%x00%at%x00%s%x00%b", &hash],
+    )
+    .await
+    .map(without_bom)?;
+    let fields: Vec<&str> = header.splitn(5, '\0').collect();
+
+    let counts = run_git(&root, &["show", "--format=", "--numstat", &hash]).await?;
+    let statuses = run_git(&root, &["show", "--format=", "--name-status", &hash]).await?;
+
+    Ok(CommitDetail {
+        hash: fields.first().unwrap_or(&"").trim().to_string(),
+        author: fields.get(1).unwrap_or(&"").to_string(),
+        when: fields.get(2).and_then(|at| at.parse().ok()).unwrap_or_default(),
+        subject: fields.get(3).unwrap_or(&"").to_string(),
+        body: fields.get(4).unwrap_or(&"").trim_end().to_string(),
+        files: commit_files(&counts, &statuses),
+    })
+}
+
+/// Merges the two things git will only report separately: how many lines moved
+/// (`--numstat`) and what kind of change it was (`--name-status`).
+fn commit_files(counts: &str, statuses: &str) -> Vec<CommitFile> {
+    let mut files: Vec<CommitFile> = Vec::new();
+    for line in counts.lines() {
+        let mut parts = line.split('\t');
+        let (Some(added), Some(removed), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        // A rename is written `old\tnew` here, and the new name is what the
+        // reader opens.
+        let path = parts.next().unwrap_or(path);
+        files.push(CommitFile {
+            path: path.to_string(),
+            // Binary files are reported as `-` for both counts.
+            binary: added == "-",
+            added: added.parse().unwrap_or_default(),
+            removed: removed.parse().unwrap_or_default(),
+            ..CommitFile::default()
+        });
+    }
+
+    for line in statuses.lines() {
+        let mut parts = line.split('\t');
+        let (Some(status), Some(first)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let renamed_to = parts.next();
+        let path = renamed_to.unwrap_or(first);
+        let Some(file) = files.iter_mut().find(|file| file.path == path) else {
+            continue;
+        };
+        // `R100`, `C75`: the score is git's confidence, not something to show.
+        file.status = status.chars().take(1).collect();
+        file.orig_path = renamed_to.map(|_| first.to_string());
+    }
+    files
+}
+
+/// The patch of one file in one commit.
+#[tauri::command]
+pub async fn git_show_commit_file(root: String, hash: String, path: String) -> Result<String, String> {
+    // `--` keeps a path that looks like a revision from being read as one.
+    run_git(&root, &["show", "--format=", "--patch", &hash, "--", &path])
         .await
         .map(without_bom)
 }
@@ -931,6 +1033,50 @@ mod tests {
     #[test]
     fn a_repo_without_remotes_lists_none() {
         assert!(super::parse_remotes("").is_empty());
+    }
+
+    #[test]
+    fn a_commit_s_files_carry_both_what_changed_and_how_much() {
+        // Real `git show` output: numstat says how many lines, name-status says
+        // what kind of change, and neither one alone is enough for the list.
+        let counts = "3	1	src/cart.ts
+0	40	src/old.ts
+9	0	src/new.ts
+-	-	logo.png
+";
+        let statuses = "M	src/cart.ts
+D	src/old.ts
+A	src/new.ts
+M	logo.png
+";
+        let files = commit_files(counts, statuses);
+
+        assert_eq!(files.len(), 4);
+        assert_eq!(files[0].status, "M");
+        assert_eq!((files[0].added, files[0].removed), (3, 1));
+        assert_eq!(files[1].status, "D");
+        assert_eq!(files[2].status, "A");
+        // A binary file has no line counts, and pretending it has zero of each
+        // would read as "nothing changed".
+        assert!(files[3].binary, "a binary file must say so");
+        assert_eq!((files[3].added, files[3].removed), (0, 0));
+    }
+
+    #[test]
+    fn a_rename_is_listed_under_its_new_name_and_remembers_the_old_one() {
+        // Both commands spell a rename with two paths, and the reader opens the
+        // new one - a list keyed on the old name would open nothing.
+        let counts = "2	2	src/old-name.ts	src/new-name.ts
+";
+        let statuses = "R096	src/old-name.ts	src/new-name.ts
+";
+        let files = commit_files(counts, statuses);
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/new-name.ts");
+        assert_eq!(files[0].orig_path.as_deref(), Some("src/old-name.ts"));
+        // The similarity score is git's confidence, not something to show.
+        assert_eq!(files[0].status, "R");
     }
 
     #[test]

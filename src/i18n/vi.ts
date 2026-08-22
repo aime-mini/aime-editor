@@ -337,6 +337,11 @@ export const vi: Record<TranslationKey, string> = {
   "sidebar.debug": "Chạy và gỡ lỗi",
   "sidebar.workItems": "Công việc",
 
+  "commit.files": "{count} file thay đổi",
+  "commit.noFiles": "Commit này không đổi file nào.",
+  "commit.binary": "File nhị phân - không có gì để đọc theo dòng.",
+  "commit.reading": "Đang đọc…",
+  "commit.close": "Đóng",
   "run.title": "Lượt làm việc",
   "run.cancel": "Dừng lượt này",
   "run.close": "Đóng",

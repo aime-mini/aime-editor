@@ -194,6 +194,14 @@ const EN: HelpTopic[] = [
     keywords: "branch rename delete merge remote origin url tag fetch prune",
   },
   {
+    id: "git-commit-view",
+    section: "Git",
+    title: "Reading a commit",
+    body: "Clicking a commit in History opens it in the editor area, and what you get is the commit as a person reads one: its subject, who wrote it and when, the body of its message, and then the files it touched as a list - each with the letter for what happened to it (added, modified, deleted, renamed) and how many lines moved. Clicking a file shows that file's patch, and only that one. It used to be a single `git show` poured into one editor: a stat block nothing could be clicked in, followed by every file's patch run together, which on a commit touching twenty files is a wall of text you scroll through looking for the one file you came for. A rename is listed under the name it has now, since that is the one you want to open, and hovering it shows where it came from. Binary files say so rather than showing a patch that means nothing. Each patch is fetched only when you open it, so a commit touching a hundred files still opens at once.",
+    keywords:
+      "commit history file list changed files patch diff show rename binary added modified deleted lines author message",
+  },
+  {
     id: "git-history-ops",
     section: "Git",
     title: "Undoing and moving commits",
@@ -550,6 +558,14 @@ const VI: HelpTopic[] = [
     title: "Nhánh, remote và tag",
     body: "Bấm tên nhánh để chuyển nhánh, tạo nhánh, đổi tên nhánh hiện tại, merge nhánh khác vào, hoặc xoá nhánh - xoá nhánh còn commit chưa merge thì hỏi lại lần nữa trước khi mất phần việc đó. Nút ... cạnh Refresh quản lý remote (thêm mới, hoặc trỏ remote cũ sang URL khác) và tag (tạo tag thường hoặc annotated, xoá, push toàn bộ). Mũi tên tải xuống là fetch - cập nhật nhánh từ remote mà không đụng file của bạn.",
     keywords: "nhánh đổi tên xoá merge remote origin url tag fetch",
+  },
+  {
+    id: "git-commit-view",
+    section: "Git",
+    title: "Đọc một commit",
+    body: "Bấm vào một commit trong Lịch sử là nó mở ra giữa cửa sổ, và những gì anh thấy đúng là cách người ta đọc một commit: tiêu đề, ai viết và viết lúc nào, phần nội dung của message, rồi danh sách các file nó đụng tới - mỗi file kèm chữ cái cho biết chuyện gì đã xảy ra (thêm, sửa, xoá, đổi tên) và bao nhiêu dòng đã đổi. Bấm vào một file là hiện diff của đúng file đó, không kèm file nào khác. Trước đây chỗ này đổ nguyên một lệnh `git show` vào một khung soạn thảo: một khối thống kê không bấm được gì, rồi diff của mọi file nối liền nhau - với commit đụng hai mươi file thì đó là một bức tường chữ mà anh phải cuộn mãi để tìm đúng file mình cần. File đổi tên được liệt kê theo tên mới, vì đó mới là cái anh muốn mở, và rê chuột vào sẽ thấy nó vốn tên gì. File nhị phân thì nói thẳng là nhị phân chứ không hiện một cái diff vô nghĩa. Diff của từng file chỉ được đọc khi anh mở nó, nên commit đụng cả trăm file vẫn mở ra tức thì.",
+    keywords:
+      "commit lịch sử danh sách file thay đổi diff patch đổi tên nhị phân thêm sửa xoá số dòng tác giả message",
   },
   {
     id: "git-history-ops",

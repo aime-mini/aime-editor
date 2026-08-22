@@ -19,6 +19,7 @@ import { useSetup } from "../stores/setup";
 import { monacoThemeOf, useTheme } from "../stores/theme";
 import { useSettings } from "../stores/settings";
 import { useWorkspace } from "../stores/workspace";
+import { CommitView } from "./CommitView";
 import { ConflictView } from "./ConflictView";
 import { RunView } from "./RunView";
 import { WorkItemView } from "./WorkItemView";
@@ -459,49 +460,6 @@ function DiffView({ relativePath }: { relativePath: string }) {
 }
 
 /** Read-only patch of one commit (opened from the Git history list). */
-function CommitView({ hash }: { hash: string }) {
-  const { rootPath, closeDiff } = useWorkspace();
-  const theme = useTheme((s) => s.theme);
-  const [patch, setPatch] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!rootPath) return;
-    let stale = false;
-    invoke<string>("git_show_commit", { root: rootPath, hash })
-      .then((text) => {
-        if (!stale) setPatch(text);
-      })
-      .catch((err: unknown) => {
-        if (!stale) setPatch(String(err));
-      });
-    return () => {
-      stale = true;
-    };
-  }, [rootPath, hash]);
-
-  return (
-    <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b border-line bg-panel px-3 py-1.5 text-xs">
-        <span className="font-mono text-accent">{hash.slice(0, 8)}</span>
-        <span className="flex-1" />
-        <button onClick={closeDiff} className="rounded p-0.5 text-muted hover:bg-elevated hover:text-fg">
-          <X size={13} />
-        </button>
-      </div>
-      <div className="min-h-0 flex-1">
-        {patch !== null && (
-          <Editor
-            value={patch}
-            language="aime-diff"
-            theme={monacoThemeOf(theme)}
-            options={{ ...EDITOR_OPTIONS, readOnly: true, wordWrap: "off" }}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
 interface BlameLine {
   sha: string;
   author: string;
@@ -752,7 +710,9 @@ export function EditorPane() {
   }
 
   if (commitHash) {
-    return <CommitView hash={commitHash} />;
+    // Keyed by the commit, so opening another starts clean instead of showing
+    // the last one's files while the new one loads.
+    return <CommitView key={commitHash} hash={commitHash} />;
   }
 
   if (diffPath) {

@@ -336,6 +336,11 @@ export const en = {
   "sidebar.debug": "Run and Debug",
   "sidebar.workItems": "Work items",
 
+  "commit.files": "{count} file(s) changed",
+  "commit.noFiles": "This commit changed no files.",
+  "commit.binary": "A binary file - there is nothing to read line by line.",
+  "commit.reading": "Reading…",
+  "commit.close": "Close",
   "run.title": "Task run",
   "run.cancel": "Stop this run",
   "run.close": "Close",
