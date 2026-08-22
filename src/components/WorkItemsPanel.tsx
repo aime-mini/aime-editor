@@ -41,6 +41,7 @@ import {
 } from "../lib/workItems";
 import { useBoardView } from "../stores/boardView";
 import { useGit } from "../stores/git";
+import { useRun } from "../stores/run";
 import { useTrackers, type StateCategory, type StateOption, type WorkItem } from "../stores/trackers";
 import { useWorkspace } from "../stores/workspace";
 import { ContextMenu, SEPARATOR, type MenuItem } from "./ContextMenu";
@@ -673,7 +674,7 @@ function ItemRow({
           <button
             onClick={(event) => {
               event.stopPropagation();
-              void useTrackers.getState().askAi(item);
+              void useRun.getState().start(item);
             }}
             title={t("tracker.askAi")}
             className="rounded p-0.5 text-muted hover:text-accent"

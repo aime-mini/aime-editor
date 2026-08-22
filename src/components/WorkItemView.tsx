@@ -5,6 +5,7 @@ import { useI18n, useT } from "../i18n";
 import { branchNameFor, readableId, whenText } from "../lib/workItems";
 import { Markdown } from "./Markdown";
 import { useGit } from "../stores/git";
+import { useRun } from "../stores/run";
 import {
   useTrackers,
   type Comment,
@@ -170,7 +171,7 @@ function Header({ item }: { item: WorkItem }) {
             <Action
               icon={<Sparkles size={12} />}
               label={t("tracker.askAi")}
-              onClick={() => void useTrackers.getState().askAi(item)}
+              onClick={() => void useRun.getState().start(item)}
             />
           </div>
         </div>

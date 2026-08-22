@@ -38,6 +38,8 @@ interface WorkspaceState {
    * sidebar has none.
    */
   workItemId: string | null;
+  /** True while a Task Run has the editor area. */
+  runOpen: boolean;
   fileContent: string;
   /** Content as last loaded/saved — dirty is a comparison against this, so undoing back to it clears the flag. */
   savedContent: string;
@@ -61,6 +63,9 @@ interface WorkspaceState {
   openBlame: (relativePath: string) => void;
   /** Shows one work item in the editor area (the panel hands over its id). */
   openWorkItem: (id: string) => void;
+  /** Gives the editor area to the running Task Run. */
+  openRun: () => void;
+  closeRun: () => void;
   setContent: (content: string) => void;
   saveFile: () => Promise<void>;
   /**
@@ -138,6 +143,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     conflictPath: null,
     blamePath: null,
     workItemId: null,
+    runOpen: false,
     fileContent: "",
     savedContent: "",
     dirty: false,
@@ -292,7 +298,29 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     },
 
     openWorkItem: (id: string) => {
-      set({ workItemId: id, diffPath: null, commitHash: null, conflictPath: null, blamePath: null });
+      set({
+        workItemId: id,
+        runOpen: false,
+        diffPath: null,
+        commitHash: null,
+        conflictPath: null,
+        blamePath: null,
+      });
+    },
+
+    openRun: () => {
+      set({
+        runOpen: true,
+        workItemId: null,
+        diffPath: null,
+        commitHash: null,
+        conflictPath: null,
+        blamePath: null,
+      });
+    },
+
+    closeRun: () => {
+      set({ runOpen: false });
     },
 
     setContent: (content: string) => {

@@ -20,6 +20,7 @@ import { monacoThemeOf, useTheme } from "../stores/theme";
 import { useSettings } from "../stores/settings";
 import { useWorkspace } from "../stores/workspace";
 import { ConflictView } from "./ConflictView";
+import { RunView } from "./RunView";
 import { WorkItemView } from "./WorkItemView";
 import { DebugToolbar } from "./DebugToolbar";
 import { useDebugGutter } from "./useDebugGutter";
@@ -601,6 +602,7 @@ export function EditorPane() {
     conflictPath,
     blamePath,
     workItemId,
+    runOpen,
     fileContent,
     dirty,
     rootPath,
@@ -728,6 +730,12 @@ export function EditorPane() {
       stale = true;
     };
   }, [openFilePath, rootPath, treeVersion, renderBlameForLine]);
+
+  if (runOpen) {
+    // A run owns the area while it goes: it is minutes of work with evidence
+    // to read, not a dialog to dismiss.
+    return <RunView />;
+  }
 
   if (workItemId) {
     // Keyed by the item, so opening another one starts from a clean view
