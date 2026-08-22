@@ -70,7 +70,15 @@ const BREAKS = "export function subtotal(lines) {\n" +
   "}\n";
 
 const prompt = fs.readFileSync(0, "utf8");
+
+// Two routes reach this script and they read its output differently, which is
+// a real property of the app rather than a quirk of the probe. A phase that can
+// answer from the prompt alone runs the CLI one-shot, and Aime takes stdout
+// verbatim. A phase that has to look at the repository runs it as an agent with
+// read-only tools, and Aime reads the streamed events - where a line of plain
+// output arrives wrapped as {type:"raw", text}.
 const say = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+const stream = (text) => process.stdout.write(JSON.stringify({ type: "raw", text }) + "\n");
 const mode = fs.existsSync(${JSON.stringify(MODE_FILE)})
   ? fs.readFileSync(${JSON.stringify(MODE_FILE)}, "utf8").trim()
   : "sound";
@@ -81,13 +89,15 @@ if (prompt.includes("say what it actually asks for")) {
     criteria: [{ id: "AC1", text: "withTax rounds to two decimal places" }],
     questions: [],
   });
-} else if (prompt.includes("List the files")) {
-  process.stdout.write("src/cart.js\n");
+} else if (prompt.includes("Find the files")) {
+  stream("src/cart.js");
 } else if (prompt.includes("Plan the change")) {
-  say({
-    steps: [{ what: "Round in withTax", files: ["src/cart.js"], criteria: ["AC1"] }],
-    tests: [{ name: "rounds to two places", file: "test.cjs", criterion: "AC1" }],
-  });
+  stream(
+    JSON.stringify({
+      steps: [{ what: "Round in withTax", files: ["src/cart.js"], criteria: ["AC1"] }],
+      tests: [{ name: "rounds to two places", file: "test.cjs", criterion: "AC1" }],
+    }),
+  );
 } else if (prompt.includes("Review this change")) {
   say({ risks: ["rounding could drift on large totals"], findings: [] });
 } else if (prompt.includes("Your change broke something")) {

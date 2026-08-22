@@ -17,6 +17,7 @@ import {
   type Review,
 } from "../lib/aiRun";
 import { aiOneshot } from "../lib/aiOneshot";
+import { createEventParser } from "../lib/aiParsers";
 import { impactOf, radiusIsComplete, radiusOf } from "../lib/blastRadius";
 import { allOutput, execCancel } from "../lib/exec";
 import { judge, runSuite, type Baseline, type GateVerdict, type SuiteRun } from "../lib/regressionGate";
@@ -306,7 +307,7 @@ async function runPhase(phase: PhaseId, context: Context, set: Setter, get: Gett
     case "understand":
       return understand(context, set);
     case "locate":
-      return locate(context, get);
+      return locate(context, set, get);
     case "plan":
       return planPhase(context, set, get);
     case "implement":
@@ -418,13 +419,15 @@ async function understand(context: Context, set: Setter): Promise<PhaseResult> {
  * radius is reported as incomplete until a language server has been asked,
  * because "nothing else is affected" and "nobody looked" must not read alike.
  */
-async function locate(context: Context, get: Getter): Promise<PhaseResult> {
+async function locate(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
   const brief = get().brief;
   if (brief === null) return { state: "skipped", summary: translate("run.noBrief") };
 
-  const asked = await aiOneshot(
+  const asked = await readRepository(
     `${LOCATE_PROMPT}\n\nGoal: ${brief.goal}\n${brief.criteria.map((one) => `- ${one.text}`).join("\n")}`,
     context.root,
+    set,
+    "locate",
   );
   const files = [...new Set(asked.split("\n").map((line) => line.trim().replace(/^[-*]\s*/, "")))]
     .filter((line) => line !== "" && !line.includes(" ") && line.includes("."))
@@ -448,6 +451,10 @@ async function planPhase(context: Context, set: Setter, get: Getter): Promise<Ph
 
   const asking = [
     PLAN_PROMPT,
+    "Read the files you will change, and two or three of their neighbours, before you answer: the",
+    "plan has to fit the conventions this project already uses, and those live in the code rather",
+    "than in your habits.",
+    "",
     `Goal: ${brief.goal}`,
     "Acceptance criteria:",
     ...brief.criteria.map((one) => `${one.id}: ${one.text}`),
@@ -467,7 +474,7 @@ async function planPhase(context: Context, set: Setter, get: Getter): Promise<Ph
             "Your last plan left these criteria with no test. Cover every one of them:",
             ...missing.map((one) => `${one.id}: ${one.text}`),
           ].join("\n");
-    plan = parsePlan(await aiOneshot(asked, context.root));
+    plan = parsePlan(await readRepository(asked, context.root, set, "plan"));
     if (plan === null) continue;
     missing = uncoveredCriteria(brief, plan);
     if (missing.length === 0) break;
@@ -721,9 +728,13 @@ test to make it pass - the test is the evidence, not the obstacle.
 Run the failing tests when you are done. Do not commit anything.
 `;
 
-const LOCATE_PROMPT = `List the files in this repository this change will need to touch.
-Answer with one path per line, nothing else - no prose, no numbering, no explanation.
-Look at the repository rather than guessing from the names.`;
+const LOCATE_PROMPT = `Find the files in this repository this change will need to touch.
+
+Look at the code: search it, open the candidates, follow what calls what. Do not answer from the
+wording of the ticket.
+
+Then answer with one repository-relative path per line and nothing else - no prose, no numbering,
+no explanation, no backticks.`;
 
 const IMPLEMENT_PROMPT = `Implement this work item in this repository.
 
@@ -759,12 +770,24 @@ function runCommand(set: Setter, phase: PhaseId) {
  * Answers the exit code, or null when it was cancelled — which the backend
  * reports as an exit with no code at all.
  */
-async function runAgent(
+/**
+ * Runs the CLI as an agent - with tools, in the project - and waits for it.
+ *
+ * The permission is the phase's, not the run's: a phase that only has to read
+ * the repository is launched read-only, and the two that change it are the only
+ * ones ever launched with edits. That is a real constraint at the CLI rather
+ * than a sentence in a prompt.
+ *
+ * Answers the exit code and whatever the agent said, or a null code when it was
+ * cancelled - which the backend reports as an exit carrying no code at all.
+ */
+async function runCli(
   prompt: string,
   cwd: string,
   set: Setter,
-  phase: PhaseId = "implement",
-): Promise<number | null> {
+  phase: PhaseId,
+  permission: "readOnly" | "edits",
+): Promise<{ code: number | null; text: string }> {
   /**
    * Listening happens *before* the CLI is started, and what arrives before its
    * id is known is kept.
@@ -785,6 +808,25 @@ async function runAgent(
     report = resolve;
   });
 
+  const ai = useAi.getState();
+  const provider = ai.providers.find((candidate) => candidate.id === ai.providerId);
+  const parse = createEventParser({
+    id: ai.providerId,
+    parser: provider?.parser,
+    textField: provider?.textField,
+  });
+  let said = "";
+
+  unlistenAgent.push(
+    await listen<{ run_id: string; event: unknown }>("ai:stream", (event) => {
+      if (runId !== null && event.payload.run_id !== runId) return;
+      for (const one of parse(event.payload.event)) {
+        if (one.kind === "message-delta") said += one.text;
+        if (one.kind === "done" && one.resultText !== undefined) said = one.resultText;
+        if (one.kind === "tool-call") note(set, phase, `${one.name} ${one.detail}`.trim(), "output");
+      }
+    }),
+  );
   unlistenAgent.push(
     await listen<{ run_id: string; code: number | null }>("ai:exit", (event) => {
       if (runId === null) {
@@ -802,7 +844,6 @@ async function runAgent(
     }),
   );
 
-  const ai = useAi.getState();
   try {
     runId = await invoke<string>("ai_send_prompt", {
       providerId: ai.providerId,
@@ -810,9 +851,7 @@ async function runAgent(
       cwd,
       // No session id: this must never join or resume the user's chat.
       sessionId: null,
-      // Edits, never full: the agent may change files and run its own tests,
-      // and the gates after it are what decide whether that was any good.
-      options: { model: ai.model || null, effort: ai.effort || null, permission: "edits" },
+      options: { model: ai.model || null, effort: ai.effort || null, permission },
     });
   } catch (error: unknown) {
     stopListening();
@@ -827,7 +866,27 @@ async function runAgent(
   const code = await finished;
   stopListening();
   inFlight = null;
+  return { code, text: said };
+}
+
+/** The two phases that change the project. */
+async function runAgent(prompt: string, cwd: string, set: Setter, phase: PhaseId = "implement") {
+  const { code } = await runCli(prompt, cwd, set, phase, "edits");
   return code;
+}
+
+/**
+ * A phase that has to look at the repository before it can answer.
+ *
+ * `ai_oneshot` cannot do this: it runs the CLI with no tools at all, so a
+ * question like "which files does this change touch?" would be answered from
+ * the shape of the ticket rather than from the code - plausible names, and no
+ * way to tell them from real ones. Read-only tools are the difference between
+ * analysing a codebase and imagining one.
+ */
+async function readRepository(prompt: string, cwd: string, set: Setter, phase: PhaseId): Promise<string> {
+  const { text } = await runCli(prompt, cwd, set, phase, "readOnly");
+  return text;
 }
 
 function stopListening(): void {
