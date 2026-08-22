@@ -719,23 +719,30 @@ describe("Workflows", () => {
         getComputedStyle(document.documentElement).getPropertyValue("--text-muted"),
       ),
     );
-    await browser.waitUntil(async () => (await colourOf("secret.log")) === muted, {
-      timeout: 30_000,
-      timeoutMsg: `the ignored file was not drawn in the muted colour (${muted})`,
-    });
+    /**
+     * Waits for one row to be drawn in the muted colour.
+     *
+     * A wait rather than a read: the tree greys a row when the ignored list
+     * arrives, and the list arrives in its own pass. Reading once turned this
+     * into the suite's flakiest assertion - it passed on an idle machine and
+     * failed on a busy one, with a different row each time.
+     */
+    const waitForMuted = (name, message) =>
+      browser.waitUntil(async () => (await colourOf(name)) === muted, {
+        timeout: 30_000,
+        timeoutMsg: message,
+      });
+
+    await waitForMuted("secret.log", `the ignored file was not drawn in the muted colour (${muted})`);
     const tracked = await colourOf("README.md");
     assert.notEqual(tracked, muted, "a tracked file was greyed out along with the ignored ones");
-    assert.equal(await colourOf("dist"), muted, "an ignored folder kept the colour of a real one");
+    await waitForMuted("dist", "an ignored folder kept the colour of a real one");
 
     // What is inside an ignored folder is ignored too, and git never listed those
     // files - the folder was collapsed into one entry, and the row inherits.
     await (await $("span=dist")).click();
     await waitForText("bundle.js", "the ignored folder never opened");
-    assert.equal(
-      await colourOf("bundle.js"),
-      muted,
-      "a file inside an ignored folder was drawn as part of the repository",
-    );
+    await waitForMuted("bundle.js", "a file inside an ignored folder was drawn as part of the repository");
   });
 
   /**
@@ -805,11 +812,13 @@ describe("Workflows", () => {
         getComputedStyle(document.documentElement).getPropertyValue("--text-muted"),
       ),
     );
-    await browser.waitUntil(async () => (await colourOf("debug.log")) === muted, {
-      timeout: 20_000,
-      timeoutMsg: "the file stayed black after being ignored",
-    });
-    assert.equal(await colourOf("build"), muted, "the folder stayed black after being ignored");
+    const waitForMutedRow = (name, message) =>
+      browser.waitUntil(async () => (await colourOf(name)) === muted, {
+        timeout: 30_000,
+        timeoutMsg: message,
+      });
+    await waitForMutedRow("debug.log", "the file stayed black after being ignored");
+    await waitForMutedRow("build", "the folder stayed black after being ignored");
   });
 
   /**

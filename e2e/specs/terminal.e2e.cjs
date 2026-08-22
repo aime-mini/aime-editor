@@ -104,20 +104,27 @@ describe("Terminal", () => {
    * default 14px. What was wrong was its weight, not its size.
    */
   it("marks the caret with a bar, not a filled cell", async () => {
-    await browser.execute(() => {
-      document.querySelector(".xterm-helper-textarea")?.focus();
-    });
     // xterm paints a bar as an inset box-shadow inside a cell-sized element, so
     // the element's own width says nothing - what is painted is the shadow.
+    //
+    // The focus goes inside the wait on purpose: focusing once before it lands on
+    // nothing when the terminal has not finished mounting, and then the cursor
+    // never renders at all - which is how this test failed under load while
+    // passing on its own.
     const caret = await browser.waitUntil(
       async () =>
         browser.execute(() => {
+          document.querySelector(".xterm-helper-textarea")?.focus();
           const cursor = document.querySelector('[class*="xterm-cursor"]');
           if (!cursor) return null;
           const style = getComputedStyle(cursor);
           return { style: cursor.className, shadow: style.boxShadow, fill: style.backgroundColor };
         }),
-      { timeout: 20_000, timeoutMsg: "the caret never appeared" },
+      // Generous on purpose: what this test asserts is the caret's *shape*, not
+      // how fast a PowerShell starts on a loaded machine. Measured, the spec
+      // finishes in 6-9s when the box is idle and took 26s when it was not,
+      // which is what made this the one flaky test in the suite.
+      { timeout: 60_000, timeoutMsg: "the caret never appeared" },
     );
     assert.match(caret.style, /xterm-cursor-bar/, `the caret is not a bar: ${caret.style}`);
     assert.match(caret.shadow, /\b2px\b.*inset/, `the caret is not a 2px bar: ${caret.shadow}`);
