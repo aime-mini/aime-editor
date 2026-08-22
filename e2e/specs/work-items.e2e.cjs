@@ -567,17 +567,22 @@ describe("Work items", () => {
     assert.deepEqual(JSON.parse(patch.body), [{ op: "add", path: "/fields/System.State", value: "Doing" }]);
   });
 
-  it("hands the item to the AI with its description as plain text", async () => {
+  it("starts a run rather than a chat turn, and refuses to work on a branch it cannot make", async () => {
+    // What the sparkle does now: a run with phases and gates, not a prompt
+    // dropped into the conversation. The whole run is driven end to end in
+    // `task-run.e2e.cjs`; what matters here is that the button reaches it.
     const row = await rowFor(42);
     await clickAction(row, "Work on this with AI");
 
-    // The prompt goes into the AI panel, which is where a turn starts; the CLI
-    // behind it is not this spec's business, only what was handed over.
-    await waitForText("work item #42", "the item never reached the AI panel");
-    await waitForText("the picker resets after a reload", "the description never reached the prompt");
-    const chat = await $("body").getText();
-    assert.equal(chat.includes("&nbsp;"), false, "raw markup reached the prompt");
-    assert.equal(chat.includes("<div>"), false, "raw markup reached the prompt");
+    await waitForText("task run", "the sparkle did not start a run");
+    await waitForText("login screen forgets", "the run does not say which item it is about");
+
+    // The branch this item suggests was created by an earlier test, so git
+    // refuses it - and the first gate is exactly where that has to stop. A run
+    // that shrugged and worked on whatever branch was checked out would be a
+    // run editing the user's own working branch.
+    await waitForText("stopped here", "a run that could not start its branch carried on anyway");
+    await waitForText("already exists", "the run did not say why it stopped");
   });
 
   it("opens an item in the middle of the window, with its facts and its conversation", async () => {
@@ -748,17 +753,31 @@ describe("Work items", () => {
       timeoutMsg: "the branch for item 9 was never checked out",
     });
 
-    const branchRow = await browser.execute(() => {
-      const rows = [...document.querySelectorAll("div.group")].filter((row) =>
-        (row.textContent ?? "").trim().startsWith("#"),
-      );
-      const marked = rows.filter((row) => row.querySelector('span[title*="branch"]') !== null);
-      // The id runs straight into the title, so a row is named by its start.
-      const idOf = (row) => ((row?.textContent ?? "").trim().match(/^#\S*?(?=[A-Z])/) ?? [""])[0];
-      return { marked: marked.map(idOf), first: idOf(rows[0]) };
-    });
-    assert.deepEqual(branchRow.marked, ["#9"], "the item whose branch is checked out was not marked");
-    assert.equal(branchRow.first, "#9", "the item being worked on was not the first row on the board");
+    // Waited for rather than read once: the panel learns the branch from two
+    // git calls of its own, so the status bar can show it a moment before the
+    // list has been re-ordered by it.
+    const branchRow = () =>
+      browser.execute(() => {
+        const rows = [...document.querySelectorAll("div.group")].filter((row) =>
+          (row.textContent ?? "").trim().startsWith("#"),
+        );
+        // The id runs straight into the title, so a row is named by its start.
+        const idOf = (row) => ((row?.textContent ?? "").trim().match(/^#\S*?(?=[A-Z])/) ?? [""])[0];
+        return {
+          marked: rows.filter((row) => row.querySelector('span[title*="branch"]') !== null).map(idOf),
+          first: idOf(rows[0]),
+        };
+      });
+    await browser.waitUntil(
+      async () => {
+        const seen = await branchRow();
+        return seen.marked.join(",") === "#9" && seen.first === "#9";
+      },
+      {
+        timeout: 20_000,
+        timeoutMsg: `the item being worked on was not marked and first: ${JSON.stringify(await branchRow())}`,
+      },
+    );
   });
 
   it("filters what is on screen as it is typed, without asking the board again", async () => {
