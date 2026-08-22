@@ -20,12 +20,14 @@ function runWith(results: Partial<Record<PhaseId, "passed" | "blocked" | "skippe
 }
 
 describe("the phase list", () => {
-  it("only ever lets two phases write, and checks straight after the one that does", () => {
+  it("checks straight after every phase that can break something", () => {
     const writers = PHASES.filter((phase) => phase.worker === "writer").map((phase) => phase.id);
-    expect(writers).toEqual(["implement"]);
-    // The gate that makes a run safe to walk away from has to come after the
-    // only phase that can break anything.
+    expect(writers).toEqual(["implement", "repair"]);
+    // The gate that makes a run safe to walk away from comes right after the
+    // phase that writes the change, and the phase that fixes what it broke
+    // comes right after the gate.
     expect(nextPhase("implement")).toBe("regression");
+    expect(nextPhase("regression")).toBe("repair");
   });
 
   it("puts the cheap mistakes first", () => {
@@ -41,15 +43,21 @@ describe("the phase list", () => {
 });
 
 describe("mayContinue", () => {
-  it("stops the run when a blocking gate refuses", () => {
-    expect(mayContinue("regression", { state: "blocked", summary: "" })).toBe(false);
+  it("stops the run only where stopping is the last resort", () => {
+    // `repair` is the one that can refuse, and only after it has tried: this
+    // is where a run admits it could not finish the task.
+    expect(mayContinue("repair", { state: "blocked", summary: "" })).toBe(false);
     expect(mayContinue("plan", { state: "blocked", summary: "" })).toBe(false);
   });
 
-  it("carries on past a phase whose refusal is only news", () => {
-    // A reviewer that found something has found something; it is not grounds
-    // to throw away a change whose tests all pass.
+  it("does not end a run over a phase whose refusal is only news", () => {
+    // Finding a regression is not the same as giving up on it - `repair` gets
+    // that news and does something about it - and a reviewer that found
+    // something has found something, not grounds to throw away a change whose
+    // tests all pass.
+    expect(phaseAt("regression").blocking).toBe(false);
     expect(phaseAt("review").blocking).toBe(false);
+    expect(mayContinue("regression", { state: "blocked", summary: "" })).toBe(true);
     expect(mayContinue("review", { state: "blocked", summary: "" })).toBe(true);
     expect(mayContinue("locate", { state: "blocked", summary: "" })).toBe(true);
   });
@@ -59,7 +67,8 @@ describe("mayContinue", () => {
   });
 
   it("carries on after a phase that had nothing to do", () => {
-    expect(mayContinue("regression", { state: "skipped", summary: "" })).toBe(true);
+    // Nothing broke, so there was nothing for `repair` to fix.
+    expect(mayContinue("repair", { state: "skipped", summary: "" })).toBe(true);
   });
 });
 

@@ -29,7 +29,7 @@ import { useRun } from "../stores/run";
  * run that stopped for a good reason must look different from one that failed.
  */
 export function RunView() {
-  const { run, log, autonomy, setAutonomy, approvePlan, cancel, dismiss } = useRun();
+  const { run, log, autonomy, setAutonomy, approvePlan, resume, cancel, dismiss } = useRun();
   const t = useT();
   const [open, setOpen] = useState<PhaseId | null>(null);
   const tail = useRef<HTMLDivElement>(null);
@@ -93,7 +93,9 @@ export function RunView() {
       </header>
 
       <div className="mx-auto w-full max-w-3xl px-6 pb-10">
-        {ended !== null && <Ending ending={ended} onApprove={() => void approvePlan()} />}
+        {ended !== null && (
+          <Ending ending={ended} onApprove={() => void approvePlan()} onResume={() => void resume()} />
+        )}
 
         <ol className="mt-5">
           {PHASES.map((phase) => {
@@ -198,12 +200,31 @@ export function RunView() {
 function Ending({
   ending,
   onApprove,
+  onResume,
 }: {
   ending: NonNullable<ReturnType<typeof useRun.getState>["run"]>["ended"];
   onApprove: () => void;
+  onResume: () => void;
 }) {
   const t = useT();
   if (ending === null) return null;
+
+  if (ending.kind === "interrupted") {
+    return (
+      <div className="mt-4 rounded-lg border border-accent bg-accent-soft px-4 py-3">
+        <p className="flex items-center gap-2 text-[13px] font-medium text-accent">
+          <CirclePause size={14} /> {t("run.interrupted")}
+        </p>
+        <p className="mt-1 text-[12.5px] text-fg/90">{t("run.interruptedWhy")}</p>
+        <button
+          onClick={onResume}
+          className="mt-2.5 flex items-center gap-1.5 rounded bg-accent-strong px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90"
+        >
+          <Play size={12} /> {t("run.carryOn")}
+        </button>
+      </div>
+    );
+  }
 
   if (ending.kind === "waiting") {
     return (
@@ -298,6 +319,7 @@ const PHASE_LABELS: Record<PhaseId, TranslationKey> = {
   plan: "run.phase.plan",
   implement: "run.phase.implement",
   regression: "run.phase.regression",
+  repair: "run.phase.repair",
   review: "run.phase.review",
   report: "run.phase.report",
 };

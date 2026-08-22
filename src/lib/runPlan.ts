@@ -13,7 +13,7 @@
  */
 
 export type PhaseId =
-  "baseline" | "understand" | "locate" | "plan" | "implement" | "regression" | "review" | "report";
+  "baseline" | "understand" | "locate" | "plan" | "implement" | "regression" | "repair" | "review" | "report";
 
 /** Who does the work of a phase, which decides what it is allowed to touch. */
 export type PhaseWorker =
@@ -38,8 +38,12 @@ export interface Phase {
  * missed half the callers is wrong in a way no amount of later checking
  * recovers — and stopping there costs a minute instead of an hour.
  *
- * `implement` is the only phase besides `plan`'s tests that may write, and
- * `regression` immediately after it is the reason a run can be left alone.
+ * `regression` right after `implement` is what makes a run safe to walk away
+ * from - and `repair` right after *that* is what makes walking away worth
+ * anything. A run that downed tools at the first broken test would hand back an
+ * unfinished job far more often than a finished one, so every gate here tries
+ * again before it refuses, and refusing is the last resort rather than the
+ * first answer.
  */
 export const PHASES: Phase[] = [
   { id: "baseline", worker: "tools", blocking: true },
@@ -47,7 +51,11 @@ export const PHASES: Phase[] = [
   { id: "locate", worker: "reader", blocking: false },
   { id: "plan", worker: "reader", blocking: true },
   { id: "implement", worker: "writer", blocking: true },
-  { id: "regression", worker: "tools", blocking: true },
+  // Detecting a regression is not the same as giving up on it. This phase only
+  // measures; `repair` is what does something about what it found, and is
+  // therefore the one that can stop the run.
+  { id: "regression", worker: "tools", blocking: false },
+  { id: "repair", worker: "writer", blocking: true },
   { id: "review", worker: "reader", blocking: false },
   { id: "report", worker: "tools", blocking: false },
 ];
@@ -98,6 +106,11 @@ export type RunEnding =
   | { kind: "blocked"; phase: PhaseId; why: string }
   /** Waiting on the reader — the plan needs approval, or a question needs an answer. */
   | { kind: "waiting"; phase: PhaseId; question: string }
+  /**
+   * Cut off rather than ended: the app closed, the machine slept, the network
+   * went. Read back from the journal, and offered to be carried on.
+   */
+  | { kind: "interrupted"; phase: PhaseId }
   | { kind: "cancelled" }
   /** Something broke that is not the change's fault. */
   | { kind: "failed"; phase: PhaseId; error: string };

@@ -6,9 +6,13 @@
  * model — it is that the run stops when the evidence says stop. So the two
  * things proved here are the two halves of that:
  *
- * 1. A run whose change is sound walks every phase and finishes.
- * 2. A run whose change breaks a test that was passing is **stopped** at the
- *    regression gate, and says which phase refused.
+ * 1. A run whose change is sound walks every phase and finishes, with nothing
+ *    to click on the way.
+ * 2. A run whose change breaks a test that was passing **fixes it** and still
+ *    finishes - reporting the damage and stopping would have been homework,
+ *    not a finished task.
+ * 3. A run that cannot fix what it broke stops after trying, says it tried,
+ *    and never reports success.
  *
  * Neither test spends a penny. The "AI CLI" is a `providers.json` entry
  * pointing at a script this spec writes: it reads the prompt on stdin, works
@@ -21,7 +25,7 @@
  * spec touches a real repository.
  */
 const { strict: assert } = require("node:assert");
-const { execFileSync } = require("node:child_process");
+const { execFileSync, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
 const os = require("node:os");
@@ -50,6 +54,21 @@ const PROBE_SOURCE = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
 
+const SOUND = "export function subtotal(lines) {\n" +
+  "  return lines.reduce((total, line) => total + line.price * line.quantity, 0);\n" +
+  "}\n" +
+  "export function withTax(amount, rate) {\n" +
+  "  return Math.round(amount * (1 + rate) * 100) / 100;\n" +
+  "}\n";
+// Rounds as asked, and quietly ruins the totals - a change that does the job
+// and breaks something else, which is the case the whole gate exists for.
+const BREAKS = "export function subtotal(lines) {\n" +
+  "  return 0;\n" +
+  "}\n" +
+  "export function withTax(amount, rate) {\n" +
+  "  return Math.round(amount * (1 + rate) * 100) / 100;\n" +
+  "}\n";
+
 const prompt = fs.readFileSync(0, "utf8");
 const say = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const mode = fs.existsSync(${JSON.stringify(MODE_FILE)})
@@ -71,22 +90,17 @@ if (prompt.includes("say what it actually asks for")) {
   });
 } else if (prompt.includes("Review this change")) {
   say({ risks: ["rounding could drift on large totals"], findings: [] });
+} else if (prompt.includes("Your change broke something")) {
+  // The repair phase. In "repairs" mode it puts back what it broke while
+  // keeping the new behaviour; in "breaks" mode it stubbornly does not, which
+  // is how the bounded give-up gets proved.
+  if (mode === "repairs") {
+    fs.writeFileSync(path.join(process.cwd(), "src", "cart.js"), SOUND);
+  }
+  process.stdout.write("tried\n");
 } else if (prompt.includes("Implement this work item")) {
   // The only phase that writes, and it writes for real.
-  const cart = path.join(process.cwd(), "src", "cart.js");
-  const sound = "export function subtotal(lines) {\n" +
-    "  return lines.reduce((total, line) => total + line.price * line.quantity, 0);\n" +
-    "}\n" +
-    "export function withTax(amount, rate) {\n" +
-    "  return Math.round(amount * (1 + rate) * 100) / 100;\n" +
-    "}\n";
-  const breaks = "export function subtotal(lines) {\n" +
-    "  return 0;\n" +
-    "}\n" +
-    "export function withTax(amount, rate) {\n" +
-    "  return Math.round(amount * (1 + rate) * 100) / 100;\n" +
-    "}\n";
-  fs.writeFileSync(cart, mode === "breaks" ? breaks : sound);
+  fs.writeFileSync(path.join(process.cwd(), "src", "cart.js"), mode === "sound" ? SOUND : BREAKS);
   process.stdout.write("done\n");
 } else {
   process.stdout.write("unrecognised prompt\n");
@@ -292,6 +306,28 @@ async function startRun(repo) {
   await (await $('button[title="Work on this with AI"]')).click();
 }
 
+/** A sample whose suite is green from the first commit, so a break is new. */
+function freshGreenRepo(previous) {
+  try {
+    if (previous) fs.rmSync(previous, { recursive: true, force: true });
+  } catch {
+    // Windows keeps a handle on the folder the app has open; the temp sweep gets it.
+  }
+  const dir = sampleProject();
+  fs.writeFileSync(
+    path.join(dir, "src", "cart.js"),
+    SAMPLE_CART.replace("return amount * (1 + rate);", "return Math.round(amount * (1 + rate) * 100) / 100;"),
+  );
+  execFileSync("git", ["commit", "-am", "green"], { cwd: dir, stdio: "pipe" });
+  return dir;
+}
+
+/** Runs the sample's own suite, so "fixed" is checked and not taken on trust. */
+function spawnSuite(dir) {
+  const run = spawnSync("npm", ["test"], { cwd: dir, encoding: "utf8", shell: true });
+  return { status: run.status, output: `${run.stdout ?? ""}${run.stderr ?? ""}` };
+}
+
 describe("Task run", () => {
   const saved = { providers: null, trackers: null, keys: null };
   let repo = "";
@@ -326,10 +362,10 @@ describe("Task run", () => {
     repo = sampleProject();
     await startRun(repo);
 
-    // Phase 0 is real work before a single token is spent: its own branch, and
-    // the suite as it stands. The sample's suite fails at the start - withTax
-    // does not round yet - which is exactly a red baseline, and the run must
-    // carry on rather than blame the change for it.
+    // Phase 0 is real work before a single token is spent: a branch of its own,
+    // and the suite as it stands. The sample's suite fails at the start -
+    // withTax does not round yet - which is exactly a red baseline, and the run
+    // must carry on rather than blame the change for it.
     await waitForText("baseline", "the run never started");
     await browser.waitUntil(() => currentBranch(repo).startsWith("bugfix/12-"), {
       timeout: 60_000,
@@ -337,13 +373,9 @@ describe("Task run", () => {
     });
     assert.notEqual(currentBranch(repo), "main", "a run must never work on the branch the user was on");
 
-    // It stops at the plan by default, which is the cheap place to catch a
-    // wrong direction.
-    await waitForText("read the plan below", "the run did not stop for the plan to be read");
-    await (await $("button*=carry on")).click();
-
-    await waitForText("finished, and every gate agreed", "the run never finished", 180_000);
-    // The change is on disk, and the suite that judged it is the project's own.
+    // Nothing to click: the run drives itself to the end, which is the point of
+    // handing a task over.
+    await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
     assert.match(
       fs.readFileSync(path.join(repo, "src", "cart.js"), "utf8"),
       /Math\.round/,
@@ -351,31 +383,43 @@ describe("Task run", () => {
     );
   });
 
-  it("stops at the regression gate when the change breaks something that worked", async () => {
-    // The same run, with one difference: the change also breaks `subtotal`,
-    // which was passing before. This is the gate the whole feature exists for.
-    fs.writeFileSync(MODE_FILE, "breaks");
-    fs.rmSync(repo, { recursive: true, force: true });
-    repo = sampleProject();
-    // Make the baseline green, so the break is unambiguously new.
-    fs.writeFileSync(
-      path.join(repo, "src", "cart.js"),
-      SAMPLE_CART.replace(
-        "return amount * (1 + rate);",
-        "return Math.round(amount * (1 + rate) * 100) / 100;",
-      ),
-    );
-    execFileSync("git", ["commit", "-am", "green"], { cwd: repo, stdio: "pipe" });
-
+  it("fixes what it broke instead of handing back an unfinished job", async () => {
+    // The change does what was asked *and* ruins `subtotal`, which was passing.
+    // A workflow that reported the damage and stopped would have produced
+    // homework; this one is asked to finish the task, so the repair phase gets
+    // the failure and puts it right.
+    fs.writeFileSync(MODE_FILE, "repairs");
+    repo = freshGreenRepo(repo);
     await startRun(repo);
-    await waitForText("read the plan below", "the run did not stop for the plan to be read");
-    await (await $("button*=carry on")).click();
 
-    await waitForText("stopped here", "a change that broke a passing test was not stopped", 180_000);
+    await waitForText("finished, and every gate agreed", "the run gave up instead of repairing", 240_000);
     const page = (await $("body").getText()).toLowerCase();
     assert.ok(
-      page.includes("passing before this change") || page.includes("passing to failing"),
-      `the run stopped without saying a test regressed:\n${page.slice(0, 1200)}`,
+      page.includes("fixed, and the suite is clean"),
+      `the repair was not reported: ${page.slice(0, 900)}`,
+    );
+    // And it really is fixed on disk, by the project's own suite's standard.
+    const suite = spawnSuite(repo);
+    assert.equal(
+      suite.status,
+      0,
+      `the suite is still failing after the repair:
+${suite.output}`,
+    );
+  });
+
+  it("stops only after trying, and says so, when it cannot fix what it broke", async () => {
+    // Same damage, but the repair phase refuses to undo it. The run must not
+    // report success, and must not loop forever either.
+    fs.writeFileSync(MODE_FILE, "breaks");
+    repo = freshGreenRepo(repo);
+    await startRun(repo);
+
+    await waitForText("stopped here", "a change that broke a passing test was not stopped", 240_000);
+    const page = (await $("body").getText()).toLowerCase();
+    assert.ok(
+      page.includes("still broken after"),
+      `the run stopped without saying it had tried: ${page.slice(0, 900)}`,
     );
     assert.equal(
       page.includes("finished, and every gate agreed"),

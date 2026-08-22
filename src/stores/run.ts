@@ -12,13 +12,15 @@ import {
   REVIEW_PROMPT,
   UNDERSTAND_PROMPT,
   type Brief,
+  type Criterion,
   type Plan,
   type Review,
 } from "../lib/aiRun";
 import { aiOneshot } from "../lib/aiOneshot";
 import { impactOf, radiusIsComplete, radiusOf } from "../lib/blastRadius";
-import { execCancel } from "../lib/exec";
-import { judge, runSuite, type Baseline, type SuiteRun } from "../lib/regressionGate";
+import { allOutput, execCancel } from "../lib/exec";
+import { judge, runSuite, type Baseline, type GateVerdict, type SuiteRun } from "../lib/regressionGate";
+import { forgetRun, loadRun, saveRun, wasInterrupted } from "../lib/runFile";
 import {
   abandonRest,
   mayContinue,
@@ -59,9 +61,13 @@ export interface LogLine {
 
 /** How far the run may go before it waits for the reader. */
 export type Autonomy =
-  /** Stops after the plan for a look. The default, and the cheap place to catch a wrong direction. */
+  /** Stops after the plan for a look, for a task worth checking the direction of. */
   | "reviewPlan"
-  /** Runs to the end and reports. */
+  /**
+   * Runs to the end and reports. The default, because the point of handing a
+   * task over is coming back to it done: a run that waits for a click halfway
+   * has spent the time and produced nothing.
+   */
   | "autopilot";
 
 interface RunState {
@@ -73,12 +79,18 @@ interface RunState {
   plan: Plan | null;
   review: Review | null;
   baseline: Baseline | null;
+  /** What the last comparison with the baseline found; null until one is made. */
+  verdict: GateVerdict | null;
 
   setAutonomy: (autonomy: Autonomy) => void;
   /** Starts a run for this item. Refuses if one is already going. */
   start: (item: WorkItem) => Promise<void>;
   /** Carries on from the plan gate once the reader has looked. */
   approvePlan: () => Promise<void>;
+  /** Picks a run back up where a closed lid or a lost network left it. */
+  resume: () => Promise<void>;
+  /** Reads back the run this project left behind, if any. */
+  reopen: (root: string) => Promise<void>;
   cancel: () => Promise<void>;
   /** Forgets a finished run, so the panel goes back to the item. */
   dismiss: () => void;
@@ -93,11 +105,12 @@ let unlistenAgent: UnlistenFn[] = [];
 export const useRun = create<RunState>((set, get) => ({
   run: null,
   log: [],
-  autonomy: "reviewPlan",
+  autonomy: "autopilot",
   brief: null,
   plan: null,
   review: null,
   baseline: null,
+  verdict: null,
 
   setAutonomy: (autonomy) => {
     set({ autonomy });
@@ -108,7 +121,7 @@ export const useRun = create<RunState>((set, get) => ({
     if (rootPath === null || running) return;
     running = true;
     const run = newRun(`run-${String(Date.now())}`, item.id, item.title, Date.now());
-    set({ run, log: [], brief: null, plan: null, review: null, baseline: null });
+    set({ run, log: [], brief: null, plan: null, review: null, baseline: null, verdict: null });
     useWorkspace.getState().openRun();
     await drive("baseline", { item, root: rootPath }, set, get);
   },
@@ -135,11 +148,63 @@ export const useRun = create<RunState>((set, get) => ({
     });
   },
 
+  resume: async () => {
+    const { run } = get();
+    const { rootPath } = useWorkspace.getState();
+    if (run === null || rootPath === null || running) return;
+    const item = itemOf(run.itemId);
+    if (item === null) return;
+    running = true;
+    useWorkspace.getState().openRun();
+    // From the phase that was in flight: every phase is written to be safe to
+    // run twice, which is what makes picking one up again possible at all.
+    await drive(run.current ?? "baseline", { item, root: rootPath }, set, get);
+  },
+
+  reopen: async (root) => {
+    const saved = await loadRun(root);
+    if (saved === null) {
+      set({ run: null, log: [], brief: null, plan: null, review: null, baseline: null, verdict: null });
+      return;
+    }
+    set({
+      run: wasInterrupted(saved)
+        ? { ...saved.run, ended: { kind: "interrupted", phase: saved.run.current ?? "baseline" } }
+        : saved.run,
+      log: [],
+      brief: saved.brief,
+      plan: saved.plan,
+      review: saved.review,
+      baseline: saved.baseline,
+      verdict: saved.verdict,
+    });
+  },
+
   dismiss: () => {
+    const { rootPath } = useWorkspace.getState();
+    if (rootPath !== null) void forgetRun(rootPath);
     set({ run: null, log: [] });
     useWorkspace.getState().closeRun();
   },
 }));
+
+/**
+ * Another project is another run. What was on screen belongs to the folder that
+ * was open, and the next folder's own journal is read in its place.
+ */
+useWorkspace.subscribe((state, previous) => {
+  if (state.rootPath === previous.rootPath) return;
+  useRun.setState({
+    run: null,
+    log: [],
+    brief: null,
+    plan: null,
+    review: null,
+    baseline: null,
+    verdict: null,
+  });
+  if (state.rootPath !== null) void useRun.getState().reopen(state.rootPath);
+});
 
 /** The work item a run is about, if the board still has it. */
 function itemOf(id: string): WorkItem | null {
@@ -185,6 +250,9 @@ async function drive(start: PhaseId, context: Context, set: Setter, get: Getter)
     }
     result = { ...result, startedAt: started, endedAt: Date.now() };
     update(set, (run) => ({ ...run, results: { ...run.results, [at]: result } }));
+    // Written after every phase, so a lid closing here costs this phase and
+    // nothing before it.
+    journal(context.root, get);
 
     // A red gate stops the run only where the phase is a blocking one: a
     // reviewer that found something has found something, not grounds to throw
@@ -194,12 +262,14 @@ async function drive(start: PhaseId, context: Context, set: Setter, get: Getter)
         ...abandonRest(run, at, "skipped", ""),
         ended: { kind: "blocked", phase: at, why: result.summary },
       }));
+      journal(context.root, get);
       running = false;
       return;
     }
     // A phase may hold the run rather than end it - an unanswered question, or
     // a plan waiting to be looked at.
     if (get().run?.ended != null) {
+      journal(context.root, get);
       running = false;
       return;
     }
@@ -207,7 +277,21 @@ async function drive(start: PhaseId, context: Context, set: Setter, get: Getter)
   }
 
   update(set, (run) => ({ ...run, current: null, ended: { kind: "done" } }));
+  journal(context.root, get);
   running = false;
+}
+
+/**
+ * Writes the run to the project's `.aime/` folder.
+ *
+ * Not awaited: the journal exists so a lost run can be picked up, and making
+ * every phase wait on a disk write to serve that would be paying the cost on
+ * the path that matters for a benefit on the path that rarely happens.
+ */
+function journal(root: string, get: Getter): void {
+  const { run, brief, plan, review, baseline, verdict } = get();
+  if (run === null) return;
+  void saveRun(root, { run, brief, plan, review, baseline, verdict });
 }
 
 /** Changes the run in place, leaving whatever a phase wrote to it alone. */
@@ -220,7 +304,7 @@ async function runPhase(phase: PhaseId, context: Context, set: Setter, get: Gett
     case "baseline":
       return baseline(context, set);
     case "understand":
-      return understand(context, set, get);
+      return understand(context, set);
     case "locate":
       return locate(context, get);
     case "plan":
@@ -229,6 +313,8 @@ async function runPhase(phase: PhaseId, context: Context, set: Setter, get: Gett
       return implement(context, set, get);
     case "regression":
       return regression(context, set, get);
+    case "repair":
+      return repair(context, set, get);
     case "review":
       return reviewPhase(context, set);
     case "report":
@@ -244,9 +330,18 @@ async function runPhase(phase: PhaseId, context: Context, set: Setter, get: Gett
  * gate has nothing to compare against and every later claim is unfounded.
  */
 async function baseline(context: Context, set: Setter): Promise<PhaseResult> {
-  const branch = branchNameFor(context.item);
-  await useGit.getState().createBranch(branch);
-  const refused = useGit.getState().lastError;
+  // A branch left over from an earlier run is the common case, and it is not a
+  // reason to hand the task back: the run takes the next free name instead.
+  // Only a git that refuses every name has genuinely stopped anything.
+  const wanted = branchNameFor(context.item);
+  let branch = wanted;
+  let refused: string | null = null;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+    branch = attempt === 1 ? wanted : `${wanted}-${String(attempt)}`;
+    await useGit.getState().createBranch(branch);
+    refused = useGit.getState().lastError;
+    if (refused === null) break;
+  }
   if (refused !== null) {
     return { state: "blocked", summary: translate("run.branchRefused", { detail: refused }) };
   }
@@ -283,7 +378,7 @@ async function baseline(context: Context, set: Setter): Promise<PhaseResult> {
 }
 
 /** What the ticket actually asks for, and what it does not settle. */
-async function understand(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
+async function understand(context: Context, set: Setter): Promise<PhaseResult> {
   const description = await useTrackers.getState().detailOf(context.item);
   const ticket = [
     `# ${context.item.title}`,
@@ -291,23 +386,28 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
     description?.description ?? translate("tracker.noDescription"),
   ].join("\n\n");
 
-  const brief = parseBrief(await aiOneshot(UNDERSTAND_PROMPT + ticket, context.root));
+  const brief = await tryUntil(ATTEMPTS, async () =>
+    parseBrief(await aiOneshot(UNDERSTAND_PROMPT + ticket, context.root)),
+  );
   if (brief === null) return { state: "blocked", summary: translate("run.briefUnreadable") };
   set({ brief });
 
-  const blocking = brief.questions.filter((question) => question.blocking);
-  if (blocking.length > 0) {
-    hold(set, get, "understand", blocking.map((question) => question.text).join("\n"));
-    return {
-      state: "passed",
-      summary: translate("run.questionsFirst", { count: blocking.length }),
-      detail: blocking.map((question) => `- ${question.text}`).join("\n"),
-    };
-  }
+  // A question does not stop the run. Waiting for an answer from a desk nobody
+  // is sitting at is the one failure that makes handing a task over pointless,
+  // so the run takes the sensible default it was told to prefer and writes the
+  // assumption down where the reader will meet it in the report.
+  const open = brief.questions.filter((question) => question.blocking);
   return {
     state: "passed",
-    summary: translate("run.criteria", { count: brief.criteria.length }),
-    detail: brief.criteria.map((one) => `${one.id}. ${one.text}`).join("\n"),
+    summary:
+      open.length > 0
+        ? translate("run.criteriaWithAssumptions", { count: brief.criteria.length, open: open.length })
+        : translate("run.criteria", { count: brief.criteria.length }),
+    detail: [
+      ...brief.criteria.map((one) => `${one.id}. ${one.text}`),
+      ...(open.length > 0 ? ["", translate("run.assumed")] : []),
+      ...open.map((question) => `- ${question.text}`),
+    ].join("\n"),
   };
 }
 
@@ -353,11 +453,28 @@ async function planPhase(context: Context, set: Setter, get: Getter): Promise<Ph
     ...brief.criteria.map((one) => `${one.id}: ${one.text}`),
   ].join("\n");
 
-  const plan = parsePlan(await aiOneshot(asking, context.root));
+  // Asked again with the criteria it dropped, rather than refused: a plan that
+  // missed one is a plan one sentence away from being right.
+  let plan: Plan | null = null;
+  let missing: Criterion[] = [];
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+    const asked =
+      missing.length === 0
+        ? asking
+        : [
+            asking,
+            "",
+            "Your last plan left these criteria with no test. Cover every one of them:",
+            ...missing.map((one) => `${one.id}: ${one.text}`),
+          ].join("\n");
+    plan = parsePlan(await aiOneshot(asked, context.root));
+    if (plan === null) continue;
+    missing = uncoveredCriteria(brief, plan);
+    if (missing.length === 0) break;
+  }
   if (plan === null) return { state: "blocked", summary: translate("run.planUnreadable") };
   set({ plan });
 
-  const missing = uncoveredCriteria(brief, plan);
   if (missing.length > 0) {
     return {
       state: "blocked",
@@ -395,48 +512,141 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
     ...plan.tests.map((test) => `- [${test.criterion}] ${test.name} in ${test.file}`),
   ].join("\n");
 
-  const code = await runAgent(prompt, context.root, set);
+  let code: number | null = null;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+    if (attempt > 1) note(set, "implement", translate("run.tryingAgain", { attempt, of: ATTEMPTS }));
+    code = await runAgent(prompt, context.root, set);
+    // A cancel is the one answer not worth repeating.
+    if (code === null || code === 0) break;
+  }
   if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
   if (code !== 0) return { state: "blocked", summary: translate("run.agentFailed", { code }) };
   return { state: "passed", summary: translate("run.implemented") };
 }
 
-/** The suite again, against the baseline. The gate the whole run exists for. */
+/**
+ * The suite again, against the baseline.
+ *
+ * This phase only *measures*. Finding a regression is not a reason to hand back
+ * an unfinished job - `repair` gets that news and does something about it - so
+ * nothing here refuses, and what it learned is stored for the phase that acts.
+ */
 async function regression(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
   const before = get().baseline;
   if (before === null || !before.taken) return { state: "skipped", summary: translate("run.noBaseline") };
 
-  const tasks = await invoke<TaskDef[]>("detect_tasks", { rootPath: context.root });
-  const after = await runSuite(tasks, context.root, commandId(), runCommand(set, "regression"));
+  const after = await suiteNow(context, set, "regression");
   if (!after.taken) {
+    set({ verdict: null });
     return { state: "blocked", summary: translate("run.suiteWontRun", { detail: describeSilence(after) }) };
   }
   const verdict = judge(before.run, after.run);
-  if (verdict.blocks) {
-    // Naming the tests is only possible where a reader understood the output.
-    // Otherwise the honest summary is that the suite turned: "0 tests are
-    // failing" on a run that just blocked reads as a bug in the gate.
-    const named = verdict.comparison.broken;
-    return {
-      state: "blocked",
-      summary:
-        named.length > 0
-          ? translate("run.regressed", { count: named.length })
-          : translate("run.regressedUnnamed"),
-      detail: named.join("\n"),
-    };
+  set({ verdict });
+  return { state: "passed", summary: summarise(verdict), detail: differences(verdict) };
+}
+
+/**
+ * The phase that finishes the job.
+ *
+ * A workflow that reports "I broke something, goodbye" has not done the task -
+ * it has produced homework. So a regression goes straight back to the agent
+ * with the failing tests and the output that proves them, and the suite is
+ * measured again after every attempt. Only when the attempts run out does the
+ * run stop, and then it says what it tried.
+ *
+ * Bounded, because an agent that has failed three times on the same test is not
+ * one attempt from success - it is looping, and looping unattended is how a run
+ * spends a night and a fortune.
+ */
+async function repair(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
+  const before = get().baseline;
+  let verdict = get().verdict;
+  if (before === null || !before.taken || verdict === null || !verdict.blocks) {
+    return { state: "skipped", summary: translate("run.nothingToRepair") };
+  }
+
+  const tried: string[] = [];
+  for (let attempt = 1; attempt <= REPAIR_ATTEMPTS; attempt += 1) {
+    note(set, "repair", translate("run.repairing", { attempt, of: REPAIR_ATTEMPTS }));
+    tried.push(translate("run.repairAttempt", { attempt, detail: summarise(verdict) }));
+
+    const code = await runAgent(repairPrompt(verdict), context.root, set, "repair");
+    if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+
+    const after = await suiteNow(context, set, "repair");
+    if (!after.taken) {
+      return { state: "blocked", summary: translate("run.suiteWontRun", { detail: describeSilence(after) }) };
+    }
+    verdict = judge(before.run, after.run);
+    set({ verdict });
+    if (!verdict.blocks) {
+      return {
+        state: "passed",
+        summary: translate("run.repaired", { attempts: attempt }),
+        detail: [...tried, differences(verdict)].filter(Boolean).join("\n"),
+      };
+    }
   }
   return {
-    state: "passed",
-    summary:
-      after.run.report.reader === null
-        ? translate("run.noRegressionPlain")
-        : translate("run.noRegression", { count: after.run.report.total ?? 0 }),
-    detail: [
-      ...verdict.comparison.alreadyBroken.map((name) => `${translate("run.wasAlreadyRed")}: ${name}`),
-      ...verdict.comparison.repaired.map((name) => `${translate("run.nowFixed")}: ${name}`),
-    ].join("\n"),
+    state: "blocked",
+    summary: translate("run.repairGaveUp", { attempts: REPAIR_ATTEMPTS, detail: summarise(verdict) }),
+    detail: [...tried, differences(verdict)].filter(Boolean).join("\n"),
   };
+}
+
+/**
+ * Tries something that can come back empty, until it does not.
+ *
+ * A model that answered with prose instead of JSON has not refused - it has
+ * missed, and asking again costs one call. The bound is what stops a miss from
+ * becoming an all-night loop.
+ */
+async function tryUntil<T>(times: number, attempt: () => Promise<T | null>): Promise<T | null> {
+  for (let go = 1; go <= times; go += 1) {
+    const answer = await attempt();
+    if (answer !== null) return answer;
+  }
+  return null;
+}
+
+/** Runs the project's suite now, for whichever phase is asking. */
+async function suiteNow(context: Context, set: Setter, phase: PhaseId): Promise<Baseline> {
+  const tasks = await invoke<TaskDef[]>("detect_tasks", { rootPath: context.root });
+  return runSuite(tasks, context.root, commandId(), runCommand(set, phase));
+}
+
+/** One line for what the comparison found, however much of it can be named. */
+function summarise(verdict: GateVerdict): string {
+  const broken = verdict.comparison.broken;
+  if (broken.length > 0) return translate("run.regressed", { count: broken.length });
+  if (verdict.comparison.brokeWithoutDetail) return translate("run.regressedUnnamed");
+  const report = verdict.after.report;
+  return report.reader === null
+    ? translate("run.noRegressionPlain")
+    : translate("run.noRegression", { count: report.total ?? 0 });
+}
+
+/** The rest of what moved between the two runs, for the detail panel. */
+function differences(verdict: GateVerdict): string {
+  return [
+    ...verdict.comparison.broken.map((name) => `${translate("run.nowBroken")}: ${name}`),
+    ...verdict.comparison.alreadyBroken.map((name) => `${translate("run.wasAlreadyRed")}: ${name}`),
+    ...verdict.comparison.repaired.map((name) => `${translate("run.nowFixed")}: ${name}`),
+  ].join("\n");
+}
+
+/** What the agent is told about the damage, with the evidence attached. */
+function repairPrompt(verdict: GateVerdict): string {
+  const named = verdict.comparison.broken;
+  return [
+    REPAIR_PROMPT,
+    named.length > 0
+      ? `These tests passed before your change and fail now:\n${named.map((name) => `- ${name}`).join("\n")}`
+      : "The suite passed before your change and fails now.",
+    "",
+    "The suite said:",
+    allOutput(verdict.after.outcome).slice(-SUITE_OUTPUT_LIMIT),
+  ].join("\n");
 }
 
 /** A reader with a clean context, whose job is to find fault. */
@@ -485,6 +695,31 @@ function report(get: Getter): PhaseResult {
 const LOCATE_FILE_LIMIT = 40;
 /** How much of a diff is worth sending to a reviewer. */
 const DIFF_LIMIT = 12_000;
+/** How much of a failing suite's output the agent is shown when repairing. */
+const SUITE_OUTPUT_LIMIT = 8_000;
+
+/**
+ * How many times a phase tries before it admits it cannot.
+ *
+ * The run's job is to finish the task, so nothing here refuses on its first
+ * disappointment: a model that answered with prose is asked again, a plan that
+ * missed a criterion is sent back with the criterion it missed, an agent that
+ * exited badly is given another go. What the bound buys is the other half -
+ * three failures at the same thing is a loop, not bad luck, and a loop left
+ * alone overnight is what makes an unattended run frightening rather than
+ * useful.
+ */
+const ATTEMPTS = 3;
+const REPAIR_ATTEMPTS = 3;
+
+const REPAIR_PROMPT = `Your change broke something that was working before it.
+
+Fix it, and keep the behaviour you were asked to add: the point is to have both, not to undo your
+work. Read the failure first, then the code around it. Do not weaken, skip or delete the failing
+test to make it pass - the test is the evidence, not the obstacle.
+
+Run the failing tests when you are done. Do not commit anything.
+`;
 
 const LOCATE_PROMPT = `List the files in this repository this change will need to touch.
 Answer with one path per line, nothing else - no prose, no numbering, no explanation.
@@ -524,7 +759,12 @@ function runCommand(set: Setter, phase: PhaseId) {
  * Answers the exit code, or null when it was cancelled — which the backend
  * reports as an exit with no code at all.
  */
-async function runAgent(prompt: string, cwd: string, set: Setter): Promise<number | null> {
+async function runAgent(
+  prompt: string,
+  cwd: string,
+  set: Setter,
+  phase: PhaseId = "implement",
+): Promise<number | null> {
   /**
    * Listening happens *before* the CLI is started, and what arrives before its
    * id is known is kept.
@@ -557,7 +797,7 @@ async function runAgent(prompt: string, cwd: string, set: Setter): Promise<numbe
   unlistenAgent.push(
     await listen<{ run_id: string; event: string }>("ai:stderr", (event) => {
       if (runId === null || event.payload.run_id === runId) {
-        note(set, "implement", event.payload.event, "output");
+        note(set, phase, event.payload.event, "output");
       }
     }),
   );
@@ -621,6 +861,7 @@ const PHASE_LABELS: Record<PhaseId, TranslationKey> = {
   plan: "run.phase.plan",
   implement: "run.phase.implement",
   regression: "run.phase.regression",
+  repair: "run.phase.repair",
   review: "run.phase.review",
   report: "run.phase.report",
 };
