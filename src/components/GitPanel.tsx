@@ -39,7 +39,7 @@ import {
 } from "../stores/git";
 import { useWorkspace } from "../stores/workspace";
 import { Panel, PanelGroup } from "react-resizable-panels";
-import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { ContextMenu, SEPARATOR, type MenuItem } from "./ContextMenu";
 import { PromptModal } from "./PromptModal";
 import { ResizeHandle } from "./ResizeHandle";
 
@@ -533,7 +533,11 @@ export function GitPanel() {
   const git = useGit();
   const providerHealth = useAi((s) => s.providerHealth);
   const openCommit = useWorkspace((s) => s.openCommit);
-  const [branchMenu, setBranchMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  const [branchMenu, setBranchMenu] = useState<{
+    x: number;
+    y: number;
+    items: (MenuItem | typeof SEPARATOR)[];
+  } | null>(null);
   const [newBranchModal, setNewBranchModal] = useState(false);
   /**
    * Every confirm/prompt this panel can raise. One state instead of ten flags:
@@ -554,7 +558,15 @@ export function GitPanel() {
 
   const showBranchMenu = async (x: number, y: number) => {
     const branches = await git.listBranches();
-    const items: MenuItem[] = branches.map((branch) => ({
+    const local = branches.filter((branch) => !branch.remote);
+    // A remote branch whose local counterpart exists is already on the list
+    // under its local name; offering it twice only makes the menu longer. The
+    // local name is everything after the remote's own segment.
+    const localNames = new Set(local.map((branch) => branch.name));
+    const remote = branches.filter(
+      (branch) => branch.remote && !localNames.has(branch.name.split("/").slice(1).join("/")),
+    );
+    const items: (MenuItem | typeof SEPARATOR)[] = local.map((branch) => ({
       label: branch.name,
       icon: branch.current ? (
         <Check size={13} className="text-accent" />
@@ -565,10 +577,26 @@ export function GitPanel() {
         if (!branch.current) void git.checkout(branch.name);
       },
     }));
-    const others = branches.filter((branch) => !branch.current);
+    if (remote.length > 0) {
+      // Below the local ones, the branches that so far exist only on the
+      // remote - the whole of a fresh clone's team work. Picking one checks it
+      // out as a local branch that tracks it.
+      items.push(
+        SEPARATOR,
+        ...remote.map((branch) => ({
+          label: branch.name,
+          icon: <Cloud size={13} className="text-muted" />,
+          onClick: () => {
+            void git.checkoutTracking(branch.name);
+          },
+        })),
+      );
+    }
+    items.push(SEPARATOR);
+    const others = local.filter((branch) => !branch.current);
     // git names the checked-out branch itself; the status is only a fallback
     // for the moment right after a checkout, before it is re-read.
-    const current = branches.find((branch) => branch.current)?.name ?? git.status?.branch ?? "";
+    const current = local.find((branch) => branch.current)?.name ?? git.status?.branch ?? "";
     items.push(
       {
         label: t("git.newBranch"),

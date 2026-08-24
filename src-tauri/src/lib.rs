@@ -116,6 +116,7 @@ pub fn run() {
             git::git_commit_detail,
             git::git_show_commit_file,
             git::git_branches,
+            git::git_checkout_tracking,
             git::git_checkout,
             git::git_create_branch,
             git::git_rename_branch,

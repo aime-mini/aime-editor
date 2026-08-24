@@ -701,21 +701,62 @@ pub async fn git_show_commit_file(
 pub struct GitBranch {
     pub name: String,
     pub current: bool,
+    /// True for a remote-tracking branch (`origin/feature`): offered for
+    /// checkout, never for rename or delete.
+    pub remote: bool,
 }
 
+/// Local **and** remote-tracking branches. A freshly cloned repository has one
+/// local branch and everything else under `origin/`, so a list of local
+/// branches alone reads as "there are no other branches" — the exact opposite
+/// of the truth.
+///
+/// Measured against real `for-each-ref` output (2026-08-24): `%(HEAD)` is `*`
+/// on the checked-out branch and a space otherwise, and a clone's
+/// `origin/HEAD` is a symbolic ref whose *short name is just `origin`* — any
+/// line with a non-empty `%(symref)` is an alias for another ref, not a
+/// branch, and listing it would offer a branch named after the remote.
 #[tauri::command]
 pub async fn git_branches(root: String) -> Result<Vec<GitBranch>, String> {
-    let out = run_git(&root, &["branch", "--format=%(HEAD)%00%(refname:short)"]).await?;
+    let out = run_git(
+        &root,
+        &[
+            "for-each-ref",
+            "refs/heads",
+            "refs/remotes",
+            "--format=%(HEAD)%00%(refname)%00%(refname:short)%00%(symref)",
+        ],
+    )
+    .await?;
     Ok(out
         .lines()
         .filter_map(|line| {
-            let (head, name) = line.split_once('\0')?;
-            Some(GitBranch {
-                name: name.to_string(),
-                current: head == "*",
-            })
+            let mut parts = line.split('\0');
+            let head = parts.next()?;
+            let full = parts.next()?;
+            let short = parts.next()?;
+            let symref = parts.next().unwrap_or("");
+            if symref.is_empty() {
+                Some(GitBranch {
+                    name: short.to_string(),
+                    current: head == "*",
+                    remote: full.starts_with("refs/remotes/"),
+                })
+            } else {
+                None
+            }
         })
         .collect())
+}
+
+/// Checks out a remote-tracking branch as a local branch that tracks it.
+///
+/// `--track origin/x` rather than the bare `x`: the shorthand only works while
+/// exactly one remote has the branch, and a second remote turns it into an
+/// "ambiguous" refusal that nothing in the menu explains.
+#[tauri::command]
+pub async fn git_checkout_tracking(root: String, name: String) -> Result<String, String> {
+    run_git(&root, &["checkout", "--track", &name]).await
 }
 
 #[tauri::command]
@@ -927,6 +968,66 @@ mod tests {
         assert_eq!(status.ahead, 2);
         assert_eq!(status.behind, 1);
         assert!(status.files.is_empty());
+    }
+
+    /// A real clone, because the whole point is what git prints: a fresh clone
+    /// has one local branch, every other branch lives under `origin/`, and
+    /// `origin/HEAD` is a symref whose short name is just "origin" — the three
+    /// facts the branch list must survive.
+    #[tokio::test]
+    async fn a_clone_lists_remote_branches_and_never_the_head_alias() {
+        let base = std::env::temp_dir().join(format!("aime-branches-{}", std::process::id()));
+        let source = base.join("src");
+        let clone = base.join("clone");
+        std::fs::create_dir_all(&source).expect("mkdir");
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&source, &["init", "-q", "-b", "main"]);
+        git(&source, &["config", "user.email", "t@t"]);
+        git(&source, &["config", "user.name", "t"]);
+        git(&source, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&source, &["branch", "feature/checkout"]);
+        git(
+            &base,
+            &[
+                "clone",
+                "-q",
+                source.to_str().expect("utf8"),
+                clone.to_str().expect("utf8"),
+            ],
+        );
+
+        let branches = git_branches(clone.to_string_lossy().to_string())
+            .await
+            .expect("branches");
+
+        let names: Vec<(&str, bool, bool)> = branches
+            .iter()
+            .map(|b| (b.name.as_str(), b.current, b.remote))
+            .collect();
+        assert!(
+            names.contains(&("main", true, false)),
+            "local main missing: {names:?}"
+        );
+        assert!(
+            names.contains(&("origin/feature/checkout", false, true)),
+            "the remote branch never arrived: {names:?}"
+        );
+        assert!(
+            !branches.iter().any(|b| b.name == "origin"),
+            "origin/HEAD leaked in as a branch named after the remote: {names:?}"
+        );
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

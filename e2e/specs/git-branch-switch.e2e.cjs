@@ -37,6 +37,18 @@ git("add", ".");
 git("commit", "-m", "feature state");
 git("checkout", "main");
 
+// And a branch that exists only on a remote, the way a teammate's work does in
+// a fresh clone: a local "remote" repository, pushed to, then fetched from -
+// nothing ever checked out. The branch menu must still offer it.
+const remote = fs.mkdtempSync(path.join(os.tmpdir(), "aime-e2e-remote-"));
+execFileSync("git", ["init", "--bare", "-q", remote], { stdio: "pipe" });
+git("remote", "add", "origin", remote);
+git("push", "-q", "origin", "main");
+git("branch", "team/only-on-remote", "main");
+git("push", "-q", "origin", "team/only-on-remote");
+git("branch", "-D", "team/only-on-remote");
+git("fetch", "-q", "origin");
+
 async function waitForText(text, message) {
   const needle = text.toLowerCase();
   await browser.waitUntil(async () => (await $("body").getText()).toLowerCase().includes(needle), {
@@ -73,7 +85,43 @@ describe("Git panel across an external branch switch", () => {
   });
 
   after(() => {
-    fs.rmSync(repo, { recursive: true, force: true });
+    try {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(remote, { recursive: true, force: true });
+    } catch {
+      // Windows keeps a handle on the folder the app has open; the temp sweep
+      // gets what this could not.
+    }
+  });
+
+  it("offers the branches that exist only on the remote, and checks one out as tracking", async () => {
+    // The user's own report: a clone showed nothing but the current branch,
+    // because the menu listed local branches and a clone has exactly one.
+    await (await $('button[title="Git"]')).click();
+    await (await $('button[title="Switch branch"]')).click();
+    await waitForText("team/only-on-remote", "the remote-only branch never appeared in the menu");
+
+    // Picking it must create a real local branch tracking the remote one - the
+    // assertion is against git itself, not against the label on screen.
+    await (await $("button*=team/only-on-remote")).click();
+    await browser.waitUntil(
+      () =>
+        execFileSync("git", ["branch", "--show-current"], { cwd: repo }).toString().trim() ===
+        "team/only-on-remote",
+      { timeout: 20_000, timeoutMsg: "picking the remote branch did not check it out locally" },
+    );
+    const upstream = execFileSync(
+      "git",
+      ["rev-parse", "--abbrev-ref", "team/only-on-remote@{upstream}"],
+      { cwd: repo },
+    )
+      .toString()
+      .trim();
+    assert.equal(upstream, "origin/team/only-on-remote", "the new local branch tracks nothing");
+
+    // Back to main so the next test starts where it expects to.
+    git("checkout", "main");
+    await waitForBranch("main");
   });
 
   it("follows a checkout to the other branch and back without a restart", async () => {

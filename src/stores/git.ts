@@ -33,6 +33,8 @@ export interface GitLogEntry {
 export interface GitBranch {
   name: string;
   current: boolean;
+  /** A remote-tracking branch (`origin/feature`): checkout-only. */
+  remote: boolean;
 }
 
 export interface GitStashEntry {
@@ -91,6 +93,8 @@ interface GitState {
   init: () => Promise<void>;
   listBranches: () => Promise<GitBranch[]>;
   checkout: (name: string) => Promise<void>;
+  /** Checks a remote branch out as a local branch that tracks it. */
+  checkoutTracking: (name: string) => Promise<void>;
   createBranch: (name: string) => Promise<void>;
   renameBranch: (from: string, to: string) => Promise<void>;
   /** "unmerged" means git refused because the branch holds unmerged work. */
@@ -342,6 +346,11 @@ export const useGit = create<GitState>((set, get) => {
     checkout: async (name) => {
       const root = useWorkspace.getState().rootPath;
       if (root) await runOp(set, () => invoke("git_checkout", { root, name }));
+    },
+
+    checkoutTracking: async (name) => {
+      const root = useWorkspace.getState().rootPath;
+      if (root) await runOp(set, () => invoke("git_checkout_tracking", { root, name }));
     },
 
     createBranch: async (name) => {
