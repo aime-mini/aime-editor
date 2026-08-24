@@ -101,9 +101,12 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
  */
 export function TerminalPane({
   initialCommand,
+  cwd,
   onOutput,
 }: {
   initialCommand?: string;
+  /** Where the shell starts; the project root when the tab named nowhere else. */
+  cwd?: string;
   onOutput?: (chunk: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -196,7 +199,7 @@ export function TerminalPane({
       );
 
       const created = await invoke<number>("term_create", {
-        cwd: rootPath,
+        cwd: cwd ?? rootPath,
         cols: term.cols,
         rows: term.rows,
       });
@@ -254,7 +257,8 @@ export function TerminalPane({
       term.dispose();
       termRef.current = null;
     };
-  }, [rootPath]);
+    // `cwd` is fixed for the life of a tab, so it never restarts a shell here.
+  }, [rootPath, cwd]);
 
   // Follow app theme switches live.
   useEffect(() => {

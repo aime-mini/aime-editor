@@ -8,6 +8,11 @@ export interface TerminalTab {
   initialCommand?: string;
   /** Tab label; task runs name themselves instead of "Terminal n". */
   title?: string;
+  /**
+   * Where the shell starts, when it is not the project root - a task belonging
+   * to one member of a repository that holds several.
+   */
+  cwd?: string;
 }
 
 /** Everything a caller may choose about a new tab; the key is ours. */

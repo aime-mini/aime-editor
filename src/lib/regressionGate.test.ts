@@ -45,6 +45,26 @@ describe("runSuite", () => {
     if (baseline.taken) expect(baseline.run.report.passed).toBe(true);
   });
 
+  it("runs a member's suite in the member's own folder", async () => {
+    const run = vi.fn().mockResolvedValue(outcome({ stdout: PASSING }));
+    const member: TaskDef = { ...TASKS[1], id: "api/test", command: "npm test", cwd: "api" };
+    await runSuite([member], "C:/work", "run-1", run);
+
+    expect(run.mock.calls[0][2]).toBe("C:/work/api");
+  });
+
+  it("measures the whole repository rather than whichever member came first", () => {
+    const members: TaskDef[] = [
+      { id: "api/test", label: "api · npm test", kind: "test", command: "npm test", cwd: "api" },
+      { id: "web/test", label: "web · npm test", kind: "test", command: "npm test", cwd: "web" },
+    ];
+    // A root suite covers them all, so it wins wherever it sits in the list.
+    expect(testTaskOf([...members, TASKS[1]])?.id).toBe("test");
+    // With only members to choose from, the first is better than refusing -
+    // but it is a member, and the run reports it as the one that was measured.
+    expect(testTaskOf(members)?.cwd).toBe("api");
+  });
+
   it("says a project has no test command instead of passing it silently", async () => {
     const run = vi.fn();
     const baseline = await runSuite([TASKS[0]], "C:/work", "run-1", run);

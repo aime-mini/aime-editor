@@ -13,6 +13,20 @@ async function screenText() {
   return browser.execute(() => document.querySelector(".xterm-rows")?.textContent ?? "");
 }
 
+/**
+ * The same, for the tab in front of the user rather than the first one made.
+ * Every pane stays mounted so switching tabs never kills a shell, so the first
+ * `.xterm-rows` in the document is whichever tab was opened first - not the one
+ * a task just started.
+ */
+async function activeScreenText() {
+  return browser.execute(
+    () =>
+      [...document.querySelectorAll(".xterm-rows")].find((rows) => rows.offsetParent !== null)
+        ?.textContent ?? "",
+  );
+}
+
 /** Each painted row on its own, which is how a wrapped prompt becomes visible. */
 async function screenRows() {
   return browser.execute(() =>
@@ -156,6 +170,40 @@ describe("Terminal", () => {
       )
       .catch(() => {
         assert.fail(`the shell never answered a command. painted=${JSON.stringify(painted)}`);
+      });
+  });
+
+  /**
+   * A task belonging to one folder of a repository that builds nothing at its
+   * root. Detection can hand back the right command and the right label and
+   * still be useless if the shell starts in the wrong folder, and only the real
+   * app can show that: the PTY's working directory is decided in Rust, passed
+   * from a tab, put there by the tasks store.
+   *
+   * The proof is behavioural rather than a reading of the prompt: `npm test`
+   * started at the root would find no package.json at all, so the marker the
+   * script prints can only appear if the shell really is inside `api`.
+   */
+  it("runs a folder's own task inside that folder", async () => {
+    await (await $('button[title="Run a task (build / test / run)"]')).click();
+    const task = await $("button=api · npm test");
+    await task.waitForDisplayed({
+      timeout: 10_000,
+      timeoutMsg: "the play menu did not offer the task of the folder below the root",
+    });
+    await task.click();
+
+    let painted = "";
+    await browser
+      .waitUntil(
+        async () => {
+          painted = await activeScreenText();
+          return painted.includes("the api suite ran here");
+        },
+        { timeout: 60_000 },
+      )
+      .catch(() => {
+        assert.fail(`the task did not run in its own folder. painted=${JSON.stringify(painted)}`);
       });
   });
 });

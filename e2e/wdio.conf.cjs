@@ -32,6 +32,24 @@ const PROFILE_RETRY_MS = 400;
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "aime-e2e-"));
 fs.writeFileSync(path.join(workspace, "hello.ts"), 'export const greeting = "hello";\n');
 fs.writeFileSync(path.join(workspace, "notes.md"), "# Notes\n\nsecond file\n");
+// A repository that builds nothing at its own root: the project lives one folder
+// down, which is the shape that makes task detection look past the root and
+// carry a `cwd` on what it finds. The script prints a marker precisely so a task
+// started in the wrong folder is a failure rather than a shrug - npm run from
+// the root would find no package.json at all.
+fs.mkdirSync(path.join(workspace, "api"));
+fs.writeFileSync(
+  path.join(workspace, "api", "package.json"),
+  JSON.stringify(
+    {
+      name: "api",
+      private: true,
+      scripts: { test: 'node -e "console.log(\'the api suite ran here\')"' },
+    },
+    null,
+    2,
+  ),
+);
 // A file carrying a UTF-8 byte order mark, the way Visual Studio writes C#:
 // 3373 of the 4071 .cs files in the solution this was found on have one.
 fs.writeFileSync(path.join(workspace, "marked.cs"), "\ufeffusing Nop.Core.Caching;\n\nclass Marked { }\n");

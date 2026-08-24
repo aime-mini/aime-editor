@@ -1,4 +1,4 @@
-import type { TaskDef } from "../stores/tasks";
+import { folderOf, type TaskDef } from "../stores/tasks";
 import { allOutput, type CommandOutcome } from "./exec";
 import { compareRuns, isRegression, readTestOutput, type Comparison, type TestReport } from "./testReport";
 
@@ -52,9 +52,17 @@ export type RunCommand = (
   timeoutMs: number,
 ) => Promise<CommandOutcome>;
 
-/** The project's own test command, if it declares one. */
+/**
+ * The project's own test command, if it declares one.
+ *
+ * A suite that covers the whole repository wins over one belonging to a single
+ * member of it: in a repository holding a `frontend` beside an `api`, the first
+ * member in the alphabet is not the project, and letting it stand for the whole
+ * would be a gate quietly measuring a fraction of what it claims.
+ */
 export function testTaskOf(tasks: TaskDef[]): TaskDef | null {
-  return tasks.find((task) => task.kind === "test") ?? null;
+  const tests = tasks.filter((task) => task.kind === "test");
+  return tests.find((task) => task.cwd === undefined) ?? tests.at(0) ?? null;
 }
 
 /**
@@ -75,7 +83,7 @@ export async function runSuite(
   if (task === null) return { taken: false, reason: "noTestCommand" };
 
   try {
-    const outcome = await run(runId, task.command, root, SUITE_TIMEOUT_MS);
+    const outcome = await run(runId, task.command, folderOf(task, root), SUITE_TIMEOUT_MS);
     return {
       taken: true,
       run: { command: task.command, report: readTestOutput(allOutput(outcome), outcome.code), outcome },

@@ -264,8 +264,9 @@ const EN: HelpTopic[] = [
     id: "tasks",
     section: "Tasks",
     title: "Run, build and test",
-    body: "The play button in the status bar (or 'Run task' in the command palette) lists what Aime detected for this project: npm scripts, cargo, go, dotnet, pytest, docker. A task runs in its own terminal tab named after it, so you see the real output and can interact with it. Add or override tasks in .aime/tasks.json (id, label, kind, command) - an entry reusing a detected id replaces it.",
-    keywords: "task run build test publish npm cargo dotnet go pytest docker tasks.json",
+    body: "The play button in the status bar (or 'Run task' in the command palette) lists what Aime detected for this project: package.json scripts, cargo, go, dotnet, pytest, docker. Scripts are run by the manager the project itself declares - npm, pnpm, yarn or bun, taken from its packageManager field first and its lockfile second - so a pnpm project is never handed an npm command. A workspace whose root declares no build or test script of its own is offered the command that runs every member at once. And a repository that builds nothing at the top - a frontend beside an api - has each folder detected separately, listed as 'frontend · npm test' and run in that folder. A task runs in its own terminal tab named after it, so you see the real output and can interact with it. Add or override tasks in .aime/tasks.json (id, label, kind, command, and cwd for a folder below the root) - an entry reusing a detected id replaces it.",
+    keywords:
+      "task run build test publish npm pnpm yarn bun workspace monorepo cargo dotnet go pytest docker tasks.json",
   },
   {
     id: "tasks-fix",
@@ -630,8 +631,9 @@ const VI: HelpTopic[] = [
     id: "tasks",
     section: "Task",
     title: "Chạy, build và test",
-    body: "Nút play trên status bar (hoặc 'Chạy task' trong command palette) liệt kê những gì Aime phát hiện cho dự án: script npm, cargo, go, dotnet, pytest, docker. Task chạy trong tab terminal riêng mang tên nó, nên bạn thấy output thật và vẫn tương tác được. Thêm hoặc ghi đè task bằng .aime/tasks.json (id, label, kind, command) - mục nào trùng id với task tự phát hiện sẽ thay thế task đó.",
-    keywords: "task chạy build test publish npm cargo dotnet go pytest docker tasks.json",
+    body: "Nút play trên status bar (hoặc 'Chạy task' trong command palette) liệt kê những gì Aime phát hiện cho dự án: script trong package.json, cargo, go, dotnet, pytest, docker. Script được chạy bằng đúng package manager mà dự án tự khai - npm, pnpm, yarn hay bun, lấy từ field packageManager trước rồi mới tới lockfile - nên dự án pnpm không bao giờ bị đưa lệnh npm. Workspace mà thư mục gốc không có script build/test của riêng nó thì được đề nghị lệnh chạy một lượt cho mọi thành viên. Còn repo mà gốc không build gì cả - kiểu frontend nằm cạnh api - thì từng thư mục được nhận diện riêng, hiện thành 'frontend · npm test' và chạy ngay trong thư mục đó. Task chạy trong tab terminal riêng mang tên nó, nên bạn thấy output thật và vẫn tương tác được. Thêm hoặc ghi đè task bằng .aime/tasks.json (id, label, kind, command, và cwd nếu nằm trong thư mục con) - mục nào trùng id với task tự phát hiện sẽ thay thế task đó.",
+    keywords:
+      "task chạy build test publish npm pnpm yarn bun workspace monorepo cargo dotnet go pytest docker tasks.json",
   },
   {
     id: "tasks-fix",

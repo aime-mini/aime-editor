@@ -15,6 +15,17 @@ export interface TaskDef {
   label: string;
   kind: TaskKind;
   command: string;
+  /**
+   * Where the command runs, relative to the project root; absent means the root
+   * itself. Only carried by the members of a repository that builds nothing of
+   * its own - a `frontend` beside an `api`.
+   */
+  cwd?: string;
+}
+
+/** Where a task's command belongs, as an absolute path. */
+export function folderOf(task: TaskDef, rootPath: string): string {
+  return task.cwd === undefined ? rootPath : `${rootPath}/${task.cwd}`;
 }
 
 /** One execution of a task, tied to the terminal tab that shows it. */
@@ -69,7 +80,11 @@ export const useTasks = create<TasksState>((set, get) => ({
     // exit after a task, so the PTY's own exit event never fires here.
     const commandLine = await invoke<string>("task_command_line", { command: task.command });
     useLayout.getState().showTerminal();
-    const tabKey = useTerminals.getState().addTab({ initialCommand: commandLine, title: task.label });
+    const tabKey = useTerminals.getState().addTab({
+      initialCommand: commandLine,
+      title: task.label,
+      cwd: folderOf(task, rootPath),
+    });
     set((s) => ({ runs: { ...s.runs, [tabKey]: { task, output: "", exitCode: null } } }));
   },
 

@@ -86,6 +86,7 @@ export function TerminalPanel() {
           <div key={tab.key} className={tab.key === activeTab ? "h-full" : "hidden"}>
             <TerminalPane
               initialCommand={tab.initialCommand}
+              cwd={tab.cwd}
               onOutput={
                 tab.key in runs
                   ? (chunk) => {
