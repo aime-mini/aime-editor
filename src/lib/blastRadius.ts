@@ -87,6 +87,71 @@ export function radiusOf(impacts: Impact[]): Radius {
   };
 }
 
+/** Where a symbol sits, in the 1-based coordinates the editor counts in. */
+export interface SymbolAt {
+  name: string;
+  line: number;
+  column: number;
+}
+
+/**
+ * The language server, as this module needs it.
+ *
+ * The seam is here rather than in the caller so the reasoning above can be
+ * tested without an editor, a server or a project on disk; the implementation
+ * that talks to a real one lives in `lsp/impact.ts`.
+ */
+export interface SymbolProbe {
+  /**
+   * Every symbol of one file and the files that reference it, or null when
+   * nothing could answer for that file - no server for the language, no
+   * outline, or a server that stopped answering.
+   */
+  dependentsOf: (file: string) => Promise<SymbolReferences[] | null>;
+}
+
+/**
+ * The radius of a change, asked file by file.
+ *
+ * One file at a time on purpose: a language server answers a queue, and asking
+ * it about forty files at once buys no wall-clock while making a run that is
+ * cancelled halfway leave forty requests in flight.
+ */
+export async function radiusFrom(files: string[], probe: SymbolProbe): Promise<Radius> {
+  const impacts: Impact[] = [];
+  for (const file of files) {
+    const references = await probe.dependentsOf(file);
+    impacts.push(
+      references === null ? { file, dependents: [], symbols: [], unknown: true } : impactOf(file, references),
+    );
+  }
+  return radiusOf(provenReach(impacts));
+}
+
+/**
+ * The impacts, with "no dependents" demoted to "unknown" unless something in
+ * this radius proved the server could see past the file it was asked about.
+ *
+ * A server that answers about one file at a time answers exactly like a project
+ * where nothing depends on anything: a list of zeroes. The two were told apart
+ * by measurement rather than assumed - typescript-language-server 5.3 on a
+ * folder with no `tsconfig`/`jsconfig` puts each opened file in an inferred
+ * project of its own, so `references` never leaves it, and a radius asked there
+ * would report "nothing else is affected" about a file with real callers
+ * (measured 2026-08-23; the same folder with a `jsconfig.json` answers the
+ * dependants correctly).
+ *
+ * The rule this settles on needs no per-server knowledge and makes no guess: a
+ * radius claims completeness only on positive evidence, which is one dependant
+ * found anywhere in it. The cost is that a change genuinely touching a leaf file
+ * reads as unknown - and "nobody could show me anything depends on this" is the
+ * honest thing to say when that is all that happened.
+ */
+function provenReach(impacts: Impact[]): Impact[] {
+  const reachedAnother = impacts.some((impact) => impact.dependents.length > 0);
+  return reachedAnother ? impacts : impacts.map((impact) => ({ ...impact, unknown: true }));
+}
+
 /**
  * Whether the radius is knowable at all.
  *

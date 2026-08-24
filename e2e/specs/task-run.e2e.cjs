@@ -146,6 +146,18 @@ import(cart).then((module) => {
 });
 `;
 
+/**
+ * A second module that really imports the one being changed. Without it the
+ * blast radius has no true answer to find: the suite reaches `cart.js` through
+ * a computed `import()`, which is not a reference any language server can see.
+ */
+const SAMPLE_CHECKOUT = `import { withTax } from "./cart.js";
+
+export function receiptTotal(amount, rate) {
+  return withTax(amount, rate);
+}
+`;
+
 const SAMPLE_CART = `export function subtotal(lines) {
   return lines.reduce((total, line) => total + line.price * line.quantity, 0);
 }
@@ -153,6 +165,38 @@ export function withTax(amount, rate) {
   return amount * (1 + rate);
 }
 `;
+
+/**
+ * What a JavaScript project needs before a language server can say anything
+ * about it, both measured against typescript-language-server 5.3 on 2026-08-23:
+ *
+ * 1. **A jsconfig (or tsconfig).** Without one the server puts the opened file
+ *    in an inferred project of its own, so `references` sees that file and
+ *    nothing else - `checkout.js` importing `cart.js` is invisible. With one,
+ *    the server announces "Initializing JS/TS language features…" and the same
+ *    question answers `src/checkout.js`.
+ * 2. **A real TypeScript.** The server runs the `typescript` it finds in the
+ *    project; without one it falls back to a bundled stub that reports version
+ *    1.0.0 and does not even declare `documentSymbolProvider`. Note that a
+ *    global install is not enough - measured, it is not looked at.
+ *
+ * Both are ordinary in a real project, and a sample that lacks them would test
+ * a language server that was never given a chance to answer.
+ */
+function giveItALanguageService(dir) {
+  fs.writeFileSync(
+    path.join(dir, "jsconfig.json"),
+    JSON.stringify({ compilerOptions: { checkJs: false }, include: ["src/**/*"] }, null, 2),
+  );
+  fs.mkdirSync(path.join(dir, "node_modules"), { recursive: true });
+  fs.symlinkSync(
+    path.join(process.cwd(), "node_modules", "typescript"),
+    path.join(dir, "node_modules", "typescript"),
+    // A junction, because a symlink to a directory needs administrator rights
+    // on Windows and a junction does not.
+    "junction",
+  );
+}
 
 function sampleProject() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aime-run-"));
@@ -167,6 +211,8 @@ function sampleProject() {
   );
   fs.writeFileSync(path.join(dir, "test.cjs"), SAMPLE_TEST);
   fs.writeFileSync(path.join(dir, "src", "cart.js"), SAMPLE_CART);
+  fs.writeFileSync(path.join(dir, "src", "checkout.js"), SAMPLE_CHECKOUT);
+  giveItALanguageService(dir);
 
   const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe" });
   git("init", "-b", "main");
@@ -239,6 +285,21 @@ const restore = (file, content) => {
   else fs.writeFileSync(file, content);
 };
 
+/**
+ * One phase's own row in the run's list, by the heading it carries.
+ *
+ * Anchored to the row rather than read off the whole page: a summary that
+ * appeared under a different phase - or in the log - would still be found by a
+ * search of the body, and a test that cannot tell those apart proves nothing.
+ */
+async function phaseRow(heading) {
+  return browser.execute((label) => {
+    const rows = [...document.querySelectorAll("ol > li")];
+    const row = rows.find((candidate) => (candidate.textContent ?? "").includes(label));
+    return row?.textContent ?? "";
+  }, heading);
+}
+
 async function waitForText(text, message, timeout = 60_000) {
   const needle = text.toLowerCase();
   try {
@@ -302,7 +363,9 @@ async function startRun(repo) {
 
   if ((await $("body").getText()).toLowerCase().includes("connect a board")) {
     await (await $('input[placeholder="contoso"]')).setValue(ORGANIZATION);
-    await (await $('input[placeholder="Contoso Web"]')).setValue(PROJECT);
+    // Matched by prefix: the field takes a comma-separated list of projects, so
+    // its placeholder names two.
+    await (await $('input[placeholder^="Contoso Web"]')).setValue(PROJECT);
     await (await $('input[placeholder="https://dev.azure.com"]')).setValue(board.origin);
     await (await $('input[type="password"]')).setValue(TOKEN);
     await browser.keys("Enter");
@@ -382,6 +445,23 @@ describe("Task run", () => {
       timeoutMsg: `the run did not start a branch of its own: on ${currentBranch(repo)}`,
     });
     assert.notEqual(currentBranch(repo), "main", "a run must never work on the branch the user was on");
+
+    // The phase that asks the language server "who else uses this?". `checkout.js`
+    // imports `cart.js`, and the only thing in the app that can know it is the
+    // server - the fake CLI never mentions that file.
+    await browser.waitUntil(
+      async () => (await phaseRow("Find what it touches")).includes("depending on them"),
+      {
+        timeout: 120_000,
+        timeoutMsg: "the locate phase never reported a radius",
+      },
+    );
+    const locate = await phaseRow("Find what it touches");
+    assert.match(
+      locate,
+      /1 file\(s\) to change, 1 depending on them/,
+      `the language server was not asked what depends on the change: ${locate}`,
+    );
 
     // Nothing to click: the run drives itself to the end, which is the point of
     // handing a task over.

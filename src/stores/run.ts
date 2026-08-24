@@ -18,7 +18,7 @@ import {
 } from "../lib/aiRun";
 import { aiOneshot } from "../lib/aiOneshot";
 import { createEventParser } from "../lib/aiParsers";
-import { impactOf, radiusIsComplete, radiusOf } from "../lib/blastRadius";
+import { radiusFrom, radiusIsComplete, type Radius } from "../lib/blastRadius";
 import { allOutput, execCancel } from "../lib/exec";
 import { judge, runSuite, type Baseline, type GateVerdict, type SuiteRun } from "../lib/regressionGate";
 import { forgetRun, loadRun, saveRun, wasInterrupted } from "../lib/runFile";
@@ -77,6 +77,8 @@ interface RunState {
   autonomy: Autonomy;
   /** What each phase produced, for the report and for the panel's detail. */
   brief: Brief | null;
+  /** What the language server said depends on the files about to change. */
+  radius: Radius | null;
   plan: Plan | null;
   review: Review | null;
   baseline: Baseline | null;
@@ -108,6 +110,7 @@ export const useRun = create<RunState>((set, get) => ({
   log: [],
   autonomy: "autopilot",
   brief: null,
+  radius: null,
   plan: null,
   review: null,
   baseline: null,
@@ -122,7 +125,7 @@ export const useRun = create<RunState>((set, get) => ({
     if (rootPath === null || running) return;
     running = true;
     const run = newRun(`run-${String(Date.now())}`, item.id, item.title, Date.now());
-    set({ run, log: [], brief: null, plan: null, review: null, baseline: null, verdict: null });
+    set({ run, log: [], brief: null, radius: null, plan: null, review: null, baseline: null, verdict: null });
     useWorkspace.getState().openRun();
     await drive("baseline", { item, root: rootPath }, set, get);
   },
@@ -165,7 +168,16 @@ export const useRun = create<RunState>((set, get) => ({
   reopen: async (root) => {
     const saved = await loadRun(root);
     if (saved === null) {
-      set({ run: null, log: [], brief: null, plan: null, review: null, baseline: null, verdict: null });
+      set({
+        run: null,
+        log: [],
+        brief: null,
+        radius: null,
+        plan: null,
+        review: null,
+        baseline: null,
+        verdict: null,
+      });
       return;
     }
     set({
@@ -174,6 +186,7 @@ export const useRun = create<RunState>((set, get) => ({
         : saved.run,
       log: [],
       brief: saved.brief,
+      radius: saved.radius,
       plan: saved.plan,
       review: saved.review,
       baseline: saved.baseline,
@@ -199,6 +212,7 @@ useWorkspace.subscribe((state, previous) => {
     run: null,
     log: [],
     brief: null,
+    radius: null,
     plan: null,
     review: null,
     baseline: null,
@@ -290,9 +304,9 @@ async function drive(start: PhaseId, context: Context, set: Setter, get: Getter)
  * the path that matters for a benefit on the path that rarely happens.
  */
 function journal(root: string, get: Getter): void {
-  const { run, brief, plan, review, baseline, verdict } = get();
+  const { run, brief, radius, plan, review, baseline, verdict } = get();
   if (run === null) return;
-  void saveRun(root, { run, brief, plan, review, baseline, verdict });
+  void saveRun(root, { run, brief, radius, plan, review, baseline, verdict });
 }
 
 /** Changes the run in place, leaving whatever a phase wrote to it alone. */
@@ -415,9 +429,12 @@ async function understand(context: Context, set: Setter): Promise<PhaseResult> {
 /**
  * Which files the change touches, and what else depends on them.
  *
- * The dependants are not asked of the model — that answer would be a guess. The
- * radius is reported as incomplete until a language server has been asked,
- * because "nothing else is affected" and "nobody looked" must not read alike.
+ * The files are the model's answer, read out of the repository. The dependants
+ * are not: they come from `textDocument/references` put to the language server
+ * this editor is already running, because asking a model to recall its callers
+ * produces a plausible list where the server produces the real one. A file no
+ * server could answer for is reported as unknown rather than as clear - "nothing
+ * else is affected" and "nobody looked" must never read alike.
  */
 async function locate(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
   const brief = get().brief;
@@ -434,14 +451,46 @@ async function locate(context: Context, set: Setter, get: Getter): Promise<Phase
     .slice(0, LOCATE_FILE_LIMIT);
   if (files.length === 0) return { state: "skipped", summary: translate("run.noFiles") };
 
-  const radius = radiusOf(files.map((file) => impactOf(file, [])));
+  // Imported here rather than at the top: the probe speaks to Monaco, and this
+  // store is loaded long before an editor exists.
+  const { languageServerProbe } = await import("../lib/lsp/impact");
+  note(set, "locate", translate("run.asking", { count: files.length }));
+  const radius = await radiusFrom(files, languageServerProbe(context.root));
+  set({ radius });
+
   return {
     state: "passed",
     summary: radiusIsComplete(radius)
       ? translate("run.radius", { files: radius.changing.length, dependents: radius.dependents.length })
-      : translate("run.radiusUnknown", { files: radius.changing.length }),
-    detail: radius.changing.join("\n"),
+      : translate("run.radiusPartly", {
+          files: radius.changing.length,
+          dependents: radius.dependents.length,
+          unknown: radius.unknown.length,
+        }),
+    detail: [
+      ...radius.changing,
+      ...(radius.dependents.length > 0 ? ["", translate("run.dependents")] : []),
+      ...radius.dependents,
+    ].join("\n"),
   };
+}
+
+/**
+ * What the language server said uses the code about to change, for the phases
+ * that write it.
+ *
+ * Empty when nothing could be asked or nothing came back - a heading with an
+ * empty list under it reads as "nothing depends on this", which is the one
+ * thing an unanswered radius must never be mistaken for.
+ */
+function whatDependsOnIt(radius: Radius | null): string[] {
+  if (radius === null || radius.dependents.length === 0) return [];
+  return [
+    "",
+    "These files use something the files above declare. The language server named them, so this is",
+    "what the change must not break - they are not themselves part of the work:",
+    ...radius.dependents.map((file) => `- ${file}`),
+  ];
 }
 
 /** The steps, and one test per criterion. The gate is the mapping. */
@@ -458,6 +507,7 @@ async function planPhase(context: Context, set: Setter, get: Getter): Promise<Ph
     `Goal: ${brief.goal}`,
     "Acceptance criteria:",
     ...brief.criteria.map((one) => `${one.id}: ${one.text}`),
+    ...whatDependsOnIt(get().radius),
   ].join("\n");
 
   // Asked again with the criteria it dropped, rather than refused: a plan that
@@ -517,6 +567,7 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
     "",
     "The tests to write first, each proving one criterion:",
     ...plan.tests.map((test) => `- [${test.criterion}] ${test.name} in ${test.file}`),
+    ...whatDependsOnIt(get().radius),
   ].join("\n");
 
   let code: number | null = null;

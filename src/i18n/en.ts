@@ -400,9 +400,11 @@ export const en = {
   "run.criteria": "{count} acceptance criteria, each of which a test must prove",
   "run.noBrief": "Nothing was understood from the item, so there is nothing to work from.",
   "run.noFiles": "No files were named, so the change was not placed.",
+  "run.asking": "Asking the language server what depends on the {count} file(s) named",
   "run.radius": "{files} file(s) to change, {dependents} depending on them",
-  "run.radiusUnknown":
-    "{files} file(s) to change; no language server was asked, so what depends on them is unknown",
+  "run.radiusPartly":
+    "{files} file(s) to change, {dependents} depending on them; {unknown} with no answer worth trusting",
+  "run.dependents": "Files that depend on them:",
   "run.planUnreadable": "The plan came back as prose rather than as steps.",
   "run.planIncomplete": "{count} acceptance criteria have no test - the plan does not cover what was asked",
   "run.planWaiting": "Read the plan below. Carry on when it looks right.",

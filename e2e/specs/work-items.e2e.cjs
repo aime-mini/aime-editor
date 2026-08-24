@@ -266,6 +266,13 @@ async function waitForText(text, message) {
   await browser.waitUntil(async () => (await $("body").getText()).toLowerCase().includes(needle), {
     timeout: 30_000,
     timeoutMsg: `${message ?? "text never appeared"} (looked for "${text}")`,
+  }).catch(async (error) => {
+    // The panel's own words are the diagnosis; without them a timeout says only
+    // that something did not happen.
+    const page = await $("body").getText();
+    throw new Error(`${error.message}
+--- on screen ---
+${page.slice(0, 2500)}`);
   });
 }
 
@@ -567,22 +574,25 @@ describe("Work items", () => {
     assert.deepEqual(JSON.parse(patch.body), [{ op: "add", path: "/fields/System.State", value: "Doing" }]);
   });
 
-  it("starts a run rather than a chat turn, and refuses to work on a branch it cannot make", async () => {
+  it("starts a run rather than a chat turn, on a branch of its own", async () => {
     // What the sparkle does now: a run with phases and gates, not a prompt
     // dropped into the conversation. The whole run is driven end to end in
-    // `task-run.e2e.cjs`; what matters here is that the button reaches it.
+    // `task-run.e2e.cjs`; what matters here is that the button reaches it, and
+    // that it reaches it the way a run must start.
     const row = await rowFor(42);
     await clickAction(row, "Work on this with AI");
 
     await waitForText("task run", "the sparkle did not start a run");
     await waitForText("login screen forgets", "the run does not say which item it is about");
 
-    // The branch this item suggests was created by an earlier test, so git
-    // refuses it - and the first gate is exactly where that has to stop. A run
-    // that shrugged and worked on whatever branch was checked out would be a
-    // run editing the user's own working branch.
-    await waitForText("stopped here", "a run that could not start its branch carried on anyway");
-    await waitForText("already exists", "the run did not say why it stopped");
+    // An earlier test already created the branch this item suggests. A run that
+    // shrugged and used whatever was checked out would be a run editing the
+    // user's own working branch; a run that gave up would be homework. It takes
+    // the next free name instead, and says which one it took.
+    await waitForText(
+      "bugfix/42-login-screen-forgets-the-language-2",
+      "the run did not take a free branch of its own beside the one that existed",
+    );
   });
 
   it("opens an item in the middle of the window, with its facts and its conversation", async () => {

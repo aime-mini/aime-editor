@@ -401,8 +401,11 @@ export const vi: Record<TranslationKey, string> = {
   "run.criteria": "{count} tiêu chí nghiệm thu, mỗi tiêu chí phải có test chứng minh",
   "run.noBrief": "Chưa hiểu được gì từ yêu cầu nên không có gì để làm tiếp.",
   "run.noFiles": "Không nêu được file nào, nên chưa định vị được thay đổi.",
+  "run.asking": "Đang hỏi language server xem {count} file vừa nêu có gì phụ thuộc vào",
   "run.radius": "{files} file sẽ sửa, {dependents} chỗ phụ thuộc vào chúng",
-  "run.radiusUnknown": "{files} file sẽ sửa; chưa hỏi language server nên chưa biết còn gì phụ thuộc",
+  "run.radiusPartly":
+    "{files} file sẽ sửa, {dependents} chỗ phụ thuộc vào chúng; {unknown} file chưa có câu trả lời đáng tin",
+  "run.dependents": "Những file phụ thuộc vào chúng:",
   "run.planUnreadable": "Plan trả về dạng văn xuôi chứ không phải các bước.",
   "run.planIncomplete": "{count} tiêu chí chưa có test - plan chưa phủ hết yêu cầu",
   "run.planWaiting": "Đọc plan bên dưới. Thấy ổn thì cho chạy tiếp.",

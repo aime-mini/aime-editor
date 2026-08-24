@@ -127,6 +127,55 @@ const cargoReader: Reader = {
 };
 
 /**
+ * `dotnet test`. Measured 2026-08-23 against real failing runs of xunit 2.9,
+ * MSTest 3.6 and NUnit 4.2 — all three go through the same VSTest console
+ * runner, so one reader covers them, and the SDK 10 template still prints this
+ * format.
+ *
+ * Each failure is a `Failed <name> [<duration>]` line and every test assembly
+ * ends with `Failed!  - Failed: 2, Passed: 3, Skipped: 1, Total: 6`. A solution
+ * prints one such summary per assembly, so the totals are added rather than
+ * taken from the last one.
+ *
+ * The name is kept exactly as printed and never rebuilt: xunit prints it fully
+ * qualified with the theory arguments (`Shop.CartTests.Rounds(amount: 1)`),
+ * MSTest and NUnit print the bare method (`Rounds_down`, `Never_negative (1)`).
+ * Whichever it is, both runs of a comparison print it the same way, which is all
+ * the gate needs.
+ *
+ * English output only, and deliberately not more: the runner translates these
+ * words with the machine's UI language and no other language has been measured.
+ * An output this does not recognise answers null, and the gate then speaks about
+ * the exit code alone rather than about tests it invented.
+ */
+const DOTNET_SUMMARY =
+  /^(?:Passed|Failed)!\s+-\s+Failed:\s+\d+, Passed:\s+\d+, Skipped:\s+\d+, Total:\s+(\d+)/;
+/** `Failed!  - Failed: …` is the summary, not a test: the space after the word tells them apart. */
+const DOTNET_FAILURE = /^Failed\s+(.+?)\s+\[[^\]]*\]$/;
+
+const dotnetReader: Reader = {
+  name: "dotnet",
+  read: (text) => {
+    const lines = text.split("\n").map((line) => line.trim());
+    const totals = lines
+      .map((line) => DOTNET_SUMMARY.exec(line))
+      .filter((match) => match !== null)
+      .map((match) => Number(match[1]));
+    // Without a summary line the run never reached the runner - a build error,
+    // or a project with no test assembly - and nothing here may be claimed.
+    if (totals.length === 0) return null;
+    const failed = lines
+      .map((line) => DOTNET_FAILURE.exec(line))
+      .filter((match) => match !== null)
+      .map((match) => match[1]);
+    return {
+      failed: [...new Set(failed)],
+      total: totals.reduce((sum, count) => sum + count, 0),
+    };
+  },
+};
+
+/**
  * Vitest. Measured against a real failing run: each failure is repeated as
  * `FAIL  <file> > <suite> > <test>` under a "Failed Tests" heading, and the
  * summary line reads `Tests  1 failed | 3 passed (4)`.
@@ -162,7 +211,4 @@ const vitestReader: Reader = {
  * In the order they are tried. Cargo first because its `test result:` line is
  * unmistakable; a reader that is unsure answers null and lets the next look.
  */
-const READERS: Reader[] = [cargoReader, vitestReader];
-
-/** The runners whose output has been measured, for saying so on screen. */
-export const KNOWN_RUNNERS = READERS.map((reader) => reader.name);
+const READERS: Reader[] = [cargoReader, dotnetReader, vitestReader];

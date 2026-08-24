@@ -200,6 +200,20 @@ const NEEDS_RESTORE_METHOD = "workspace/_roslyn_projectNeedsRestore";
 /** LSP TextDocumentSyncKind.Incremental. */
 const INCREMENTAL_SYNC = 2;
 
+/** How often `whenIndexed` looks again while the server is still working. */
+const INDEX_POLL_MS = 100;
+
+/**
+ * How long a server that never says it is working is given anyway.
+ *
+ * Some index without announcing it, and waiting out the deadline for an
+ * announcement that is not coming would be worse than asking a moment early.
+ */
+const INDEX_GRACE_MS = 2_000;
+
+/** The longest an index is waited for; a huge solution is slow, not stuck. */
+const INDEX_DEADLINE_MS = 60_000;
+
 /** `initialize` answers the sync kind as a bare number or inside options. */
 interface InitializeAnswer {
   capabilities?: {
@@ -228,6 +242,12 @@ export class LanguageSession {
 
   /** The solution `openProject` announced, which is what a restore targets. */
   private solution: string | null = null;
+
+  /** Work-done progress the server has begun and not ended yet. */
+  private readonly working = new Set<string>();
+
+  /** Whether the server has ever announced background work at all. */
+  private announcesWork = false;
 
   /** Restores in flight by target list, so a repeated ask joins the running one. */
   private readonly restores = new Map<string, Promise<null>>();
@@ -261,6 +281,7 @@ export class LanguageSession {
     const session = new LanguageSession(languageId, client);
     client.onNotification = (method, params) => {
       if (method === "textDocument/publishDiagnostics") session.publishDiagnostics(params);
+      if (method === "$/progress") session.trackProgress(params);
     };
     client.onRequest = (method, params) =>
       method === NEEDS_RESTORE_METHOD ? session.restore(params) : undefined;
@@ -272,6 +293,12 @@ export class LanguageSession {
         rootUri: pathToUri(root),
         workspaceFolders: [{ uri: pathToUri(root), name: root.split(/[\\/]/).pop() ?? root }],
         capabilities: {
+          // Not decoration: a server only reports its background work when the
+          // client says it can receive it. Measured 2026-08-23 against
+          // typescript-language-server 5.3 - without this line it announces
+          // nothing at all, and `whenIndexed` has no way to tell an index that
+          // is still running from one that has finished.
+          window: { workDoneProgress: true },
           textDocument: {
             synchronization: { didSave: false },
             publishDiagnostics: {},
@@ -382,6 +409,45 @@ export class LanguageSession {
     });
     this.openDocuments.delete(uri);
     this.client.notify("textDocument/didClose", { textDocument: { uri } });
+  }
+
+  private trackProgress(params: unknown): void {
+    const { token, value } = (params ?? {}) as { token?: string | number; value?: { kind?: string } };
+    if (token === undefined) return;
+    if (value?.kind === "begin") {
+      this.announcesWork = true;
+      this.working.add(String(token));
+    }
+    if (value?.kind === "end") this.working.delete(String(token));
+  }
+
+  /**
+   * Waits for the background indexing a server does after a file is opened.
+   *
+   * Measured 2026-08-23 against typescript-language-server 5.3 on this
+   * repository: `references` on a freshly opened file answers **from that file
+   * alone** until the project has loaded, and the server says exactly when that
+   * is - a work-done progress titled "Initializing JS/TS language features…"
+   * whose `end` landed at 2.9 s, one query before the answers began crossing
+   * files. Asking before it is not a slow answer, it is a wrong one: an empty
+   * list reads as "nothing depends on this", which is the single thing a blast
+   * radius must never say by accident.
+   *
+   * Only for callers that ask about a file the user is not looking at. The
+   * editor's own providers must never wait: Monaco asks on every keystroke, and
+   * an early hover is worth more than a late one.
+   */
+  async whenIndexed(): Promise<void> {
+    const startedAt = Date.now();
+    for (;;) {
+      const waited = Date.now() - startedAt;
+      if (this.announcesWork ? this.working.size === 0 : waited >= INDEX_GRACE_MS) return;
+      if (waited >= INDEX_DEADLINE_MS) {
+        console.warn(`${this.languageId} server is still indexing after ${String(waited)}ms; asking anyway`);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, INDEX_POLL_MS));
+    }
   }
 
   private publishDiagnostics(params: unknown): void {

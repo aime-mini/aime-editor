@@ -43,6 +43,17 @@ export type LanguageState =
 /** Live sessions by language; the providers below read this map. */
 const sessions = new Map<string, LanguageSession>();
 
+/**
+ * The server serving a language right now, if one is.
+ *
+ * For the callers that are not Monaco providers - a Task Run asking who
+ * depends on the files it is about to change. They must go through `ensure`
+ * first; this only answers what is already running.
+ */
+export function sessionOf(languageId: string): LanguageSession | undefined {
+  return sessions.get(languageId);
+}
+
 /** Monaco, once the workbench has loaded it; nothing here works without it. */
 let editor: typeof Monaco | null = null;
 const providersRegistered = new Set<string>();

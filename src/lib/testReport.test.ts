@@ -64,6 +64,57 @@ const VITEST_PASSING = `
    Duration  1.9s
 `;
 
+/**
+ * `dotnet test` over a solution holding two test projects — xunit and MSTest —
+ * captured 2026-08-23 on SDK 9/10. One run, two assemblies, and the two
+ * frameworks name a test differently: xunit fully qualified with the theory
+ * arguments, MSTest the bare method. Only the paths are shortened.
+ */
+const DOTNET_FAILING = `
+Test run for C:\\…\\Ms.Tests.dll (.NETCoreApp,Version=v9.0)
+A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:00.15]     Shop.Tests.CartTests.Discount_never_goes_negative(amount: 1) [FAIL]
+[xUnit.net 00:00:00.16]     Shop.Tests.CartTests.WithTax_rounds_to_cents [FAIL]
+  Skipped Shop.Tests.CheckoutTests.Refund_restores_stock [1 ms]
+  Failed Shop.Tests.CartTests.Discount_never_goes_negative(amount: 1) [< 1 ms]
+  Error Message:
+   Assert.True() Failure
+Expected: True
+Actual:   False
+  Stack Trace:
+     at Shop.Tests.CartTests.Discount_never_goes_negative(Int32 amount) in C:\\…\\CartTests.cs:line 16
+   at InvokeStub_CartTests.Discount_never_goes_negative(Object, Span\`1)
+  Failed Shop.Tests.CartTests.WithTax_rounds_to_cents [1 ms]
+  Error Message:
+   Assert.Equal() Failure: Values differ
+Expected: 2
+Actual:   3
+  Stack Trace:
+     at Shop.Tests.CartTests.WithTax_rounds_to_cents() in C:\\…\\CartTests.cs:line 11
+
+Failed!  - Failed:     2, Passed:     3, Skipped:     1, Total:     6, Duration: 17 ms - Sample.Tests.dll (net9.0)
+  Failed Rounds_down [9 ms]
+  Error Message:
+   Assert.AreEqual failed. Expected:<2>. Actual:<3>.
+  Stack Trace:
+     at Shop.Ms.PriceTests.Rounds_down() in C:\\…\\PriceTests.cs:line 12
+
+  Failed Never_negative (1) [< 1 ms]
+  Error Message:
+   Assert.IsTrue failed.
+
+Failed!  - Failed:     2, Passed:     2, Skipped:     0, Total:     4, Duration: 33 ms - Ms.Tests.dll (net9.0)
+`;
+
+const DOTNET_PASSING = `
+Test run for C:\\…\\Sample.Tests.dll (.NETCoreApp,Version=v9.0)
+A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:01.22]     Shop.Tests.CheckoutTests.Refund_restores_stock [SKIP]
+  Skipped Shop.Tests.CheckoutTests.Refund_restores_stock [1 ms]
+
+Passed!  - Failed:     0, Passed:     5, Skipped:     1, Total:     6, Duration: 254 ms - Sample.Tests.dll (net9.0)
+`;
+
 describe("readTestOutput", () => {
   it("reads cargo's own words, and counts every test rather than the tail", () => {
     const report = readTestOutput(CARGO_FAILING, 101);
@@ -81,6 +132,40 @@ describe("readTestOutput", () => {
     expect(report.passed).toBe(false);
     expect(report.failed).toEqual(["src/cart.test.js > withTax > this one is meant to fail"]);
     expect(report.total).toBe(4);
+  });
+
+  it("reads dotnet across every assembly of a solution, not just the last one", () => {
+    const report = readTestOutput(DOTNET_FAILING, 1);
+    expect(report.reader).toBe("dotnet");
+    expect(report.passed).toBe(false);
+    // As each framework printed it: xunit qualifies and carries the theory
+    // arguments, MSTest hands over the bare method.
+    expect(report.failed).toEqual([
+      "Shop.Tests.CartTests.Discount_never_goes_negative(amount: 1)",
+      "Shop.Tests.CartTests.WithTax_rounds_to_cents",
+      "Rounds_down",
+      "Never_negative (1)",
+    ]);
+    expect(report.total).toBe(10);
+  });
+
+  it("does not read dotnet's own `Failed!` summary as a test that failed", () => {
+    const report = readTestOutput(DOTNET_PASSING, 0);
+    expect(report.reader).toBe("dotnet");
+    expect(report.passed).toBe(true);
+    expect(report.failed).toEqual([]);
+    expect(report.total).toBe(6);
+  });
+
+  it("says nothing about a dotnet run that never reached the runner", () => {
+    // A real MSBuild refusal: the suite did not run, so there is no failing set
+    // to speak of - and inventing an empty one would read as "all green".
+    const report = readTestOutput(
+      "MSBUILD : error MSB1009: Project file does not exist.\nSwitch: Shop.sln",
+      1,
+    );
+    expect(report.reader).toBeNull();
+    expect(report.total).toBeNull();
   });
 
   it("sees through the colours a terminal leaves behind", () => {

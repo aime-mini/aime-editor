@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Brief, Plan, Review } from "./aiRun";
+import type { Radius } from "./blastRadius";
 import type { Baseline, GateVerdict, SuiteRun } from "./regressionGate";
 import type { Run } from "./runPlan";
 
@@ -34,16 +35,18 @@ const KEEP_OUTPUT = 8_000;
 /** Everything a run needs to be picked back up. */
 export interface SavedRun {
   /** Bumped when the shape changes, so an old file is ignored rather than misread. */
-  version: 1;
+  version: 2;
   run: Run;
   brief: Brief | null;
+  /** What the language server said depends on the files being changed. */
+  radius: Radius | null;
   plan: Plan | null;
   review: Review | null;
   baseline: Baseline | null;
   verdict: GateVerdict | null;
 }
 
-const VERSION = 1;
+const VERSION = 2;
 
 /** The path of the run file inside one project. */
 function pathIn(root: string): string {
