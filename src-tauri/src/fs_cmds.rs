@@ -8,6 +8,16 @@ pub struct DirEntry {
     pub name: String,
     pub path: String,
     pub is_dir: bool,
+    /// When it was last written, in milliseconds since the epoch; `None` when the
+    /// filesystem would not say. Carried so a caller can tell a file this run
+    /// produced from one that was already lying there — the difference between
+    /// evidence and decoration.
+    pub modified_ms: Option<u64>,
+    /// The file's size in bytes; `None` for a directory or when the filesystem
+    /// would not say. Carried so a caller can refuse an empty file as evidence
+    /// without reading it — the artifacts are often binary, and `read_file`
+    /// only speaks UTF-8.
+    pub size_bytes: Option<u64>,
 }
 
 /// Directories the file tree never shows.
@@ -33,6 +43,25 @@ pub const IGNORED_DIRS: &[&str] = &[
     "__pycache__",
 ];
 
+/// When a path was last written (milliseconds since the epoch) and how large it
+/// is, from one metadata call.
+///
+/// Every step of it is allowed to fail quietly: a file on a filesystem that
+/// keeps no modification time, or one deleted between the listing and this call,
+/// answers `None` rather than a made-up number.
+fn file_facts(path: &Path, is_dir: bool) -> (Option<u64>, Option<u64>) {
+    let Ok(meta) = fs::metadata(path) else {
+        return (None, None);
+    };
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|since| u64::try_from(since.as_millis()).ok());
+    let size = if is_dir { None } else { Some(meta.len()) };
+    (modified, size)
+}
+
 /// Lists one directory level — folders first, then files; only VCS metadata is skipped.
 #[tauri::command]
 pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
@@ -45,10 +74,13 @@ pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
             if is_dir && HIDDEN_DIRS.contains(&name.as_str()) {
                 return None;
             }
+            let (modified_ms, size_bytes) = file_facts(&e.path(), is_dir);
             Some(DirEntry {
                 path: e.path().to_string_lossy().to_string(),
                 name,
                 is_dir,
+                modified_ms,
+                size_bytes,
             })
         })
         .collect();

@@ -7,13 +7,19 @@ import {
   CirclePause,
   GitBranch,
   Loader2,
+  FileText,
+  History as HistoryIcon,
   Play,
   ShieldAlert,
+  Trash2,
   SkipForward,
   X,
 } from "lucide-react";
-import { useT } from "../i18n";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { useI18n, useT } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
+import { whenText } from "../lib/workItems";
+import type { SavedRun } from "../lib/runFile";
 import { PHASES, progressOf, type PhaseId, type PhaseResult, type PhaseState } from "../lib/runPlan";
 import { useRun } from "../stores/run";
 
@@ -30,18 +36,39 @@ import { useRun } from "../stores/run";
  */
 export function RunView() {
   const { run, log, autonomy, setAutonomy, approvePlan, resume, cancel, dismiss } = useRun();
+  const { evidence, history, viewingPast, openPast, forget } = useRun();
   const t = useT();
   const [open, setOpen] = useState<PhaseId | null>(null);
   const tail = useRef<HTMLDivElement>(null);
+  const gate = useRef<HTMLDivElement>(null);
 
   // The log is the only sign of life during a long phase, so it follows itself.
   useEffect(() => {
     tail.current?.scrollIntoView({ block: "end" });
   }, [log.length]);
 
-  if (run === null) return null;
+  // But the moment the run needs the reader, the reader has to be able to see
+  // it: the log scrolling itself had left the one button that answers a gate
+  // above the top of the panel, behind the header.
+  const ending = run?.ended ?? null;
+  useEffect(() => {
+    if (ending !== null) gate.current?.scrollIntoView({ block: "center" });
+  }, [ending]);
+
+  // No run on screen is not an empty panel: the record of what has been handed
+  // to the AI in this project is the thing worth looking at when nothing is
+  // working right now.
+  if (run === null) {
+    return (
+      <div className="flex h-full flex-col overflow-y-auto bg-bg">
+        <div className="mx-auto w-full max-w-3xl px-6 py-6">
+          <p className="text-[11.5px] tracking-wide text-muted uppercase">{t("run.title")}</p>
+          <Past history={history} onOpen={openPast} onForget={forget} />
+        </div>
+      </div>
+    );
+  }
   const { done, total } = progressOf(run);
-  const ended = run.ended;
 
   return (
     <div className="flex h-full flex-col overflow-y-auto bg-bg">
@@ -93,8 +120,18 @@ export function RunView() {
       </header>
 
       <div className="mx-auto w-full max-w-3xl px-6 pb-10">
-        {ended !== null && (
-          <Ending ending={ended} onApprove={() => void approvePlan()} onResume={() => void resume()} />
+        {viewingPast && (
+          <div className="mt-4 rounded-lg border border-line px-4 py-3">
+            <p className="flex items-center gap-2 text-[13px] font-medium">
+              <HistoryIcon size={14} className="text-muted" /> {t("run.viewingPast")}
+            </p>
+            <p className="mt-1 text-[12.5px] text-muted">{t("run.viewingPastWhy")}</p>
+          </div>
+        )}
+        {ending !== null && (
+          <div ref={gate}>
+            <Ending ending={ending} onApprove={() => void approvePlan()} onResume={() => void resume()} />
+          </div>
         )}
 
         <ol className="mt-5">
@@ -170,6 +207,39 @@ export function RunView() {
           </section>
         )}
 
+        {evidence.length > 0 && (
+          <section className="mt-6">
+            <h2 className="mb-2 text-[11px] tracking-wide text-muted uppercase">
+              {t("run.evidenceHeading")}
+            </h2>
+            <ul className="rounded-md border border-line">
+              {evidence.map((file) => (
+                <li
+                  key={file}
+                  className="flex items-center gap-2 border-b border-line px-3 py-1.5 last:border-0"
+                >
+                  <FileText size={12} className="shrink-0 text-muted" />
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11.5px]" title={file}>
+                    {file}
+                  </span>
+                  <button
+                    onClick={() => {
+                      revealItemInDir(file).catch(console.error);
+                    }}
+                    className="shrink-0 rounded border border-line px-1.5 py-0.5 text-[11px] text-muted hover:border-accent hover:text-fg"
+                  >
+                    {t("run.openFile")}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        <Past history={history} onOpen={openPast} onForget={forget} current={run.id} />
+
+        {run.current === null && ending?.kind !== "waiting" && ending?.kind !== "interrupted" && <Trash />}
+
         <section className="mt-6">
           <h2 className="mb-2 text-[11px] tracking-wide text-muted uppercase">{t("run.autonomy")}</h2>
           <div className="flex gap-1.5">
@@ -194,6 +264,203 @@ export function RunView() {
       </div>
     </div>
   );
+}
+
+/**
+ * What this run left behind, and the button that sweeps it.
+ *
+ * Two clicks by design: the first only *lists* — new untracked files and the
+ * artifact folders, told apart from everything that was already there by the
+ * baseline's own snapshot — and the second deletes exactly what is ticked.
+ * Evidence starts unticked because it proves the work; the run's paperwork
+ * (cases, journal, report) is never offered at all. Nothing tracked, and
+ * nothing that predates the run, can ever appear in this list.
+ */
+function Trash() {
+  const { trash, trashResult, previewTrash, sweepTrash } = useRun();
+  const t = useT();
+
+  return (
+    <section className="mt-6">
+      <h2 className="mb-2 text-[11px] tracking-wide text-muted uppercase">{t("run.trashHeading")}</h2>
+      {trash === null ? (
+        <button
+          onClick={() => void previewTrash()}
+          className="rounded border border-line px-2 py-1 text-[11.5px] text-muted hover:border-accent hover:text-fg"
+        >
+          {t("run.trashPreview")}
+        </button>
+      ) : trash.length === 0 ? (
+        <p className="text-[12.5px] text-muted">{t("run.trashEmpty")}</p>
+      ) : (
+        // Keyed by the listing itself, so a re-listing after a sweep remounts
+        // the list and the default selection is computed fresh - the selection
+        // never outlives the files it points at.
+        <TrashList
+          key={trash.map((item) => item.path).join("\n")}
+          items={trash}
+          onSweep={(paths) => void sweepTrash(paths)}
+        />
+      )}
+      {trashResult !== null && (
+        <p className="mt-2 text-[12.5px] text-muted">
+          {t("run.trashDone", { count: trashResult.deleted })}
+          {trashResult.failed.length > 0 &&
+            ` · ${t("run.trashFailed", { count: trashResult.failed.length })}`}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** One listing with its selection: sweepings ticked, keepsakes not. */
+function TrashList({
+  items,
+  onSweep,
+}: {
+  items: readonly { path: string; shown: string; keeper: boolean }[];
+  onSweep: (paths: string[]) => void;
+}) {
+  const t = useT();
+  const [ticked, setTicked] = useState<ReadonlySet<string>>(
+    () => new Set(items.filter((item) => !item.keeper).map((item) => item.path)),
+  );
+
+  const toggle = (path: string) => {
+    setTicked((now) => {
+      const next = new Set(now);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  return (
+    <>
+      <p className="mb-2 text-[12.5px] text-muted">{t("run.trashWhy")}</p>
+      <ul className="rounded-md border border-line">
+        {items.map((item) => (
+          <li
+            key={item.path}
+            className="flex items-center gap-2 border-b border-line px-3 py-1.5 last:border-0"
+          >
+            <button
+              onClick={() => {
+                toggle(item.path);
+              }}
+              aria-pressed={ticked.has(item.path)}
+              className={`flex size-3.5 shrink-0 items-center justify-center rounded-sm border ${
+                ticked.has(item.path) ? "border-accent bg-accent text-white" : "border-line"
+              }`}
+            >
+              {ticked.has(item.path) && <Check size={10} />}
+            </button>
+            <span className="min-w-0 flex-1 truncate font-mono text-[11.5px]" title={item.path}>
+              {item.shown}
+            </span>
+            {item.keeper && <span className="shrink-0 text-[10.5px] text-muted">{t("run.trashKeeper")}</span>}
+          </li>
+        ))}
+      </ul>
+      <button
+        onClick={() => {
+          onSweep([...ticked]);
+        }}
+        disabled={ticked.size === 0}
+        className="hover:border-danger hover:text-danger mt-2 rounded border border-line px-2 py-1 text-[11.5px] text-muted disabled:cursor-default disabled:opacity-50"
+      >
+        {t("run.trashDelete", { count: ticked.size })}
+      </button>
+    </>
+  );
+}
+
+/**
+ * The runs this project kept.
+ *
+ * Deliberately not a graveyard of ids: each row says which item it was about,
+ * when it ran and how it ended, because the question a reader brings here is
+ * "what happened to that ticket?" rather than "which run was 1724500000000?".
+ * A run that was cut off is offered back with the same words as a live one, so
+ * picking work up a week later reads the same as picking it up after lunch.
+ */
+function Past({
+  history,
+  onOpen,
+  onForget,
+  current,
+}: {
+  history: SavedRun[];
+  onOpen: (id: string) => Promise<void>;
+  onForget: (id: string) => Promise<void>;
+  current?: string;
+}) {
+  const t = useT();
+  const { locale } = useI18n();
+  const others = history.filter((saved) => saved.run.id !== current);
+
+  return (
+    <section className="mt-6">
+      <h2 className="mb-2 flex items-baseline gap-2 text-[11px] tracking-wide text-muted uppercase">
+        {t("run.history")}
+        {others.length > 0 && (
+          <span className="normal-case">{t("run.historyCount", { count: others.length })}</span>
+        )}
+      </h2>
+      {others.length === 0 ? (
+        <p className="text-[12.5px] text-muted">{t("run.historyEmpty")}</p>
+      ) : (
+        <ul className="rounded-md border border-line">
+          {others.map((saved) => (
+            <li
+              key={saved.run.id}
+              className="flex items-center gap-2 border-b border-line px-3 py-2 last:border-0"
+            >
+              <button
+                onClick={() => void onOpen(saved.run.id)}
+                title={t("run.historyOpen")}
+                className="min-w-0 flex-1 text-left"
+              >
+                <span className="line-clamp-1 text-[12.5px]">{saved.run.itemTitle}</span>
+                <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-muted">
+                  <span>{whenText(String(saved.run.startedAt), locale)}</span>
+                  <span>· {t(endingLabel(saved))}</span>
+                  {saved.run.branch !== null && <span className="font-mono">· {saved.run.branch}</span>}
+                </span>
+              </button>
+              <button
+                onClick={() => void onForget(saved.run.id)}
+                title={t("run.historyForget")}
+                className="hover:text-danger shrink-0 rounded p-1 text-muted"
+              >
+                <Trash2 size={12} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** How a kept run ended, in the same words the panel uses while it is live. */
+function endingLabel(saved: SavedRun): TranslationKey {
+  const ended = saved.run.ended;
+  if (ended === null) return saved.run.current === null ? "run.done" : "run.interrupted";
+  switch (ended.kind) {
+    case "done":
+      return "run.done";
+    case "blocked":
+      return "run.blocked";
+    case "waiting":
+      return "run.waiting";
+    case "cancelled":
+      return "run.cancelled";
+    case "failed":
+      return "run.failed";
+    case "interrupted":
+      return "run.interrupted";
+  }
 }
 
 /** How a run stopped, and the one button that answers it. */
@@ -233,7 +500,7 @@ function Ending({
           <CirclePause size={14} /> {t("run.waiting")}
         </p>
         <p className="mt-1 text-[12.5px] whitespace-pre-wrap text-fg/90">{ending.question}</p>
-        {ending.phase === "plan" && (
+        {ending.phase === "design" && (
           <button
             onClick={onApprove}
             className="mt-2.5 flex items-center gap-1.5 rounded bg-accent-strong px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90"
@@ -315,12 +582,13 @@ function Mark({ state }: { state: PhaseState }) {
 const PHASE_LABELS: Record<PhaseId, TranslationKey> = {
   baseline: "run.phase.baseline",
   understand: "run.phase.understand",
-  locate: "run.phase.locate",
-  plan: "run.phase.plan",
+  design: "run.phase.design",
+  tests: "run.phase.tests",
   implement: "run.phase.implement",
-  regression: "run.phase.regression",
-  repair: "run.phase.repair",
+  verify: "run.phase.verify",
   review: "run.phase.review",
+  polish: "run.phase.polish",
+  deliver: "run.phase.deliver",
   report: "run.phase.report",
 };
 

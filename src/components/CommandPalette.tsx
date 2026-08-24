@@ -6,6 +6,7 @@ import {
   Bot,
   Brain,
   Bug,
+  History,
   CircleHelp,
   ExternalLink,
   File,
@@ -217,6 +218,14 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
           icon: <ListChecks size={14} />,
           run: () => {
             setSidebarView("workItems");
+          },
+        },
+        {
+          id: "task-runs",
+          title: t("cmd.taskRuns"),
+          icon: <History size={14} />,
+          run: () => {
+            useWorkspace.getState().openRun();
           },
         },
         {

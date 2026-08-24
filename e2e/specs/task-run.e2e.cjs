@@ -2,23 +2,35 @@
  * A Task Run from end to end, offline.
  *
  * The run is the whole promise of the feature: hand it a work item, walk away,
- * and trust what you come back to. What makes that trustworthy is not the
- * model — it is that the run stops when the evidence says stop. So the two
- * things proved here are the two halves of that:
+ * and trust what you come back to. What makes that trustworthy is not the model
+ * — it is that the run stops when the evidence says stop, and that every claim
+ * in the report was measured by something other than the thing that wrote the
+ * code. So this drives the four things that promise rests on:
  *
- * 1. A run whose change is sound walks every phase and finishes, with nothing
- *    to click on the way.
- * 2. A run whose change breaks a test that was passing **fixes it** and still
- *    finishes - reporting the damage and stopping would have been homework,
- *    not a finished task.
- * 3. A run that cannot fix what it broke stops after trying, says it tried,
- *    and never reports success.
+ * 1. The confirmation gate: the approach, the test cases and the plan are on
+ *    screen with NOTHING written yet, and the run waits.
+ * 2. Red-then-green as a measurement, per CASE: the tests go in first, the
+ *    suite has to get worse, and the failure has to carry the case's own test
+ *    by name - the case table says PASS only because all of that happened.
+ * 3. The project's own checks: a change that breaks `npm run check` is caught
+ *    and fixed, not reported and abandoned.
+ * 4. The record: a finished run is still there after a reload, and can be
+ *    opened again.
+ * 5. Delivery as a gate: the deliver phase must leave an artifact per case and
+ *    proof the deployed software answered - files Aime checks on disk - and
+ *    the cleanup button lists only what the run created and deletes only what
+ *    is ticked, never the evidence by default.
+ * 6. A project with no test script: the model says how it is really tested,
+ *    Aime runs the answer, and the whole pipeline measures through it.
  *
- * Neither test spends a penny. The "AI CLI" is a `providers.json` entry
+ * Plus the two halves of "finish the job": a break it can repair, and one it
+ * cannot - which must stop after trying and never claim success.
+ *
+ * Nothing here spends a penny. The "AI CLI" is a `providers.json` entry
  * pointing at a script this spec writes: it reads the prompt on stdin, works
  * out which phase is asking, and answers with the JSON that phase expects —
- * and, for the implementing phase, actually edits the sample project. That is
- * enough to drive every gate with real files, a real branch, a real suite and
+ * and, for the phases that write, actually edits the sample project. That is
+ * enough to drive every gate with real files, a real branch, real suites and
  * real exit codes.
  *
  * The sample project is created here and thrown away here. Nothing in this
@@ -36,7 +48,7 @@ const providersFile = path.join(configDir, "providers.json");
 const trackersFile = path.join(configDir, "trackers.json");
 const keysFile = path.join(configDir, "api-keys.json");
 
-/** Where the fake CLI reads its orders: "sound" or "breaks". */
+/** Where the fake CLI reads its orders: "sound", "repairs", "breaks" or "sloppy". */
 const MODE_FILE = path.join(os.tmpdir(), "aime-run-probe-mode.txt");
 const PROBE_SCRIPT = path.join(os.tmpdir(), "aime-run-probe.cjs");
 
@@ -54,22 +66,47 @@ const PROBE_SOURCE = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
 
-const SOUND = "export function subtotal(lines) {\n" +
-  "  return lines.reduce((total, line) => total + line.price * line.quantity, 0);\n" +
-  "}\n" +
-  "export function withTax(amount, rate) {\n" +
-  "  return Math.round(amount * (1 + rate) * 100) / 100;\n" +
-  "}\n";
-// Rounds as asked, and quietly ruins the totals - a change that does the job
-// and breaks something else, which is the case the whole gate exists for.
-const BREAKS = "export function subtotal(lines) {\n" +
-  "  return 0;\n" +
-  "}\n" +
-  "export function withTax(amount, rate) {\n" +
-  "  return Math.round(amount * (1 + rate) * 100) / 100;\n" +
-  "}\n";
+const ROUNDS = "  return Math.round(amount * (1 + rate) * 100) / 100;\n";
+const RAW = "  return amount * (1 + rate);\n";
+
+const cart = (total, tax, extra) =>
+  "export function subtotal(lines) {\n" + total + "}\n" +
+  (extra || "") +
+  "export function withTax(amount, rate) {\n" + tax + "}\n";
+
+const ADDS_UP = "  return lines.reduce((sum, line) => sum + line.price * line.quantity, 0);\n";
+const RUINED = "  return 0;\n";
+
+// What the implementing phase writes, per mode. "sound" does the job; "breaks"
+// and "sloppy" each do the job and something else - one ruins a passing test,
+// the other trips the project's own linter.
+const SOUND = cart(ADDS_UP, ROUNDS);
+const BREAKS = cart(RUINED, ROUNDS);
+const SLOPPY = cart(ADDS_UP, ROUNDS, 'const debug = () => console.log("here");\n');
+
+// The suite as the tests phase leaves it: rounding now asserted, and results
+// printed the way vitest prints them - the one JS format Aime reads failing
+// test NAMES out of. The names are what let the red proof be credited to TC1
+// itself rather than to "the suite", which is the per-case bar the report holds.
+const TEST_WITH_ROUNDING =
+  'const assert = require("node:assert");\n' +
+  'const { pathToFileURL } = require("node:url");\n' +
+  'const cart = pathToFileURL(require("node:path").join(__dirname, "src", "cart.js")).href;\n' +
+  "const checks = [\n" +
+  '  ["subtotal adds every line", (m) => assert.equal(m.subtotal([{ price: 10, quantity: 2 }]), 20)],\n' +
+  '  ["rounds to two places", (m) => assert.equal(m.withTax(25, 0.1), 27.5)],\n' +
+  "];\n" +
+  "import(cart).then((m) => {\n" +
+  "  const failed = checks.filter(([, run]) => { try { run(m); return false; } catch { return true; } });\n" +
+  '  for (const [name] of failed) console.log("FAIL  test.cjs > " + name);\n' +
+  "  console.log(failed.length > 0\n" +
+  '    ? "Tests  " + failed.length + " failed | " + (checks.length - failed.length) + " passed (" + checks.length + ")"\n' +
+  '    : "Tests  " + checks.length + " passed (" + checks.length + ")");\n' +
+  "  process.exit(failed.length > 0 ? 1 : 0);\n" +
+  "});\n";
 
 const prompt = fs.readFileSync(0, "utf8");
+const here = (...parts) => path.join(process.cwd(), ...parts);
 
 // Two routes reach this script and they read its output differently, which is
 // a real property of the app rather than a quirk of the probe. A phase that can
@@ -78,40 +115,85 @@ const prompt = fs.readFileSync(0, "utf8");
 // read-only tools, and Aime reads the streamed events - where a line of plain
 // output arrives wrapped as {type:"raw", text}.
 const say = (value) => process.stdout.write(JSON.stringify(value) + "\n");
-const stream = (text) => process.stdout.write(JSON.stringify({ type: "raw", text }) + "\n");
+const stream = (value) =>
+  process.stdout.write(JSON.stringify({ type: "raw", text: JSON.stringify(value) }) + "\n");
 const mode = fs.existsSync(${JSON.stringify(MODE_FILE)})
   ? fs.readFileSync(${JSON.stringify(MODE_FILE)}, "utf8").trim()
   : "sound";
 
-if (prompt.includes("say what it actually asks for")) {
-  say({
+if (prompt.includes("answer both questions at once")) {
+  // The ticket and the ground it lands on, in one reply: Aime takes its keys
+  // out of the same JSON object.
+  stream({
     goal: "Round the total to two places",
     criteria: [{ id: "AC1", text: "withTax rounds to two decimal places" }],
     questions: [],
+    files: ["src/cart.js"],
+    patterns: ["plain ES modules, no framework - src/checkout.js"],
+    testsLiveIn: "test.cjs at the root, run by node",
+    // Read out of "CI config": how this project is really tested. Aime only
+    // acts on this when the manifest declares no test script - and even then
+    // only after running it for real.
+    suites: [{ command: "node test.cjs", dir: "." }],
   });
-} else if (prompt.includes("Find the files")) {
-  stream("src/cart.js");
-} else if (prompt.includes("Plan the change")) {
-  stream(
-    JSON.stringify({
-      steps: [{ what: "Round in withTax", files: ["src/cart.js"], criteria: ["AC1"] }],
-      tests: [{ name: "rounds to two places", file: "test.cjs", criterion: "AC1" }],
-    }),
-  );
+} else if (prompt.includes("Decide how this gets done")) {
+  // The approach, the cases and the plan are one page, because they are what a
+  // person is asked to agree to in one reading.
+  stream({
+    how: "round the total inside withTax, where the maths already lives",
+    why: "one place to be right, and no caller can forget it; rounding at every screen cannot be enforced",
+    decisions: ["withTax returns money, rounded to two places"],
+    cases: [
+      {
+        id: "TC1",
+        criterion: "AC1",
+        prove: "a unit test of withTax through the project's own suite",
+        given: "a total of 25 and a rate of 0.1",
+        when: "withTax is called",
+        then: "it answers 27.5 rather than 27.500000000000004",
+      },
+    ],
+    steps: [{ what: "Round in withTax", files: ["src/cart.js"], criteria: ["AC1"] }],
+    tests: [{ name: "rounds to two places", file: "test.cjs", case: "TC1" }],
+  });
+} else if (prompt.includes("Write the tests for this change")) {
+  // Tests only, and no production code: the suite must go red on the strength
+  // of the assertion alone, which is the thing the phase after this measures.
+  fs.writeFileSync(here("test.cjs"), TEST_WITH_ROUNDING);
+  process.stdout.write("tests written\n");
+} else if (prompt.includes("Implement this work item")) {
+  // "repairs" and "breaks" both break something here; they differ in what the
+  // repair phase does about it afterwards.
+  const breaks = mode === "breaks" || mode === "repairs";
+  const source = breaks ? BREAKS : mode === "sloppy" ? SLOPPY : SOUND;
+  fs.writeFileSync(here("src", "cart.js"), source);
+  // And the kind of droppings an agent leaves behind: an untracked scratch
+  // file, which the cleanup button must offer and the baseline snapshot must
+  // not blame on anything that was already there.
+  fs.writeFileSync(here("debug-scratch.log"), "temporary notes\n");
+  process.stdout.write("done\n");
+} else if (prompt.includes("broke this project's own checks")) {
+  // The linter caught the stray console.log. Take it out - which is what
+  // "fixed and re-run until they pass" has to mean in practice.
+  fs.writeFileSync(here("src", "cart.js"), SOUND);
+  process.stdout.write("tidied\n");
+} else if (prompt.includes("Your change broke something")) {
+  // In "repairs" mode it puts back what it broke while keeping the new
+  // behaviour; in "breaks" mode it stubbornly does not, which is how the
+  // bounded give-up gets proved.
+  if (mode === "repairs") fs.writeFileSync(here("src", "cart.js"), SOUND);
+  process.stdout.write("tried\n");
+// Matched on a phrase that sits on ONE line of the prompt: the prompts are
+// wrapped template literals, and a phrase spanning a wrap point never matches.
+} else if (prompt.includes("build it, deploy it, and prove it works where it runs")) {
+  // The deliver phase: deploy proof plus one artifact per case, which is what
+  // the gate reads off the disk - the words in stdout prove nothing to it.
+  fs.mkdirSync(here(".aime", "evidence", "deploy"), { recursive: true });
+  fs.writeFileSync(here(".aime", "evidence", "TC1.txt"), "node test.cjs: rounds to two places passed\n");
+  fs.writeFileSync(here(".aime", "evidence", "deploy", "health.txt"), "served on 4173, / answered 200\n");
+  process.stdout.write("delivered\n");
 } else if (prompt.includes("Review this change")) {
   say({ risks: ["rounding could drift on large totals"], findings: [] });
-} else if (prompt.includes("Your change broke something")) {
-  // The repair phase. In "repairs" mode it puts back what it broke while
-  // keeping the new behaviour; in "breaks" mode it stubbornly does not, which
-  // is how the bounded give-up gets proved.
-  if (mode === "repairs") {
-    fs.writeFileSync(path.join(process.cwd(), "src", "cart.js"), SOUND);
-  }
-  process.stdout.write("tried\n");
-} else if (prompt.includes("Implement this work item")) {
-  // The only phase that writes, and it writes for real.
-  fs.writeFileSync(path.join(process.cwd(), "src", "cart.js"), mode === "sound" ? SOUND : BREAKS);
-  process.stdout.write("done\n");
 } else {
   process.stdout.write("unrecognised prompt\n");
 }
@@ -130,7 +212,14 @@ const PROBE_PROVIDER = [
 
 // ------------------------------------------------------------ the sample
 
-/** The suite the gate measures: plain node, so nothing has to be installed. */
+/**
+ * The suite the gate measures, before the run touches it: green, and silent
+ * about rounding.
+ *
+ * That silence is the point. The baseline has to pass, so that the test the run
+ * writes for the new behaviour can make it fail - which is the only way
+ * "red-then-green" is a measurement rather than a promise.
+ */
 const SAMPLE_TEST = `
 const assert = require("node:assert");
 const { pathToFileURL } = require("node:url");
@@ -138,12 +227,31 @@ const { pathToFileURL } = require("node:url");
 const cart = pathToFileURL(require("node:path").join(__dirname, "src", "cart.js")).href;
 import(cart).then((module) => {
   assert.equal(module.subtotal([{ price: 10, quantity: 2 }]), 20, "subtotal adds every line");
-  assert.equal(module.withTax(25, 0.1), 27.5, "withTax rounds to two places");
-  console.log("2 passing");
-}).catch((error) => {
-  console.error(String(error.message ?? error));
+  console.log("Tests  1 passed (1)");
+}).catch(() => {
+  console.log("FAIL  test.cjs > subtotal adds every line");
+  console.log("Tests  1 failed (1)");
   process.exit(1);
 });
+`;
+
+/**
+ * The project's own check, so the quality gate has something real to run.
+ *
+ * Deliberately a rule this project made up for itself rather than anything
+ * Aime knows: the gate's whole claim is that it enforces the team's standard,
+ * not its own.
+ */
+const SAMPLE_CHECK = `
+const fs = require("node:fs");
+const path = require("node:path");
+
+const source = fs.readFileSync(path.join(__dirname, "src", "cart.js"), "utf8");
+if (source.includes("console.log")) {
+  console.error("src/cart.js logs to the console");
+  process.exit(1);
+}
+console.log("check ok");
 `;
 
 /**
@@ -159,7 +267,7 @@ export function receiptTotal(amount, rate) {
 `;
 
 const SAMPLE_CART = `export function subtotal(lines) {
-  return lines.reduce((total, line) => total + line.price * line.quantity, 0);
+  return lines.reduce((sum, line) => sum + line.price * line.quantity, 0);
 }
 export function withTax(amount, rate) {
   return amount * (1 + rate);
@@ -198,18 +306,29 @@ function giveItALanguageService(dir) {
   );
 }
 
-function sampleProject() {
+function sampleProject({ declaresTest = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aime-run-"));
   fs.mkdirSync(path.join(dir, "src"));
   fs.writeFileSync(
     path.join(dir, "package.json"),
     JSON.stringify(
-      { name: "sample", private: true, type: "module", scripts: { test: "node test.cjs" } },
+      {
+        name: "sample",
+        private: true,
+        type: "module",
+        // `declaresTest: false` models the Gradle/Makefile world: the tests
+        // exist, but no manifest script names them, so the run has to ask and
+        // then verify the answer by running it.
+        scripts: declaresTest
+          ? { test: "node test.cjs", check: "node check.cjs" }
+          : { check: "node check.cjs" },
+      },
       null,
       2,
     ),
   );
   fs.writeFileSync(path.join(dir, "test.cjs"), SAMPLE_TEST);
+  fs.writeFileSync(path.join(dir, "check.cjs"), SAMPLE_CHECK);
   fs.writeFileSync(path.join(dir, "src", "cart.js"), SAMPLE_CART);
   fs.writeFileSync(path.join(dir, "src", "checkout.js"), SAMPLE_CHECKOUT);
   giveItALanguageService(dir);
@@ -300,6 +419,15 @@ async function phaseRow(heading) {
   }, heading);
 }
 
+/** Waits for a phase's row to say something, and hands back what it says. */
+async function waitForPhase(heading, needle, message, timeout = 180_000) {
+  await browser.waitUntil(async () => (await phaseRow(heading)).includes(needle), {
+    timeout,
+    timeoutMsg: `${message} (row "${heading}" never said "${needle}")`,
+  });
+  return phaseRow(heading);
+}
+
 async function waitForText(text, message, timeout = 60_000) {
   const needle = text.toLowerCase();
   try {
@@ -307,7 +435,7 @@ async function waitForText(text, message, timeout = 60_000) {
       timeout,
       timeoutMsg: `${message} (looked for "${text}")`,
     });
-  } catch (error) {
+  } catch {
     // The panel's own words are the diagnosis; without them a timeout says
     // only that something did not happen.
     const page = await $("body").getText();
@@ -315,6 +443,23 @@ async function waitForText(text, message, timeout = 60_000) {
 --- on screen ---
 ${page.slice(0, 2000)}`);
   }
+}
+
+/**
+ * Types a value and proves it arrived whole.
+ *
+ * Measured 2026-08-24: a person typing at the machine while the parked test
+ * window held keyboard focus left "làm" interleaved inside the board URL -
+ * 'lhttp://127.0.0.1:51291àm' - and the connect step failed for a reason that
+ * looked exactly like the long-standing board flake. A field read back is a
+ * field known to hold its value, whatever else the keyboard was doing.
+ */
+async function fill(field, value) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await field.setValue(value);
+    if ((await field.getValue()) === value) return;
+  }
+  throw new Error(`a field never held "${value}" - something else is typing into this window`);
 }
 
 async function open(dir) {
@@ -362,12 +507,12 @@ async function startRun(repo) {
   );
 
   if ((await $("body").getText()).toLowerCase().includes("connect a board")) {
-    await (await $('input[placeholder="contoso"]')).setValue(ORGANIZATION);
+    await fill(await $('input[placeholder="contoso"]'), ORGANIZATION);
     // Matched by prefix: the field takes a comma-separated list of projects, so
     // its placeholder names two.
-    await (await $('input[placeholder^="Contoso Web"]')).setValue(PROJECT);
-    await (await $('input[placeholder="https://dev.azure.com"]')).setValue(board.origin);
-    await (await $('input[type="password"]')).setValue(TOKEN);
+    await fill(await $('input[placeholder^="Contoso Web"]'), PROJECT);
+    await fill(await $('input[placeholder="https://dev.azure.com"]'), board.origin);
+    await fill(await $('input[type="password"]'), TOKEN);
     await browser.keys("Enter");
   } else {
     await (await $(`button*=${ORGANIZATION}`)).click();
@@ -379,26 +524,36 @@ async function startRun(repo) {
   await (await $('button[title="Work on this with AI"]')).click();
 }
 
-/** A sample whose suite is green from the first commit, so a break is new. */
-function freshGreenRepo(previous) {
-  try {
-    if (previous) fs.rmSync(previous, { recursive: true, force: true });
-  } catch {
-    // Windows keeps a handle on the folder the app has open; the temp sweep gets it.
-  }
-  const dir = sampleProject();
-  fs.writeFileSync(
-    path.join(dir, "src", "cart.js"),
-    SAMPLE_CART.replace("return amount * (1 + rate);", "return Math.round(amount * (1 + rate) * 100) / 100;"),
+/**
+ * Waits for the confirmation gate and approves it.
+ *
+ * The gate is the default, and it is the one place a person is meant to be in
+ * the loop - so every test goes through it rather than around it.
+ */
+async function approve(repo) {
+  await waitForText("read the approach", "the run never stopped for approval", 240_000);
+  assert.equal(
+    fs.readFileSync(path.join(repo, "src", "cart.js"), "utf8").includes("Math.round"),
+    false,
+    "the run wrote code before it was approved",
   );
-  execFileSync("git", ["commit", "-am", "green"], { cwd: dir, stdio: "pipe" });
-  return dir;
+  await (await $("button*=Approved")).click();
 }
 
 /** Runs the sample's own suite, so "fixed" is checked and not taken on trust. */
 function spawnSuite(dir) {
   const run = spawnSync("npm", ["test"], { cwd: dir, encoding: "utf8", shell: true });
   return { status: run.status, output: `${run.stdout ?? ""}${run.stderr ?? ""}` };
+}
+
+/** The run report this project wrote, whichever run wrote it. */
+function reportsIn(dir) {
+  const runs = path.join(dir, ".aime", "runs");
+  if (!fs.existsSync(runs)) return [];
+  return fs
+    .readdirSync(runs)
+    .filter((name) => name.endsWith(".md"))
+    .map((name) => fs.readFileSync(path.join(runs, name), "utf8"));
 }
 
 describe("Task run", () => {
@@ -430,15 +585,23 @@ describe("Task run", () => {
     }
   });
 
-  it("walks every phase and finishes when the change is sound", async () => {
+  /** A fresh sample for each test, so no run inherits another's damage. */
+  function freshRepo(previous, options) {
+    try {
+      if (previous) fs.rmSync(previous, { recursive: true, force: true });
+    } catch {
+      // Windows keeps a handle on the folder the app has open; the temp sweep gets it.
+    }
+    return sampleProject(options);
+  }
+
+  it("agrees the approach and the cases before it writes anything, then proves the tests red", async () => {
     fs.writeFileSync(MODE_FILE, "sound");
-    repo = sampleProject();
+    repo = freshRepo(repo);
     await startRun(repo);
 
     // Phase 0 is real work before a single token is spent: a branch of its own,
-    // and the suite as it stands. The sample's suite fails at the start -
-    // withTax does not round yet - which is exactly a red baseline, and the run
-    // must carry on rather than blame the change for it.
+    // and every suite and check as they stand.
     await waitForText("baseline", "the run never started");
     await browser.waitUntil(() => currentBranch(repo).startsWith("bugfix/12-"), {
       timeout: 60_000,
@@ -449,27 +612,83 @@ describe("Task run", () => {
     // The phase that asks the language server "who else uses this?". `checkout.js`
     // imports `cart.js`, and the only thing in the app that can know it is the
     // server - the fake CLI never mentions that file.
-    await browser.waitUntil(
-      async () => (await phaseRow("Find what it touches")).includes("depending on them"),
-      {
-        timeout: 120_000,
-        timeoutMsg: "the locate phase never reported a radius",
-      },
+    const ground = await waitForPhase(
+      "Read the item and the code",
+      "depending on them",
+      "the phase never reported a radius",
     );
-    const locate = await phaseRow("Find what it touches");
     assert.match(
-      locate,
+      ground,
       /1 file\(s\) to change, 1 depending on them/,
-      `the language server was not asked what depends on the change: ${locate}`,
+      `the language server was not asked what depends on the change: ${ground}`,
     );
 
-    // Nothing to click: the run drives itself to the end, which is the point of
-    // handing a task over.
+    // One page: the approach, the cases and the plan. The cases exist as a file
+    // a person can read and edit, which is the whole difference between "there
+    // is a test" and "we agreed what proof is".
+    await waitForPhase(
+      "Decide the approach, the cases and the plan",
+      "test case(s) covering",
+      "the approach and the cases were never decided",
+    );
+    const casesFile = path.join(repo, ".aime", "test-cases.md");
+    assert.ok(fs.existsSync(casesFile), "the test cases were not written where a person can read them");
+    const cases = fs.readFileSync(casesFile, "utf8");
+    assert.match(cases, /## AC1 —/, `the cases are not filed under the criterion: ${cases}`);
+    assert.match(cases, /\*\*Then\*\* it answers 27\.5/, `the expected result is missing: ${cases}`);
+    // And how it gets proved, which is the case's own answer rather than a
+    // layer Aime guessed from the file path.
+    assert.match(cases, /\*\*Proved by\*\* a unit test/, `the case does not say how it is proved: ${cases}`);
+
+    // The gate: everything is on screen and nothing has been written. `approve`
+    // itself asserts the second half of that.
+    await approve(repo);
+
+    // Red-then-green, measured: the tests went in alone and the suite got worse.
+    const tests = await waitForPhase("Write the tests", "as they must", "the tests were never proved red");
+    assert.match(tests, /fail as they must/, `the red proof was not reported: ${tests}`);
+
     await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
     assert.match(
       fs.readFileSync(path.join(repo, "src", "cart.js"), "utf8"),
       /Math\.round/,
       "the implementing phase did not actually edit the file",
+    );
+
+    // The table a tester would sign, and the one word in it that has to be
+    // earned: a test naming the case exists, that test was seen failing first,
+    // every suite is green, and an artifact from the running software names it.
+    const [report] = reportsIn(repo);
+    assert.ok(report, "the run left no report behind");
+    assert.match(report, /\| TC1 \| AC1 \|/, `the case table is missing its row: ${report}`);
+    assert.match(report, /\| PASS \|/, `the case was not recorded as proved: ${report}`);
+
+    // The deliver phase's evidence is real files Aime checked, not a claim:
+    // one artifact named after the case, and proof the deployed thing answered.
+    assert.ok(
+      fs.existsSync(path.join(repo, ".aime", "evidence", "TC1.txt")),
+      "no artifact for TC1 on disk",
+    );
+    assert.ok(
+      fs.existsSync(path.join(repo, ".aime", "evidence", "deploy", "health.txt")),
+      "no proof the deployed software answered",
+    );
+
+    // The cleanup button: the first click only lists - the stray file the run
+    // created is offered, the evidence is shown but not ticked - and the second
+    // click deletes exactly what is ticked.
+    await (await $("button*=List what this run left behind")).click();
+    await waitForText("debug-scratch.log", "the stray file the run created was never offered");
+    const listed = await $("body").getText();
+    assert.match(listed, /TC1\.txt/, "the evidence is not in the cleanup list at all");
+    await (await $("button*=Delete 1 file")).click();
+    await browser.waitUntil(() => !fs.existsSync(path.join(repo, "debug-scratch.log")), {
+      timeout: 30_000,
+      timeoutMsg: "the ticked stray file is still on disk",
+    });
+    assert.ok(
+      fs.existsSync(path.join(repo, ".aime", "evidence", "TC1.txt")),
+      "the sweep took the evidence too, which the default must never do",
     );
   });
 
@@ -479,15 +698,19 @@ describe("Task run", () => {
     // homework; this one is asked to finish the task, so the repair phase gets
     // the failure and puts it right.
     fs.writeFileSync(MODE_FILE, "repairs");
-    repo = freshGreenRepo(repo);
+    repo = freshRepo(repo);
     await startRun(repo);
+    await approve(repo);
 
-    await waitForText("finished, and every gate agreed", "the run gave up instead of repairing", 240_000);
-    const page = (await $("body").getText()).toLowerCase();
-    assert.ok(
-      page.includes("fixed, and the suite is clean"),
-      `the repair was not reported: ${page.slice(0, 900)}`,
+    const repair = await waitForPhase(
+      "Measure everything, and fix what broke",
+      "Fixed in",
+      "the phase never reported putting it right",
+      240_000,
     );
+    assert.match(repair, /Fixed in \d+ attempt/, `the repair did not say what it cost: ${repair}`);
+    assert.match(repair, /measured again/, `nothing was measured after the fix: ${repair}`);
+    await waitForText("finished, and every gate agreed", "the run gave up instead of repairing", 240_000);
     // And it really is fixed on disk, by the project's own suite's standard.
     const suite = spawnSuite(repo);
     assert.equal(
@@ -498,21 +721,96 @@ ${suite.output}`,
     );
   });
 
-  it("stops only after trying, and says so, when it cannot fix what it broke", async () => {
-    // Same damage, but the repair phase refuses to undo it. The run must not
-    // report success, and must not loop forever either.
-    fs.writeFileSync(MODE_FILE, "breaks");
-    repo = freshGreenRepo(repo);
+  it("fixes the project's own check when the change breaks it", async () => {
+    // `npm run check` is this project's rule, not Aime's: no console.log in
+    // cart.js. The implementing phase leaves one in, so the quality gate has to
+    // catch it, hand it back, and re-run - and never silence the rule.
+    fs.writeFileSync(MODE_FILE, "sloppy");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+
+    const quality = await waitForPhase(
+      "Measure everything, and fix what broke",
+      "Fixed in",
+      "the project's own check was not fixed",
+      240_000,
+    );
+    // The summary names what it mended, which is this project's own check task
+    // ("npm check", the way the task list labels it) - not a rule Aime invented.
+    assert.match(quality, /measured again: npm check/, `the mended check was not named: ${quality}`);
+    await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
+    assert.equal(
+      fs.readFileSync(path.join(repo, "src", "cart.js"), "utf8").includes("console.log"),
+      false,
+      "the console.log the project forbids is still there",
+    );
+  });
+
+  it("keeps the run on file, so it can be read again after a reload", async () => {
+    // The run just finished in this project. Reload the app, open the project
+    // again and ask for the runs: what a person comes back to a week later.
+    await browser.refresh();
+    await waitForText("recent", "the welcome screen never rendered");
+    await (await $(`span=${repo.split(/[\\/]/).pop()}`)).click();
+    await waitForText("package.json", "the sample never reopened");
+
+    await browser.keys(["Control", "p"]);
+    // '>' narrows the palette to commands, so Enter cannot land on a file whose
+    // name happens to fuzzy-match better than the command does.
+    await (await $('input[placeholder*="Type a command"]')).setValue(">task runs");
+    await browser.keys("Enter");
+
+    await waitForText("earlier runs", "the run history never opened");
+    await waitForText("round the total", "the finished run was not kept on file");
+  });
+
+  it("finds how a script-less project is tested, runs it, and still proves the case", async () => {
+    // The Gradle/Makefile world: the tests exist but no manifest script names
+    // them. The model is asked how this project is really tested, and Aime
+    // believes the answer only after running it. Everything downstream is the
+    // proof that this worked: without the discovered suite there is no
+    // baseline, the tests phase would skip, and TC1 could never be proved red.
+    fs.writeFileSync(MODE_FILE, "sound");
+    repo = freshRepo(repo, { declaresTest: false });
     await startRun(repo);
 
-    await waitForText("stopped here", "a change that broke a passing test was not stopped", 240_000);
-    const page = (await $("body").getText()).toLowerCase();
-    assert.ok(
-      page.includes("still broken after"),
-      `the run stopped without saying it had tried: ${page.slice(0, 900)}`,
+    await waitForPhase(
+      "Baseline",
+      "declares no test command",
+      "the baseline hid that the gate had nothing to run",
     );
+    await approve(repo);
+    const tests = await waitForPhase(
+      "Write the tests",
+      "as they must",
+      "the discovered command never carried the red proof",
+    );
+    assert.match(tests, /fail as they must/, `red was not proved through the discovered suite: ${tests}`);
+
+    await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
+    const [report] = reportsIn(repo);
+    assert.match(report, /\| PASS \|/, `the case was not proved end to end: ${report}`);
+  });
+
+  it("stops only after trying, and says so, when it cannot fix what it broke", async () => {
+    // Same damage as the repair test, but the repair phase refuses to undo it.
+    // The run must not report success, and must not loop forever either.
+    fs.writeFileSync(MODE_FILE, "breaks");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+
+    const gave = await waitForPhase(
+      "Measure everything, and fix what broke",
+      "Still broken after",
+      "the run stopped without saying it had tried",
+      240_000,
+    );
+    assert.match(gave, /Still broken after 3 attempts/, `the attempts were not reported: ${gave}`);
+    await waitForText("stopped here", "a change that broke a passing test was not stopped", 240_000);
     assert.equal(
-      page.includes("finished, and every gate agreed"),
+      (await $("body").getText()).toLowerCase().includes("finished, and every gate agreed"),
       false,
       "a blocked run must never also report success",
     );

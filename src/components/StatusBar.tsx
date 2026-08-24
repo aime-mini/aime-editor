@@ -15,6 +15,7 @@ import {
   Loader2,
   Moon,
   PackageCheck,
+  ShieldCheck,
   PanelLeft,
   Play,
   Settings2,
@@ -42,6 +43,7 @@ const TASK_ICONS: Record<TaskKind, typeof Play> = {
   run: Play,
   build: Hammer,
   test: FlaskConical,
+  check: ShieldCheck,
   publish: PackageCheck,
 };
 

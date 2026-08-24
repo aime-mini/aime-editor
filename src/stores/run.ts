@@ -4,24 +4,78 @@ import { create } from "zustand";
 import { translate } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
 import {
+  casesWithoutProof,
   parseBrief,
   parsePlan,
   parseReview,
+  parseSolution,
+  parseSurvey,
+  parseTestCases,
+  uncoveredCases,
   uncoveredCriteria,
-  PLAN_PROMPT,
+  DESIGN_PROMPT,
   REVIEW_PROMPT,
   UNDERSTAND_PROMPT,
   type Brief,
   type Criterion,
   type Plan,
   type Review,
+  type Solution,
+  type Survey,
+  type TestCase,
+  type TestCases,
 } from "../lib/aiRun";
 import { aiOneshot } from "../lib/aiOneshot";
 import { createEventParser } from "../lib/aiParsers";
 import { radiusFrom, radiusIsComplete, type Radius } from "../lib/blastRadius";
-import { allOutput, execCancel } from "../lib/exec";
-import { judge, runSuite, type Baseline, type GateVerdict, type SuiteRun } from "../lib/regressionGate";
-import { forgetRun, loadRun, saveRun, wasInterrupted } from "../lib/runFile";
+import { allOutput, execCancel, type CommandOutcome } from "../lib/exec";
+import {
+  alreadyFailing,
+  checkEvidence,
+  checkTasksOf,
+  isClean,
+  newlyFailing,
+  runChecks,
+  type CheckPass,
+  type CheckRun,
+} from "../lib/qualityGate";
+import {
+  brokenNames,
+  gateResolution,
+  judge,
+  measured,
+  runSuites,
+  skipList,
+  SUITE_TIMEOUT_MS,
+  tally,
+  testTasksOf,
+  unusable,
+  wentRed,
+  type Baseline,
+  type GateVerdict,
+  type SuiteRun,
+} from "../lib/regressionGate";
+import { renderReport, collectEvidence } from "../lib/runReport";
+import { caseEvidence, deployProof, DEPLOY_PROOF_DIR, EVIDENCE_DIR } from "../lib/evidenceFile";
+import { emptyTrash, trashOf, untrackedNow, type TrashItem } from "../lib/runTrash";
+import {
+  caseOutcomes,
+  casesProvenRed,
+  loadTestCases,
+  saveTestCases,
+  TEST_CASES_MD,
+  type CaseVerdict,
+} from "../lib/testCaseFile";
+import {
+  forgetRun,
+  interruptedRun,
+  listRuns,
+  loadRun,
+  RUNS_DIR,
+  saveRun,
+  wasInterrupted,
+  type SavedRun,
+} from "../lib/runFile";
 import {
   abandonRest,
   mayContinue,
@@ -35,7 +89,7 @@ import {
 import { branchNameFor } from "../lib/workItems";
 import { useAi } from "./ai";
 import { useGit } from "./git";
-import type { TaskDef } from "./tasks";
+import { folderOf, type TaskDef } from "./tasks";
 import { useTrackers, type WorkItem } from "./trackers";
 import { useWorkspace } from "./workspace";
 
@@ -62,41 +116,108 @@ export interface LogLine {
 
 /** How far the run may go before it waits for the reader. */
 export type Autonomy =
-  /** Stops after the plan for a look, for a task worth checking the direction of. */
-  | "reviewPlan"
   /**
-   * Runs to the end and reports. The default, because the point of handing a
-   * task over is coming back to it done: a run that waits for a click halfway
-   * has spent the time and produced nothing.
+   * Stops once the approach, the test cases and the plan are on screen. The
+   * default: that page costs a minute to read and is the last moment where
+   * redirecting the work is free, and a run nobody agreed to is a branch nobody
+   * asked for.
    */
+  | "reviewPlan"
+  /** Runs to the end and reports, for work whose direction is not in doubt. */
   | "autopilot";
 
-interface RunState {
-  run: Run | null;
-  log: LogLine[];
-  autonomy: Autonomy;
-  /** What each phase produced, for the report and for the panel's detail. */
+/**
+ * Everything the phases produce.
+ *
+ * Kept together because they move together: a run starts with none of them, a
+ * reopened run is restored with all of them, and the journal writes exactly
+ * this. Spelling them out at each of those places is how one of them gets
+ * forgotten in one of them.
+ */
+interface Artifacts {
+  /** What the ticket was understood to ask for. */
   brief: Brief | null;
+  /** The files to change and the conventions around them, read from the code. */
+  survey: Survey | null;
   /** What the language server said depends on the files about to change. */
   radius: Radius | null;
+  /** The approaches weighed, and the one taken. */
+  solution: Solution | null;
+  /** What proof looks like, agreed before any code exists. */
+  cases: TestCases | null;
   plan: Plan | null;
   review: Review | null;
   baseline: Baseline | null;
+  /** The project's own linters as they stood before the change. */
+  checks: CheckPass | null;
   /** What the last comparison with the baseline found; null until one is made. */
   verdict: GateVerdict | null;
+  /** Files the suites left behind - screenshots, traces, reports. */
+  evidence: string[];
+  /**
+   * Test commands the model found for a project whose manifest declares none —
+   * kept only after Aime ran each one for real, and run on every later pass.
+   */
+  discovered: TaskDef[];
+  /** The cases whose own test was seen failing before the code existed. */
+  redCases: string[];
+  /** Git's untracked list at the baseline: the "was already there" side of cleanup. */
+  untrackedBefore: string[];
+}
+
+const NOTHING_YET: Artifacts = {
+  brief: null,
+  survey: null,
+  radius: null,
+  solution: null,
+  cases: null,
+  plan: null,
+  review: null,
+  baseline: null,
+  checks: null,
+  verdict: null,
+  evidence: [],
+  discovered: [],
+  redCases: [],
+  untrackedBefore: [],
+};
+
+/** The artifacts and the cleanup view together: what a fresh panel shows. */
+const NOTHING_SHOWN = { ...NOTHING_YET, trash: null, trashResult: null };
+
+interface RunState extends Artifacts {
+  run: Run | null;
+  log: LogLine[];
+  autonomy: Autonomy;
+  /** Every run this project kept, newest first. */
+  history: SavedRun[];
+  /** True while the panel shows a run out of the history rather than a live one. */
+  viewingPast: boolean;
+  /** The files the shown run left behind, once the reader asked to see them. */
+  trash: TrashItem[] | null;
+  /** What the last sweep did, so the panel can say it. */
+  trashResult: { deleted: number; failed: string[] } | null;
 
   setAutonomy: (autonomy: Autonomy) => void;
   /** Starts a run for this item. Refuses if one is already going. */
   start: (item: WorkItem) => Promise<void>;
-  /** Carries on from the plan gate once the reader has looked. */
+  /** Carries on from the confirmation gate once the reader has looked. */
   approvePlan: () => Promise<void>;
   /** Picks a run back up where a closed lid or a lost network left it. */
   resume: () => Promise<void>;
-  /** Reads back the run this project left behind, if any. */
+  /** Reads back what this project left behind: its history, and any live run. */
   reopen: (root: string) => Promise<void>;
+  /** Opens a finished run from the history, read-only. */
+  openPast: (id: string) => Promise<void>;
+  /** Removes one run from the project's record, at the reader's request. */
+  forget: (id: string) => Promise<void>;
   cancel: () => Promise<void>;
-  /** Forgets a finished run, so the panel goes back to the item. */
+  /** Closes the panel, keeping the run in the history. */
   dismiss: () => void;
+  /** Lists what the shown run left behind, without deleting anything. */
+  previewTrash: () => Promise<void>;
+  /** Deletes exactly the ticked paths, then lists what is still there. */
+  sweepTrash: (paths: readonly string[]) => Promise<void>;
 }
 
 /** The id of the command or agent run in flight, so Cancel has something to pull. */
@@ -108,13 +229,10 @@ let unlistenAgent: UnlistenFn[] = [];
 export const useRun = create<RunState>((set, get) => ({
   run: null,
   log: [],
-  autonomy: "autopilot",
-  brief: null,
-  radius: null,
-  plan: null,
-  review: null,
-  baseline: null,
-  verdict: null,
+  autonomy: "reviewPlan",
+  history: [],
+  viewingPast: false,
+  ...NOTHING_SHOWN,
 
   setAutonomy: (autonomy) => {
     set({ autonomy });
@@ -124,8 +242,9 @@ export const useRun = create<RunState>((set, get) => ({
     const { rootPath } = useWorkspace.getState();
     if (rootPath === null || running) return;
     running = true;
-    const run = newRun(`run-${String(Date.now())}`, item.id, item.title, Date.now());
-    set({ run, log: [], brief: null, radius: null, plan: null, review: null, baseline: null, verdict: null });
+    const startedAt = Date.now();
+    const run = newRun(`run-${String(startedAt)}`, item.id, item.title, startedAt);
+    set({ run, log: [], viewingPast: false, ...NOTHING_SHOWN });
     useWorkspace.getState().openRun();
     await drive("baseline", { item, root: rootPath }, set, get);
   },
@@ -137,7 +256,9 @@ export const useRun = create<RunState>((set, get) => ({
     const item = itemOf(run.itemId);
     if (item === null) return;
     running = true;
-    await drive("implement", { item, root: rootPath }, set, get);
+    // From the first phase allowed to write: everything before it was reading,
+    // deciding and asking, and all of it is what the reader just agreed to.
+    await drive("tests", { item, root: rootPath }, set, get);
   },
 
   cancel: async () => {
@@ -166,41 +287,92 @@ export const useRun = create<RunState>((set, get) => ({
   },
 
   reopen: async (root) => {
-    const saved = await loadRun(root);
-    if (saved === null) {
-      set({
-        run: null,
-        log: [],
-        brief: null,
-        radius: null,
-        plan: null,
-        review: null,
-        baseline: null,
-        verdict: null,
-      });
+    const history = await listRuns(root);
+    // The one worth putting back on screen is the one that never finished: it is
+    // the only one with work left in it. Everything else is history until asked
+    // for by name.
+    const live = await interruptedRun(root);
+    if (live === null) {
+      set({ run: null, log: [], history, viewingPast: false, ...NOTHING_SHOWN });
       return;
     }
     set({
-      run: wasInterrupted(saved)
-        ? { ...saved.run, ended: { kind: "interrupted", phase: saved.run.current ?? "baseline" } }
-        : saved.run,
-      log: [],
-      brief: saved.brief,
-      radius: saved.radius,
-      plan: saved.plan,
-      review: saved.review,
-      baseline: saved.baseline,
-      verdict: saved.verdict,
+      ...restore(live),
+      history,
+      viewingPast: false,
+      run: { ...live.run, ended: { kind: "interrupted", phase: live.run.current ?? "baseline" } },
     });
   },
 
-  dismiss: () => {
+  openPast: async (id) => {
     const { rootPath } = useWorkspace.getState();
-    if (rootPath !== null) void forgetRun(rootPath);
-    set({ run: null, log: [] });
+    if (rootPath === null || running) return;
+    const saved = await loadRun(rootPath, id);
+    if (saved === null) return;
+    set({ ...restore(saved), run: saved.run, viewingPast: !wasInterrupted(saved) });
+    useWorkspace.getState().openRun();
+  },
+
+  forget: async (id) => {
+    const { rootPath } = useWorkspace.getState();
+    if (rootPath === null) return;
+    await forgetRun(rootPath, id);
+    const history = await listRuns(rootPath);
+    // A reader who deletes the run they are looking at is asking for it to be
+    // gone, not for it to stay on screen with nothing behind it.
+    const showing = get().run;
+    set(showing?.id === id ? { history, run: null, log: [], ...NOTHING_SHOWN } : { history });
+    if (showing?.id === id) useWorkspace.getState().closeRun();
+  },
+
+  dismiss: () => {
+    // Nothing is deleted: the run stays in the project's record, and the panel
+    // simply stops showing it. A record that vanishes when the reader clicks
+    // away is not a record.
+    set({ run: null, log: [], viewingPast: false, ...NOTHING_SHOWN });
     useWorkspace.getState().closeRun();
   },
+
+  previewTrash: async () => {
+    const { run, untrackedBefore } = get();
+    const { rootPath } = useWorkspace.getState();
+    if (run === null || rootPath === null) return;
+    set({ trash: await trashOf(rootPath, untrackedBefore, run.startedAt), trashResult: null });
+  },
+
+  sweepTrash: async (paths) => {
+    const { run, untrackedBefore } = get();
+    const { rootPath } = useWorkspace.getState();
+    if (run === null || rootPath === null) return;
+    const trashResult = await emptyTrash(paths);
+    // Listed again from disk rather than subtracted in memory, so what the
+    // panel shows afterwards is what is actually still there.
+    set({ trashResult, trash: await trashOf(rootPath, untrackedBefore, run.startedAt) });
+  },
 }));
+
+/** A saved run put back into the shape the panel reads. */
+function restore(saved: SavedRun): Artifacts & { log: LogLine[]; trash: null; trashResult: null } {
+  return {
+    log: [],
+    trash: null,
+    trashResult: null,
+    brief: saved.brief,
+    survey: saved.survey,
+    radius: saved.radius,
+    solution: saved.solution,
+    cases: saved.cases,
+    plan: saved.plan,
+    review: saved.review,
+    baseline: saved.baseline,
+    checks: saved.checks,
+    verdict: saved.verdict,
+    evidence: saved.evidence,
+    discovered: saved.discovered,
+    redCases: saved.redCases,
+    untrackedBefore: saved.untrackedBefore,
+  };
+}
 
 /**
  * Another project is another run. What was on screen belongs to the folder that
@@ -208,18 +380,22 @@ export const useRun = create<RunState>((set, get) => ({
  */
 useWorkspace.subscribe((state, previous) => {
   if (state.rootPath === previous.rootPath) return;
-  useRun.setState({
-    run: null,
-    log: [],
-    brief: null,
-    radius: null,
-    plan: null,
-    review: null,
-    baseline: null,
-    verdict: null,
-  });
+  useRun.setState({ run: null, log: [], history: [], viewingPast: false, ...NOTHING_SHOWN });
   if (state.rootPath !== null) void useRun.getState().reopen(state.rootPath);
 });
+
+/**
+ * And the project that was already open when this module first loaded.
+ *
+ * The workbench is imported lazily, so the state change that opened the project
+ * happens *before* anything in this file exists to hear it. Without this line a
+ * project opened from the welcome screen would never read its own runs back - no
+ * offer to carry on an interrupted one, no history - and only switching to a
+ * second project would work, which is the kind of bug that looks like
+ * forgetfulness rather than like a missing subscription.
+ */
+const alreadyOpen = useWorkspace.getState().rootPath;
+if (alreadyOpen !== null) void useRun.getState().reopen(alreadyOpen);
 
 /** The work item a run is about, if the board still has it. */
 function itemOf(id: string): WorkItem | null {
@@ -278,13 +454,15 @@ async function drive(start: PhaseId, context: Context, set: Setter, get: Getter)
         ended: { kind: "blocked", phase: at, why: result.summary },
       }));
       journal(context.root, get);
+      refreshHistory(context.root, set);
       running = false;
       return;
     }
     // A phase may hold the run rather than end it - an unanswered question, or
-    // a plan waiting to be looked at.
+    // the confirmation gate waiting to be read.
     if (get().run?.ended != null) {
       journal(context.root, get);
+      refreshHistory(context.root, set);
       running = false;
       return;
     }
@@ -293,6 +471,7 @@ async function drive(start: PhaseId, context: Context, set: Setter, get: Getter)
 
   update(set, (run) => ({ ...run, current: null, ended: { kind: "done" } }));
   journal(context.root, get);
+  refreshHistory(context.root, set);
   running = false;
 }
 
@@ -304,9 +483,42 @@ async function drive(start: PhaseId, context: Context, set: Setter, get: Getter)
  * the path that matters for a benefit on the path that rarely happens.
  */
 function journal(root: string, get: Getter): void {
-  const { run, brief, radius, plan, review, baseline, verdict } = get();
-  if (run === null) return;
-  void saveRun(root, { run, brief, radius, plan, review, baseline, verdict });
+  const state = get();
+  if (state.run === null) return;
+  void saveRun(root, { run: state.run, ...artifactsOf(state) });
+}
+
+/** Just the artifacts out of the state, which is what the journal is. */
+function artifactsOf(state: RunState): Artifacts {
+  return {
+    brief: state.brief,
+    survey: state.survey,
+    radius: state.radius,
+    solution: state.solution,
+    cases: state.cases,
+    plan: state.plan,
+    review: state.review,
+    baseline: state.baseline,
+    checks: state.checks,
+    verdict: state.verdict,
+    evidence: state.evidence,
+    discovered: state.discovered,
+    redCases: state.redCases,
+    untrackedBefore: state.untrackedBefore,
+  };
+}
+
+/**
+ * Re-reads the history after a run reaches a resting place.
+ *
+ * Not awaited and not on the phase path: the list is what the reader browses
+ * later, and making a finishing run wait on a directory listing would be paying
+ * for the panel out of the work's own time.
+ */
+function refreshHistory(root: string, set: Setter): void {
+  void listRuns(root).then((history) => {
+    set({ history });
+  });
 }
 
 /** Changes the run in place, leaving whatever a phase wrote to it alone. */
@@ -320,20 +532,22 @@ async function runPhase(phase: PhaseId, context: Context, set: Setter, get: Gett
       return baseline(context, set);
     case "understand":
       return understand(context, set);
-    case "locate":
-      return locate(context, set, get);
-    case "plan":
-      return planPhase(context, set, get);
+    case "design":
+      return design(context, set, get);
+    case "tests":
+      return writeTests(context, set, get);
     case "implement":
       return implement(context, set, get);
-    case "regression":
-      return regression(context, set, get);
-    case "repair":
-      return repair(context, set, get);
+    case "verify":
+      return verify(context, set, get);
     case "review":
-      return reviewPhase(context, set);
+      return reviewPhase(context, set, get);
+    case "polish":
+      return polish(context, set, get);
+    case "deliver":
+      return deliver(context, set, get);
     case "report":
-      return report(get);
+      return report(context, set, get);
   }
 }
 
@@ -341,8 +555,11 @@ async function runPhase(phase: PhaseId, context: Context, set: Setter, get: Gett
 
 /**
  * Before anything is touched: a branch of its own, a checkpoint to undo the
- * whole run, and the suite as it stands. Without this last one the regression
- * gate has nothing to compare against and every later claim is unfounded.
+ * whole run, every suite as it stands, and every check as it stands.
+ *
+ * Without these last two the later gates have nothing to compare against, and
+ * "your change broke this" and "this was already broken" become the same
+ * sentence — which is the sentence that makes a gate untrustworthy.
  */
 async function baseline(context: Context, set: Setter): Promise<PhaseResult> {
   // A branch left over from an earlier run is the common case, and it is not a
@@ -362,198 +579,402 @@ async function baseline(context: Context, set: Setter): Promise<PhaseResult> {
   }
   set((state) => ({ run: state.run === null ? null : { ...state.run, branch } }));
 
-  const tasks = await invoke<TaskDef[]>("detect_tasks", { rootPath: context.root });
-  const taken = await runSuite(tasks, context.root, commandId(), runCommand(set, "baseline"));
-  set({ baseline: taken });
+  // Git's untracked list, before anything runs: whatever is untracked later and
+  // not in here is what this run created — the only files the cleanup button
+  // may ever offer to delete.
+  set({ untrackedBefore: await untrackedNow(context.root) });
 
-  if (!taken.taken && taken.reason === "couldNotRun") {
-    return { state: "blocked", summary: translate("run.suiteWontRun", { detail: taken.detail }) };
+  const tasks = await tasksOf(context.root);
+  const suites = await runSuites(tasks, context.root, commandId, runCommand(set, "baseline"));
+  set({ baseline: suites });
+  const checks = await runChecks(tasks, context.root, commandId, runCommand(set, "baseline"));
+  set({ checks });
+
+  const declared = testTasksOf(tasks).length;
+  if (declared === 0) {
+    // No test command at all. The run may go on, but the gate that matters most
+    // cannot speak, and saying so now beats discovering it at the end.
+    return { state: "skipped", summary: translate("run.noSuite"), detail: describeChecks(checks) };
   }
-  if (!taken.taken) {
-    // No test command at all. The run may go on, but the gate that matters
-    // most cannot speak, and saying so now beats discovering it at the end.
-    return { state: "skipped", summary: translate("run.noSuite") };
+  if (measured(suites).length === 0) {
+    return {
+      state: "blocked",
+      summary: translate("run.suiteWontRun", { detail: describeSilence(suites) }),
+    };
   }
-  const report = taken.run.report;
-  // A count is only quoted when a reader understood the output. Otherwise the
-  // verdict is all that is honestly known, and the summary says that instead of
-  // reporting "0 failing" about a suite it could not read.
-  const counted = report.reader !== null;
+  const counts = tally(suites);
   return {
     state: "passed",
-    summary: report.passed
-      ? counted
-        ? translate("run.baselineGreen", { count: report.total ?? 0 })
-        : translate("run.baselineGreenPlain")
-      : counted
-        ? translate("run.baselineRed", { count: report.failed.length })
-        : translate("run.baselineRedPlain"),
-    detail: report.failed.join("\n"),
+    summary: translate("run.baselineTaken", {
+      suites: measured(suites).length,
+      failed: counts.failed,
+    }),
+    detail: [
+      describeSuites(suites),
+      describeChecks(checks),
+      // Said now rather than discovered at the end: a team whose runners Aime
+      // cannot read closely should know the gates will speak by exit code alone
+      // before they walk away from a run.
+      gateResolution(suites) === "verdictOnly" ? translate("run.verdictOnly") : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
   };
 }
 
-/** What the ticket actually asks for, and what it does not settle. */
+/**
+ * What the ticket asks for, and the ground it lands on.
+ *
+ * Two questions in one phase because they have one answer: what a change is for
+ * cannot be settled without reading the code it will live in, and asking twice
+ * costs a model call and buys nothing a reader can act on differently. So the
+ * criteria come out of the ticket, the files and the conventions come out of the
+ * repository - every convention citing the file it was seen in, because one with
+ * no evidence is a habit - and the dependants come from
+ * `textDocument/references` put to the language server this editor is already
+ * running, since asking a model to recall its callers produces a plausible list
+ * where the server produces the real one. A file no server could answer for is
+ * reported as unknown, never as clear.
+ */
 async function understand(context: Context, set: Setter): Promise<PhaseResult> {
   const description = await useTrackers.getState().detailOf(context.item);
-  const ticket = [
+  const asking = [
+    UNDERSTAND_PROMPT,
     `# ${context.item.title}`,
     `Type: ${context.item.itemType} · State: ${context.item.state}`,
     description?.description ?? translate("tracker.noDescription"),
   ].join("\n\n");
 
-  const brief = await tryUntil(ATTEMPTS, async () =>
-    parseBrief(await aiOneshot(UNDERSTAND_PROMPT + ticket, context.root)),
-  );
-  if (brief === null) return { state: "blocked", summary: translate("run.briefUnreadable") };
-  set({ brief });
+  // One reply, two readers: each parser takes its own keys out of the same JSON
+  // object, so merging the phases costs nothing in parsing.
+  const answer = await tryUntil(ATTEMPTS, async () => {
+    const reply = await readRepository(asking, context.root, set, "understand");
+    const brief = parseBrief(reply);
+    const found = parseSurvey(reply);
+    return brief === null || found === null ? null : { brief, found };
+  });
+  if (answer === null) return { state: "blocked", summary: translate("run.briefUnreadable") };
 
-  // A question does not stop the run. Waiting for an answer from a desk nobody
-  // is sitting at is the one failure that makes handing a task over pointless,
-  // so the run takes the sensible default it was told to prefer and writes the
-  // assumption down where the reader will meet it in the report.
-  const open = brief.questions.filter((question) => question.blocking);
-  return {
-    state: "passed",
-    summary:
-      open.length > 0
-        ? translate("run.criteriaWithAssumptions", { count: brief.criteria.length, open: open.length })
-        : translate("run.criteria", { count: brief.criteria.length }),
-    detail: [
-      ...brief.criteria.map((one) => `${one.id}. ${one.text}`),
-      ...(open.length > 0 ? ["", translate("run.assumed")] : []),
-      ...open.map((question) => `- ${question.text}`),
-    ].join("\n"),
-  };
-}
+  const { brief, found } = answer;
+  const files = found.files.slice(0, SURVEY_FILE_LIMIT);
+  set({ brief, survey: { ...found, files } });
 
-/**
- * Which files the change touches, and what else depends on them.
- *
- * The files are the model's answer, read out of the repository. The dependants
- * are not: they come from `textDocument/references` put to the language server
- * this editor is already running, because asking a model to recall its callers
- * produces a plausible list where the server produces the real one. A file no
- * server could answer for is reported as unknown rather than as clear - "nothing
- * else is affected" and "nobody looked" must never read alike.
- */
-async function locate(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
-  const brief = get().brief;
-  if (brief === null) return { state: "skipped", summary: translate("run.noBrief") };
-
-  const asked = await readRepository(
-    `${LOCATE_PROMPT}\n\nGoal: ${brief.goal}\n${brief.criteria.map((one) => `- ${one.text}`).join("\n")}`,
-    context.root,
-    set,
-    "locate",
-  );
-  const files = [...new Set(asked.split("\n").map((line) => line.trim().replace(/^[-*]\s*/, "")))]
-    .filter((line) => line !== "" && !line.includes(" ") && line.includes("."))
-    .slice(0, LOCATE_FILE_LIMIT);
-  if (files.length === 0) return { state: "skipped", summary: translate("run.noFiles") };
+  // A project whose manifest declares no test script may still have suites -
+  // in a Makefile, a CI file, a build script - and the model was asked to read
+  // them out. None of them is believed on its word: Aime runs every one, keeps
+  // the ones that actually ran, and they become this run's baseline and join
+  // every later pass over the suites.
+  const discoveredLines: string[] = [];
+  if (testTasksOf(await tasksOf(context.root)).length === 0 && found.suites.length > 0) {
+    const candidates: TaskDef[] = found.suites.slice(0, DISCOVERED_SUITE_LIMIT).map((suite, index) => ({
+      id: `ai-suite-${String(index + 1)}`,
+      label: suite.command,
+      kind: "test",
+      command: suite.command,
+      ...(suite.dir === "." ? {} : { cwd: suite.dir }),
+    }));
+    note(set, "understand", translate("run.tryingDiscovered", { count: candidates.length }));
+    const pass = await runSuites(candidates, context.root, commandId, runCommand(set, "understand"));
+    const usable = candidates.filter((candidate) =>
+      pass.suites.some((suite) => suite.id === candidate.id && suite.run !== null),
+    );
+    set({ discovered: usable, baseline: pass });
+    discoveredLines.push(
+      "",
+      translate("run.discoveredSuites", { found: candidates.length, ran: usable.length }),
+      ...candidates.map(
+        (candidate) =>
+          `- ${candidate.command} · ${
+            usable.includes(candidate) ? translate("run.suiteRan") : translate("run.suiteSilent")
+          }`,
+      ),
+    );
+  }
 
   // Imported here rather than at the top: the probe speaks to Monaco, and this
   // store is loaded long before an editor exists.
   const { languageServerProbe } = await import("../lib/lsp/impact");
-  note(set, "locate", translate("run.asking", { count: files.length }));
+  note(set, "understand", translate("run.asking", { count: files.length }));
   const radius = await radiusFrom(files, languageServerProbe(context.root));
   set({ radius });
 
+  // A question does not stop the run. Waiting for an answer from a desk nobody
+  // is sitting at is the one failure that makes handing a task over pointless,
+  // so the run takes the sensible default it was told to prefer and writes the
+  // assumption down where the reader will meet it in the report - and at the
+  // confirmation gate, which is before anything has been written.
+  const open = brief.questions.filter((question) => question.blocking);
+  const counts = {
+    criteria: brief.criteria.length,
+    files: radius.changing.length,
+    dependents: radius.dependents.length,
+  };
   return {
     state: "passed",
     summary: radiusIsComplete(radius)
-      ? translate("run.radius", { files: radius.changing.length, dependents: radius.dependents.length })
-      : translate("run.radiusPartly", {
-          files: radius.changing.length,
-          dependents: radius.dependents.length,
-          unknown: radius.unknown.length,
-        }),
+      ? translate("run.understood", counts)
+      : translate("run.understoodPartly", { ...counts, unknown: radius.unknown.length }),
     detail: [
+      ...brief.criteria.map((one) => `${one.id}. ${one.text}`),
+      ...(open.length > 0 ? ["", translate("run.assumed")] : []),
+      ...open.map((question) => `- ${question.text}`),
+      "",
       ...radius.changing,
       ...(radius.dependents.length > 0 ? ["", translate("run.dependents")] : []),
       ...radius.dependents,
+      ...(found.patterns.length > 0 ? ["", translate("run.conventions")] : []),
+      ...found.patterns.map((pattern) => `- ${pattern}`),
+      ...(found.testsLiveIn === "" ? [] : ["", `${translate("run.testsLiveIn")}: ${found.testsLiveIn}`]),
+      ...discoveredLines,
     ].join("\n"),
   };
 }
 
 /**
- * What the language server said uses the code about to change, for the phases
- * that write it.
+ * The approach, what proof looks like, and the order it happens in - one page.
  *
- * Empty when nothing could be asked or nothing came back - a heading with an
- * empty list under it reads as "nothing depends on this", which is the one
- * thing an unanswered radius must never be mistaken for.
+ * They arrive together because they are one decision: a plan can be flawless
+ * about the wrong approach, and an approach nobody turned into checkable cases
+ * is a paragraph. This is also the page the reader is asked to agree to, and
+ * three phases producing three pages for one minute of reading was three model
+ * calls spent on the same question.
+ *
+ * Three gates, and none of them guesses. Every criterion must have a case, or
+ * the requirement is not covered. Every case must say how it would be proved,
+ * because a screen proved by a unit test of the function behind it is not proved
+ * at all - what the right check *is* stays the model's call, since it read the
+ * project and Aime did not. And every case must be placed in a test: the plan
+ * may disagree about *where* a case is proved, never about *whether* it is. What
+ * comes back short is asked again with exactly what it missed rather than
+ * refused, because an answer one sentence from being right is not a failure.
+ *
+ * The cases then go into the project as `.aime/test-cases.md` to read and
+ * `.aime/test-cases.json` to edit, so the agreed definition of done outlives the
+ * run that produced it.
  */
-function whatDependsOnIt(radius: Radius | null): string[] {
-  if (radius === null || radius.dependents.length === 0) return [];
-  return [
-    "",
-    "These files use something the files above declare. The language server named them, so this is",
-    "what the change must not break - they are not themselves part of the work:",
-    ...radius.dependents.map((file) => `- ${file}`),
-  ];
-}
-
-/** The steps, and one test per criterion. The gate is the mapping. */
-async function planPhase(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
-  const brief = get().brief;
+async function design(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
+  const { brief, survey: ground } = get();
   if (brief === null) return { state: "skipped", summary: translate("run.noBrief") };
 
   const asking = [
-    PLAN_PROMPT,
-    "Read the files you will change, and two or three of their neighbours, before you answer: the",
-    "plan has to fit the conventions this project already uses, and those live in the code rather",
-    "than in your habits.",
-    "",
+    DESIGN_PROMPT,
     `Goal: ${brief.goal}`,
     "Acceptance criteria:",
     ...brief.criteria.map((one) => `${one.id}: ${one.text}`),
+    ...conventionsOf(ground),
     ...whatDependsOnIt(get().radius),
   ].join("\n");
 
-  // Asked again with the criteria it dropped, rather than refused: a plan that
-  // missed one is a plan one sentence away from being right.
-  let plan: Plan | null = null;
+  let answer: { solution: Solution; cases: TestCases; plan: Plan } | null = null;
   let missing: Criterion[] = [];
+  let unproved: TestCase[] = [];
+  let unplaced: TestCase[] = [];
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
-    const asked =
-      missing.length === 0
-        ? asking
-        : [
-            asking,
+    const shortfall = [
+      ...(missing.length > 0
+        ? [
             "",
-            "Your last plan left these criteria with no test. Cover every one of them:",
+            "Your last answer left these criteria with no case. Cover every one of them:",
             ...missing.map((one) => `${one.id}: ${one.text}`),
-          ].join("\n");
-    plan = parsePlan(await readRepository(asked, context.root, set, "plan"));
-    if (plan === null) continue;
-    missing = uncoveredCriteria(brief, plan);
-    if (missing.length === 0) break;
+          ]
+        : []),
+      ...(unproved.length > 0
+        ? [
+            "",
+            'These cases did not say how they would be proved. Fill in "prove" for each one with',
+            "the check that would make a tester believe it:",
+            ...unproved.map(oneLine),
+          ]
+        : []),
+      ...(unplaced.length > 0
+        ? [
+            "",
+            "These cases had nowhere to be proved. Place every one of them in a test:",
+            ...unplaced.map(oneLine),
+          ]
+        : []),
+    ];
+    const reply = await readRepository([asking, ...shortfall].join("\n"), context.root, set, "design");
+    const solution = parseSolution(reply);
+    const cases = parseTestCases(reply);
+    const plan = parsePlan(reply);
+    if (solution === null || cases === null || plan === null) continue;
+    answer = { solution, cases, plan };
+    missing = uncoveredCriteria(brief, cases);
+    unproved = casesWithoutProof(cases);
+    unplaced = uncoveredCases(cases, plan);
+    if (missing.length === 0 && unproved.length === 0 && unplaced.length === 0) break;
   }
-  if (plan === null) return { state: "blocked", summary: translate("run.planUnreadable") };
-  set({ plan });
+  if (answer === null) return { state: "blocked", summary: translate("run.designUnreadable") };
+  set({ solution: answer.solution, cases: answer.cases, plan: answer.plan });
+  await saveTestCases(context.root, answer.cases, brief, context.item.title);
 
-  if (missing.length > 0) {
+  const missed = [...missing.map((one) => `${one.id}: ${one.text}`), ...unproved.map(oneLine)];
+  if (missed.length > 0) {
     return {
       state: "blocked",
-      summary: translate("run.planIncomplete", { count: missing.length }),
-      detail: missing.map((one) => `${one.id}: ${one.text}`).join("\n"),
+      summary: translate("run.casesIncomplete", { count: missed.length }),
+      detail: missed.join("\n"),
     };
   }
+  if (unplaced.length > 0) {
+    return {
+      state: "blocked",
+      summary: translate("run.planIncomplete", { count: unplaced.length }),
+      detail: unplaced.map(oneLine).join("\n"),
+    };
+  }
+
   const detail = [
-    ...plan.steps.map((step) => `- ${step.what} (${step.files.join(", ")})`),
+    answer.solution.how,
     "",
-    ...plan.tests.map((test) => `${test.criterion} → ${test.name} [${test.file}]`),
+    `${translate("run.why")}: ${answer.solution.why}`,
+    ...(answer.solution.decisions.length > 0 ? ["", translate("run.decisions")] : []),
+    ...answer.solution.decisions.map((decision) => `- ${decision}`),
+    "",
+    translate("run.casesHeading"),
+    ...answer.cases.cases.map((one) => `${one.id} ${one.criterion}: ${one.then} — ${one.prove}`),
+    "",
+    translate("run.planHeading"),
+    ...answer.plan.steps.map((step) => `- ${step.what} (${step.files.join(", ")})`),
+    ...answer.plan.tests.map((test) => `${test.case} → ${test.name} [${test.file}]`),
+    "",
+    translate("run.casesWritten", { file: TEST_CASES_MD }),
   ].join("\n");
 
   if (get().autonomy === "reviewPlan") {
-    hold(set, get, "plan", translate("run.planWaiting"));
+    hold(set, get, "design", translate("run.planWaiting"));
   }
-  return { state: "passed", summary: translate("run.planReady", { count: plan.tests.length }), detail };
+  return {
+    state: "passed",
+    summary: translate("run.designReady", {
+      cases: answer.cases.cases.length,
+      criteria: brief.criteria.length,
+      steps: answer.plan.steps.length,
+    }),
+    detail,
+  };
 }
 
-/** The only phase that writes. Tests first, then the code, then green. */
+/** One case as a line, for the pages and the prompts that quote it. */
+function oneLine(one: TestCase): string {
+  return `${one.id}: ${one.then}`;
+}
+
+/**
+ * The tests, written before the code, and proved to fail.
+ *
+ * "Write the tests first" is worth nothing as an instruction, because a test
+ * that passes before its feature exists looks exactly like a test that works.
+ * So this phase measures it: the tests go in, the suites run, and the comparison
+ * with the baseline must show something that passed now failing. That is the
+ * same comparison the regression gate uses, so "worse" means one thing in this
+ * pipeline rather than two things that can drift apart.
+ *
+ * A run of the suites stops at the first one that proves the point: the proof is
+ * that a test fails, and a second opinion from a nine-minute browser suite adds
+ * nothing to it.
+ */
+async function writeTests(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
+  const { brief, plan, baseline: before } = get();
+  const cases = await agreedCases(context.root, get, set);
+  if (brief === null || plan === null || cases === null) {
+    return { state: "skipped", summary: translate("run.noPlan") };
+  }
+
+  const prompt = [
+    WRITE_TESTS_PROMPT,
+    `Goal: ${brief.goal}`,
+    "Write exactly these tests, one per case:",
+    ...plan.tests.map((test) => {
+      const one = cases.cases.find((candidate) => candidate.id === test.case);
+      return `- ${test.file} :: ${test.name}${
+        one === undefined ? "" : ` — given ${one.given}, when ${one.when}, then ${one.then}`
+      }`;
+    }),
+    ...conventionsOf(get().survey),
+  ].join("\n");
+
+  const tried: string[] = [];
+  // What the next attempt is told it still owes: nothing yet, then either "no
+  // test went red at all" or the exact cases whose own test stayed green.
+  let owed = "";
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+    if (attempt > 1) note(set, "tests", translate("run.tryingAgain", { attempt, of: ATTEMPTS }));
+    const code = await runAgent(owed === "" ? prompt : `${prompt}\n\n${owed}`, context.root, set, "tests");
+    if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+
+    // Without a baseline there is nothing to be worse than, so the red proof
+    // cannot be made either way - and claiming it was made would be the exact
+    // lie this phase exists to prevent.
+    if (before === null || measured(before).length === 0) {
+      return { state: "skipped", summary: translate("run.noBaseline") };
+    }
+    const after = await suitesNow(context, set, get, "tests", before, (soFar) =>
+      wentRed(judge(before, soFar)),
+    );
+    const verdict = judge(before, after);
+    if (!wentRed(verdict)) {
+      tried.push(translate("run.testsNotRedAttempt", { attempt }));
+      owed = NOT_RED_YET;
+      continue;
+    }
+    set({ verdict });
+
+    // Red per case, not per suite: only a case whose own test is among the
+    // named failures may ever be reported as proved. A runner that names no
+    // tests can attribute nothing to any case, and asking again cannot change
+    // what the runner prints - the suite-level proof is then all there is.
+    const broken = brokenNames(verdict);
+    const red = casesProvenRed(plan, broken);
+    set({ redCases: [...red] });
+    const missing = broken.length === 0 ? [] : cases.cases.filter((one) => !red.has(one.id));
+    if (missing.length === 0) {
+      return {
+        state: "passed",
+        summary:
+          broken.length === 0
+            ? translate("run.testsRedUnnamed")
+            : translate("run.testsRed", { count: broken.length }),
+        detail: [...tried, differences(verdict)].filter(Boolean).join("\n"),
+      };
+    }
+    if (attempt === ATTEMPTS) {
+      // Something is red, so the work can go on - but the cases that never
+      // showed their own test failing can never earn a PASS in the report.
+      return {
+        state: "passed",
+        summary: translate("run.testsRedPartly", { red: red.size, missing: missing.length }),
+        detail: [...tried, ...missing.map(oneLine), differences(verdict)].filter(Boolean).join("\n"),
+      };
+    }
+    tried.push(
+      translate("run.casesStillGreen", {
+        attempt,
+        detail: missing.map((one) => one.id).join(", "),
+      }),
+    );
+    owed = [CASES_NOT_RED, ...missing.map(oneLine)].join("\n");
+  }
+  return {
+    state: "blocked",
+    summary: translate("run.testsNotRed", { attempts: ATTEMPTS }),
+    detail: tried.join("\n"),
+  };
+}
+
+/**
+ * The code, until the tests that were red are green.
+ *
+ * The senior bar is in the prompt rather than in a wish: the conventions read
+ * out of this repository, the decisions the solution locked in, the files the
+ * language server said must not break, and the four things a reviewer will
+ * measure it against anyway. The gate is small and mechanical - the agent
+ * finished cleanly, and the working tree actually changed - because the real
+ * gates on this phase are the three that come after it.
+ */
 async function implement(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
-  const { brief, plan } = get();
+  const { brief, plan, solution } = get();
   if (brief === null || plan === null) return { state: "skipped", summary: translate("run.noPlan") };
 
   const prompt = [
@@ -564,9 +985,18 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
     "",
     "The plan:",
     ...plan.steps.map((step) => `- ${step.what} (${step.files.join(", ")})`),
+    ...(solution === null
+      ? []
+      : [
+          "",
+          `The approach agreed: ${solution.how} — ${solution.why}`,
+          ...(solution.decisions.length > 0 ? ["What it locks in:"] : []),
+          ...solution.decisions.map((decision) => `- ${decision}`),
+        ]),
     "",
-    "The tests to write first, each proving one criterion:",
-    ...plan.tests.map((test) => `- [${test.criterion}] ${test.name} in ${test.file}`),
+    "The tests are already written and failing. Make them pass:",
+    ...plan.tests.map((test) => `- [${test.case}] ${test.name} in ${test.file}`),
+    ...conventionsOf(get().survey),
     ...whatDependsOnIt(get().radius),
   ].join("\n");
 
@@ -579,78 +1009,433 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
   }
   if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
   if (code !== 0) return { state: "blocked", summary: translate("run.agentFailed", { code }) };
+
+  // An agent that exited cleanly having done nothing is the quietest failure
+  // there is: every gate after this one would pass, and the run would report a
+  // finished job over an empty diff.
+  const diff = await invoke<string>("git_worktree_diff", { root: context.root });
+  if (diff.trim() === "") return { state: "blocked", summary: translate("run.noChange") };
   return { state: "passed", summary: translate("run.implemented") };
 }
 
 /**
- * The suite again, against the baseline.
+ * Everything measured, and what this change broke put right.
  *
- * This phase only *measures*. Finding a regression is not a reason to hand back
- * an unfinished job - `repair` gets that news and does something about it - so
- * nothing here refuses, and what it learned is stored for the phase that acts.
+ * One phase, because measuring and mending are one job: a run that finds a
+ * regression and reports it has produced homework, not a finished task. What is
+ * measured is not Aime's opinion of good code but what the project declared -
+ * `npm run check`, `cargo clippy`, every test command it has - and it is
+ * measured against the baseline taken before a line was written, so "your change
+ * broke this" and "this was already broken" stay different sentences.
+ *
+ * The cheap gate goes first: the checks are fast, and code that does not compile
+ * has nothing to say to a nine-minute browser suite. Then every suite. Whatever
+ * this change broke goes back to the agent with the evidence attached and is
+ * measured again, up to three rounds - bounded because an agent that has failed
+ * three times at the same test is not one attempt from success, it is looping,
+ * and looping unattended is how a run spends a night and a fortune.
+ *
+ * What it will not do is weaken a rule to get past it: the prompts say so, and a
+ * check that was already failing before the change is reported rather than
+ * blamed on it.
  */
-async function regression(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
+async function verify(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
+  const tasks = await tasksOf(context.root);
   const before = get().baseline;
-  if (before === null || !before.taken) return { state: "skipped", summary: translate("run.noBaseline") };
-
-  const after = await suiteNow(context, set, "regression");
-  if (!after.taken) {
-    set({ verdict: null });
-    return { state: "blocked", summary: translate("run.suiteWontRun", { detail: describeSilence(after) }) };
-  }
-  const verdict = judge(before.run, after.run);
-  set({ verdict });
-  return { state: "passed", summary: summarise(verdict), detail: differences(verdict) };
-}
-
-/**
- * The phase that finishes the job.
- *
- * A workflow that reports "I broke something, goodbye" has not done the task -
- * it has produced homework. So a regression goes straight back to the agent
- * with the failing tests and the output that proves them, and the suite is
- * measured again after every attempt. Only when the attempts run out does the
- * run stop, and then it says what it tried.
- *
- * Bounded, because an agent that has failed three times on the same test is not
- * one attempt from success - it is looping, and looping unattended is how a run
- * spends a night and a fortune.
- */
-async function repair(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
-  const before = get().baseline;
-  let verdict = get().verdict;
-  if (before === null || !before.taken || verdict === null || !verdict.blocks) {
-    return { state: "skipped", summary: translate("run.nothingToRepair") };
+  const checksBefore = get().checks ?? { checks: [] };
+  const hasChecks = checkTasksOf(tasks).length > 0;
+  const hasSuites = before !== null && measured(before).length > 0;
+  if (!hasChecks && !hasSuites) {
+    return { state: "skipped", summary: translate("run.nothingToMeasure") };
   }
 
   const tried: string[] = [];
-  for (let attempt = 1; attempt <= REPAIR_ATTEMPTS; attempt += 1) {
-    note(set, "repair", translate("run.repairing", { attempt, of: REPAIR_ATTEMPTS }));
-    tried.push(translate("run.repairAttempt", { attempt, detail: summarise(verdict) }));
-
-    const code = await runAgent(repairPrompt(verdict), context.root, set, "repair");
-    if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
-
-    const after = await suiteNow(context, set, "repair");
-    if (!after.taken) {
-      return { state: "blocked", summary: translate("run.suiteWontRun", { detail: describeSilence(after) }) };
+  // What had to be mended, so the summary can say it rather than only claiming
+  // a number of attempts: "fixed in two attempts" tells a reader nothing about
+  // what was wrong.
+  const mended: string[] = [];
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+    // The checks first: they are the cheap ones, and a tree that does not
+    // typecheck has nothing to tell a suite that takes nine minutes.
+    let stale: CheckRun[] = [];
+    if (hasChecks) {
+      const now = await runChecks(tasks, context.root, commandId, runCommand(set, "verify"));
+      const broke = newlyFailing(checksBefore, now);
+      stale = alreadyFailing(checksBefore, now);
+      if (broke.length > 0) {
+        if (attempt === ATTEMPTS) {
+          return {
+            state: "blocked",
+            summary: translate("run.qualityFailed", {
+              count: broke.length,
+              detail: broke.map((check) => check.label).join(", "),
+            }),
+            detail: [...tried, checkEvidence(broke)].join("\n"),
+          };
+        }
+        const labels = broke.map((check) => check.label).join(", ");
+        tried.push(translate("run.qualityFixing", { attempt, detail: labels }));
+        mended.push(labels);
+        note(set, "verify", tried[tried.length - 1]);
+        const code = await runAgent(
+          [FIX_CHECKS_PROMPT, checkEvidence(broke)].join("\n\n"),
+          context.root,
+          set,
+          "verify",
+        );
+        if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+        continue;
+      }
     }
-    verdict = judge(before.run, after.run);
+
+    if (!hasSuites) {
+      return {
+        state: "passed",
+        summary: translate("run.checksOnly", { count: stale.length }),
+        detail: [...tried, ...stale.map((check) => `- ${check.label}`)].join("\n"),
+      };
+    }
+
+    const after = await suitesNow(context, set, get, "verify", before);
+    if (measured(after).length === 0) {
+      // The suites that answered before have stopped answering: that is a
+      // broken harness, not a verdict, and guessing either way would be worse.
+      return {
+        state: "blocked",
+        summary: translate("run.suiteWontRun", { detail: describeSilence(after) }),
+      };
+    }
+    const verdict = judge(before, after);
     set({ verdict });
     if (!verdict.blocks) {
       return {
         state: "passed",
-        summary: translate("run.repaired", { attempts: attempt }),
+        summary:
+          attempt === 1
+            ? summarise(verdict)
+            : translate("run.repaired", { attempts: attempt - 1, detail: mended.join("; ") }),
+        detail: [...tried, describeChecks({ checks: stale }), differences(verdict)]
+          .filter(Boolean)
+          .join("\n"),
+      };
+    }
+    if (attempt === ATTEMPTS) {
+      return {
+        state: "blocked",
+        summary: translate("run.repairGaveUp", { attempts: ATTEMPTS, detail: summarise(verdict) }),
         detail: [...tried, differences(verdict)].filter(Boolean).join("\n"),
       };
     }
+    tried.push(translate("run.repairAttempt", { attempt, detail: summarise(verdict) }));
+    mended.push(brokenNames(verdict).join(", ") || summarise(verdict));
+    note(set, "verify", translate("run.repairing", { attempt, of: ATTEMPTS }));
+    const code = await runAgent(repairPrompt(verdict), context.root, set, "verify");
+    if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+  }
+  // Unreachable: every path out of the loop above returns. Here so that a future
+  // edit to the loop cannot fall through into a silent pass.
+  return { state: "blocked", summary: translate("run.repairGaveUp", { attempts: ATTEMPTS, detail: "" }) };
+}
+
+/** A reader with a clean context, whose job is to find fault. */
+async function reviewPhase(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
+  const diff = await invoke<string>("git_worktree_diff", { root: context.root });
+  if (diff.trim() === "") return { state: "skipped", summary: translate("run.nothingChanged") };
+
+  const asking = [
+    REVIEW_PROMPT,
+    ...conventionsOf(get().survey),
+    ...(get().solution === null
+      ? []
+      : [
+          "",
+          "What the change was supposed to lock in:",
+          ...(get().solution?.decisions ?? []).map((d) => `- ${d}`),
+        ]),
+    "",
+    diff.slice(0, DIFF_LIMIT),
+  ].join("\n");
+  const review = parseReview(await aiOneshot(asking, context.root));
+  set({ review });
+  const issues = review.findings.filter((finding) => finding.severity === "issue");
+  return {
+    state: "passed",
+    summary: translate("run.reviewed", { issues: issues.length, total: review.findings.length }),
+    detail: [
+      ...review.risks.map((risk) => `? ${risk}`),
+      ...review.findings.map((finding) => `${finding.file}:${String(finding.line)} — ${finding.message}`),
+    ].join("\n"),
+  };
+}
+
+/**
+ * What the review found, fixed - and then everything measured again.
+ *
+ * The half that was missing: a review whose findings nobody acts on is a
+ * document, not a gate. Only findings that said how they would be proved are
+ * worked on, since those are the ones with something to check afterwards. And
+ * every fix is followed by the checks and the suites again, because a fix is a
+ * change like any other and the last change of a run is the least examined one.
+ *
+ * This phase never ends the run. A reviewer is the one voice here that can
+ * simply be wrong, so what it could not fix is reported for a person to judge.
+ */
+async function polish(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
+  const review = get().review;
+  const issues = review?.findings.filter((finding) => finding.severity === "issue") ?? [];
+  if (issues.length === 0) return { state: "skipped", summary: translate("run.polishNothing") };
+
+  const before = get().baseline;
+  const tried: string[] = [];
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+    note(set, "polish", translate("run.polishing", { attempt, of: ATTEMPTS, count: issues.length }));
+    const code = await runAgent(
+      [
+        POLISH_PROMPT,
+        ...issues.map(
+          (finding) =>
+            `- ${finding.file}:${String(finding.line)} — ${finding.message} (check: ${finding.check})`,
+        ),
+      ].join("\n"),
+      context.root,
+      set,
+      "polish",
+    );
+    if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+
+    // Nothing is claimed until it is measured again: the checks first, because
+    // they are the cheap ones, then every suite against the baseline.
+    const tasks = await tasksOf(context.root);
+    const checksNow = await runChecks(tasks, context.root, commandId, runCommand(set, "polish"));
+    const broke = newlyFailing(get().checks ?? { checks: [] }, checksNow);
+    let stillGreen = broke.length === 0;
+    if (stillGreen && before !== null && measured(before).length > 0) {
+      const after = await suitesNow(context, set, get, "polish", before);
+      const verdict = judge(before, after);
+      set({ verdict });
+      stillGreen = !verdict.blocks;
+    }
+    if (stillGreen) {
+      return {
+        state: "passed",
+        summary: translate("run.polishFixed", { count: issues.length, attempts: attempt }),
+        detail: [...tried, ...issues.map((finding) => `- ${finding.message}`)].join("\n"),
+      };
+    }
+    tried.push(translate("run.polishBroke", { attempt }));
   }
   return {
     state: "blocked",
-    summary: translate("run.repairGaveUp", { attempts: REPAIR_ATTEMPTS, detail: summarise(verdict) }),
-    detail: [...tried, differences(verdict)].filter(Boolean).join("\n"),
+    summary: translate("run.polishLeft", { count: issues.length, attempts: ATTEMPTS }),
+    detail: [...tried, ...issues.map((finding) => `- ${finding.file}: ${finding.message}`)].join("\n"),
   };
 }
+
+/**
+ * Built, deployed, and proved where it runs — because "done" means a thing a
+ * person can use, not a green suite on a dev machine.
+ *
+ * Aime's half is deterministic: every build task the project declares is run,
+ * and a build this change broke goes back to the agent with the output attached,
+ * up to the usual three rounds. The agent's half is judgement, so the agent gets
+ * it: how this project deploys (its own CI file, Dockerfile or script; locally
+ * when it declares nothing), how to smoke-test what came up, and how to drive
+ * the running software through every agreed case. What Aime believes is neither
+ * the exit banner nor the agent's word but the files: one artifact per case
+ * under `.aime/evidence/`, proof of the deployment under its `deploy/` — each
+ * checked to exist, to be non-empty and to be newer than the run.
+ *
+ * A case with no artifact does not stop the run — it is reported unproven,
+ * which is the honest sentence. No proof that the deployed thing answered at
+ * all does stop it: a run that cannot show the software running has not
+ * delivered anything, however green its gates.
+ */
+async function deliver(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
+  const cases = await agreedCases(context.root, get, set);
+  const since = get().run?.startedAt ?? 0;
+
+  // The declared builds first, run by Aime itself: code that does not build has
+  // nothing to deploy, and the agent deserves the real output, not a summary.
+  const builds = (await tasksOf(context.root)).filter((task) => task.kind === "build");
+  const tried: string[] = [];
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+    const failing: { task: TaskDef; outcome: CommandOutcome }[] = [];
+    for (const task of builds) {
+      const outcome = await runCommand(set, "deliver")(
+        commandId(),
+        task.command,
+        folderOf(task, context.root),
+        SUITE_TIMEOUT_MS,
+      );
+      if (outcome.timedOut || outcome.code !== 0) failing.push({ task, outcome });
+    }
+    if (failing.length === 0) break;
+    const labels = failing.map((one) => one.task.label).join(", ");
+    if (attempt === ATTEMPTS) {
+      return {
+        state: "blocked",
+        summary: translate("run.buildFailed", { detail: labels }),
+        detail: tried.join("\n"),
+      };
+    }
+    tried.push(translate("run.buildFixing", { attempt, detail: labels }));
+    note(set, "deliver", tried[tried.length - 1]);
+    const evidence = failing
+      .map((one) => [`$ ${one.task.command}`, allOutput(one.outcome).slice(-SUITE_OUTPUT_LIMIT)].join("\n"))
+      .join("\n\n");
+    const code = await runAgent([FIX_BUILD_PROMPT, evidence].join("\n\n"), context.root, set, "deliver");
+    if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+  }
+
+  // Then the agent deploys and proves, and the gate reads the disk. What is
+  // still owed is told back verbatim - the missing case ids, the missing
+  // deployment proof - because "try again" without the list is a wish.
+  const caseIds = (cases?.cases ?? []).map((one) => one.id);
+  let missing: TestCase[] = [];
+  let proofs: string[] = [];
+  let owed = "";
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+    if (attempt > 1) note(set, "deliver", translate("run.tryingAgain", { attempt, of: ATTEMPTS }));
+    const code = await runAgent(
+      [deliverPrompt(cases, get), owed].filter(Boolean).join("\n\n"),
+      context.root,
+      set,
+      "deliver",
+    );
+    if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+
+    const evidence = await caseEvidence(context.root, caseIds, since);
+    missing = (cases?.cases ?? []).filter((one) => (evidence.get(one.id) ?? []).length === 0);
+    proofs = await deployProof(context.root, since);
+    if (proofs.length > 0 && missing.length === 0) break;
+    if (attempt === ATTEMPTS) break;
+    owed = [
+      ...(proofs.length === 0 ? [NO_DEPLOY_PROOF] : []),
+      ...(missing.length > 0 ? [EVIDENCE_MISSING, ...missing.map(oneLine)] : []),
+    ].join("\n");
+    tried.push(
+      translate("run.deliverOwedAttempt", {
+        attempt,
+        detail: [
+          proofs.length === 0 ? translate("run.deliverNoProofShort") : "",
+          missing.map((one) => one.id).join(", "),
+        ]
+          .filter(Boolean)
+          .join("; "),
+      }),
+    );
+  }
+  if (proofs.length === 0) {
+    return {
+      state: "blocked",
+      summary: translate("run.deliverNoProof"),
+      detail: tried.join("\n"),
+    };
+  }
+  return {
+    state: "passed",
+    summary: translate("run.delivered", {
+      proved: caseIds.length - missing.length,
+      total: caseIds.length,
+    }),
+    detail: [
+      ...tried,
+      ...proofs.map((path) => `- ${path}`),
+      ...(missing.length > 0 ? ["", translate("run.deliverUnproven")] : []),
+      ...missing.map(oneLine),
+    ].join("\n"),
+  };
+}
+
+/**
+ * What the reader gets when they come back: the case table, and the evidence.
+ *
+ * The table is the thing a tester signs: every case, and whether it is proved.
+ * "Proved" is deliberately hard to earn - a test citing the case exists in the
+ * tree, that test was seen failing before the code, every suite that answered
+ * is green, and an artifact from the running software names the case - because
+ * a table that says "passed" wherever nothing contradicted it is the most
+ * expensive lie a report can tell. An unproven cell names the first missing
+ * condition, so the reader never has to reverse-engineer the gate.
+ */
+async function report(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
+  const state = get();
+  const evidence = await collectEvidence(context.root, state.run?.startedAt ?? 0);
+  set({ evidence });
+
+  const written = await existingFiles(context.root);
+  const proof =
+    state.cases === null
+      ? new Map<string, string[]>()
+      : await caseEvidence(
+          context.root,
+          state.cases.cases.map((one) => one.id),
+          state.run?.startedAt ?? 0,
+        );
+  const outcomes =
+    state.cases === null
+      ? new Map<string, CaseVerdict>()
+      : caseOutcomes(state.cases, state.plan, state.verdict, written, new Set(state.redCases), proof);
+  const proved = [...outcomes.values()].filter((verdict) => verdict.outcome === "passed").length;
+
+  const markdown = renderReport({
+    run: state.run,
+    brief: state.brief,
+    solution: state.solution,
+    cases: state.cases,
+    plan: state.plan,
+    review: state.review,
+    verdict: state.verdict,
+    outcomes,
+    evidence,
+  });
+  await writeReport(context.root, state.run?.id ?? "run", markdown);
+
+  return {
+    state: "passed",
+    summary: translate("run.reportReady", { branch: state.run?.branch ?? "" }),
+    detail: [
+      state.brief === null ? "" : `${translate("run.reportGoal")}: ${state.brief.goal}`,
+      state.cases === null ? "" : translate("run.reportCases", { proved, total: state.cases.cases.length }),
+      state.review === null
+        ? ""
+        : translate("run.reportFindings", {
+            count: state.review.findings.filter((finding) => finding.severity === "issue").length,
+          }),
+      evidence.length === 0 ? "" : translate("run.reportEvidence", { count: evidence.length }),
+      translate("run.reportSaved", { file: `${RUNS_DIR}/${state.run?.id ?? ""}.md` }),
+    ]
+      .filter((line) => line !== "")
+      .join("\n"),
+  };
+}
+
+// ------------------------------------------------------------------ helpers
+
+/** How many files the survey will carry forward. */
+const SURVEY_FILE_LIMIT = 40;
+/**
+ * How many model-found test commands are tried. Each one costs a real run of
+ * an unknown command with a fifteen-minute ceiling; a project with more than
+ * a handful of suites declares them properly.
+ */
+const DISCOVERED_SUITE_LIMIT = 5;
+/** How much of a diff is worth sending to a reviewer. */
+const DIFF_LIMIT = 12_000;
+/** How much of a failing suite's output the agent is shown when repairing. */
+const SUITE_OUTPUT_LIMIT = 8_000;
+
+/**
+ * How many times a phase tries before it admits it cannot.
+ *
+ * The run's job is to finish the task, so nothing here refuses on its first
+ * disappointment: a model that answered with prose is asked again, a plan that
+ * missed a case is sent back with the case it missed, an agent that exited badly
+ * is given another go. What the bound buys is the other half - three failures at
+ * the same thing is a loop, not bad luck, and a loop left alone overnight is
+ * what makes an unattended run frightening rather than useful.
+ */
+const ATTEMPTS = 3;
 
 /**
  * Tries something that can come back empty, until it does not.
@@ -667,108 +1452,211 @@ async function tryUntil<T>(times: number, attempt: () => Promise<T | null>): Pro
   return null;
 }
 
-/** Runs the project's suite now, for whichever phase is asking. */
-async function suiteNow(context: Context, set: Setter, phase: PhaseId): Promise<Baseline> {
-  const tasks = await invoke<TaskDef[]>("detect_tasks", { rootPath: context.root });
-  return runSuite(tasks, context.root, commandId(), runCommand(set, phase));
+/** The tasks this project declares, asked of the backend each time it matters. */
+function tasksOf(root: string): Promise<TaskDef[]> {
+  return invoke<TaskDef[]>("detect_tasks", { rootPath: root });
+}
+
+/**
+ * Every suite, now.
+ *
+ * Suites the baseline could not run are skipped: paying a fifteen-minute timeout
+ * again - three times over inside the repair loop - buys nothing the first one
+ * did not already say. `enough` lets a caller stop early when its question is
+ * already answered.
+ */
+async function suitesNow(
+  context: Context,
+  set: Setter,
+  get: Getter,
+  phase: PhaseId,
+  before: Baseline | null,
+  enough?: (soFar: Baseline) => boolean,
+): Promise<Baseline> {
+  return runSuites(
+    await allSuiteTasks(context.root, get),
+    context.root,
+    commandId,
+    runCommand(set, phase),
+    before === null ? new Set<string>() : skipList(before),
+    enough,
+  );
+}
+
+/**
+ * The suites a pass runs: what the project declares, plus what the model found
+ * and Aime proved able to run. Read together everywhere so no pass can quietly
+ * measure fewer suites than the baseline did.
+ */
+async function allSuiteTasks(root: string, get: Getter): Promise<TaskDef[]> {
+  return [...(await tasksOf(root)), ...get().discovered];
+}
+
+/**
+ * The test cases as they stand on disk, falling back to what the phase produced.
+ *
+ * Read at every phase that acts on them, because between the confirmation gate
+ * and the first line of code there is a person with an editor - and if they
+ * changed what proof looks like, that is the definition the run must work to.
+ */
+async function agreedCases(root: string, get: Getter, set: Setter): Promise<TestCases | null> {
+  const onDisk = await loadTestCases(root);
+  if (onDisk === null) return get().cases;
+  set({ cases: onDisk });
+  return onDisk;
+}
+
+/**
+ * The conventions read out of this repository, for the phases that write code.
+ *
+ * Empty when the survey found none: a heading with nothing under it reads as
+ * "this project has no conventions", which is never true and never useful.
+ */
+function conventionsOf(survey: Survey | null): string[] {
+  if (survey === null || (survey.patterns.length === 0 && survey.testsLiveIn === "")) return [];
+  return [
+    "",
+    "How this repository does things - follow these rather than your own defaults:",
+    ...survey.patterns.map((pattern) => `- ${pattern}`),
+    ...(survey.testsLiveIn === "" ? [] : [`- Tests: ${survey.testsLiveIn}`]),
+  ];
+}
+
+/**
+ * What the language server said uses the code about to change, for the phases
+ * that write it.
+ *
+ * Empty when nothing could be asked or nothing came back - a heading with an
+ * empty list under it reads as "nothing depends on this", which is the one thing
+ * an unanswered radius must never be mistaken for.
+ */
+function whatDependsOnIt(radius: Radius | null): string[] {
+  if (radius === null || radius.dependents.length === 0) return [];
+  return [
+    "",
+    "These files use something the files above declare. The language server named them, so this is",
+    "what the change must not break - they are not themselves part of the work:",
+    ...radius.dependents.map((file) => `- ${file}`),
+  ];
+}
+
+/** Every file in the project, as a set of repository-relative paths. */
+async function existingFiles(root: string): Promise<Set<string>> {
+  try {
+    return new Set(await invoke<string[]>("list_files", { root }));
+  } catch {
+    // A project too large to index, or one that moved. The report then says
+    // "unknown" for every case rather than claiming any of them was proved.
+    return new Set();
+  }
+}
+
+/** Writes the readable report beside the run's own journal. */
+async function writeReport(root: string, id: string, markdown: string): Promise<void> {
+  try {
+    await invoke("write_file", {
+      path: `${root.replace(/[\\/]+$/, "")}/${RUNS_DIR}/${id}.md`,
+      content: markdown,
+    });
+  } catch (error: unknown) {
+    console.warn("could not write the run report:", error);
+  }
 }
 
 /** One line for what the comparison found, however much of it can be named. */
 function summarise(verdict: GateVerdict): string {
-  const broken = verdict.comparison.broken;
+  const broken = brokenNames(verdict);
   if (broken.length > 0) return translate("run.regressed", { count: broken.length });
-  if (verdict.comparison.brokeWithoutDetail) return translate("run.regressedUnnamed");
-  const report = verdict.after.report;
-  return report.reader === null
+  if (verdict.suites.some((suite) => suite.comparison.brokeWithoutDetail)) {
+    return translate("run.regressedUnnamed");
+  }
+  if (verdict.silent.length > 0) {
+    return translate("run.suiteWentQuiet", { count: verdict.silent.length });
+  }
+  const counted = verdict.suites.filter((suite) => suite.after.report.reader !== null);
+  return counted.length === 0
     ? translate("run.noRegressionPlain")
-    : translate("run.noRegression", { count: report.total ?? 0 });
+    : translate("run.noRegression", {
+        count: counted.reduce((sum, suite) => sum + (suite.after.report.total ?? 0), 0),
+      });
 }
 
-/** The rest of what moved between the two runs, for the detail panel. */
+/** The rest of what moved between the two passes, for the detail panel. */
 function differences(verdict: GateVerdict): string {
-  return [
-    ...verdict.comparison.broken.map((name) => `${translate("run.nowBroken")}: ${name}`),
-    ...verdict.comparison.alreadyBroken.map((name) => `${translate("run.wasAlreadyRed")}: ${name}`),
-    ...verdict.comparison.repaired.map((name) => `${translate("run.nowFixed")}: ${name}`),
-  ].join("\n");
+  return verdict.suites
+    .flatMap((suite) => [
+      ...suite.comparison.broken.map((name) => `${suite.label} · ${translate("run.nowBroken")}: ${name}`),
+      ...suite.comparison.alreadyBroken.map(
+        (name) => `${suite.label} · ${translate("run.wasAlreadyRed")}: ${name}`,
+      ),
+      ...suite.comparison.repaired.map((name) => `${suite.label} · ${translate("run.nowFixed")}: ${name}`),
+    ])
+    .concat(verdict.silent.map((suite) => `${suite.label} · ${translate("run.wentQuiet")}`))
+    .join("\n");
+}
+
+/** Every suite of a pass, one line each, for the detail panel. */
+function describeSuites(pass: Baseline): string {
+  return pass.suites
+    .map((suite) => {
+      if (suite.run === null) return `${suite.label} · ${translate("run.suiteSilent")}`;
+      const report = suite.run.report;
+      const counted = report.reader === null ? "" : ` (${String(report.total ?? 0)})`;
+      return `${suite.label} · ${report.passed ? translate("run.suiteGreen") : translate("run.suiteRed")}${counted}`;
+    })
+    .join("\n");
+}
+
+/** The project's checks as they stood, one line each. */
+function describeChecks(pass: CheckPass): string {
+  if (pass.checks.length === 0) return "";
+  return pass.checks
+    .map(
+      (check) =>
+        `${check.label} · ${isClean(check) ? translate("run.checkClean") : translate("run.checkDirty")}`,
+    )
+    .join("\n");
+}
+
+/** Why a pass had nothing to say, in the words of the suites that failed to run. */
+function describeSilence(pass: Baseline): string {
+  const quiet = unusable(pass);
+  if (quiet.length === 0) return translate("run.noSuite");
+  return quiet
+    .map((suite) => {
+      const why =
+        suite.silence?.reason === "didNotFinish"
+          ? translate("run.suiteDidNotFinish")
+          : (suite.silence?.detail ?? "");
+      return `${suite.label}: ${why}`;
+    })
+    .join("; ");
 }
 
 /** What the agent is told about the damage, with the evidence attached. */
 function repairPrompt(verdict: GateVerdict): string {
-  const named = verdict.comparison.broken;
+  const named = brokenNames(verdict);
+  const output = verdict.suites
+    .filter((suite) => isFailing(suite))
+    .map((suite) =>
+      [`$ ${suite.after.command}`, allOutput(suite.after.outcome).slice(-SUITE_OUTPUT_LIMIT)].join("\n"),
+    )
+    .join("\n\n");
   return [
     REPAIR_PROMPT,
     named.length > 0
       ? `These tests passed before your change and fail now:\n${named.map((name) => `- ${name}`).join("\n")}`
-      : "The suite passed before your change and fails now.",
+      : "A suite that passed before your change fails now.",
     "",
-    "The suite said:",
-    allOutput(verdict.after.outcome).slice(-SUITE_OUTPUT_LIMIT),
+    "The suites said:",
+    output,
   ].join("\n");
 }
 
-/** A reader with a clean context, whose job is to find fault. */
-async function reviewPhase(context: Context, set: Setter): Promise<PhaseResult> {
-  const diff = await invoke<string>("git_worktree_diff", { root: context.root });
-  if (diff.trim() === "") return { state: "skipped", summary: translate("run.nothingChanged") };
-
-  const review = parseReview(
-    await aiOneshot(`${REVIEW_PROMPT}\n\n${diff.slice(0, DIFF_LIMIT)}`, context.root),
-  );
-  set({ review });
-  const issues = review.findings.filter((finding) => finding.severity === "issue");
-  return {
-    state: "passed",
-    summary: translate("run.reviewed", { issues: issues.length, total: review.findings.length }),
-    detail: [
-      ...review.risks.map((risk) => `? ${risk}`),
-      ...review.findings.map((finding) => `${finding.file}:${String(finding.line)} — ${finding.message}`),
-    ].join("\n"),
-  };
+/** Whether this suite is the one carrying the bad news. */
+function isFailing(suite: GateVerdict["suites"][number]): boolean {
+  return suite.comparison.broken.length > 0 || suite.comparison.brokeWithoutDetail;
 }
-
-/** What the reader gets when they come back. */
-function report(get: Getter): PhaseResult {
-  const { run, brief, plan, review } = get();
-  const changed = run?.branch ?? "";
-  const lines = [
-    brief === null ? "" : `${translate("run.reportGoal")}: ${brief.goal}`,
-    plan === null ? "" : translate("run.reportTests", { count: plan.tests.length }),
-    review === null
-      ? ""
-      : translate("run.reportFindings", {
-          count: review.findings.filter((finding) => finding.severity === "issue").length,
-        }),
-  ].filter((line) => line !== "");
-  return {
-    state: "passed",
-    summary: translate("run.reportReady", { branch: changed }),
-    detail: lines.join("\n"),
-  };
-}
-
-// ------------------------------------------------------------------ helpers
-
-/** How many files the locate phase will carry forward. */
-const LOCATE_FILE_LIMIT = 40;
-/** How much of a diff is worth sending to a reviewer. */
-const DIFF_LIMIT = 12_000;
-/** How much of a failing suite's output the agent is shown when repairing. */
-const SUITE_OUTPUT_LIMIT = 8_000;
-
-/**
- * How many times a phase tries before it admits it cannot.
- *
- * The run's job is to finish the task, so nothing here refuses on its first
- * disappointment: a model that answered with prose is asked again, a plan that
- * missed a criterion is sent back with the criterion it missed, an agent that
- * exited badly is given another go. What the bound buys is the other half -
- * three failures at the same thing is a loop, not bad luck, and a loop left
- * alone overnight is what makes an unattended run frightening rather than
- * useful.
- */
-const ATTEMPTS = 3;
-const REPAIR_ATTEMPTS = 3;
 
 const REPAIR_PROMPT = `Your change broke something that was working before it.
 
@@ -779,25 +1667,139 @@ test to make it pass - the test is the evidence, not the obstacle.
 Run the failing tests when you are done. Do not commit anything.
 `;
 
-const LOCATE_PROMPT = `Find the files in this repository this change will need to touch.
+const WRITE_TESTS_PROMPT = `Write the tests for this change. Write NO production code at all.
 
-Look at the code: search it, open the candidates, follow what calls what. Do not answer from the
-wording of the ticket.
+This is the step that makes the rest of the run mean something: the tests go in before the feature
+exists, so that when they pass later, their passing is evidence rather than decoration.
 
-Then answer with one repository-relative path per line and nothing else - no prose, no numbering,
-no explanation, no backticks.`;
+Rules:
+- Write exactly the tests listed below, in the files named. One test per case.
+- Assert the observable result the case names - a value, a status, a message, a row. Not that a
+  function was called.
+- Follow the runner and the layout this repository already uses. Read a neighbouring test first.
+- Do NOT touch the code under test, do not add stubs to make an import resolve, and do not weaken
+  an assertion so the test can pass today. A test that passes now proves nothing.
+- Run the tests you wrote. They must FAIL, and fail because the behaviour is missing rather than
+  because the file does not parse.
+- Do not commit anything.`;
 
-const IMPLEMENT_PROMPT = `Implement this work item in this repository.
+/** Sent back with the same prompt when the tests came out green. */
+const NOT_RED_YET = `Your tests passed WITHOUT the feature being implemented, so they prove nothing.
+Read what each case actually requires and assert that. If a test passes against today's code, it is
+asserting something that is already true - change it to assert the behaviour that is missing.`;
+
+/** Sent back when the suite went red but named none of these cases' own tests. */
+const CASES_NOT_RED = `The suite got worse, but the tests for the cases below were not among the named
+failures - so nothing proves those cases yet. Each one needs a test that fails BECAUSE its behaviour
+is missing, printed by name in the runner's failures:`;
+
+/** Sent back when nothing on disk shows the deployed software answered. */
+const NO_DEPLOY_PROOF = `Nothing under ${DEPLOY_PROOF_DIR}/ shows the deployed software running. Deploy
+it, smoke-test it, and save what you saw - the health response, the serving page, the smoke output -
+as a non-empty file there.`;
+
+/** Sent back with the cases whose artifact never appeared. */
+const EVIDENCE_MISSING = `These cases have no artifact under ${EVIDENCE_DIR}/ - no non-empty file whose
+name starts with the case id was written during this run. Prove each one against the running software
+and save what you saw:`;
+
+const IMPLEMENT_PROMPT = `Implement this work item in this repository. The tests are already
+written and failing; your job is to make them pass by adding the behaviour they describe.
 
 Order matters:
-1. Write the tests listed below FIRST, and run them. They must fail, and fail for the right reason -
-   a test that passes before the code exists is testing nothing.
-2. Then write the code until those tests pass.
-3. Match the conventions of the files you are editing: read two or three neighbours first and follow
-   their naming, error handling and layering rather than your own defaults.
-4. Run the tests you touched as you go. Do not run the whole suite; that check comes after you.
+1. Read the files you are about to change, and two or three of their neighbours.
+2. Write the code until the failing tests pass. Do not touch the tests: if a test looks wrong, say
+   so in your final message and leave it alone.
+3. Run the tests you are working on as you go. Do not run the whole suite; that check comes after you.
+
+Write it the way a senior engineer on THIS project would, which means:
+- Follow this project's architecture. That is a rule, not advice: the layering, the naming, the error
+  handling and the place a thing like this already lives. Nothing here is a green field, and code
+  that works while sitting in the wrong layer will be sent back.
+- If your change touches a user interface, it must look like the rest of the app. Read the components,
+  design tokens, theme and spacing this project already has and use them. Do not introduce a colour,
+  a font, a spacing scale or a component style of your own.
+- Handle the failure paths deliberately. Never swallow an error to make a signature simpler.
+- No dead code, no commented-out code, no "for future use" parameters, no TODO you are not doing.
+- Performance is part of correctness: no query inside a loop, nothing that turns one request into N,
+  no reading a whole collection to answer a question about one row, no SQL that cannot use an index.
+  Say what you did if the cheap way was not available.
+- Security is part of correctness, measured against the OWASP Top Ten where it applies: no query
+  built by string concatenation, authorisation checked on the server for every request, input
+  validated at the boundary, secrets out of the source and out of the logs, nothing deserialised
+  from a caller you do not control, and no permission widened to get something working.
+- Comments explain why, never what. The code says what.
 
 Do not commit anything.`;
+
+const FIX_BUILD_PROMPT = `This project's own build fails on the current tree. Read the output below,
+fix the code so the build passes, and run the failing build command again to see it pass.
+
+Do not weaken anything to get there: no skipped compilation steps, no excluded files, no downgraded
+settings. If the build was already failing for a reason unrelated to this change, say so in your
+final message. Do not commit anything.`;
+
+/**
+ * The deliver prompt is assembled rather than constant because the cases go in
+ * it: the agent proves exactly what was agreed, not what it remembers.
+ */
+function deliverPrompt(cases: TestCases | null, get: Getter): string {
+  return [
+    DELIVER_PROMPT,
+    ...(cases === null
+      ? []
+      : [
+          "",
+          "The agreed cases, and how each said it would be proved:",
+          ...cases.cases.map((one) => `- ${one.id} (${one.prove}): when ${one.when}, then ${one.then}`),
+        ]),
+    ...conventionsOf(get().survey),
+  ].join("\n");
+}
+
+const DELIVER_PROMPT = `The change is written and the gates so far agree. Now finish it the way a team
+calls finished: build it, deploy it, and prove it works where it runs.
+
+How to deploy is your call, because you read this project: the way it already declares - its CI
+pipeline, Dockerfile, compose file or deploy script - is the way to use. When it declares nothing,
+build what it produces and deploy that locally: start the built server, install the packaged library
+into a scratch consumer, open the built app. Never invent credentials, and never push to a shared
+environment the project did not configure.
+
+Then prove it, and leave the proof on disk - Aime believes files, not reports:
+- Save proof that the deployed thing answered under ${DEPLOY_PROOF_DIR}/: the health endpoint's
+  response, the smoke check's output, a screenshot of it serving.
+- Prove every agreed case against the RUNNING software, the way its "prove" line says: drive the
+  browser and capture the screen, send the request and keep the response, invoke the CLI and keep
+  what it printed. A case proved by a test gets that test run's own output, captured to a file -
+  not a sentence you wrote about it.
+- One artifact per case under ${EVIDENCE_DIR}/, named after it: TC1.png, TC2-response.json, TC3.txt.
+- Install what you need to drive things - a headless browser, a driver - preferring what the project
+  already uses. Show progress, do not ask permission.
+
+Every artifact must be non-empty and written now, during this run. An empty file, a stale file or a
+missing one reads as "unproven" in the report, never as a pass. Do not commit anything.`;
+
+const FIX_CHECKS_PROMPT = `Your change broke this project's own checks - the linter, the type checker
+or the formatter it runs itself.
+
+Fix the code so they pass. Do not weaken the rules to get there: do not edit the linter's
+configuration, do not add an ignore or a suppression comment, and do not disable a rule for a file.
+If a rule genuinely cannot be satisfied, say so in your final message and leave it failing rather
+than silencing it.
+
+Run the failing command again when you are done. Do not commit anything.`;
+
+const POLISH_PROMPT = `A reviewer with no stake in your work read the change and found these. Each one
+came with a way to prove it, so each one is checkable.
+
+Fix them. If one of them is wrong, leave the code alone and say why in your final message - a
+reviewer can be mistaken, and a change made to please a mistaken reviewer is worse than the finding.
+Keep every test passing and do not weaken one to close a finding.
+
+Do not commit anything.
+
+The findings:`;
 
 /** A fresh id per command, so Cancel pulls the right handle. */
 function commandId(): string {
@@ -958,21 +1960,17 @@ function note(set: Setter, phase: PhaseId, text: string, kind: LogLine["kind"] =
 
 const LOG_LIMIT = 500;
 
-function describeSilence(baseline: Baseline): string {
-  if (baseline.taken) return "";
-  return baseline.reason === "couldNotRun" ? baseline.detail : translate("run.noSuite");
-}
-
 /** A phase's name, as the log says it. Typed so a new phase cannot be forgotten. */
 const PHASE_LABELS: Record<PhaseId, TranslationKey> = {
   baseline: "run.phase.baseline",
   understand: "run.phase.understand",
-  locate: "run.phase.locate",
-  plan: "run.phase.plan",
+  design: "run.phase.design",
+  tests: "run.phase.tests",
   implement: "run.phase.implement",
-  regression: "run.phase.regression",
-  repair: "run.phase.repair",
+  verify: "run.phase.verify",
   review: "run.phase.review",
+  polish: "run.phase.polish",
+  deliver: "run.phase.deliver",
   report: "run.phase.report",
 };
 

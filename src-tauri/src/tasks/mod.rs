@@ -13,6 +13,10 @@ pub enum TaskKind {
     Run,
     Build,
     Test,
+    /// Answers "is this code acceptable?" without changing anything: a linter, a
+    /// type check, a formatter asked only to report. Kept apart from Test
+    /// because a Task Run gates on both and they fail for different reasons.
+    Check,
     Publish,
 }
 
@@ -137,12 +141,48 @@ struct FolderFacts {
 /// The one npm script Aime treats as "Run", most idiomatic name first.
 const NPM_RUN_SCRIPTS: [&str; 4] = ["dev", "start", "serve", "develop"];
 
+/// Segments that turn a test script into something that never answers: it does
+/// not terminate on its own.
+///
+/// Measured over the 44 package.json files on this machine (2026-08-24):
+/// `test:watch` is `jest --watch`, `test:ui` is `vitest --ui`, and `test:debug`
+/// is `node --inspect-brk …`, which sits waiting for a debugger to attach. Each
+/// is a fine thing to start and watch, so each is still offered — as a Run
+/// rather than as a suite. A gate that ran one would spend its whole timeout
+/// learning nothing.
+const NEVER_FINISHES: [&str; 4] = ["watch", "ui", "debug", "inspect"];
+
+/// Scripts that judge the code without rewriting it, most common name first.
+///
+/// Measured over the same package.json files: `lint` in 19 of them, then
+/// `format` (5), `lint:fix` (3), `check` (2), `format:check`, `type-check`,
+/// `prettier`. Only the read-only half is here. `format`, `prettier` and
+/// anything `:fix` REWRITE the tree — in this very repository `format` is
+/// `prettier --write "src/**"` — and a gate that edits the code it is judging
+/// has stopped being a gate.
+const NPM_CHECK_SCRIPTS: [&str; 6] = ["check", "lint", "typecheck", "type-check", "tsc", "format:check"];
+
+/// Whether a script name declares itself a test suite, and its segments.
+///
+/// The FIRST segment decides, which is what tells `test:e2e` from `build:test` —
+/// the latter being a build with a test configuration, measured on this machine
+/// as `ng build --configuration=test`. `e2e` alone is here because that is how
+/// Angular spells it. A name like `nodejs-tests` or `truffle:test:bsc_testnet`
+/// is left alone: it may well be a suite, but nothing in the name says so, and
+/// running a command on a hunch is worse than not offering it.
+fn test_script_segments(name: &str) -> Option<Vec<String>> {
+    let lower = name.to_ascii_lowercase();
+    let segments: Vec<String> = lower.split(':').map(str::to_string).collect();
+    let first = segments.first()?;
+    (first == "test" || first == "e2e").then_some(segments)
+}
+
 fn node_tasks(facts: &FolderFacts, tasks: &mut Vec<TaskDef>) {
     let manager = facts.package_manager;
     let has = |name: &str| facts.npm_scripts.iter().any(|s| s == name);
-    let mut push = |id: &str, script: &str, kind: TaskKind, command: String| {
+    let mut push = |id: String, script: &str, kind: TaskKind, command: String| {
         tasks.push(TaskDef::new(
-            id,
+            &id,
             &format!("{} {script}", manager.program()),
             kind,
             command,
@@ -150,26 +190,58 @@ fn node_tasks(facts: &FolderFacts, tasks: &mut Vec<TaskDef>) {
     };
 
     if let Some(script) = NPM_RUN_SCRIPTS.into_iter().find(|s| has(s)) {
-        push("node.run", script, TaskKind::Run, manager.run(script));
+        push("node.run".to_string(), script, TaskKind::Run, manager.run(script));
     }
-    // Building and testing every member at once is what a workspace root is
-    // for, and the only sound answer when the root declares no script of its
-    // own. "Run" is deliberately left out of that: starting every member's dev
-    // server at once is not what the play button promises.
-    for (id, script, kind) in [
-        ("node.build", "build", TaskKind::Build),
-        ("node.test", "test", TaskKind::Test),
-    ] {
-        let command = if has(script) {
-            Some(manager.run(script))
-        } else if facts.workspace_root {
-            manager.run_in_every_member(script, facts.yarn_is_berry)
-        } else {
-            None
+    // Building every member at once is what a workspace root is for, and the
+    // only sound answer when the root declares no script of its own. "Run" is
+    // deliberately left out of that: starting every member's dev server at once
+    // is not what the play button promises.
+    let build = if has("build") {
+        Some(manager.run("build"))
+    } else if facts.workspace_root {
+        manager.run_in_every_member("build", facts.yarn_is_berry)
+    } else {
+        None
+    };
+    if let Some(command) = build {
+        push("node.build".to_string(), "build", TaskKind::Build, command);
+    }
+
+    // Every suite the project declares, not the first one: a repository that
+    // keeps `test` apart from `test:e2e` has two, and a gate running one of them
+    // measures half the project while claiming to have measured the project.
+    let mut suites = 0;
+    for script in &facts.npm_scripts {
+        let Some(segments) = test_script_segments(script) else {
+            continue;
         };
-        if let Some(command) = command {
-            push(id, script, kind, command);
+        let kind = if segments.iter().any(|s| NEVER_FINISHES.contains(&s.as_str())) {
+            TaskKind::Run
+        } else {
+            suites += 1;
+            TaskKind::Test
+        };
+        // `node.test` for the plain script, so a `tasks.json` entry written
+        // against it keeps overriding the same task it always did.
+        push(format!("node.{script}"), script, kind, manager.run(script));
+    }
+    if suites == 0 {
+        if let Some(command) = facts
+            .workspace_root
+            .then(|| manager.run_in_every_member("test", facts.yarn_is_berry))
+            .flatten()
+        {
+            push("node.test".to_string(), "test", TaskKind::Test, command);
         }
+    }
+
+    for script in NPM_CHECK_SCRIPTS.into_iter().filter(|s| has(s)) {
+        push(
+            format!("node.{script}"),
+            script,
+            TaskKind::Check,
+            manager.run(script),
+        );
     }
 }
 
@@ -201,6 +273,20 @@ fn detect_from(facts: &FolderFacts) -> Vec<TaskDef> {
             "cargo test",
             TaskKind::Test,
             "cargo test".into(),
+        ));
+        // Both ship with the toolchain and both only report: `--check` is what
+        // keeps rustfmt from rewriting the tree it is judging.
+        tasks.push(TaskDef::new(
+            "cargo.clippy",
+            "cargo clippy",
+            TaskKind::Check,
+            "cargo clippy --all-targets".into(),
+        ));
+        tasks.push(TaskDef::new(
+            "cargo.fmt",
+            "cargo fmt --check",
+            TaskKind::Check,
+            "cargo fmt --check".into(),
         ));
     }
     if facts.has_go_mod {
@@ -552,10 +638,105 @@ mod tests {
         assert_eq!(command_of(&tasks, "node.test"), "npm test");
     }
 
+    /// Ids and commands of every task of one kind, in the order detected.
+    fn of_kind(tasks: &[super::TaskDef], kind: TaskKind) -> Vec<(&str, &str)> {
+        tasks
+            .iter()
+            .filter(|task| task.kind == kind)
+            .map(|task| (task.id.as_str(), task.command.as_str()))
+            .collect()
+    }
+
     #[test]
-    fn a_script_that_does_not_exist_yields_no_task() {
-        let tasks = detect_from(&facts_with_scripts(&["lint"]));
-        assert!(tasks.is_empty());
+    fn every_test_script_is_a_suite_of_its_own() {
+        // The hole this closes: a repository that keeps its unit tests apart from
+        // its end-to-end tests has two suites, and running one of them measures
+        // half the project while claiming to have measured the project.
+        let tasks = detect_from(&facts_with_scripts(&["test", "test:e2e", "e2e"]));
+        assert_eq!(
+            of_kind(&tasks, TaskKind::Test),
+            vec![
+                ("node.test", "npm test"),
+                ("node.test:e2e", "npm run test:e2e"),
+                ("node.e2e", "npm run e2e"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_suite_that_never_finishes_is_offered_to_start_rather_than_to_measure() {
+        // `jest --watch`, `vitest --ui` and `node --inspect-brk` all sit there
+        // until stopped. Worth starting by hand, never worth waiting on: a gate
+        // that ran one would spend its whole timeout learning nothing.
+        let tasks = detect_from(&facts_with_scripts(&[
+            "test",
+            "test:watch",
+            "test:ui",
+            "test:debug",
+        ]));
+        assert_eq!(of_kind(&tasks, TaskKind::Test), vec![("node.test", "npm test")]);
+        let watchers: Vec<&str> = of_kind(&tasks, TaskKind::Run)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(
+            watchers,
+            vec!["node.test:watch", "node.test:ui", "node.test:debug"]
+        );
+    }
+
+    #[test]
+    fn a_build_configured_for_test_is_not_a_suite() {
+        // Measured on this machine: `build:test` is `ng build --configuration=test`.
+        // The first segment is what says which of the two a script is, and
+        // `nodejs-tests` says nothing either way - so nothing is claimed about it.
+        let tasks = detect_from(&facts_with_scripts(&["build:test", "pretest", "nodejs-tests"]));
+        assert!(of_kind(&tasks, TaskKind::Test).is_empty(), "{tasks:?}");
+    }
+
+    #[test]
+    fn only_the_checks_that_do_not_rewrite_the_code_are_offered() {
+        // `format` is `prettier --write` in this very repository, and `lint:fix`
+        // says what it does in its name. A gate that reformats the code it is
+        // judging turns every verdict into a verdict about its own edit.
+        let tasks = detect_from(&facts_with_scripts(&[
+            "check",
+            "lint",
+            "lint:fix",
+            "format",
+            "type-check",
+            "format:check",
+        ]));
+        assert_eq!(
+            of_kind(&tasks, TaskKind::Check),
+            vec![
+                ("node.check", "npm run check"),
+                ("node.lint", "npm run lint"),
+                ("node.type-check", "npm run type-check"),
+                ("node.format:check", "npm run format:check"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cargo_project_is_checked_by_the_two_tools_it_ships_with() {
+        let tasks = detect_from(&FolderFacts {
+            has_cargo: true,
+            ..FolderFacts::default()
+        });
+        assert_eq!(
+            of_kind(&tasks, TaskKind::Check),
+            vec![
+                ("cargo.clippy", "cargo clippy --all-targets"),
+                ("cargo.fmt", "cargo fmt --check"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_script_aime_knows_nothing_about_yields_no_task() {
+        let tasks = detect_from(&facts_with_scripts(&["docs", "release-notes"]));
+        assert!(tasks.is_empty(), "{tasks:?}");
     }
 
     #[test]
@@ -728,7 +909,8 @@ mod tests {
         });
         let kinds: Vec<TaskKind> = tasks.iter().map(|t| t.kind).collect();
         assert!(kinds.windows(2).all(|pair| pair[0] <= pair[1]), "grouped by kind");
-        assert_eq!(tasks.len(), 6);
+        // Three per stack, plus the two checks cargo ships with.
+        assert_eq!(tasks.len(), 8, "{tasks:?}");
     }
 
     #[test]

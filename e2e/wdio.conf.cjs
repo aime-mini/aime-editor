@@ -182,7 +182,11 @@ exports.config = {
   // for up to 180 s around `dotnet build`, and the Java one boots the real JDT
   // LS twice (verify, then run). 90 s used to cap both from above, which made
   // those longer inner waits dead letters.
-  mochaOpts: { ui: "bdd", timeout: 240_000 },
+  // Four minutes was enough while a Task Run was eight phases; it is not enough
+  // now that one drives ten, each with a real suite, a real linter, a repair
+  // loop and a delivery gate behind it. Measured: the repair test spends about
+  // five minutes when the machine is busy.
+  mochaOpts: { ui: "bdd", timeout: 600_000 },
 
   onPrepare: () => {
     if (!fs.existsSync(nativeDriver)) {

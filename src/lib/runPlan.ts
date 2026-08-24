@@ -13,7 +13,16 @@
  */
 
 export type PhaseId =
-  "baseline" | "understand" | "locate" | "plan" | "implement" | "regression" | "repair" | "review" | "report";
+  | "baseline"
+  | "understand"
+  | "design"
+  | "tests"
+  | "implement"
+  | "verify"
+  | "review"
+  | "polish"
+  | "deliver"
+  | "report";
 
 /** Who does the work of a phase, which decides what it is allowed to touch. */
 export type PhaseWorker =
@@ -34,29 +43,52 @@ export interface Phase {
 /**
  * The phases in order.
  *
- * `understand` and `locate` are early because a run that misread the ticket or
- * missed half the callers is wrong in a way no amount of later checking
- * recovers — and stopping there costs a minute instead of an hour.
+ * The shape of it: **understand what is asked and the ground it stands on,
+ * decide how and what proof looks like, get it confirmed, then write — and prove
+ * every claim with something that is not the author.**
  *
- * `regression` right after `implement` is what makes a run safe to walk away
- * from - and `repair` right after *that* is what makes walking away worth
- * anything. A run that downed tools at the first broken test would hand back an
- * unfinished job far more often than a finished one, so every gate here tries
- * again before it refuses, and refusing is the last resort rather than the
- * first answer.
+ * There are ten of them because a phase is a *gate*, not a chapter heading:
+ * splitting one question into three costs three model calls and buys nothing a
+ * reader can act on. So `understand` reads the ticket and the code together —
+ * the ground a change stands on is part of understanding it — and `design`
+ * settles the approach, the test cases and the plan in one answer, which is the
+ * page the reader is asked to agree to. Anything a person could not redirect on
+ * its own is not worth stopping for.
+ *
+ * `tests` stays separate so red-then-green can be *measured*: the tests go in
+ * first and the suites must get worse, because a test that passes before the
+ * code exists is testing nothing. `implement` then has to turn that red green.
+ *
+ * The rest are what make walking away rational. `verify` is the one that
+ * cannot be argued with: the project's own checks and every suite it declares,
+ * measured against the baseline, with what this change broke fixed and measured
+ * again until it holds. `review` is a reader with a clean context, `polish` acts
+ * on what it found, `deliver` builds, deploys and proves every case against the
+ * running software, and `report` is what a person comes back to. A run that
+ * downed tools at the first red gate would hand back homework, so every gate
+ * here tries again before it refuses, and refusing is the last resort.
  */
 export const PHASES: Phase[] = [
   { id: "baseline", worker: "tools", blocking: true },
   { id: "understand", worker: "reader", blocking: true },
-  { id: "locate", worker: "reader", blocking: false },
-  { id: "plan", worker: "reader", blocking: true },
+  { id: "design", worker: "reader", blocking: true },
+  { id: "tests", worker: "writer", blocking: true },
   { id: "implement", worker: "writer", blocking: true },
-  // Detecting a regression is not the same as giving up on it. This phase only
-  // measures; `repair` is what does something about what it found, and is
-  // therefore the one that can stop the run.
-  { id: "regression", worker: "tools", blocking: false },
-  { id: "repair", worker: "writer", blocking: true },
+  // Measuring and mending are one phase, not three: finding a regression and
+  // then reporting it is what handing back homework looks like. Its own loops
+  // live inside - the checks are fixed until they pass, the suites until they
+  // are no worse than the baseline - and only what will not mend stops the run.
+  { id: "verify", worker: "writer", blocking: true },
   { id: "review", worker: "reader", blocking: false },
+  // A finding the polish phase could not fix is reported, not fatal: a reviewer
+  // is the one voice here that can be wrong, so it never gets to end the work.
+  { id: "polish", worker: "writer", blocking: false },
+  // "Done" means deployed and seen working, not green on a dev machine: the
+  // declared builds run, the software is deployed the way this project deploys,
+  // and every agreed case is proved against the running thing - with artifacts
+  // on disk, because Aime checks files, not claims. Last of the writers so that
+  // what gets deployed is the polished code, not a draft of it.
+  { id: "deliver", worker: "writer", blocking: true },
   { id: "report", worker: "tools", blocking: false },
 ];
 

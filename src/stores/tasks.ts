@@ -7,7 +7,13 @@ import { useLayout } from "./layout";
 import { useTerminals } from "./terminals";
 import { useWorkspace } from "./workspace";
 
-export type TaskKind = "run" | "build" | "test" | "publish";
+/**
+ * Mirror of the Rust `TaskKind`. "check" is the project judging its own code -
+ * a linter, a type check, a formatter asked only to report - which a Task Run
+ * gates on separately from the tests, because the two fail for different
+ * reasons.
+ */
+export type TaskKind = "run" | "build" | "test" | "check" | "publish";
 
 /** Mirror of the Rust `TaskDef` (tasks/mod.rs). */
 export interface TaskDef {
