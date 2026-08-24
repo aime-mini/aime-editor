@@ -320,6 +320,9 @@ fn work_item_from(issue: &Value, conn: &Connection) -> Option<WorkItem> {
             })
         }),
         dimensions: dimensions_of(&key, fields),
+        // A Jira issue key carries its project, and every route is addressed by
+        // that key - there is nothing else to remember.
+        scope: None,
         id: key,
     })
 }
@@ -892,6 +895,7 @@ mod tests {
             display_id: None,
             parent: None,
             dimensions: Vec::new(),
+            scope: None,
         }
     }
 

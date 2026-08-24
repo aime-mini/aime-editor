@@ -220,6 +220,8 @@ fn work_item_from(task: &Value) -> Option<WorkItem> {
                 })
             })
             .collect(),
+        // One connection is one ClickUp workspace: nothing narrower to remember.
+        scope: None,
         // A workspace with custom task ids on reads and says `DEV-123`; the API
         // still only answers to the internal id, so both travel.
         display_id: task
@@ -636,6 +638,7 @@ mod tests {
             display_id: None,
             parent: None,
             dimensions: Vec::new(),
+            scope: None,
         }
     }
 

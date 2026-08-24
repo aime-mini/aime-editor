@@ -67,6 +67,13 @@ export interface WorkItem {
    * way of organizing costs nothing here.
    */
   dimensions: Fact[];
+  /**
+   * Where inside the connection this item lives, when the connection covers more
+   * than one place - an Azure DevOps connection may hold several projects.
+   * Opaque here on purpose: the panel only ever hands it back, and the connector
+   * is the only thing that knows what it means.
+   */
+  scope?: string;
 }
 
 export interface StateOption {

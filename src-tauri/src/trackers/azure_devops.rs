@@ -63,13 +63,19 @@ const BATCH_SIZE: usize = 200;
 /// test suite which plan - because in this service the backlog hierarchy *is* a
 /// parent link. `System.AreaPath` is what a board is: a team's board is the work
 /// under its area path, which is also how Azure Boards itself decides.
-const LIST_FIELDS: [&str; 6] = [
+/// `System.TeamProject` and `System.ChangedDate` are what let one connection
+/// cover several projects: the first tells every later call which project the
+/// item lives in, the second puts the projects' separate answers back into one
+/// order the reader asked for.
+const LIST_FIELDS: [&str; 8] = [
     "System.Title",
     "System.State",
     "System.WorkItemType",
     "System.Parent",
     "System.AreaPath",
     "System.IterationPath",
+    "System.TeamProject",
+    "System.ChangedDate",
 ];
 
 /// Facts worth reading beside an opened item, with the label each carries in the
@@ -99,8 +105,11 @@ const CONNECT_FIELDS: [ConnectionField; 4] = [
         optional: false,
     },
     ConnectionField {
+        // Several, separated by commas: one credential opens every project of an
+        // organization, and a person who works across three of them should type
+        // the token once rather than keep three connections in step.
         name: "project",
-        placeholder: "Contoso Web",
+        placeholder: "Contoso Web, Contoso Api",
         optional: false,
     },
     ConnectionField {
@@ -116,6 +125,64 @@ const CONNECT_FIELDS: [ConnectionField; 4] = [
         optional: true,
     },
 ];
+
+/// How many projects one connection will walk.
+///
+/// Every project costs its own process template, its own query and its own
+/// batches, and a person cannot read thirty boards at once anyway. The cap is
+/// announced rather than silent: `projects_of` reports what it dropped.
+const MAX_PROJECTS: usize = 10;
+
+/// The project names in a settings map, as typed, with the empties dropped.
+/// Used before a `Connection` exists - naming and identifying a connection
+/// happens while the connect form is still open.
+fn named_projects(settings: &Settings) -> Vec<String> {
+    settings
+        .get("project")
+        .map_or("", String::as_str)
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The projects this connection covers, in the order they were typed.
+///
+/// One field holding a list rather than a repeatable one, because that is the
+/// shape the connect form has - and because the common case is still one name,
+/// which types the same as it always did.
+fn projects_of(conn: &Connection) -> Result<Vec<String>, TrackerError> {
+    let named: Vec<String> = conn
+        .required("project")?
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect();
+    if named.is_empty() {
+        return Err(TrackerError::Config("'project' is missing".into()));
+    }
+    if named.len() > MAX_PROJECTS {
+        return Err(TrackerError::Config(format!(
+            "{} projects were named; this connection reads at most {MAX_PROJECTS}",
+            named.len()
+        )));
+    }
+    Ok(named)
+}
+
+/// The project one item lives in: the one it came back from, or - for an item
+/// stored before a connection grew a second project - the first one named.
+fn project_of(conn: &Connection, item: &WorkItem) -> Result<String, TrackerError> {
+    match item.scope.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(project) => Ok(project.to_string()),
+        None => projects_of(conn)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| TrackerError::Config("'project' is missing".into())),
+    }
+}
 
 // ---------------------------------------------------------------- HTTP
 
@@ -179,12 +246,11 @@ fn organization_is_in_host(url: &Url, organization: &str) -> bool {
 }
 
 /// Where a person opens one work item in their browser.
-fn web_url(conn: &Connection, item_id: &str) -> Result<String, TrackerError> {
+fn web_url(conn: &Connection, project: &str, item_id: &str) -> Result<String, TrackerError> {
     let mut url = collection_url(conn)?;
-    let project = conn.required("project")?.to_string();
     url.path_segments_mut()
         .map_err(|()| TrackerError::Config("the server URL cannot hold a path".into()))?
-        .extend([project.as_str(), "_workitems", "edit", item_id]);
+        .extend([project, "_workitems", "edit", item_id]);
     Ok(url.to_string())
 }
 
@@ -417,7 +483,16 @@ fn wiql(finished_states: &[&str], asked: WorkItemQuery, board: Option<&str>) -> 
 /// One work item as the UI knows it, or nothing when the service returned a
 /// stub instead (the `omit` error policy does that for an item this token may
 /// not read).
-fn work_item_from(item: &Value, vocabulary: &Vocabulary, conn: &Connection) -> Option<WorkItem> {
+///
+/// `across_projects` is what decides whether the project is worth showing: on a
+/// connection covering one project it is the same word on every row, and a
+/// dimension that never varies is a column of noise.
+fn work_item_from(
+    item: &Value,
+    vocabulary: &Vocabulary,
+    conn: &Connection,
+    across_projects: bool,
+) -> Option<WorkItem> {
     let id = item.get("id").and_then(Value::as_i64)?.to_string();
     let fields = item.get("fields")?;
     let text = |name: &str| {
@@ -430,9 +505,19 @@ fn work_item_from(item: &Value, vocabulary: &Vocabulary, conn: &Connection) -> O
 
     let item_type = text("System.WorkItemType");
     let state = text("System.State");
+    // Every batch asks for this field, so the service always names it. The
+    // fallback is for an item that reached here another way, and it keeps a
+    // broken URL - `contoso//_workitems/edit/42` - out of the panel.
+    let project = match text("System.TeamProject") {
+        named if !named.is_empty() => named,
+        _ => projects_of(conn)
+            .ok()
+            .and_then(|named| named.into_iter().next())
+            .unwrap_or_default(),
+    };
     Some(WorkItem {
         category: vocabulary.category(&item_type, &state),
-        web_url: web_url(conn, &id).ok()?,
+        web_url: web_url(conn, &project, &id).ok()?,
         // Addressed by the same id it is read by.
         display_id: None,
         id,
@@ -448,21 +533,50 @@ fn work_item_from(item: &Value, vocabulary: &Vocabulary, conn: &Connection) -> O
                 id: parent.to_string(),
                 title: String::new(),
             }),
-        dimensions: dimensions_of(&text("System.AreaPath"), &text("System.IterationPath")),
+        dimensions: dimensions_of(
+            &text("System.AreaPath"),
+            &text("System.IterationPath"),
+            across_projects.then_some(project.as_str()),
+        ),
+        // Every later call about this item - its states, its comments, its
+        // update - goes to the project it is actually in, which is not
+        // necessarily the first one the connection names.
+        scope: (!project.is_empty()).then_some(project),
     })
+}
+
+/// When the service last touched an item, exactly as it reports it.
+///
+/// ISO-8601 UTC, which sorts as text - so merging several projects' answers back
+/// into one order needs no date parsing and no clock of its own.
+fn changed_date_of(item: &Value) -> String {
+    item.get("fields")
+        .and_then(|fields| fields.get("System.ChangedDate"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// How this service files work: a team's board is an area path, a sprint is an
 /// iteration. Both are paths, and what people say out loud is the last segment.
-fn dimensions_of(area_path: &str, iteration_path: &str) -> Vec<Fact> {
-    [("Board", area_path), ("Sprint", iteration_path)]
+///
+/// The project is passed already decided rather than as a flag, because it is
+/// filed differently from the other two: it is a name, not a path, so `leaf`
+/// would cut a project genuinely called `Contoso\Web` down to its last segment.
+fn dimensions_of(area_path: &str, iteration_path: &str, project: Option<&str>) -> Vec<Fact> {
+    let named = |label: &str, value: &str| Fact {
+        label: label.to_string(),
+        value: value.to_string(),
+    };
+    project
+        .filter(|name| !name.is_empty())
+        .map(|name| named("Project", name))
         .into_iter()
-        .filter_map(|(label, path)| {
-            Some(Fact {
-                label: label.into(),
-                value: leaf(path)?,
-            })
-        })
+        .chain(
+            [("Board", area_path), ("Sprint", iteration_path)]
+                .into_iter()
+                .filter_map(|(label, path)| Some(named(label, &leaf(path)?))),
+        )
         .collect()
 }
 
@@ -570,62 +684,91 @@ impl Connector for AzureDevOps {
         "https://dev.azure.com/{organization}/_usersSettings/tokens"
     }
 
+    /// The same set of projects is the same connection however it was typed, so
+    /// the id sorts them and the case is dropped - reordering the field must not
+    /// fork a second connection with a second copy of the token. A connection
+    /// naming one project keeps exactly the id it always had.
     fn connection_id(&self, settings: &Settings) -> String {
-        let value = |name: &str| {
+        let mut projects = named_projects(settings);
+        projects.sort_by_key(|name| name.to_lowercase());
+        format!(
+            "azure-devops:{}/{}",
             settings
-                .get(name)
+                .get("organization")
                 .map_or("", String::as_str)
                 .trim()
-                .to_lowercase()
-        };
-        format!("azure-devops:{}/{}", value("organization"), value("project"))
+                .to_lowercase(),
+            projects.join(",").to_lowercase()
+        )
     }
 
     fn connection_label(&self, settings: &Settings) -> String {
-        let value = |name: &str| settings.get(name).map_or("", String::as_str).trim().to_string();
-        format!("{} / {}", value("organization"), value("project"))
+        format!(
+            "{} / {}",
+            settings.get("organization").map_or("", String::as_str).trim(),
+            named_projects(settings).join(", ")
+        )
     }
 
+    /// Every project this connection names, read in turn and merged.
+    ///
+    /// One project at a time and never at the organization's level, because the
+    /// service's own specification requires a project on every route this
+    /// connector calls - work items, batch, types, states, WIQL alike. Reading
+    /// each and merging is a few more requests; inventing an organization-wide
+    /// route the vendor does not document would be a connector that works until
+    /// somebody tries it.
     async fn work_items(
         &self,
         conn: &Connection,
         query: WorkItemQuery,
     ) -> Result<Vec<WorkItem>, TrackerError> {
-        let vocabulary = self.vocabulary(conn).await?;
-        let ids = self.query_ids(conn, &vocabulary, query).await?;
+        let projects = projects_of(conn)?;
+        let across_projects = projects.len() > 1;
 
-        // The query answers with ids only; the fields come in batches of 200,
-        // walked until the cap is reached.
-        let mut by_id: BTreeMap<String, WorkItem> = BTreeMap::new();
-        for chunk in ids.chunks(BATCH_SIZE) {
-            let body = call(
-                conn,
-                Method::POST,
-                api_url(
+        let mut found: Vec<(String, WorkItem)> = Vec::new();
+        for project in &projects {
+            let vocabulary = self.vocabulary(conn, project).await?;
+            let ids = self.query_ids(conn, project, &vocabulary, query).await?;
+
+            // The query answers with ids only; the fields come in batches of 200,
+            // walked until the cap is reached.
+            let mut by_id: BTreeMap<String, (String, WorkItem)> = BTreeMap::new();
+            for chunk in ids.chunks(BATCH_SIZE) {
+                let body = call(
                     conn,
-                    &[conn.required("project")?, "_apis", "wit", "workitemsbatch"],
-                )?,
-                Payload::Json(json!({
-                    "ids": chunk,
-                    "fields": LIST_FIELDS,
-                    // One item this token may not read must not cost the whole list.
-                    "errorPolicy": "omit",
-                })),
-            )
-            .await?;
-            by_id.extend(
-                values(body)
-                    .iter()
-                    .filter_map(|item| work_item_from(item, &vocabulary, conn))
-                    .map(|item| (item.id.clone(), item)),
-            );
+                    Method::POST,
+                    api_url(conn, &[project, "_apis", "wit", "workitemsbatch"])?,
+                    Payload::Json(json!({
+                        "ids": chunk,
+                        "fields": LIST_FIELDS,
+                        // One item this token may not read must not cost the whole list.
+                        "errorPolicy": "omit",
+                    })),
+                )
+                .await?;
+                by_id.extend(values(body).iter().filter_map(|item| {
+                    let changed = changed_date_of(item);
+                    let work_item = work_item_from(item, &vocabulary, conn, across_projects)?;
+                    Some((work_item.id.clone(), (changed, work_item)))
+                }));
+            }
+
+            // The batches answer in their own order; the query's order is the one
+            // the user asked for, so the items are put back into it.
+            found.extend(ids.iter().filter_map(|id| by_id.remove(&id.to_string())));
         }
 
-        // The batches answer in their own order; the query's order is the one the
-        // user asked for, so the items are put back into it.
-        let mut items: Vec<WorkItem> = ids
-            .iter()
-            .filter_map(|id| by_id.remove(&id.to_string()))
+        // Each project answered most-recently-touched first; merging them keeps
+        // that promise only if the merge sorts, and the cap then means "the most
+        // recent this many across the whole connection".
+        if across_projects {
+            found.sort_by(|(left, _), (right, _)| right.cmp(left));
+        }
+        let mut items: Vec<WorkItem> = found
+            .into_iter()
+            .take(MAX_WORK_ITEMS)
+            .map(|(_, item)| item)
             .collect();
         self.name_the_parents(conn, &mut items).await?;
         Ok(items)
@@ -636,7 +779,8 @@ impl Connector for AzureDevOps {
     /// was already showing, which is what made the first click on a real
     /// organization take seconds.
     async fn item_detail(&self, conn: &Connection, item: &WorkItem) -> Result<WorkItemDetail, TrackerError> {
-        let fetched = call(conn, Method::GET, self.item_url(conn, &item.id)?, Payload::Empty).await?;
+        let url = self.item_url(conn, &project_of(conn, item)?, &item.id)?;
+        let fetched = call(conn, Method::GET, url, Payload::Empty).await?;
         Ok(WorkItemDetail {
             description: description_of(&fetched),
             facts: facts_of(&fetched),
@@ -649,7 +793,7 @@ impl Connector for AzureDevOps {
         let url = api_url(
             conn,
             &[
-                conn.required("project")?,
+                &project_of(conn, item)?,
                 "_apis",
                 "wit",
                 "workitemtypes",
@@ -691,16 +835,19 @@ impl Connector for AzureDevOps {
         item: &WorkItem,
         state: &str,
     ) -> Result<WorkItem, TrackerError> {
-        let vocabulary = self.vocabulary(conn).await?;
+        let vocabulary = self.vocabulary(conn, &project_of(conn, item)?).await?;
         let patch = json!([{ "op": "add", "path": "/fields/System.State", "value": state }]);
         let updated = call(
             conn,
             Method::PATCH,
-            self.item_url(conn, &item.id)?,
+            self.item_url(conn, &project_of(conn, item)?, &item.id)?,
             Payload::JsonPatch(patch),
         )
         .await?;
-        work_item_from(&updated, &vocabulary, conn).ok_or_else(|| TrackerError::Api {
+        // The row that comes back replaces the one on screen, so it must be
+        // dressed the same way: a Project dimension appears only where it varies.
+        let across_projects = projects_of(conn)?.len() > 1;
+        work_item_from(&updated, &vocabulary, conn, across_projects).ok_or_else(|| TrackerError::Api {
             status: 200,
             message: format!("work item {} came back without its fields", item.id),
         })
@@ -774,21 +921,14 @@ impl AzureDevOps {
     /// This is how Azure Boards itself decides what belongs on a board, which is
     /// why the panel asks the same question rather than inventing a filter: the
     /// team says which field and which values, and whether children count.
-    async fn team_scope(&self, conn: &Connection) -> Result<Option<String>, TrackerError> {
+    async fn team_scope(&self, conn: &Connection, project: &str) -> Result<Option<String>, TrackerError> {
         let team = conn.setting("team").trim().to_string();
         if team.is_empty() {
             return Ok(None);
         }
         let url = api_url(
             conn,
-            &[
-                conn.required("project")?,
-                &team,
-                "_apis",
-                "work",
-                "teamsettings",
-                "teamfieldvalues",
-            ],
+            &[project, &team, "_apis", "work", "teamsettings", "teamfieldvalues"],
         )?;
         let body = call(conn, Method::GET, url, Payload::Empty).await?;
 
@@ -815,14 +955,13 @@ impl AzureDevOps {
         Ok((!clauses.is_empty()).then(|| format!("({})", clauses.join(" OR "))))
     }
 
-    /// Every state this project defines, asked for on every refresh rather than
+    /// Every state one project defines, asked for on every refresh rather than
     /// cached: it is one request, and a cache here would answer with yesterday's
-    /// process template after somebody edits it.
-    async fn vocabulary(&self, conn: &Connection) -> Result<Vocabulary, TrackerError> {
-        let url = api_url(
-            conn,
-            &[conn.required("project")?, "_apis", "wit", "workitemtypes"],
-        )?;
+    /// process template after somebody edits it. Per project, because the process
+    /// template is the project's - two projects of one organization routinely
+    /// disagree about what "Done" is called.
+    async fn vocabulary(&self, conn: &Connection, project: &str) -> Result<Vocabulary, TrackerError> {
+        let url = api_url(conn, &[project, "_apis", "wit", "workitemtypes"])?;
         Ok(Vocabulary::from_types(values(
             call(conn, Method::GET, url, Payload::Empty).await?,
         )))
@@ -832,13 +971,14 @@ impl AzureDevOps {
     async fn query_ids(
         &self,
         conn: &Connection,
+        project: &str,
         vocabulary: &Vocabulary,
         asked: WorkItemQuery,
     ) -> Result<Vec<i64>, TrackerError> {
-        let mut url = api_url(conn, &[conn.required("project")?, "_apis", "wit", "wiql"])?;
+        let mut url = api_url(conn, &[project, "_apis", "wit", "wiql"])?;
         url.query_pairs_mut()
             .append_pair("$top", &MAX_WORK_ITEMS.to_string());
-        let board = self.team_scope(conn).await?;
+        let board = self.team_scope(conn, project).await?;
         let query = wiql(&vocabulary.finished_states(), asked, board.as_deref());
         let body = call(conn, Method::POST, url, Payload::Json(json!({ "query": query }))).await?;
         Ok(values(body.get("workItems").cloned().unwrap_or(Value::Null))
@@ -859,7 +999,7 @@ impl AzureDevOps {
         api_url_at(
             conn,
             &[
-                conn.required("project")?,
+                &project_of(conn, item)?,
                 "_apis",
                 "wit",
                 "workItems",
@@ -872,20 +1012,11 @@ impl AzureDevOps {
 
     /// One item's REST URL. The id is parsed first: it arrives from the
     /// frontend, and Azure DevOps ids are numbers.
-    fn item_url(&self, conn: &Connection, item_id: &str) -> Result<Url, TrackerError> {
+    fn item_url(&self, conn: &Connection, project: &str, item_id: &str) -> Result<Url, TrackerError> {
         let id: u64 = item_id
             .parse()
             .map_err(|_| TrackerError::Config(format!("'{item_id}' is not a work item id")))?;
-        api_url(
-            conn,
-            &[
-                conn.required("project")?,
-                "_apis",
-                "wit",
-                "workitems",
-                &id.to_string(),
-            ],
-        )
+        api_url(conn, &[project, "_apis", "wit", "workitems", &id.to_string()])
     }
 }
 
@@ -920,6 +1051,7 @@ mod tests {
             web_url: String::new(),
             display_id: None,
             parent: None,
+            scope: None,
             dimensions: Vec::new(),
         }
     }
@@ -936,6 +1068,14 @@ mod tests {
             token: token.into(),
         }
     }
+    /// The same organization, read across two projects on one credential.
+    fn two_project_connection(service: &FakeService) -> Connection {
+        let mut conn = connection(service, "pat-1");
+        conn.settings
+            .insert("project".into(), " Contoso Web , Contoso Api ".into());
+        conn
+    }
+
     /// Two work item types, each with its own vocabulary - the Scrum-style
     /// "Committed" next to the Basic-style "Doing" - so nothing can pass by
     /// recognising Azure's default names.
@@ -952,16 +1092,25 @@ mod tests {
     /// The batch answers in its own order, and 7 comes back before 42.
     const BATCH: &str = r#"{"count":2,"value":[
         {"id":7,"fields":{"System.Title":"Second","System.State":"Doing",
+            "System.TeamProject":"Contoso Web",
             "System.WorkItemType":"Task","System.ChangedDate":"2026-08-17T09:00:00Z"}},
         {"id":42,"fields":{"System.Title":"First","System.State":"Committed",
+            "System.TeamProject":"Contoso Web",
             "System.WorkItemType":"Bug","System.ChangedDate":"2026-08-18T08:00:00Z",
             "System.AssignedTo":{"displayName":"Linh Pham","uniqueName":"linh@example.com"}}}]}"#;
+
+    /// The other project's single item, touched more recently than either of
+    /// those - so a merge that simply appends would put it last.
+    const API_BATCH: &str = r#"{"count":1,"value":[
+        {"id":9,"fields":{"System.Title":"Third","System.State":"Doing",
+            "System.TeamProject":"Contoso Api",
+            "System.WorkItemType":"Task","System.ChangedDate":"2026-08-19T10:00:00Z"}}]}"#;
 
     /// The same two items, filed on a board and in a sprint, and both sitting
     /// under something: 42 under a story outside the list, 7 under 42.
     const PARENTED_BATCH: &str = r#"{"count":2,"value":[
         {"id":42,"fields":{"System.Title":"First","System.State":"Committed",
-            "System.WorkItemType":"Bug","System.Parent":100,
+            "System.WorkItemType":"Bug","System.Parent":100,"System.TeamProject":"Contoso Web",
             "System.AreaPath":"Contoso Web\\Accounts",
             "System.IterationPath":"Contoso Web\\Sprint 24"}},
         {"id":7,"fields":{"System.Title":"Second","System.State":"Doing",
@@ -1453,11 +1602,173 @@ mod tests {
         };
 
         let error = AzureDevOps
-            .item_url(&conn, "42/../../_apis/wit/workitems/1")
+            .item_url(&conn, "web", "42/../../_apis/wit/workitems/1")
             .expect_err("an id from the frontend must not build its own path")
             .to_string();
         assert!(error.starts_with("TRACKER_CONFIG::"), "{error}");
-        assert!(AzureDevOps.item_url(&conn, "42").is_ok());
+        assert!(AzureDevOps.item_url(&conn, "web", "42").is_ok());
+    }
+
+    /// One credential, two projects. Every route this service documents takes a
+    /// project, so each is read on its own and the answers are merged - and the
+    /// merge is the part worth proving: each project answered
+    /// most-recently-touched first, and the reader asked for one such list.
+    #[tokio::test]
+    async fn one_connection_reads_several_projects_and_merges_them_by_recency() {
+        let service = FakeService::start(|request| {
+            let for_api = request.target.contains("Contoso%20Api");
+            if request.target.contains("workitemtypes") {
+                json_response(WORK_ITEM_TYPES)
+            } else if request.target.contains("wiql") {
+                json_response(if for_api {
+                    r#"{"queryType":"flat","workItems":[{"id":9}]}"#
+                } else {
+                    r#"{"queryType":"flat","workItems":[{"id":7},{"id":42}]}"#
+                })
+            } else if request.target.contains("workitemsbatch") {
+                json_response(if for_api { API_BATCH } else { BATCH })
+            } else {
+                json_response("{}")
+            }
+        });
+
+        let items = AzureDevOps
+            .work_items(&two_project_connection(&service), MINE)
+            .await
+            .expect("the list");
+
+        let asked: Vec<String> = service
+            .requests()
+            .iter()
+            .filter(|seen| seen.target.contains("wiql"))
+            .map(|seen| seen.target.clone())
+            .collect();
+        assert_eq!(asked.len(), 2, "each project is queried on its own: {asked:?}");
+        assert!(
+            asked.iter().any(|target| target.contains("Contoso%20Api")),
+            "the second project must be asked for by name: {asked:?}"
+        );
+
+        // 9 was touched on the 19th, 42 on the 18th, 7 on the 17th - and the two
+        // projects each answered in their own order.
+        assert_eq!(
+            items.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            vec!["9", "42", "7"],
+            "the merged list must be in the order the reader asked for"
+        );
+
+        let across = items.iter().find(|item| item.id == "9").expect("the Api item");
+        assert_eq!(
+            across.scope.as_deref(),
+            Some("Contoso Api"),
+            "an item must carry the project every later call about it goes to"
+        );
+        assert!(
+            across.web_url.contains("Contoso%20Api"),
+            "and open in its own project: {}",
+            across.web_url
+        );
+        assert!(
+            across
+                .dimensions
+                .iter()
+                .any(|fact| fact.label == "Project" && fact.value == "Contoso Api"),
+            "a connection covering several projects must let the panel group by them"
+        );
+        assert!(
+            items
+                .iter()
+                .all(|item| item.dimensions.iter().any(|fact| fact.label == "Project")),
+            "every row, not only the ones from the second project"
+        );
+    }
+
+    /// The set of projects is the connection, however it was typed: a person who
+    /// reorders the field is not asking for a second connection with a second
+    /// copy of their token. And a connection naming one project keeps the id it
+    /// has always had, so nobody's existing board comes back unlinked.
+    #[test]
+    fn the_same_projects_are_the_same_connection_whatever_order_they_were_typed_in() {
+        let id = |projects: &str| {
+            let mut settings = Settings::new();
+            settings.insert("organization".into(), "Contoso".into());
+            settings.insert("project".into(), projects.into());
+            AzureDevOps.connection_id(&settings)
+        };
+        assert_eq!(id("Contoso Web, Contoso Api"), id(" contoso api ,contoso web "));
+        assert_eq!(id("Web"), "azure-devops:contoso/web");
+
+        let mut settings = Settings::new();
+        settings.insert("organization".into(), "contoso".into());
+        settings.insert("project".into(), "Contoso Web,Contoso Api".into());
+        assert_eq!(
+            AzureDevOps.connection_label(&settings),
+            "contoso / Contoso Web, Contoso Api",
+            "the label reads in the order it was typed, whatever the id does"
+        );
+    }
+
+    /// Every project costs a process template, a query and its batches, so the
+    /// list is bounded - and refused out loud rather than quietly truncated.
+    #[test]
+    fn a_connection_says_so_rather_than_reading_half_the_projects_it_was_given() {
+        let mut settings = Settings::new();
+        settings.insert("organization".into(), "contoso".into());
+        settings.insert(
+            "project".into(),
+            (0..=MAX_PROJECTS)
+                .map(|n| format!("P{n}"))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        let conn = Connection {
+            settings,
+            token: "pat".into(),
+        };
+        let error = projects_of(&conn).expect_err("too many").to_string();
+        assert!(error.contains(&MAX_PROJECTS.to_string()), "{error}");
+
+        // The everyday case: one name, still one project, spaces and all.
+        let mut one = Settings::new();
+        one.insert("organization".into(), "contoso".into());
+        one.insert("project".into(), " Contoso Web ".into());
+        assert_eq!(
+            projects_of(&Connection {
+                settings: one,
+                token: "pat".into()
+            })
+            .expect("one project"),
+            vec!["Contoso Web".to_string()]
+        );
+    }
+
+    /// The same connector on one project must not grow a column that never
+    /// varies: a Project dimension repeating one word on every row is noise.
+    #[tokio::test]
+    async fn one_project_is_never_told_which_project_it_is() {
+        let service = FakeService::start(|request| {
+            if request.target.contains("workitemtypes") {
+                json_response(WORK_ITEM_TYPES)
+            } else if request.target.contains("wiql") {
+                json_response(r#"{"queryType":"flat","workItems":[{"id":42}]}"#)
+            } else if request.target.contains("workitemsbatch") {
+                json_response(BATCH)
+            } else {
+                json_response("{}")
+            }
+        });
+
+        let items = AzureDevOps
+            .work_items(&connection(&service, "pat-1"), MINE)
+            .await
+            .expect("the list");
+
+        assert!(
+            items[0].dimensions.iter().all(|fact| fact.label != "Project"),
+            "one project is not a dimension"
+        );
+        // It is still remembered, because that is what the item's own routes need.
+        assert_eq!(items[0].scope.as_deref(), Some("Contoso Web"));
     }
 
     /// A board's items are a tree, and the panel needs the names of the branches

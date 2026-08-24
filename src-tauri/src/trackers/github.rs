@@ -259,6 +259,9 @@ fn work_item_from(issue: &Value) -> Option<WorkItem> {
         .into_iter()
         .flatten()
         .collect(),
+        // The repository an issue belongs to already travels as a dimension and
+        // inside its own URL, so there is nothing extra to carry.
+        scope: None,
     })
 }
 
@@ -598,6 +601,7 @@ mod tests {
             web_url: String::new(),
             parent: None,
             dimensions: Vec::new(),
+            scope: None,
         }
     }
 

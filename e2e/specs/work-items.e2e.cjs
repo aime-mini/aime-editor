@@ -436,7 +436,9 @@ describe("Work items", () => {
 
   it("connects by querying the board, and only stores what worked", async () => {
     await (await $('input[placeholder="contoso"]')).setValue(ORGANIZATION);
-    await (await $('input[placeholder="Contoso Web"]')).setValue(PROJECT);
+    // Matched by prefix: the field takes a comma-separated list of projects, so
+    // its placeholder names two.
+    await (await $('input[placeholder^="Contoso Web"]')).setValue(PROJECT);
     await (await $('input[placeholder="https://dev.azure.com"]')).setValue(board.origin);
     await (await $('input[type="password"]')).setValue(TOKEN);
     // Enter finishes the form; the Connect button runs the same submit.

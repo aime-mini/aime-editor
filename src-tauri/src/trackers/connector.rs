@@ -134,6 +134,16 @@ pub struct WorkItem {
     /// and the panel groups by whichever of them the reader picks - so a new way
     /// of organizing costs a line in a connector and nothing in the UI.
     pub dimensions: Vec<Fact>,
+    /// Where inside the connection this item lives, for a connection that covers
+    /// more than one place - an Azure DevOps connection may hold several
+    /// projects, and every later call about the item goes to the project the
+    /// item is actually in.
+    ///
+    /// Opaque to the UI, which only ever hands it back. That is the whole point:
+    /// the alternative is a connector re-deriving the item's home from a label it
+    /// put in `dimensions`, which would break the moment somebody renamed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 /// A state an item can be moved to.
