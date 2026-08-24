@@ -374,6 +374,28 @@ describe("Workflows", () => {
     await waitForText("fix with ai", "a failed task offered no way forward");
   });
 
+  it("says on the tab itself that this repository has uncommitted files", async () => {
+    await open(repositoryWithANewFolder());
+    await waitForText("README.md", "the repository never opened");
+
+    // Read while the Explorer is the open tab, which is the whole point: until
+    // now the only way to learn there was anything waiting was to leave the tab
+    // you were on and look.
+    const git = await $('button[title="Git"]');
+    await browser.waitUntil(async () => (await git.getText()).trim() !== "", {
+      timeout: 30_000,
+      timeoutMsg: "the Git tab carried no badge for a repository with changes",
+    });
+    assert.equal(
+      (await git.getText()).trim(),
+      "3",
+      "the badge must count the files git listed - one modified, two untracked",
+    );
+    // A number is not a sentence; hovering it says which number this is.
+    const said = await (await git.$("span[title]")).getAttribute("title");
+    assert.match(said, /uncommitted/i, `the badge explains nothing on hover: ${said}`);
+  });
+
   it("lists every file a new folder brought, not the folder", async () => {
     await open(repositoryWithANewFolder());
     await waitForText("README.md", "the repository never opened");

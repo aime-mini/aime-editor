@@ -334,12 +334,15 @@ export const vi: Record<TranslationKey, string> = {
 
   "sidebar.files": "Cây file",
   "sidebar.git": "Git",
+  "sidebar.gitChanges": "{count} file chưa commit",
+  "sidebar.gitConflicts": "{count} file chưa commit, có file đang xung đột",
   "sidebar.debug": "Chạy và gỡ lỗi",
   "sidebar.workItems": "Công việc",
 
   "commit.files": "{count} file thay đổi",
   "commit.noFiles": "Commit này không đổi file nào.",
   "commit.binary": "File nhị phân - không có gì để đọc theo dòng.",
+  "commit.noPatch": "Git không báo thay đổi theo dòng nào cho file này trong commit này.",
   "commit.reading": "Đang đọc…",
   "commit.close": "Đóng",
   "run.title": "Lượt làm việc",

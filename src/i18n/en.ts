@@ -333,12 +333,15 @@ export const en = {
 
   "sidebar.files": "Explorer",
   "sidebar.git": "Git",
+  "sidebar.gitChanges": "{count} uncommitted file(s)",
+  "sidebar.gitConflicts": "{count} uncommitted file(s), some conflicted",
   "sidebar.debug": "Run and Debug",
   "sidebar.workItems": "Work items",
 
   "commit.files": "{count} file(s) changed",
   "commit.noFiles": "This commit changed no files.",
   "commit.binary": "A binary file - there is nothing to read line by line.",
+  "commit.noPatch": "Git reported no line-by-line change for this file in this commit.",
   "commit.reading": "Reading…",
   "commit.close": "Close",
   "run.title": "Task run",

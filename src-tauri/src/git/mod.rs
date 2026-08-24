@@ -556,8 +556,31 @@ pub async fn git_commit_detail(root: String, hash: String) -> Result<CommitDetai
     .map(without_bom)?;
     let fields: Vec<&str> = header.splitn(5, '\0').collect();
 
-    let counts = run_git(&root, &["show", "--format=", "--numstat", &hash]).await?;
-    let statuses = run_git(&root, &["show", "--format=", "--name-status", &hash]).await?;
+    // `-z` because a rename is otherwise unreadable (see `commit_files`), and
+    // `--first-parent` because a merge otherwise lists files whose patch git
+    // then refuses to print: measured 2026-08-23 against git 2.40, a merge
+    // answers `--numstat` with the files it brought in, `--name-status` with
+    // nothing at all, and `--patch` with nothing at all - a viewer showing rows
+    // that all open blank. Against the first parent all three agree, and "what
+    // this merge brought into this branch" is what the reader came for. A commit
+    // with one parent is unaffected: its first parent is its only one.
+    let counts = run_git(
+        &root,
+        &["show", "--format=", "--numstat", "-z", "--first-parent", &hash],
+    )
+    .await?;
+    let statuses = run_git(
+        &root,
+        &[
+            "show",
+            "--format=",
+            "--name-status",
+            "-z",
+            "--first-parent",
+            &hash,
+        ],
+    )
+    .await?;
 
     Ok(CommitDetail {
         hash: fields.first().unwrap_or(&"").trim().to_string(),
@@ -571,18 +594,42 @@ pub async fn git_commit_detail(root: String, hash: String) -> Result<CommitDetai
 
 /// Merges the two things git will only report separately: how many lines moved
 /// (`--numstat`) and what kind of change it was (`--name-status`).
+///
+/// Both are read in git's `-z` form, and that is not a tidiness choice. In the
+/// human form a rename is **one** field spelling `old => new` - and, when the
+/// two names share a folder, `src/{old => new}.ts` - which is a sentence, not a
+/// path. Reading it as a path is what made the commit viewer open a blank pane:
+/// the row was called `a.txt => renamed.txt`, git was asked for a file by that
+/// name, matched nothing, and printed nothing (measured 2026-08-23 against git
+/// 2.40 on a real rename). With `-z` the two names arrive as two fields and
+/// records are separated by NUL, so nothing has to be un-spelled.
 fn commit_files(counts: &str, statuses: &str) -> Vec<CommitFile> {
     let mut files: Vec<CommitFile> = Vec::new();
-    for line in counts.lines() {
-        let mut parts = line.split('\t');
+    let mut fields = counts.split('\0');
+    while let Some(record) = fields.next() {
+        if record.is_empty() {
+            continue;
+        }
+        let mut parts = record.split('\t');
         let (Some(added), Some(removed), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
             continue;
         };
-        // A rename is written `old\tnew` here, and the new name is what the
-        // reader opens.
-        let path = parts.next().unwrap_or(path);
+        // A rename leaves the path of this record empty and writes the old and
+        // the new name as the next two fields. The new one is what a reader
+        // opens: a list keyed on the old name would open nothing.
+        let (orig_path, path) = if path.is_empty() {
+            match (fields.next(), fields.next()) {
+                // An empty new name is a record git did not finish writing, and
+                // a row with no path is a row that opens nothing.
+                (Some(old), Some(new)) if !new.is_empty() => (Some(old.to_string()), new.to_string()),
+                _ => continue,
+            }
+        } else {
+            (None, path.to_string())
+        };
         files.push(CommitFile {
-            path: path.to_string(),
+            path,
+            orig_path,
             // Binary files are reported as `-` for both counts.
             binary: added == "-",
             added: added.parse().unwrap_or_default(),
@@ -591,30 +638,63 @@ fn commit_files(counts: &str, statuses: &str) -> Vec<CommitFile> {
         });
     }
 
-    for line in statuses.lines() {
-        let mut parts = line.split('\t');
-        let (Some(status), Some(first)) = (parts.next(), parts.next()) else {
+    let mut fields = statuses.split('\0');
+    while let Some(status) = fields.next() {
+        if status.is_empty() {
             continue;
+        }
+        // A rename or a copy carries both names; everything else carries one.
+        let renamed = status.starts_with('R') || status.starts_with('C');
+        let (Some(first), second) = (fields.next(), renamed.then(|| fields.next()).flatten()) else {
+            break;
         };
-        let renamed_to = parts.next();
-        let path = renamed_to.unwrap_or(first);
+        if renamed && second.is_none() {
+            break;
+        }
+        let path = second.unwrap_or(first);
         let Some(file) = files.iter_mut().find(|file| file.path == path) else {
             continue;
         };
         // `R100`, `C75`: the score is git's confidence, not something to show.
         file.status = status.chars().take(1).collect();
-        file.orig_path = renamed_to.map(|_| first.to_string());
+        if renamed {
+            file.orig_path = Some(first.to_string());
+        }
     }
     files
 }
 
 /// The patch of one file in one commit.
+///
+/// A renamed file is asked for under **both** names, because a pathspec naming
+/// only the new one leaves git unable to pair the two: it then prints the file
+/// as freshly added, every line of it, instead of the two lines that say it
+/// moved. With both names it prints `similarity index 100% / rename from … /
+/// rename to …`, which is what happened (measured 2026-08-23, git 2.40).
+///
+/// `--first-parent` for the reason `git_commit_detail` gives: without it a merge
+/// prints no patch at all.
 #[tauri::command]
-pub async fn git_show_commit_file(root: String, hash: String, path: String) -> Result<String, String> {
+pub async fn git_show_commit_file(
+    root: String,
+    hash: String,
+    path: String,
+    orig_path: Option<String>,
+) -> Result<String, String> {
     // `--` keeps a path that looks like a revision from being read as one.
-    run_git(&root, &["show", "--format=", "--patch", &hash, "--", &path])
-        .await
-        .map(without_bom)
+    let mut args = vec![
+        "show",
+        "--format=",
+        "--patch",
+        "--first-parent",
+        &hash,
+        "--",
+        &path,
+    ];
+    if let Some(orig) = orig_path.as_deref() {
+        args.push(orig);
+    }
+    run_git(&root, &args).await.map(without_bom)
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -1037,18 +1117,11 @@ mod tests {
 
     #[test]
     fn a_commit_s_files_carry_both_what_changed_and_how_much() {
-        // Real `git show` output: numstat says how many lines, name-status says
-        // what kind of change, and neither one alone is enough for the list.
-        let counts = "3	1	src/cart.ts
-0	40	src/old.ts
-9	0	src/new.ts
--	-	logo.png
-";
-        let statuses = "M	src/cart.ts
-D	src/old.ts
-A	src/new.ts
-M	logo.png
-";
+        // Real `git show -z` output: NUL after every record, numstat says how
+        // many lines, name-status says what kind of change, and neither one
+        // alone is enough for the list.
+        let counts = "3\t1\tsrc/cart.ts\x000\t40\tsrc/old.ts\x009\t0\tsrc/new.ts\0-\t-\tlogo.png\0";
+        let statuses = "M\0src/cart.ts\0D\0src/old.ts\0A\0src/new.ts\0M\0logo.png\0";
         let files = commit_files(counts, statuses);
 
         assert_eq!(files.len(), 4);
@@ -1064,12 +1137,14 @@ M	logo.png
 
     #[test]
     fn a_rename_is_listed_under_its_new_name_and_remembers_the_old_one() {
-        // Both commands spell a rename with two paths, and the reader opens the
-        // new one - a list keyed on the old name would open nothing.
-        let counts = "2	2	src/old-name.ts	src/new-name.ts
-";
-        let statuses = "R096	src/old-name.ts	src/new-name.ts
-";
+        // Captured from `git show --numstat -z` and `--name-status -z` on a real
+        // rename (git 2.40): the counts record ends at its second tab and the
+        // two names follow as fields of their own. Written from the bytes git
+        // produced rather than from what the format looks like it should be -
+        // the fixture this replaces was the second kind, and the viewer opened
+        // a blank pane for every renamed file because of it.
+        let counts = "2\t2\t\0src/old-name.ts\0src/new-name.ts\0";
+        let statuses = "R096\0src/old-name.ts\0src/new-name.ts\0";
         let files = commit_files(counts, statuses);
 
         assert_eq!(files.len(), 1);
@@ -1077,6 +1152,25 @@ M	logo.png
         assert_eq!(files[0].orig_path.as_deref(), Some("src/old-name.ts"));
         // The similarity score is git's confidence, not something to show.
         assert_eq!(files[0].status, "R");
+        // The bug itself: git's human format spells a rename `old => new`, and a
+        // row carrying that sentence is a row git can find no file for.
+        assert!(
+            !files[0].path.contains("=>"),
+            "a path must be a path, not a sentence about one: {}",
+            files[0].path
+        );
+    }
+
+    #[test]
+    fn a_truncated_answer_invents_nothing() {
+        // git killed mid-write, or a record this parser has never seen. Neither
+        // may become a row that opens a blank pane.
+        assert!(commit_files("", "").is_empty());
+        assert!(commit_files("2\t2\t\0src/only-the-old-name.ts\0", "").is_empty());
+        // A status without its path is dropped rather than attached to whatever
+        // came before it.
+        let files = commit_files("1\t0\tsrc/a.ts\0", "R096\0src/a.ts\0");
+        assert_eq!(files[0].status, "", "a half-written rename must not be believed");
     }
 
     #[test]

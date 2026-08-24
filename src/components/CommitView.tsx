@@ -207,7 +207,14 @@ function Patch({ hash, file }: { hash: string; file: CommitFile }) {
   useEffect(() => {
     if (rootPath === null) return undefined;
     let stale = false;
-    invoke<string>("git_show_commit_file", { root: rootPath, hash, path: file.path })
+    // Both names for a rename: with only the new one git cannot pair the two and
+    // prints the file as freshly added rather than as moved.
+    invoke<string>("git_show_commit_file", {
+      root: rootPath,
+      hash,
+      path: file.path,
+      origPath: file.origPath,
+    })
       .then((text) => {
         if (!stale) setPatch(text);
       })
@@ -217,10 +224,14 @@ function Patch({ hash, file }: { hash: string; file: CommitFile }) {
     return () => {
       stale = true;
     };
-  }, [rootPath, hash, file.path]);
+  }, [rootPath, hash, file.path, file.origPath]);
 
   if (file.binary) return <p className="p-4 text-[12px] text-muted">{t("commit.binary")}</p>;
   if (patch === null) return <p className="p-4 text-[12px] text-muted">{t("commit.reading")}</p>;
+  // An empty answer is a thing that happened, not a thing to render: an editor
+  // holding nothing looks exactly like an editor that failed to load, and the
+  // reader has no way to tell which they are looking at.
+  if (patch.trim() === "") return <p className="p-4 text-[12px] text-muted">{t("commit.noPatch")}</p>;
 
   return (
     <Editor
