@@ -82,6 +82,13 @@ export interface SavedRun {
    * trash button may ever offer.
    */
   untrackedBefore: string[];
+  /**
+   * Where the run worked, when that was a worktree of its own rather than the
+   * project — a run that ran beside another one. Absent for the common case,
+   * and optional rather than a version bump: an old file without it reads
+   * correctly as "worked in the project itself".
+   */
+  workRoot?: string;
 }
 
 const VERSION = 4;

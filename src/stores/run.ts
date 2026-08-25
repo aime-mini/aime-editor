@@ -182,37 +182,58 @@ const NOTHING_YET: Artifacts = {
   untrackedBefore: [],
 };
 
-/** The artifacts and the cleanup view together: what a fresh panel shows. */
-const NOTHING_SHOWN = { ...NOTHING_YET, trash: null, trashResult: null };
-
-interface RunState extends Artifacts {
-  run: Run | null;
+/**
+ * One run and everything it has produced.
+ *
+ * A slot, because a developer works two tickets at once and hands both over:
+ * every run keeps its own artifacts, its own log and its own place to work,
+ * and the panel merely chooses which slot it is showing.
+ */
+export interface RunSlot extends Artifacts {
+  run: Run;
   log: LogLine[];
+  /**
+   * Where this run works. The first run of a project gets the user's own tree
+   * — fast, and every cache is warm. A run started while another is live gets
+   * a git worktree of its own, because two runs sharing one checkout would
+   * overwrite each other's files and measure each other's damage.
+   */
+  workRoot: string;
+}
+
+interface RunState {
+  /** Every live run, keyed by run id. A finished run stays until dismissed. */
+  slots: Record<string, RunSlot>;
+  /** The slot the panel is showing. */
+  shownId: string | null;
+  /** A finished run opened read-only from the history; never a live slot. */
+  past: RunSlot | null;
   autonomy: Autonomy;
   /** Every run this project kept, newest first. */
   history: SavedRun[];
-  /** True while the panel shows a run out of the history rather than a live one. */
-  viewingPast: boolean;
   /** The files the shown run left behind, once the reader asked to see them. */
   trash: TrashItem[] | null;
   /** What the last sweep did, so the panel can say it. */
   trashResult: { deleted: number; failed: string[] } | null;
 
   setAutonomy: (autonomy: Autonomy) => void;
-  /** Starts a run for this item. Refuses if one is already going. */
+  /** Shows one live run. */
+  show: (id: string) => void;
+  /** Starts a run for this item — beside whatever else is already running. */
   start: (item: WorkItem) => Promise<void>;
-  /** Carries on from the confirmation gate once the reader has looked. */
+  /** Carries the shown run on from the confirmation gate. */
   approvePlan: () => Promise<void>;
-  /** Picks a run back up where a closed lid or a lost network left it. */
+  /** Picks the shown run back up where a closed lid or a lost network left it. */
   resume: () => Promise<void>;
   /** Reads back what this project left behind: its history, and any live run. */
   reopen: (root: string) => Promise<void>;
-  /** Opens a finished run from the history, read-only. */
+  /** Opens a run from the history: read-only when finished, live when cut off. */
   openPast: (id: string) => Promise<void>;
   /** Removes one run from the project's record, at the reader's request. */
   forget: (id: string) => Promise<void>;
+  /** Stops the shown run. */
   cancel: () => Promise<void>;
-  /** Closes the panel, keeping the run in the history. */
+  /** Closes the shown run's panel, keeping the run in the history. */
   dismiss: () => void;
   /** Lists what the shown run left behind, without deleting anything. */
   previewTrash: () => Promise<void>;
@@ -220,143 +241,398 @@ interface RunState extends Artifacts {
   sweepTrash: (paths: readonly string[]) => Promise<void>;
 }
 
-/** The id of the command or agent run in flight, so Cancel has something to pull. */
-let inFlight: { kind: "command" | "agent"; id: string } | null = null;
-/** Set while a run is going, so a second click cannot start a rival. */
-let running = false;
-let unlistenAgent: UnlistenFn[] = [];
+/**
+ * One run's live machinery: what Cancel has to pull, and the listeners its CLI
+ * streams into. Kept outside the store because none of it is for rendering —
+ * and kept per run, because cancelling one of two parallel runs must not pull
+ * the other one's process.
+ */
+interface Engine {
+  inFlight: { kind: "command" | "agent"; id: string } | null;
+  unlisten: UnlistenFn[];
+  /** True from start to the run's resting place; guards dismissal and rivals. */
+  driving: boolean;
+}
+
+const engines = new Map<string, Engine>();
+
+function engineFor(id: string): Engine {
+  const found = engines.get(id);
+  if (found !== undefined) return found;
+  const fresh: Engine = { inFlight: null, unlisten: [], driving: false };
+  engines.set(id, fresh);
+  return fresh;
+}
+
+/**
+ * Pulls whatever one run has in flight.
+ *
+ * The listeners are deliberately left alone: a cancelled agent still reports
+ * its exit through them, and that event is what resolves the promise the
+ * driving phase is awaiting. Tearing them down here would leave that await
+ * hanging forever — the exact trap the listen-before-spawn rule exists for.
+ * `runCli` removes its own listeners the moment its exit arrives.
+ */
+async function stopEngine(id: string): Promise<void> {
+  const engine = engines.get(id);
+  if (engine === undefined) return;
+  if (engine.inFlight?.kind === "command") await execCancel(engine.inFlight.id);
+  if (engine.inFlight?.kind === "agent") await invoke("ai_cancel", { runId: engine.inFlight.id });
+  engine.inFlight = null;
+  engine.driving = false;
+}
 
 export const useRun = create<RunState>((set, get) => ({
-  run: null,
-  log: [],
+  slots: {},
+  shownId: null,
+  past: null,
   autonomy: "reviewPlan",
   history: [],
-  viewingPast: false,
-  ...NOTHING_SHOWN,
+  trash: null,
+  trashResult: null,
 
   setAutonomy: (autonomy) => {
     set({ autonomy });
   },
 
+  show: (id) => {
+    if (!Object.hasOwn(get().slots, id)) return;
+    set({ shownId: id, past: null, trash: null, trashResult: null });
+  },
+
   start: async (item) => {
-    const { rootPath } = useWorkspace.getState();
-    if (rootPath === null || running) return;
-    running = true;
+    const home = useWorkspace.getState().rootPath;
+    if (home === null) return;
+    // The same item twice is a race, not parallelism: the panel switches to
+    // the run that is already on it.
+    const already = Object.values(get().slots).find(
+      (slot) => slot.run.itemId === item.id && !isOver(slot.run),
+    );
+    if (already !== undefined) {
+      get().show(already.run.id);
+      useWorkspace.getState().openRun();
+      return;
+    }
+
     const startedAt = Date.now();
-    const run = newRun(`run-${String(startedAt)}`, item.id, item.title, startedAt);
-    set({ run, log: [], viewingPast: false, ...NOTHING_SHOWN });
+    let id = `run-${String(startedAt)}`;
+    // Two clicks in the same millisecond are two runs, not one file.
+    while (Object.hasOwn(get().slots, id)) id = `${id}-`;
+    // Whether the user's tree is spoken for decides where this one works. A
+    // run waiting at its approval gate holds the tree as surely as one that is
+    // driving: its branch is checked out there and its tests will land there.
+    const sharedTreeTaken = Object.values(get().slots).some(
+      (slot) => slot.workRoot === home && !isOver(slot.run),
+    );
+    const engine = engineFor(id);
+    engine.driving = true;
+    const slot: RunSlot = {
+      run: newRun(id, item.id, item.title, startedAt),
+      log: [],
+      workRoot: home,
+      ...NOTHING_YET,
+    };
+    set((state) => ({
+      slots: { ...state.slots, [id]: slot },
+      shownId: id,
+      past: null,
+      trash: null,
+      trashResult: null,
+    }));
     useWorkspace.getState().openRun();
-    await drive("baseline", { item, root: rootPath }, set, get);
+
+    const ops = opsFor(id);
+    let workRoot = home;
+    if (sharedTreeTaken) {
+      // Another run holds the user's tree, so this one gets a worktree of its
+      // own — the price of parallelism, paid only when it buys something.
+      const made = await prepareWorktree(home, id, ops.set);
+      if (made === null) {
+        engine.driving = false;
+        ops.set((current) => ({
+          run: {
+            ...abandonRest(current.run, "baseline", "skipped", ""),
+            ended: {
+              kind: "failed",
+              phase: "baseline",
+              error: translate("run.worktreeFailed"),
+            },
+          },
+        }));
+        return;
+      }
+      workRoot = made;
+      ops.set({ workRoot });
+    }
+    await drive(id, "baseline", { item, home, workRoot, id }, ops.set, ops.get);
   },
 
   approvePlan: async () => {
-    const { run } = get();
-    const { rootPath } = useWorkspace.getState();
-    if (run === null || rootPath === null || running) return;
-    const item = itemOf(run.itemId);
+    const shown = shownSlot(get());
+    const home = useWorkspace.getState().rootPath;
+    if (shown === null || home === null) return;
+    const id = shown.run.id;
+    if (!Object.hasOwn(get().slots, id) || engines.get(id)?.driving === true) return;
+    const item = itemOf(shown.run.itemId);
     if (item === null) return;
-    running = true;
+    engineFor(id).driving = true;
+    const ops = opsFor(id);
     // From the first phase allowed to write: everything before it was reading,
     // deciding and asking, and all of it is what the reader just agreed to.
-    await drive("tests", { item, root: rootPath }, set, get);
+    await drive(id, "tests", { item, home, workRoot: shown.workRoot, id }, ops.set, ops.get);
   },
 
   cancel: async () => {
-    const { run } = get();
-    if (run === null) return;
-    if (inFlight?.kind === "command") await execCancel(inFlight.id);
-    if (inFlight?.kind === "agent") await invoke("ai_cancel", { runId: inFlight.id });
-    inFlight = null;
-    running = false;
-    set({
-      run: { ...abandonRest(run, run.current ?? "baseline", "cancelled", ""), ended: { kind: "cancelled" } },
-    });
+    const shown = shownSlot(get());
+    if (shown === null) return;
+    const id = shown.run.id;
+    await stopEngine(id);
+    opsFor(id).set((current) => ({
+      run: {
+        ...abandonRest(current.run, current.run.current ?? "baseline", "cancelled", ""),
+        ended: { kind: "cancelled" },
+      },
+    }));
   },
 
   resume: async () => {
-    const { run } = get();
-    const { rootPath } = useWorkspace.getState();
-    if (run === null || rootPath === null || running) return;
-    const item = itemOf(run.itemId);
+    const shown = shownSlot(get());
+    const home = useWorkspace.getState().rootPath;
+    if (shown === null || home === null) return;
+    const id = shown.run.id;
+    if (!Object.hasOwn(get().slots, id) || engines.get(id)?.driving === true) return;
+    const item = itemOf(shown.run.itemId);
     if (item === null) return;
-    running = true;
+    engineFor(id).driving = true;
     useWorkspace.getState().openRun();
+    const ops = opsFor(id);
     // From the phase that was in flight: every phase is written to be safe to
     // run twice, which is what makes picking one up again possible at all.
-    await drive(run.current ?? "baseline", { item, root: rootPath }, set, get);
+    await drive(
+      id,
+      shown.run.current ?? "baseline",
+      { item, home, workRoot: shown.workRoot, id },
+      ops.set,
+      ops.get,
+    );
   },
 
   reopen: async (root) => {
     const history = await listRuns(root);
-    // The one worth putting back on screen is the one that never finished: it is
-    // the only one with work left in it. Everything else is history until asked
-    // for by name.
+    // The one worth putting back on screen is the one that never finished: it
+    // is the only one with work left in it. Everything else is history until
+    // asked for by name.
     const live = await interruptedRun(root);
-    if (live === null) {
-      set({ run: null, log: [], history, viewingPast: false, ...NOTHING_SHOWN });
-      return;
-    }
+    const slots: Record<string, RunSlot> = {};
+    if (live !== null) slots[live.run.id] = slotFrom(live, root, true);
     set({
-      ...restore(live),
+      slots,
+      shownId: live?.run.id ?? null,
+      past: null,
       history,
-      viewingPast: false,
-      run: { ...live.run, ended: { kind: "interrupted", phase: live.run.current ?? "baseline" } },
+      trash: null,
+      trashResult: null,
     });
   },
 
   openPast: async (id) => {
     const { rootPath } = useWorkspace.getState();
-    if (rootPath === null || running) return;
+    if (rootPath === null) return;
+    if (Object.hasOwn(get().slots, id)) {
+      get().show(id);
+      useWorkspace.getState().openRun();
+      return;
+    }
     const saved = await loadRun(rootPath, id);
     if (saved === null) return;
-    set({ ...restore(saved), run: saved.run, viewingPast: !wasInterrupted(saved) });
+    if (wasInterrupted(saved)) {
+      // A cut-off run is not a museum piece: it goes back into a slot, where
+      // Carry on can reach it.
+      set((state) => ({
+        slots: { ...state.slots, [id]: slotFrom(saved, rootPath, true) },
+        shownId: id,
+        past: null,
+        trash: null,
+        trashResult: null,
+      }));
+    } else {
+      set({ past: slotFrom(saved, rootPath, false), trash: null, trashResult: null });
+    }
     useWorkspace.getState().openRun();
   },
 
   forget: async (id) => {
     const { rootPath } = useWorkspace.getState();
-    if (rootPath === null) return;
+    if (rootPath === null || engines.get(id)?.driving === true) return;
     await forgetRun(rootPath, id);
     const history = await listRuns(rootPath);
     // A reader who deletes the run they are looking at is asking for it to be
     // gone, not for it to stay on screen with nothing behind it.
-    const showing = get().run;
-    set(showing?.id === id ? { history, run: null, log: [], ...NOTHING_SHOWN } : { history });
-    if (showing?.id === id) useWorkspace.getState().closeRun();
+    set((state) => {
+      const slots = withoutSlot(state.slots, id);
+      const shownId = state.shownId === id ? (Object.keys(slots)[0] ?? null) : state.shownId;
+      const past = state.past?.run.id === id ? null : state.past;
+      return { history, slots, shownId, past };
+    });
+    if (shownSlot(get()) === null) useWorkspace.getState().closeRun();
   },
 
   dismiss: () => {
     // Nothing is deleted: the run stays in the project's record, and the panel
     // simply stops showing it. A record that vanishes when the reader clicks
     // away is not a record.
-    set({ run: null, log: [], viewingPast: false, ...NOTHING_SHOWN });
-    useWorkspace.getState().closeRun();
+    const state = get();
+    if (state.past !== null) {
+      set({ past: null, trash: null, trashResult: null });
+      if (state.shownId === null) useWorkspace.getState().closeRun();
+      return;
+    }
+    const id = state.shownId;
+    if (id === null || engines.get(id)?.driving === true) return;
+    set((current) => {
+      const slots = withoutSlot(current.slots, id);
+      return {
+        slots,
+        shownId: Object.keys(slots)[0] ?? null,
+        trash: null,
+        trashResult: null,
+      };
+    });
+    if (get().shownId === null) useWorkspace.getState().closeRun();
   },
 
   previewTrash: async () => {
-    const { run, untrackedBefore } = get();
-    const { rootPath } = useWorkspace.getState();
-    if (run === null || rootPath === null) return;
-    set({ trash: await trashOf(rootPath, untrackedBefore, run.startedAt), trashResult: null });
+    const shown = shownSlot(get());
+    const home = useWorkspace.getState().rootPath;
+    if (shown === null || home === null) return;
+    const items = await trashOf(shown.workRoot, shown.untrackedBefore, shown.run.startedAt);
+    // A worktree run's own checkout is offered too - its change is already
+    // committed on the branch, so the tree is disposable, but the evidence
+    // lives inside it, so keeping it stays the default.
+    if (shown.workRoot !== home) {
+      items.push({ path: shown.workRoot, shown: shown.workRoot, keeper: true });
+    }
+    set({ trash: items, trashResult: null });
   },
 
   sweepTrash: async (paths) => {
-    const { run, untrackedBefore } = get();
-    const { rootPath } = useWorkspace.getState();
-    if (run === null || rootPath === null) return;
-    const trashResult = await emptyTrash(paths);
+    const shown = shownSlot(get());
+    const home = useWorkspace.getState().rootPath;
+    if (shown === null || home === null) return;
+    const worktreeTicked = shown.workRoot !== home && paths.includes(shown.workRoot);
+    // Files inside a worktree that is itself going die with it; deleting them
+    // first would only race the removal.
+    const files = worktreeTicked
+      ? paths.filter((path) => path !== shown.workRoot && !path.startsWith(shown.workRoot))
+      : [...paths];
+    const trashResult = await emptyTrash(files);
+    if (worktreeTicked) {
+      try {
+        await invoke("git_worktree_remove", { root: home, path: shown.workRoot });
+        trashResult.deleted += 1;
+      } catch {
+        trashResult.failed.push(shown.workRoot);
+      }
+    }
     // Listed again from disk rather than subtracted in memory, so what the
     // panel shows afterwards is what is actually still there.
-    set({ trashResult, trash: await trashOf(rootPath, untrackedBefore, run.startedAt) });
+    const gone = worktreeTicked && !trashResult.failed.includes(shown.workRoot);
+    set({
+      trashResult,
+      trash: gone ? [] : await trashOf(shown.workRoot, shown.untrackedBefore, shown.run.startedAt),
+    });
   },
 }));
 
-/** A saved run put back into the shape the panel reads. */
-function restore(saved: SavedRun): Artifacts & { log: LogLine[]; trash: null; trashResult: null } {
+/** The same map without one slot — spelled out because `delete` mutates. */
+function withoutSlot(slots: Record<string, RunSlot>, id: string): Record<string, RunSlot> {
+  return Object.fromEntries(Object.entries(slots).filter(([key]) => key !== id));
+}
+
+/**
+ * Whether a run has reached a resting place a new run may work beside.
+ *
+ * Waiting and interrupted are *not* over: a run at its approval gate or one
+ * cut off mid-phase still owns its tree — its branch is checked out there and
+ * its next phase writes there.
+ */
+function isOver(run: Run): boolean {
+  return run.ended !== null && run.ended.kind !== "waiting" && run.ended.kind !== "interrupted";
+}
+
+/** The slot the panel is looking at: the opened past run, or the shown live one. */
+function shownSlot(state: RunState): RunSlot | null {
+  return state.past ?? (state.shownId === null ? null : (state.slots[state.shownId] ?? null));
+}
+
+/**
+ * The place a parallel run works: a detached worktree beside the project, made
+ * runnable the way the project itself says.
+ *
+ * The install step is deterministic, not a guess: it is the install verb of
+ * the package manager the manifest or lockfile names, and nothing at all for a
+ * project that declares none. A failed install is noted and not fatal — the
+ * baseline's own suites will say precisely what is missing.
+ */
+async function prepareWorktree(home: string, id: string, set: Setter): Promise<string | null> {
+  const base = home.replace(/[\\/]+$/, "");
+  // Named by the run's id, which is unique by construction - a timestamp alone
+  // could collide when two runs start in the same millisecond.
+  const path = `${base}-${id}`;
+  note(set, "baseline", translate("run.worktreeCreating", { path }));
+  try {
+    await invoke("git_worktree_add", { root: home, path });
+  } catch (error: unknown) {
+    note(set, "baseline", String(error), "problem");
+    return null;
+  }
+  try {
+    const install = await invoke<string | null>("worktree_setup_command", { rootPath: path });
+    if (install !== null) {
+      note(set, "baseline", translate("run.worktreeInstall", { command: install }));
+      const { execRun } = await import("../lib/exec");
+      const outcome = await execRun(`${id}-setup`, install, path, SUITE_TIMEOUT_MS);
+      if (outcome.code !== 0) {
+        note(set, "baseline", translate("run.worktreeInstallFailed", { command: install }), "problem");
+      }
+    }
+  } catch (error: unknown) {
+    // The worktree exists; a setup that would not run is the suites' story to
+    // tell, with their own output as the evidence.
+    note(set, "baseline", String(error), "problem");
+  }
+  return path;
+}
+
+/** Scoped read and write for one slot, so a phase can only touch its own run. */
+function opsFor(id: string): { set: Setter; get: Getter } {
   return {
+    set: (partial) => {
+      useRun.setState((state) => {
+        if (!Object.hasOwn(state.slots, id)) return {};
+        const slot = state.slots[id];
+        const patch = typeof partial === "function" ? partial(slot) : partial;
+        return { slots: { ...state.slots, [id]: { ...slot, ...patch } } };
+      });
+    },
+    get: () => {
+      const found = useRun.getState().slots;
+      // Dismissal is refused while an engine drives, so a driving phase always
+      // finds its slot; the throw is here so a broken invariant fails loudly.
+      if (!Object.hasOwn(found, id)) throw new Error(`no slot for ${id}`);
+      return found[id];
+    },
+  };
+}
+
+/** A saved run put back into a slot, live or read-only. */
+function slotFrom(saved: SavedRun, home: string, interrupted: boolean): RunSlot {
+  return {
+    run: interrupted
+      ? { ...saved.run, ended: { kind: "interrupted", phase: saved.run.current ?? "baseline" } }
+      : saved.run,
     log: [],
-    trash: null,
-    trashResult: null,
+    workRoot: saved.workRoot ?? home,
     brief: saved.brief,
     survey: saved.survey,
     radius: saved.radius,
@@ -375,12 +651,22 @@ function restore(saved: SavedRun): Artifacts & { log: LogLine[]; trash: null; tr
 }
 
 /**
- * Another project is another run. What was on screen belongs to the folder that
- * was open, and the next folder's own journal is read in its place.
+ * Another project is another set of runs. Whatever was driving is pulled — its
+ * journal already marks it interrupted, so it is offered back when its own
+ * project opens again — and the next folder's own journal is read in its place.
  */
 useWorkspace.subscribe((state, previous) => {
   if (state.rootPath === previous.rootPath) return;
-  useRun.setState({ run: null, log: [], history: [], viewingPast: false, ...NOTHING_SHOWN });
+  for (const id of engines.keys()) void stopEngine(id);
+  engines.clear();
+  useRun.setState({
+    slots: {},
+    shownId: null,
+    past: null,
+    history: [],
+    trash: null,
+    trashResult: null,
+  });
   if (state.rootPath !== null) void useRun.getState().reopen(state.rootPath);
 });
 
@@ -405,11 +691,16 @@ function itemOf(id: string): WorkItem | null {
 /** What every phase is handed. */
 interface Context {
   item: WorkItem;
-  root: string;
+  /** The project the user has open: journal, history and report live here. */
+  home: string;
+  /** Where this run works: `home`, or this run's own worktree. */
+  workRoot: string;
+  /** The run's id, which is also its engine's key. */
+  id: string;
 }
 
-type Setter = (partial: Partial<RunState> | ((state: RunState) => Partial<RunState>)) => void;
-type Getter = () => RunState;
+type Setter = (partial: Partial<RunSlot> | ((slot: RunSlot) => Partial<RunSlot>)) => void;
+type Getter = () => RunSlot;
 
 /**
  * Walks the phases from here, stopping at the first gate that says stop.
@@ -417,12 +708,19 @@ type Getter = () => RunState;
  * The walk is a plain loop rather than anything clever on purpose: the order of
  * the phases and the reason each one blocks should be readable in one place.
  */
-async function drive(start: PhaseId, context: Context, set: Setter, get: Getter): Promise<void> {
+async function drive(id: string, start: PhaseId, context: Context, set: Setter, get: Getter): Promise<void> {
   let phase: PhaseId | null = start;
   // Whatever held the run is over the moment it is driven again - carrying the
   // old hold forward is what made a resumed run stop again the instant its
   // first phase finished.
   update(set, (run) => ({ ...run, ended: null }));
+
+  const rest = () => {
+    journal(context, get);
+    refreshHistory(context.home);
+    const engine = engines.get(id);
+    if (engine !== undefined) engine.driving = false;
+  };
 
   while (phase !== null) {
     const at = phase;
@@ -439,11 +737,14 @@ async function drive(start: PhaseId, context: Context, set: Setter, get: Getter)
     } catch (error: unknown) {
       result = { state: "blocked", summary: translate("run.error", { detail: String(error) }) };
     }
+    // The project closed under this run: its slot is gone, its journal already
+    // marks it interrupted, and there is nothing left to write to.
+    if (!Object.hasOwn(useRun.getState().slots, id)) return;
     result = { ...result, startedAt: started, endedAt: Date.now() };
     update(set, (run) => ({ ...run, results: { ...run.results, [at]: result } }));
     // Written after every phase, so a lid closing here costs this phase and
     // nothing before it.
-    journal(context.root, get);
+    journal(context, get);
 
     // A red gate stops the run only where the phase is a blocking one: a
     // reviewer that found something has found something, not grounds to throw
@@ -453,58 +754,56 @@ async function drive(start: PhaseId, context: Context, set: Setter, get: Getter)
         ...abandonRest(run, at, "skipped", ""),
         ended: { kind: "blocked", phase: at, why: result.summary },
       }));
-      journal(context.root, get);
-      refreshHistory(context.root, set);
-      running = false;
+      rest();
       return;
     }
     // A phase may hold the run rather than end it - an unanswered question, or
     // the confirmation gate waiting to be read.
-    if (get().run?.ended != null) {
-      journal(context.root, get);
-      refreshHistory(context.root, set);
-      running = false;
+    if (get().run.ended !== null) {
+      rest();
       return;
     }
     phase = nextPhase(at);
   }
 
   update(set, (run) => ({ ...run, current: null, ended: { kind: "done" } }));
-  journal(context.root, get);
-  refreshHistory(context.root, set);
-  running = false;
+  rest();
 }
 
 /**
- * Writes the run to the project's `.aime/` folder.
+ * Writes the run to the project's `.aime/` folder — the project's, not the
+ * worktree's: the history belongs to the repository the user has open.
  *
  * Not awaited: the journal exists so a lost run can be picked up, and making
  * every phase wait on a disk write to serve that would be paying the cost on
  * the path that matters for a benefit on the path that rarely happens.
  */
-function journal(root: string, get: Getter): void {
-  const state = get();
-  if (state.run === null) return;
-  void saveRun(root, { run: state.run, ...artifactsOf(state) });
+function journal(context: Context, get: Getter): void {
+  const slot = get();
+  void saveRun(context.home, {
+    run: slot.run,
+    ...artifactsOf(slot),
+    workRoot: context.workRoot === context.home ? undefined : context.workRoot,
+  });
 }
 
-/** Just the artifacts out of the state, which is what the journal is. */
-function artifactsOf(state: RunState): Artifacts {
+/** Just the artifacts out of the slot, which is what the journal is. */
+function artifactsOf(slot: RunSlot): Artifacts {
   return {
-    brief: state.brief,
-    survey: state.survey,
-    radius: state.radius,
-    solution: state.solution,
-    cases: state.cases,
-    plan: state.plan,
-    review: state.review,
-    baseline: state.baseline,
-    checks: state.checks,
-    verdict: state.verdict,
-    evidence: state.evidence,
-    discovered: state.discovered,
-    redCases: state.redCases,
-    untrackedBefore: state.untrackedBefore,
+    brief: slot.brief,
+    survey: slot.survey,
+    radius: slot.radius,
+    solution: slot.solution,
+    cases: slot.cases,
+    plan: slot.plan,
+    review: slot.review,
+    baseline: slot.baseline,
+    checks: slot.checks,
+    verdict: slot.verdict,
+    evidence: slot.evidence,
+    discovered: slot.discovered,
+    redCases: slot.redCases,
+    untrackedBefore: slot.untrackedBefore,
   };
 }
 
@@ -515,15 +814,15 @@ function artifactsOf(state: RunState): Artifacts {
  * later, and making a finishing run wait on a directory listing would be paying
  * for the panel out of the work's own time.
  */
-function refreshHistory(root: string, set: Setter): void {
+function refreshHistory(root: string): void {
   void listRuns(root).then((history) => {
-    set({ history });
+    useRun.setState({ history });
   });
 }
 
 /** Changes the run in place, leaving whatever a phase wrote to it alone. */
 function update(set: Setter, change: (run: Run) => Run): void {
-  set((state) => (state.run === null ? {} : { run: change(state.run) }));
+  set((slot) => ({ run: change(slot.run) }));
 }
 
 async function runPhase(phase: PhaseId, context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
@@ -570,24 +869,34 @@ async function baseline(context: Context, set: Setter): Promise<PhaseResult> {
   let refused: string | null = null;
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     branch = attempt === 1 ? wanted : `${wanted}-${String(attempt)}`;
-    await useGit.getState().createBranch(branch);
-    refused = useGit.getState().lastError;
-    if (refused === null) break;
+    // Straight at git in this run's own tree, not through the git store: the
+    // store speaks for the folder the user has open, and a parallel run works
+    // somewhere else.
+    try {
+      await invoke("git_create_branch", { root: context.workRoot, name: branch });
+      refused = null;
+      break;
+    } catch (error: unknown) {
+      refused = String(error);
+    }
   }
   if (refused !== null) {
     return { state: "blocked", summary: translate("run.branchRefused", { detail: refused }) };
   }
-  set((state) => ({ run: state.run === null ? null : { ...state.run, branch } }));
+  set((slot) => ({ run: { ...slot.run, branch } }));
+  // The user's own panel should show the branch the run just took their tree to.
+  if (context.workRoot === context.home) void useGit.getState().refresh();
 
   // Git's untracked list, before anything runs: whatever is untracked later and
   // not in here is what this run created — the only files the cleanup button
   // may ever offer to delete.
-  set({ untrackedBefore: await untrackedNow(context.root) });
+  set({ untrackedBefore: await untrackedNow(context.workRoot) });
 
-  const tasks = await tasksOf(context.root);
-  const suites = await runSuites(tasks, context.root, commandId, runCommand(set, "baseline"));
+  const nextId = commandIdFor(context.id);
+  const tasks = await tasksOf(context.workRoot);
+  const suites = await runSuites(tasks, context.workRoot, nextId, runCommand(set, "baseline"));
   set({ baseline: suites });
-  const checks = await runChecks(tasks, context.root, commandId, runCommand(set, "baseline"));
+  const checks = await runChecks(tasks, context.workRoot, nextId, runCommand(set, "baseline"));
   set({ checks });
 
   const declared = testTasksOf(tasks).length;
@@ -648,7 +957,7 @@ async function understand(context: Context, set: Setter): Promise<PhaseResult> {
   // One reply, two readers: each parser takes its own keys out of the same JSON
   // object, so merging the phases costs nothing in parsing.
   const answer = await tryUntil(ATTEMPTS, async () => {
-    const reply = await readRepository(asking, context.root, set, "understand");
+    const reply = await readRepository(context, asking, set, "understand");
     const brief = parseBrief(reply);
     const found = parseSurvey(reply);
     return brief === null || found === null ? null : { brief, found };
@@ -665,7 +974,7 @@ async function understand(context: Context, set: Setter): Promise<PhaseResult> {
   // the ones that actually ran, and they become this run's baseline and join
   // every later pass over the suites.
   const discoveredLines: string[] = [];
-  if (testTasksOf(await tasksOf(context.root)).length === 0 && found.suites.length > 0) {
+  if (testTasksOf(await tasksOf(context.workRoot)).length === 0 && found.suites.length > 0) {
     const candidates: TaskDef[] = found.suites.slice(0, DISCOVERED_SUITE_LIMIT).map((suite, index) => ({
       id: `ai-suite-${String(index + 1)}`,
       label: suite.command,
@@ -674,7 +983,12 @@ async function understand(context: Context, set: Setter): Promise<PhaseResult> {
       ...(suite.dir === "." ? {} : { cwd: suite.dir }),
     }));
     note(set, "understand", translate("run.tryingDiscovered", { count: candidates.length }));
-    const pass = await runSuites(candidates, context.root, commandId, runCommand(set, "understand"));
+    const pass = await runSuites(
+      candidates,
+      context.workRoot,
+      commandIdFor(context.id),
+      runCommand(set, "understand"),
+    );
     const usable = candidates.filter((candidate) =>
       pass.suites.some((suite) => suite.id === candidate.id && suite.run !== null),
     );
@@ -692,10 +1006,12 @@ async function understand(context: Context, set: Setter): Promise<PhaseResult> {
   }
 
   // Imported here rather than at the top: the probe speaks to Monaco, and this
-  // store is loaded long before an editor exists.
+  // store is loaded long before an editor exists. The probe is pointed at the
+  // project the user has open even for a worktree run: the language servers run
+  // there, and at this point in the run the two trees hold the same commit.
   const { languageServerProbe } = await import("../lib/lsp/impact");
   note(set, "understand", translate("run.asking", { count: files.length }));
-  const radius = await radiusFrom(files, languageServerProbe(context.root));
+  const radius = await radiusFrom(files, languageServerProbe(context.home));
   set({ radius });
 
   // A question does not stop the run. Waiting for an answer from a desk nobody
@@ -794,7 +1110,7 @@ async function design(context: Context, set: Setter, get: Getter): Promise<Phase
           ]
         : []),
     ];
-    const reply = await readRepository([asking, ...shortfall].join("\n"), context.root, set, "design");
+    const reply = await readRepository(context, [asking, ...shortfall].join("\n"), set, "design");
     const solution = parseSolution(reply);
     const cases = parseTestCases(reply);
     const plan = parsePlan(reply);
@@ -807,7 +1123,7 @@ async function design(context: Context, set: Setter, get: Getter): Promise<Phase
   }
   if (answer === null) return { state: "blocked", summary: translate("run.designUnreadable") };
   set({ solution: answer.solution, cases: answer.cases, plan: answer.plan });
-  await saveTestCases(context.root, answer.cases, brief, context.item.title);
+  await saveTestCases(context.workRoot, answer.cases, brief, context.item.title);
 
   const missed = [...missing.map((one) => `${one.id}: ${one.text}`), ...unproved.map(oneLine)];
   if (missed.length > 0) {
@@ -842,8 +1158,10 @@ async function design(context: Context, set: Setter, get: Getter): Promise<Phase
     translate("run.casesWritten", { file: TEST_CASES_MD }),
   ].join("\n");
 
-  if (get().autonomy === "reviewPlan") {
-    hold(set, get, "design", translate("run.planWaiting"));
+  // The autonomy switch is the reader's own setting, so it lives on the store
+  // rather than on any one run - and it holds every run it applies to.
+  if (useRun.getState().autonomy === "reviewPlan") {
+    hold(set, "design", translate("run.planWaiting"));
   }
   return {
     state: "passed",
@@ -877,7 +1195,7 @@ function oneLine(one: TestCase): string {
  */
 async function writeTests(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
   const { brief, plan, baseline: before } = get();
-  const cases = await agreedCases(context.root, get, set);
+  const cases = await agreedCases(context.workRoot, get, set);
   if (brief === null || plan === null || cases === null) {
     return { state: "skipped", summary: translate("run.noPlan") };
   }
@@ -901,7 +1219,7 @@ async function writeTests(context: Context, set: Setter, get: Getter): Promise<P
   let owed = "";
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     if (attempt > 1) note(set, "tests", translate("run.tryingAgain", { attempt, of: ATTEMPTS }));
-    const code = await runAgent(owed === "" ? prompt : `${prompt}\n\n${owed}`, context.root, set, "tests");
+    const code = await runAgent(context, owed === "" ? prompt : `${prompt}\n\n${owed}`, set, "tests");
     if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
 
     // Without a baseline there is nothing to be worse than, so the red proof
@@ -1003,7 +1321,7 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
   let code: number | null = null;
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     if (attempt > 1) note(set, "implement", translate("run.tryingAgain", { attempt, of: ATTEMPTS }));
-    code = await runAgent(prompt, context.root, set);
+    code = await runAgent(context, prompt, set);
     // A cancel is the one answer not worth repeating.
     if (code === null || code === 0) break;
   }
@@ -1013,7 +1331,7 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
   // An agent that exited cleanly having done nothing is the quietest failure
   // there is: every gate after this one would pass, and the run would report a
   // finished job over an empty diff.
-  const diff = await invoke<string>("git_worktree_diff", { root: context.root });
+  const diff = await invoke<string>("git_worktree_diff", { root: context.workRoot });
   if (diff.trim() === "") return { state: "blocked", summary: translate("run.noChange") };
   return { state: "passed", summary: translate("run.implemented") };
 }
@@ -1040,7 +1358,7 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
  * blamed on it.
  */
 async function verify(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
-  const tasks = await tasksOf(context.root);
+  const tasks = await tasksOf(context.workRoot);
   const before = get().baseline;
   const checksBefore = get().checks ?? { checks: [] };
   const hasChecks = checkTasksOf(tasks).length > 0;
@@ -1059,7 +1377,12 @@ async function verify(context: Context, set: Setter, get: Getter): Promise<Phase
     // typecheck has nothing to tell a suite that takes nine minutes.
     let stale: CheckRun[] = [];
     if (hasChecks) {
-      const now = await runChecks(tasks, context.root, commandId, runCommand(set, "verify"));
+      const now = await runChecks(
+        tasks,
+        context.workRoot,
+        commandIdFor(context.id),
+        runCommand(set, "verify"),
+      );
       const broke = newlyFailing(checksBefore, now);
       stale = alreadyFailing(checksBefore, now);
       if (broke.length > 0) {
@@ -1078,8 +1401,8 @@ async function verify(context: Context, set: Setter, get: Getter): Promise<Phase
         mended.push(labels);
         note(set, "verify", tried[tried.length - 1]);
         const code = await runAgent(
+          context,
           [FIX_CHECKS_PROMPT, checkEvidence(broke)].join("\n\n"),
-          context.root,
           set,
           "verify",
         );
@@ -1129,7 +1452,7 @@ async function verify(context: Context, set: Setter, get: Getter): Promise<Phase
     tried.push(translate("run.repairAttempt", { attempt, detail: summarise(verdict) }));
     mended.push(brokenNames(verdict).join(", ") || summarise(verdict));
     note(set, "verify", translate("run.repairing", { attempt, of: ATTEMPTS }));
-    const code = await runAgent(repairPrompt(verdict), context.root, set, "verify");
+    const code = await runAgent(context, repairPrompt(verdict), set, "verify");
     if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
   }
   // Unreachable: every path out of the loop above returns. Here so that a future
@@ -1139,7 +1462,7 @@ async function verify(context: Context, set: Setter, get: Getter): Promise<Phase
 
 /** A reader with a clean context, whose job is to find fault. */
 async function reviewPhase(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
-  const diff = await invoke<string>("git_worktree_diff", { root: context.root });
+  const diff = await invoke<string>("git_worktree_diff", { root: context.workRoot });
   if (diff.trim() === "") return { state: "skipped", summary: translate("run.nothingChanged") };
 
   const asking = [
@@ -1155,7 +1478,7 @@ async function reviewPhase(context: Context, set: Setter, get: Getter): Promise<
     "",
     diff.slice(0, DIFF_LIMIT),
   ].join("\n");
-  const review = parseReview(await aiOneshot(asking, context.root));
+  const review = parseReview(await aiOneshot(asking, context.workRoot));
   set({ review });
   const issues = review.findings.filter((finding) => finding.severity === "issue");
   return {
@@ -1190,6 +1513,7 @@ async function polish(context: Context, set: Setter, get: Getter): Promise<Phase
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     note(set, "polish", translate("run.polishing", { attempt, of: ATTEMPTS, count: issues.length }));
     const code = await runAgent(
+      context,
       [
         POLISH_PROMPT,
         ...issues.map(
@@ -1197,7 +1521,6 @@ async function polish(context: Context, set: Setter, get: Getter): Promise<Phase
             `- ${finding.file}:${String(finding.line)} — ${finding.message} (check: ${finding.check})`,
         ),
       ].join("\n"),
-      context.root,
       set,
       "polish",
     );
@@ -1205,8 +1528,13 @@ async function polish(context: Context, set: Setter, get: Getter): Promise<Phase
 
     // Nothing is claimed until it is measured again: the checks first, because
     // they are the cheap ones, then every suite against the baseline.
-    const tasks = await tasksOf(context.root);
-    const checksNow = await runChecks(tasks, context.root, commandId, runCommand(set, "polish"));
+    const tasks = await tasksOf(context.workRoot);
+    const checksNow = await runChecks(
+      tasks,
+      context.workRoot,
+      commandIdFor(context.id),
+      runCommand(set, "polish"),
+    );
     const broke = newlyFailing(get().checks ?? { checks: [] }, checksNow);
     let stillGreen = broke.length === 0;
     if (stillGreen && before !== null && measured(before).length > 0) {
@@ -1251,20 +1579,20 @@ async function polish(context: Context, set: Setter, get: Getter): Promise<Phase
  * delivered anything, however green its gates.
  */
 async function deliver(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
-  const cases = await agreedCases(context.root, get, set);
-  const since = get().run?.startedAt ?? 0;
+  const cases = await agreedCases(context.workRoot, get, set);
+  const since = get().run.startedAt;
 
   // The declared builds first, run by Aime itself: code that does not build has
   // nothing to deploy, and the agent deserves the real output, not a summary.
-  const builds = (await tasksOf(context.root)).filter((task) => task.kind === "build");
+  const builds = (await tasksOf(context.workRoot)).filter((task) => task.kind === "build");
   const tried: string[] = [];
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     const failing: { task: TaskDef; outcome: CommandOutcome }[] = [];
     for (const task of builds) {
       const outcome = await runCommand(set, "deliver")(
-        commandId(),
+        commandIdFor(context.id)(),
         task.command,
-        folderOf(task, context.root),
+        folderOf(task, context.workRoot),
         SUITE_TIMEOUT_MS,
       );
       if (outcome.timedOut || outcome.code !== 0) failing.push({ task, outcome });
@@ -1283,7 +1611,7 @@ async function deliver(context: Context, set: Setter, get: Getter): Promise<Phas
     const evidence = failing
       .map((one) => [`$ ${one.task.command}`, allOutput(one.outcome).slice(-SUITE_OUTPUT_LIMIT)].join("\n"))
       .join("\n\n");
-    const code = await runAgent([FIX_BUILD_PROMPT, evidence].join("\n\n"), context.root, set, "deliver");
+    const code = await runAgent(context, [FIX_BUILD_PROMPT, evidence].join("\n\n"), set, "deliver");
     if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
   }
 
@@ -1297,16 +1625,16 @@ async function deliver(context: Context, set: Setter, get: Getter): Promise<Phas
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     if (attempt > 1) note(set, "deliver", translate("run.tryingAgain", { attempt, of: ATTEMPTS }));
     const code = await runAgent(
+      context,
       [deliverPrompt(cases, get), owed].filter(Boolean).join("\n\n"),
-      context.root,
       set,
       "deliver",
     );
     if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
 
-    const evidence = await caseEvidence(context.root, caseIds, since);
+    const evidence = await caseEvidence(context.workRoot, caseIds, since);
     missing = (cases?.cases ?? []).filter((one) => (evidence.get(one.id) ?? []).length === 0);
-    proofs = await deployProof(context.root, since);
+    proofs = await deployProof(context.workRoot, since);
     if (proofs.length > 0 && missing.length === 0) break;
     if (attempt === ATTEMPTS) break;
     owed = [
@@ -1360,17 +1688,34 @@ async function deliver(context: Context, set: Setter, get: Getter): Promise<Phas
  */
 async function report(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
   const state = get();
-  const evidence = await collectEvidence(context.root, state.run?.startedAt ?? 0);
+  const evidence = await collectEvidence(context.workRoot, state.run.startedAt);
   set({ evidence });
 
-  const written = await existingFiles(context.root);
+  // A run in a worktree commits its change onto its own branch: the worktree
+  // is a workplace, not a place the user visits, and the branch is how the
+  // work reaches them at home. A run in the user's tree commits nothing - the
+  // uncommitted diff is theirs to review, exactly as before.
+  let committed = "";
+  if (context.workRoot !== context.home) {
+    try {
+      await invoke("git_commit_all", {
+        root: context.workRoot,
+        message: `${state.run.itemTitle}\n\nBy an Aime task run (${state.run.id}).`,
+      });
+      committed = translate("run.workCommitted", { branch: state.run.branch ?? "" });
+    } catch (error: unknown) {
+      committed = translate("run.workCommitFailed", { detail: String(error) });
+    }
+  }
+
+  const written = await existingFiles(context.workRoot);
   const proof =
     state.cases === null
       ? new Map<string, string[]>()
       : await caseEvidence(
-          context.root,
+          context.workRoot,
           state.cases.cases.map((one) => one.id),
-          state.run?.startedAt ?? 0,
+          state.run.startedAt,
         );
   const outcomes =
     state.cases === null
@@ -1389,11 +1734,11 @@ async function report(context: Context, set: Setter, get: Getter): Promise<Phase
     outcomes,
     evidence,
   });
-  await writeReport(context.root, state.run?.id ?? "run", markdown);
+  await writeReport(context.home, state.run.id, markdown);
 
   return {
     state: "passed",
-    summary: translate("run.reportReady", { branch: state.run?.branch ?? "" }),
+    summary: translate("run.reportReady", { branch: state.run.branch ?? "" }),
     detail: [
       state.brief === null ? "" : `${translate("run.reportGoal")}: ${state.brief.goal}`,
       state.cases === null ? "" : translate("run.reportCases", { proved, total: state.cases.cases.length }),
@@ -1403,7 +1748,8 @@ async function report(context: Context, set: Setter, get: Getter): Promise<Phase
             count: state.review.findings.filter((finding) => finding.severity === "issue").length,
           }),
       evidence.length === 0 ? "" : translate("run.reportEvidence", { count: evidence.length }),
-      translate("run.reportSaved", { file: `${RUNS_DIR}/${state.run?.id ?? ""}.md` }),
+      committed,
+      translate("run.reportSaved", { file: `${RUNS_DIR}/${state.run.id}.md` }),
     ]
       .filter((line) => line !== "")
       .join("\n"),
@@ -1474,9 +1820,9 @@ async function suitesNow(
   enough?: (soFar: Baseline) => boolean,
 ): Promise<Baseline> {
   return runSuites(
-    await allSuiteTasks(context.root, get),
-    context.root,
-    commandId,
+    await allSuiteTasks(context.workRoot, get),
+    context.workRoot,
+    commandIdFor(context.id),
     runCommand(set, phase),
     before === null ? new Set<string>() : skipList(before),
     enough,
@@ -1801,11 +2147,14 @@ Do not commit anything.
 
 The findings:`;
 
-/** A fresh id per command, so Cancel pulls the right handle. */
-function commandId(): string {
-  const id = `run-cmd-${String(Date.now())}`;
-  inFlight = { kind: "command", id };
-  return id;
+/** A fresh id per command, registered with its own run so Cancel pulls the
+ * right handle — and only that run's handle. */
+function commandIdFor(runId: string): () => string {
+  return () => {
+    const id = `${runId}-cmd-${String(Date.now())}`;
+    engineFor(runId).inFlight = { kind: "command", id };
+    return id;
+  };
 }
 
 /** Runs a command for a phase, feeding its output into the run's log. */
@@ -1835,12 +2184,13 @@ function runCommand(set: Setter, phase: PhaseId) {
  * cancelled - which the backend reports as an exit carrying no code at all.
  */
 async function runCli(
+  context: Context,
   prompt: string,
-  cwd: string,
   set: Setter,
   phase: PhaseId,
   permission: "readOnly" | "edits",
 ): Promise<{ code: number | null; text: string }> {
+  const engine = engineFor(context.id);
   /**
    * Listening happens *before* the CLI is started, and what arrives before its
    * id is known is kept.
@@ -1870,17 +2220,25 @@ async function runCli(
   });
   let said = "";
 
-  unlistenAgent.push(
+  // Until the spawn answers with this run's id, nothing can be attributed:
+  // another run's CLI may be streaming at the same moment, and reading its
+  // events here would splice one run's words into another's answer. So events
+  // are held back, then replayed for the id that turned out to be ours.
+  const held: { run_id: string; event: unknown }[] = [];
+  const take = (payload: { run_id: string; event: unknown }) => {
+    for (const one of parse(payload.event)) {
+      if (one.kind === "message-delta") said += one.text;
+      if (one.kind === "done" && one.resultText !== undefined) said = one.resultText;
+      if (one.kind === "tool-call") note(set, phase, `${one.name} ${one.detail}`.trim(), "output");
+    }
+  };
+  engine.unlisten.push(
     await listen<{ run_id: string; event: unknown }>("ai:stream", (event) => {
-      if (runId !== null && event.payload.run_id !== runId) return;
-      for (const one of parse(event.payload.event)) {
-        if (one.kind === "message-delta") said += one.text;
-        if (one.kind === "done" && one.resultText !== undefined) said = one.resultText;
-        if (one.kind === "tool-call") note(set, phase, `${one.name} ${one.detail}`.trim(), "output");
-      }
+      if (runId === null) held.push(event.payload);
+      else if (event.payload.run_id === runId) take(event.payload);
     }),
   );
-  unlistenAgent.push(
+  engine.unlisten.push(
     await listen<{ run_id: string; code: number | null }>("ai:exit", (event) => {
       if (runId === null) {
         early.push({ id: event.payload.run_id, code: event.payload.code });
@@ -1889,11 +2247,11 @@ async function runCli(
       if (event.payload.run_id === runId) report(event.payload.code);
     }),
   );
-  unlistenAgent.push(
+  const heldErr: { run_id: string; event: string }[] = [];
+  engine.unlisten.push(
     await listen<{ run_id: string; event: string }>("ai:stderr", (event) => {
-      if (runId === null || event.payload.run_id === runId) {
-        note(set, phase, event.payload.event, "output");
-      }
+      if (runId === null) heldErr.push(event.payload);
+      else if (event.payload.run_id === runId) note(set, phase, event.payload.event, "output");
     }),
   );
 
@@ -1901,30 +2259,38 @@ async function runCli(
     runId = await invoke<string>("ai_send_prompt", {
       providerId: ai.providerId,
       prompt,
-      cwd,
+      cwd: context.workRoot,
       // No session id: this must never join or resume the user's chat.
       sessionId: null,
       options: { model: ai.model || null, effort: ai.effort || null, permission },
     });
   } catch (error: unknown) {
-    stopListening();
+    stopListening(engine);
     throw error;
   }
-  inFlight = { kind: "agent", id: runId };
+  engine.inFlight = { kind: "agent", id: runId };
 
-  // Whatever ended while nobody knew which run to listen for.
+  // Whatever streamed or ended while nobody knew which run to listen for.
+  for (const payload of held) {
+    if (payload.run_id === runId) take(payload);
+  }
+  held.length = 0;
+  for (const payload of heldErr) {
+    if (payload.run_id === runId) note(set, phase, payload.event, "output");
+  }
+  heldErr.length = 0;
   const already = early.find((exit) => exit.id === runId);
   if (already !== undefined) report(already.code);
 
   const code = await finished;
-  stopListening();
-  inFlight = null;
+  stopListening(engine);
+  engine.inFlight = null;
   return { code, text: said };
 }
 
-/** The two phases that change the project. */
-async function runAgent(prompt: string, cwd: string, set: Setter, phase: PhaseId = "implement") {
-  const { code } = await runCli(prompt, cwd, set, phase, "edits");
+/** The phases that change the project, each in its own run's tree. */
+async function runAgent(context: Context, prompt: string, set: Setter, phase: PhaseId = "implement") {
+  const { code } = await runCli(context, prompt, set, phase, "edits");
   return code;
 }
 
@@ -1937,21 +2303,24 @@ async function runAgent(prompt: string, cwd: string, set: Setter, phase: PhaseId
  * way to tell them from real ones. Read-only tools are the difference between
  * analysing a codebase and imagining one.
  */
-async function readRepository(prompt: string, cwd: string, set: Setter, phase: PhaseId): Promise<string> {
-  const { text } = await runCli(prompt, cwd, set, phase, "readOnly");
+async function readRepository(
+  context: Context,
+  prompt: string,
+  set: Setter,
+  phase: PhaseId,
+): Promise<string> {
+  const { text } = await runCli(context, prompt, set, phase, "readOnly");
   return text;
 }
 
-function stopListening(): void {
-  for (const off of unlistenAgent) off();
-  unlistenAgent = [];
+function stopListening(engine: Engine): void {
+  for (const off of engine.unlisten) off();
+  engine.unlisten = [];
 }
 
 /** Holds the run where it is, waiting on the reader rather than ending. */
-function hold(set: Setter, get: Getter, phase: PhaseId, question: string): void {
-  const run = get().run;
-  if (run === null) return;
-  set({ run: { ...run, current: null, ended: { kind: "waiting", phase, question } } });
+function hold(set: Setter, phase: PhaseId, question: string): void {
+  set((slot) => ({ run: { ...slot.run, current: null, ended: { kind: "waiting", phase, question } } }));
 }
 
 function note(set: Setter, phase: PhaseId, text: string, kind: LogLine["kind"] = "note"): void {

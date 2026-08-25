@@ -759,6 +759,40 @@ pub async fn git_checkout_tracking(root: String, name: String) -> Result<String,
     run_git(&root, &["checkout", "--track", &name]).await
 }
 
+/// Adds a detached worktree at `path`, for a run that must not share the
+/// user's working tree.
+///
+/// Detached on purpose: the run picks its branch name inside the worktree the
+/// same way it does in the main tree — trying the next free name — and a
+/// branch created here belongs to the repository, so the user sees it at home
+/// when the run is done.
+#[tauri::command]
+pub async fn git_worktree_add(root: String, path: String) -> Result<String, String> {
+    run_git(&root, &["worktree", "add", "--detach", &path]).await
+}
+
+/// Stages everything in a run's worktree and commits it onto the run's branch.
+///
+/// Only a worktree run ever calls this: its checkout is a workplace the user
+/// never visits, so the branch is the only honest way the change reaches them.
+/// A run in the user's own tree never commits — reviewing that diff is the
+/// user's own moment, exactly as before.
+#[tauri::command]
+pub async fn git_commit_all(root: String, message: String) -> Result<String, String> {
+    run_git(&root, &["add", "-A"]).await?;
+    run_git(&root, &["commit", "-m", &message]).await
+}
+
+/// Removes a worktree and what it still holds.
+///
+/// `--force`, because the caller is the cleanup a person just confirmed: the
+/// worktree's uncommitted leftovers are exactly what they asked to be rid of.
+/// The branch the run made is not touched — it is the deliverable.
+#[tauri::command]
+pub async fn git_worktree_remove(root: String, path: String) -> Result<String, String> {
+    run_git(&root, &["worktree", "remove", "--force", &path]).await
+}
+
 #[tauri::command]
 pub async fn git_checkout(root: String, name: String) -> Result<String, String> {
     run_git(&root, &["checkout", &name]).await
@@ -1027,6 +1061,56 @@ mod tests {
             !branches.iter().any(|b| b.name == "origin"),
             "origin/HEAD leaked in as a branch named after the remote: {names:?}"
         );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// A parallel run's whole isolation rests on these two calls, so they are
+    /// exercised against a real repository: the worktree appears detached (the
+    /// run picks its own branch name inside it), and removal takes the
+    /// leftovers with it even when the tree is dirty.
+    #[tokio::test]
+    async fn a_worktree_is_added_detached_and_removed_dirty() {
+        let base = std::env::temp_dir().join(format!("aime-worktree-{}", std::process::id()));
+        let repo = base.join("repo");
+        let tree = base.join("tree");
+        std::fs::create_dir_all(&repo).expect("mkdir");
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "one"]);
+
+        let root = repo.to_string_lossy().to_string();
+        let path = tree.to_string_lossy().to_string();
+        git_worktree_add(root.clone(), path.clone()).await.expect("add");
+        assert!(tree.is_dir(), "the worktree never appeared");
+        let head = std::process::Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(&tree)
+            .output()
+            .expect("git runs");
+        assert_eq!(
+            String::from_utf8_lossy(&head.stdout).trim(),
+            "",
+            "the worktree took a branch instead of starting detached"
+        );
+
+        // Dirty on purpose: cleanup removes a tree that still holds leftovers.
+        std::fs::write(tree.join("scratch.log"), "leftover").expect("write");
+        git_worktree_remove(root, path).await.expect("remove");
+        assert!(!tree.exists(), "the worktree is still on disk");
         std::fs::remove_dir_all(&base).ok();
     }
 

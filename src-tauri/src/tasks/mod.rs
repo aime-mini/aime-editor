@@ -94,6 +94,12 @@ impl PackageManager {
         }
     }
 
+    /// The command that installs this folder's dependencies, spelled the way
+    /// this manager spells it. All four accept the bare verb.
+    fn install(self) -> String {
+        format!("{} install", self.program())
+    }
+
     /// The command that runs one script in every member of a workspace, for a
     /// root that has no such script of its own.
     ///
@@ -574,6 +580,21 @@ pub const TASK_EXIT_MARKER: &str = "[aime] exit code:";
 
 /// Wraps a task command so the shell reports the exit code, in that shell's
 /// own syntax (the terminal runs PowerShell on Windows, `$SHELL` elsewhere).
+/// The command that makes a fresh checkout of this folder runnable, or `None`.
+///
+/// A parallel run works in a just-created git worktree, and a JavaScript
+/// project's worktree has no `node_modules` — every suite would fail for a
+/// reason that has nothing to do with the change. This answers only what the
+/// project itself declares: the install verb of the package manager named by
+/// its manifest or lockfile. Toolchains that fetch their own dependencies on
+/// build (cargo, go) need nothing, and a folder with no manifest gets `None`
+/// rather than a guess.
+#[tauri::command]
+pub fn worktree_setup_command(root_path: String) -> Option<String> {
+    let facts = gather_facts(Path::new(&root_path));
+    facts.has_package_json.then(|| facts.package_manager.install())
+}
+
 #[tauri::command]
 pub fn task_command_line(command: String) -> String {
     #[cfg(target_os = "windows")]

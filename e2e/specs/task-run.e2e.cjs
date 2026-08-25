@@ -355,6 +355,20 @@ const ITEM = {
   },
 };
 
+// A second assigned item, so two runs can be handed over at once. Its title is
+// distinct on purpose: the tab row, the branch names and the assertions all
+// need to tell the two runs apart.
+const ITEM_TWO = {
+  id: 13,
+  fields: {
+    "System.Title": "Show the currency code",
+    "System.State": "Committed",
+    "System.WorkItemType": "Bug",
+    "System.AreaPath": "Probe\\Cart",
+    "System.Description": "<div>Totals must carry their currency code.</div>",
+  },
+};
+
 const WORK_ITEM_TYPES = {
   count: 1,
   value: [{ name: "Bug", states: [{ name: "Committed", category: "InProgress" }] }],
@@ -374,8 +388,10 @@ function startBoard() {
           response.end(JSON.stringify(payload));
         };
         if (url.includes("/workitemtypes")) return json(WORK_ITEM_TYPES);
-        if (url.includes("/wiql")) return json({ queryType: "flat", workItems: [{ id: 12 }] });
-        if (url.includes("/workitemsbatch")) return json({ count: 1, value: [ITEM] });
+        if (url.includes("/wiql")) {
+          return json({ queryType: "flat", workItems: [{ id: 12 }, { id: 13 }] });
+        }
+        if (url.includes("/workitemsbatch")) return json({ count: 2, value: [ITEM, ITEM_TWO] });
         if (url.includes("/comments")) return json({ count: 0, comments: [] });
         if (url.includes("/teamsettings/teamfieldvalues")) {
           return json({
@@ -384,7 +400,8 @@ function startBoard() {
             values: [{ value: "Probe", includeChildren: true }],
           });
         }
-        if (/\/workitems\/\d+/.test(url)) return json(ITEM);
+        const one = /\/workitems\/(\d+)/.exec(url);
+        if (one) return json(one[1] === "13" ? ITEM_TWO : ITEM);
         response.writeHead(404, { "Content-Type": "application/json" });
         response.end("{}");
       });
@@ -814,5 +831,85 @@ ${suite.output}`,
       false,
       "a blocked run must never also report success",
     );
+  });
+
+  it("runs two items at once, the second in a worktree of its own", async () => {
+    // A developer holds two tickets and hands both over. They cannot share a
+    // checkout - the second run would overwrite the first's files and measure
+    // its damage - so the second takes a git worktree, commits its change on
+    // its own branch, and the first keeps the user's tree exactly as before.
+    fs.writeFileSync(MODE_FILE, "sound");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await waitForText("read the approach", "the first run never reached its gate", 240_000);
+
+    // Two runs cannot both stop to ask, so from here they run to the end.
+    await (await $("button*=Run to the end")).click();
+    // Centred first: clicking the autonomy switch left the panel scrolled so
+    // that a plain click lands the approve button under the sticky header.
+    const approveButton = await $("button*=Approved");
+    await approveButton.scrollIntoView({ block: "center" });
+    await approveButton.click();
+
+    // The second item is handed over while the first is mid-flight. The button
+    // is looked up INSIDE row 13: every row carries one, and the page-wide
+    // selector answers the first row's - which is item 12's.
+    await (await $('button[title="Work items"]')).click();
+    await waitForText("show the currency", "the second item never reached the panel");
+    const row = await rowFor(13);
+    await row.moveTo();
+    await (await row.$('button[title="Work on this with AI"]')).click();
+
+    // The panel shows the second run - its title in the header, not merely
+    // somewhere on a page that also lists the item - with a tab for each.
+    await browser.waitUntil(
+      async () => (await $("header h1").getText()).includes("Show the currency code"),
+      { timeout: 60_000, timeoutMsg: "the second run never took the panel" },
+    );
+    // Looked up inside the run panel's own header: the work-items sidebar also
+    // carries the item's title, earlier in the DOM, and clicking that opens
+    // the item view instead of switching runs.
+    const tab = await $("header").$("button*=Round the total");
+    assert.ok(await tab.isExisting(), "no tab leads back to the first run");
+
+    // Anchored to the shown run's own report row, never to page text: the
+    // history list already spells a finished run's ending in the same words,
+    // so "finished" somewhere on the page proves nothing about THIS run.
+    await waitForPhase("Hand over", "Ready on bugfix/13-", "the worktree run never finished", 300_000);
+    await (await $("header").$("button*=Round the total")).click();
+    await browser.waitUntil(
+      async () => (await $("header h1").getText()).includes("Round the total"),
+      { timeout: 30_000, timeoutMsg: "the tab did not switch back to the first run" },
+    );
+    await waitForPhase("Hand over", "Ready on bugfix/12-", "the first run never finished", 300_000);
+
+    // What git says, which is the part that cannot be faked: two worktrees,
+    // one branch per run, the worktree's change committed on its branch, and
+    // the user's own tree still carrying the first run's uncommitted change.
+    const worktrees = execFileSync("git", ["worktree", "list"], { cwd: repo })
+      .toString()
+      .trim()
+      .split("\n");
+    assert.equal(worktrees.length, 2, `the second run left no worktree: ${worktrees.join(" | ")}`);
+    const branches = execFileSync("git", ["branch", "--list"], { cwd: repo }).toString();
+    assert.match(branches, /bugfix\/12-/, `no branch for the first run: ${branches}`);
+    assert.match(branches, /bugfix\/13-/, `no branch for the second run: ${branches}`);
+    const second = /bugfix\/13-\S+/.exec(branches);
+    const committed = execFileSync("git", ["log", "--oneline", "-1", second[0]], { cwd: repo }).toString();
+    assert.match(committed, /Show the currency code/, `nothing was committed on ${second[0]}: ${committed}`);
+    assert.match(
+      fs.readFileSync(path.join(repo, "src", "cart.js"), "utf8"),
+      /Math\.round/,
+      "the first run's change is gone from the user's tree",
+    );
+    assert.ok(reportsIn(repo).length >= 2, "fewer than two reports were written");
+
+    // The worktree was this test's to make, so it is this test's to remove.
+    try {
+      const stray = worktrees[1].split(" ")[0];
+      execFileSync("git", ["worktree", "remove", "--force", stray], { cwd: repo, stdio: "pipe" });
+    } catch {
+      // Windows may still hold a handle; the temp sweep gets it.
+    }
   });
 });

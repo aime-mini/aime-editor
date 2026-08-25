@@ -20,7 +20,14 @@ import { useI18n, useT } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
 import { whenText } from "../lib/workItems";
 import type { SavedRun } from "../lib/runFile";
-import { PHASES, progressOf, type PhaseId, type PhaseResult, type PhaseState } from "../lib/runPlan";
+import {
+  PHASES,
+  progressOf,
+  type PhaseId,
+  type PhaseResult,
+  type PhaseState,
+  type Run,
+} from "../lib/runPlan";
 import { useRun } from "../stores/run";
 
 /**
@@ -35,9 +42,17 @@ import { useRun } from "../stores/run";
  * run that stopped for a good reason must look different from one that failed.
  */
 export function RunView() {
-  const { run, log, autonomy, setAutonomy, approvePlan, resume, cancel, dismiss } = useRun();
-  const { evidence, history, viewingPast, openPast, forget } = useRun();
+  const { slots, shownId, past, autonomy, setAutonomy, show } = useRun();
+  const { approvePlan, resume, cancel, dismiss, history, openPast, forget } = useRun();
   const t = useT();
+  // The slot on screen: an opened past run wins, otherwise the shown live one.
+  const slot = past ?? (shownId === null ? null : (slots[shownId] ?? null));
+  const run = slot?.run ?? null;
+  const log = slot?.log ?? [];
+  const evidence = slot?.evidence ?? [];
+  const viewingPast = past !== null;
+  // Every live run, oldest first — the order they were handed over in.
+  const live = Object.values(slots).sort((a, b) => a.run.startedAt - b.run.startedAt);
   const [open, setOpen] = useState<PhaseId | null>(null);
   const tail = useRef<HTMLDivElement>(null);
   const gate = useRef<HTMLDivElement>(null);
@@ -74,6 +89,28 @@ export function RunView() {
     <div className="flex h-full flex-col overflow-y-auto bg-bg">
       <header className="sticky top-0 z-10 border-b border-line bg-panel/95 backdrop-blur">
         <div className="mx-auto w-full max-w-3xl px-6 py-4">
+          {(live.length > 1 || (live.length > 0 && viewingPast)) && (
+            <div className="mb-3 flex flex-wrap items-center gap-1.5">
+              {live.map((one) => {
+                const active = !viewingPast && one.run.id === shownId;
+                return (
+                  <button
+                    key={one.run.id}
+                    onClick={() => {
+                      show(one.run.id);
+                    }}
+                    title={one.run.itemTitle}
+                    className={`flex max-w-48 items-center gap-1.5 rounded border px-2 py-0.5 text-[11.5px] ${
+                      active ? "border-accent text-accent" : "border-line text-muted hover:border-accent"
+                    }`}
+                  >
+                    {one.run.current !== null && <Loader2 size={10} className="shrink-0 animate-spin" />}
+                    <span className="truncate">{one.run.itemTitle}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
               <p className="text-[11.5px] tracking-wide text-muted uppercase">{t("run.title")}</p>
@@ -469,7 +506,7 @@ function Ending({
   onApprove,
   onResume,
 }: {
-  ending: NonNullable<ReturnType<typeof useRun.getState>["run"]>["ended"];
+  ending: Run["ended"];
   onApprove: () => void;
   onResume: () => void;
 }) {
