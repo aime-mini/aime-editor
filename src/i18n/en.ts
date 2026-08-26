@@ -295,6 +295,8 @@ export const en = {
 
   "tree.ignored": "Ignored by git (.gitignore) - it is not part of the repository",
 
+  "menu.filter": "Filter…",
+  "menu.noMatch": "Nothing matches",
   "menu.newFile": "New File…",
   "menu.newFolder": "New Folder…",
   "menu.open": "Open",

@@ -296,6 +296,8 @@ export const vi: Record<TranslationKey, string> = {
 
   "tree.ignored": "Git bỏ qua file này (.gitignore) - nó không nằm trong repo",
 
+  "menu.filter": "Lọc…",
+  "menu.noMatch": "Không có gì khớp",
   "menu.newFile": "Tạo file…",
   "menu.newFolder": "Tạo thư mục…",
   "menu.open": "Mở",
