@@ -26,6 +26,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
+const { fill } = require("../support/fields.cjs");
 
 const configDir = path.join(process.env.APPDATA ?? "", "com.iodm.aiminieditor");
 const trackersFile = path.join(configDir, "trackers.json");
@@ -435,12 +436,12 @@ describe("Work items", () => {
   });
 
   it("connects by querying the board, and only stores what worked", async () => {
-    await (await $('input[placeholder="contoso"]')).setValue(ORGANIZATION);
+    await fill(await $('input[placeholder="contoso"]'), ORGANIZATION);
     // Matched by prefix: the field takes a comma-separated list of projects, so
     // its placeholder names two.
-    await (await $('input[placeholder^="Contoso Web"]')).setValue(PROJECT);
-    await (await $('input[placeholder="https://dev.azure.com"]')).setValue(board.origin);
-    await (await $('input[type="password"]')).setValue(TOKEN);
+    await fill(await $('input[placeholder^="Contoso Web"]'), PROJECT);
+    await fill(await $('input[placeholder="https://dev.azure.com"]'), board.origin);
+    await fill(await $('input[type="password"]'), TOKEN);
     // Enter finishes the form; the Connect button runs the same submit.
     await browser.keys("Enter");
 
@@ -529,7 +530,7 @@ describe("Work items", () => {
     // `main` exists, so git refuses - and the click happened here, so the
     // refusal has to appear here and not only in the Git panel.
     const input = await $("div.w-80 input");
-    await input.setValue("main");
+    await fill(input, "main");
     await (await $("button=OK")).click();
     await waitForText("already exists", "a branch git refused was reported nowhere");
   });
@@ -666,7 +667,7 @@ describe("Work items", () => {
 
   it("says something on the item, and reads it back from the board", async () => {
     const box = await $("textarea");
-    await box.setValue("Fixed on the language branch.");
+    await fill(box, "Fixed on the language branch.");
     await (await $("button=Comment")).click();
 
     await waitForText("fixed on the language branch", "the comment never came back from the board");
@@ -809,7 +810,7 @@ describe("Work items", () => {
     assert.ok(whole > 1, `the list to filter was not there: ${whole} rows`);
 
     const box = await $('input[placeholder^="Filter by title"]');
-    await box.setValue("keyboard");
+    await fill(box, "keyboard");
     await browser.waitUntil(async () => (await rows()) === 1, {
       timeout: 20_000,
       timeoutMsg: "the filter did not narrow the list to the one item that matches",
@@ -824,7 +825,7 @@ describe("Work items", () => {
     assert.equal(requestsTo("/wiql").length, asked, "filtering must not cost a query");
 
     // Something nothing matches says so, rather than looking empty for no reason.
-    await box.setValue("zzzz-nothing");
+    await fill(box, "zzzz-nothing");
     await waitForText("nothing here matches", "an empty result did not explain itself");
     await browser.waitUntil(async () => (await rows()) === 0, {
       timeout: 20_000,

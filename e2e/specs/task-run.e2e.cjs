@@ -42,6 +42,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
+const { fill } = require("../support/fields.cjs");
 
 const configDir = path.join(process.env.APPDATA ?? "", "com.iodm.aiminieditor");
 const providersFile = path.join(configDir, "providers.json");
@@ -462,23 +463,6 @@ ${page.slice(0, 2000)}`);
   }
 }
 
-/**
- * Types a value and proves it arrived whole.
- *
- * Measured 2026-08-24: a person typing at the machine while the parked test
- * window held keyboard focus left "làm" interleaved inside the board URL -
- * 'lhttp://127.0.0.1:51291àm' - and the connect step failed for a reason that
- * looked exactly like the long-standing board flake. A field read back is a
- * field known to hold its value, whatever else the keyboard was doing.
- */
-async function fill(field, value) {
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    await field.setValue(value);
-    if ((await field.getValue()) === value) return;
-  }
-  throw new Error(`a field never held "${value}" - something else is typing into this window`);
-}
-
 async function open(dir) {
   await browser.execute((recent) => {
     localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: recent, openedAt: Date.now() }]));
@@ -775,7 +759,7 @@ ${suite.output}`,
     await browser.keys(["Control", "p"]);
     // '>' narrows the palette to commands, so Enter cannot land on a file whose
     // name happens to fuzzy-match better than the command does.
-    await (await $('input[placeholder*="Type a command"]')).setValue(">task runs");
+    await fill(await $('input[placeholder*="Type a command"]'), ">task runs");
     await browser.keys("Enter");
 
     await waitForText("earlier runs", "the run history never opened");

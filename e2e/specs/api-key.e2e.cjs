@@ -20,6 +20,7 @@ const { strict: assert } = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { fill } = require("../support/fields.cjs");
 
 const configDir = path.join(process.env.APPDATA ?? "", "com.iodm.aiminieditor");
 const providersFile = path.join(configDir, "providers.json");
@@ -201,7 +202,7 @@ describe("API keys", () => {
     // The field names the variable the key will ride, so the user can check
     // it against the provider's documentation.
     const field = await $('input[placeholder="AIME_PROBE_KEY"]');
-    await field.setValue("ui-key-456");
+    await fill(field, "ui-key-456");
     await (await $("button=Save")).click();
     await waitForText("saved", "the settings page never confirmed the key");
 
@@ -245,7 +246,7 @@ describe("API keys", () => {
     await waitForText("probe-login logout", "the settings page never explained the CLI route");
 
     const field = await $('input[placeholder="API key"]');
-    await field.setValue("cli-key-789");
+    await fill(field, "cli-key-789");
     await (await $("button=Save")).click();
     // Replacing a CLI's login is not a click Aime makes on its own.
     await waitForText("signs the cli out", "no warning before replacing the CLI's login");

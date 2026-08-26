@@ -51,3 +51,17 @@ Both cost an afternoon once, so they are written down rather than rediscovered:
    and never builds it. `npm run tauri dev` rebuilds it while it is running; without that, a new
    `#[tauri::command]` does not exist in the app and every test that reaches it fails with a command
    error. Run `cargo build` in `src-tauri` after changing Rust, then the suite.
+
+## Typing while the suite runs
+
+The test window is parked off-screen (`AIME_UNATTENDED`) but it still takes
+keyboard focus, so anything typed at the machine lands in whichever field the
+spec is filling. Measured 2026-08-24: the word "làm" arrived inside a board URL
+(`lhttp://127.0.0.1:51291àm`) and the connect step failed as if the product were
+broken. Specs therefore type through `fill()` in `e2e/support/fields.cjs`, which
+reads the field back and retries; use it for every value the app then acts on
+rather than `setValue` directly.
+
+Two places a guard cannot reach: text typed into Monaco and into the terminal
+goes in keystroke by keystroke with no field to read back. If one of those turns
+red for no reason, suspect the keyboard first.

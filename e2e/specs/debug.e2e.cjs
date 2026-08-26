@@ -12,6 +12,7 @@ const { strict: assert } = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { fill } = require("../support/fields.cjs");
 
 const projects = [];
 /** Programs this spec started itself, to attach to. */
@@ -737,7 +738,7 @@ describe("Debugging", () => {
     // Shift+F9: a breakpoint with a condition, in one gesture.
     await browser.keys(["Shift", "F9"]);
     await waitForText("stop only when", "Shift+F9 did not open the breakpoint condition");
-    await (await $('input[placeholder="i === 3"]')).setValue("i === 4");
+    await fill(await $('input[placeholder="i === 3"]'), "i === 4");
     await (await $("button*=Save")).click();
 
     await showDebugView();
@@ -754,7 +755,7 @@ describe("Debugging", () => {
     // A watch is evaluated in the frame the program stopped in, so this is the
     // only place it can be proven: doubled is 400 here, and nothing else on
     // screen says 401.
-    await (await $(`input[placeholder="Add an expression…"]`)).setValue("doubled + 1");
+    await fill(await $(`input[placeholder="Add an expression…"]`), "doubled + 1");
     await browser.keys(["Enter"]);
     await waitForText("401", "the watch was not evaluated in the frame the program stopped in");
 
@@ -781,8 +782,8 @@ describe("Debugging", () => {
     }
 
     await (await $("button*=Arguments")).click();
-    await (await $('input[placeholder="runserver --port 8080"]')).setValue('"hello there"');
-    await (await $('textarea[placeholder^="NODE_ENV=test"]')).setValue("AIME_E2E=works");
+    await fill(await $('input[placeholder="runserver --port 8080"]'), '"hello there"');
+    await fill(await $('textarea[placeholder^="NODE_ENV=test"]'), "AIME_E2E=works");
     await (await $("button*=Save")).click();
 
     await browser.keys(["F5"]);
@@ -923,7 +924,7 @@ describe("Debugging", () => {
     await showDebugView();
 
     await (await $("button*=Attach to a running program")).click();
-    await (await $('input[placeholder="9229"]')).setValue(String(port));
+    await fill(await $('input[placeholder="9229"]'), String(port));
     await (await $("button*=Attach")).click();
 
     await waitForText("paused:", "attaching never stopped the running JVM", 120_000);
@@ -1018,7 +1019,7 @@ describe("Debugging", () => {
     }
 
     await (await $("button*=Attach to a running program")).click();
-    await (await $('input[placeholder="9229"]')).setValue(String(port));
+    await fill(await $('input[placeholder="9229"]'), String(port));
     await (await $("button*=Attach")).click();
 
     // Node holds the first line for the debugger, so an attach that worked is a

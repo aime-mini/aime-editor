@@ -11,6 +11,7 @@ const { strict: assert } = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { fill } = require("../support/fields.cjs");
 
 const PLUGIN_ID = "e2e-shout";
 const pluginsDir = path.join(process.env.APPDATA ?? os.homedir(), "com.iodm.aiminieditor", "plugins");
@@ -103,7 +104,7 @@ async function runFromPalette(title) {
   await browser.keys(["Control", "k"]);
   // The palette's own field: `input[placeholder]` also matches the Debug
   // Console's disabled one, which is not interactable and not the point.
-  await (await $('input[placeholder^="Type a command"]')).setValue(title);
+  await fill(await $('input[placeholder^="Type a command"]'), title);
   await waitForText(title, `the palette never offered "${title}"`);
   await browser.keys(["Enter"]);
 }
@@ -182,7 +183,7 @@ describe("Plugins", () => {
     // Still alive: the palette opens and answers, which is the whole point of a
     // plugin living in a worker rather than in the window.
     await browser.keys(["Control", "k"]);
-    await (await $('input[placeholder^="Type a command"]')).setValue("Settings");
+    await fill(await $('input[placeholder^="Type a command"]'), "Settings");
     await waitForText("settings", "the window stopped answering after the runaway plugin");
     await browser.keys(["Escape"]);
 
