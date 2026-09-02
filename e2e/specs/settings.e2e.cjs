@@ -123,12 +123,14 @@ describe("Settings", () => {
       assert.ok(row.replace(label, "").trim().length > 0, `the ${label} row offers nothing: "${row}"`);
     }
 
-    // Machine-independent on purpose: this machine has the Azure and AWS CLIs
-    // and not the other two, so what is asserted is the shape of each answer
-    // rather than which clouds happen to be installed here.
+    // Machine-independent on purpose, and platform-independent too: the row
+    // names its CLI whichever way this platform gets it - a winget package on
+    // Windows, a brew cask on macOS, the vendor's page on Linux where casks do
+    // not exist. Pinning it to one of those would be asserting which machine
+    // the suite runs on.
     const gcp = await cloudRow("Google Cloud");
     assert.ok(
-      /gcloud|cloud\.google\.com/.test(gcp),
+      /gcloud|CloudSDK|cloud\.google\.com/.test(gcp),
       `the Google Cloud row says nothing about its CLI: "${gcp}"`,
     );
   });

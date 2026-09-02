@@ -23,6 +23,8 @@ export interface CloudStatus {
   command: string;
   installed: boolean;
   version: string | null;
+  /** Set when the CLI is a copy Aime downloaded, not one on PATH. */
+  path: string | null;
   signedIn: boolean | null;
   account: string | null;
   signInHint: string;

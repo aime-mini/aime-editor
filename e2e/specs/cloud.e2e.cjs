@@ -117,22 +117,6 @@ describe("Cloud", () => {
     fs.writeFileSync(path.join(project, "AGENTS.md"), "# Notes\n\nDo not rename the store keys.\n");
     fs.writeFileSync(path.join(project, "package.json"), '{ "name": "cloud-probe" }\n');
 
-    // The greeting window is a page of its own and its document has no storage
-    // access, so a spec that reaches for localStorage the moment the driver
-    // attaches can land on it. Waiting for a document that answers is the only
-    // honest way to tell "not ready yet" from "broken".
-    await browser.waitUntil(
-      async () =>
-        browser.execute(() => {
-          try {
-            return localStorage.length >= 0;
-          } catch {
-            return false;
-          }
-        }),
-      { timeout: 60_000, timeoutMsg: "the editor window never took over from the greeting" },
-    );
-
     await browser.execute((recent) => {
       localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: recent, openedAt: Date.now() }]));
       localStorage.setItem("aime.provider", "cloud-probe");
@@ -198,8 +182,12 @@ describe("Cloud", () => {
       async () => (await browser.execute(() => document.body.textContent ?? "")).includes("Install with:"),
       { timeout: 10_000, timeoutMsg: "the download button installed without asking" },
     );
+    // Whatever the offer is on this machine - a package manager command, or a
+    // release archive Aime fetches itself - the question has to name it. Anchored
+    // to the row's own hint rather than to the word "winget", which would be an
+    // assertion about this machine rather than about the feature.
     const question = await browser.execute(() => document.body.textContent ?? "");
-    assert.match(question, /winget install/, "the confirmation does not say what it would run");
+    assert.match(question, /Install with: \S+/, `the confirmation does not say what it would run: ${question.slice(0, 200)}`);
 
     // Declining leaves the row exactly as it was, and nothing gets installed.
     await (await $('button[title="Leave it"]')).click();

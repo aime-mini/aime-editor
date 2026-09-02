@@ -117,14 +117,49 @@ pub enum Probe {
 /// The Roslyn language server, pinned like every other archive Aime fetches: a
 /// machine set up today and one set up next month must behave the same.
 ///
-/// Measured 2026-08-04: the runnable build is in `content/LanguageServer/win-x64`
+/// Measured 2026-08-04: the runnable build is in `content/LanguageServer/<rid>`
 /// of the platform package - `lib/net9.0` alone cannot start (it is missing
 /// `System.CommandLine`). The whole recipe is in ARCHITECTURE.md §5.
-const ROSLYN_PACKAGE_URL: &str = "https://api.nuget.org/v3-flatcontainer/microsoft.codeanalysis.languageserver.win-x64/5.0.0-1.25277.114/microsoft.codeanalysis.languageserver.win-x64.5.0.0-1.25277.114.nupkg";
+///
+/// One package per runtime identifier, because there is one per platform and
+/// this used to name `win-x64` outright - which on a Mac downloaded a Windows
+/// build and produced a binary that could not start. All six identifiers were
+/// checked against NuGet's own index at the pinned version (2026-09-02); only
+/// the Windows package has been opened by hand, and `fetch_and_unpack` fails
+/// loudly if another one does not hold the folder named below.
+macro_rules! roslyn_package {
+    ($rid:literal, $exe:literal) => {
+        const ROSLYN_PACKAGE_URL: &str = concat!(
+            "https://api.nuget.org/v3-flatcontainer/microsoft.codeanalysis.languageserver.",
+            $rid,
+            "/5.0.0-1.25277.114/microsoft.codeanalysis.languageserver.",
+            $rid,
+            ".5.0.0-1.25277.114.nupkg"
+        );
+        /// Where the executable lands, relative to Aime's servers directory.
+        /// The nupkg unpacks into `content/`, so that is the folder Aime
+        /// watches for.
+        const ROSLYN_BINARY: &str = concat!(
+            "roslyn/content/LanguageServer/",
+            $rid,
+            "/Microsoft.CodeAnalysis.LanguageServer",
+            $exe
+        );
+    };
+}
 
-/// Where the executable lands, relative to Aime's servers directory. The nupkg
-/// unpacks into `content/`, so the folder Aime watches for is that.
-const ROSLYN_BINARY: &str = "roslyn/content/LanguageServer/win-x64/Microsoft.CodeAnalysis.LanguageServer.exe";
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+roslyn_package!("win-x64", ".exe");
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+roslyn_package!("win-arm64", ".exe");
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+roslyn_package!("osx-x64", "");
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+roslyn_package!("osx-arm64", "");
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+roslyn_package!("linux-x64", "");
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+roslyn_package!("linux-arm64", "");
 
 /// Eclipse JDT LS, pinned for the same reason Roslyn is.
 ///

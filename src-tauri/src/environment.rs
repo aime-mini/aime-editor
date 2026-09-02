@@ -292,6 +292,21 @@ pub async fn install_tool(app: AppHandle, tool_id: String) -> Result<i32, String
             return Ok(0);
         }
     }
+    // A cloud CLI Aime fetches itself is a download too, and it reports through
+    // the same log window rather than a second one.
+    if crate::cloud::is_fetched(&tool_id) {
+        let emit = |line: String| {
+            let _ = app.emit(
+                INSTALL_OUTPUT_EVENT,
+                InstallLine {
+                    tool_id: tool_id.clone(),
+                    line,
+                },
+            );
+        };
+        crate::cloud::cloud_download(app.clone(), &tool_id, emit).await?;
+        return Ok(0);
+    }
     let command = install_command_for(&tool_id).ok_or_else(|| format!("Nothing to install for {tool_id}"))?;
     let tokens = tokenize_command(&command);
     let (program, args) = tokens

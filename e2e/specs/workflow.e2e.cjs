@@ -352,8 +352,25 @@ describe("Workflows", () => {
       () => fs.readFileSync(path.join(dir, "greeting.txt"), "utf8").trim() === "hello from ours",
       { timeout: 10_000, timeoutMsg: "the resolved file was never written" },
     );
-    const staged = git(dir, "diff", "--name-only", "--cached");
-    assert.ok(staged.includes("greeting.txt"), "resolving should stage the file, as git itself expects");
+    // Waited for, not read once: staging is its own call after the write, so
+    // reading the index the moment the file lands is a race - and it lost one
+    // run in two of the full suite before this became a wait. The predicate
+    // swallows its own failure because git can refuse while it still holds a
+    // lock from the write, and a throw inside `waitUntil` ends the wait
+    // instead of retrying it.
+    await browser.waitUntil(
+      () => {
+        try {
+          return git(dir, "diff", "--name-only", "--cached").includes("greeting.txt");
+        } catch {
+          return false;
+        }
+      },
+      {
+        timeout: 15_000,
+        timeoutMsg: "resolving should stage the file, as git itself expects",
+      },
+    );
   });
 
   it("runs the project's own task and brings its exit code back", async () => {

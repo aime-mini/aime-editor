@@ -203,6 +203,30 @@ exports.config = {
     });
   },
 
+  /**
+   * Waits for the editor's own document before a spec touches anything.
+   *
+   * The greeting window (`splash.html`) is a page of its own, and its document
+   * has no storage access. A spec whose setup reaches for `localStorage` the
+   * moment the driver attaches can land on it and die with "Access is denied
+   * for this document" - which looks like a flake and is really a race with a
+   * feature. Waiting here rather than in each spec is the only way it cannot
+   * be forgotten by the next spec somebody writes.
+   */
+  before: async () => {
+    await browser.waitUntil(
+      async () =>
+        browser.execute(() => {
+          try {
+            return localStorage.length >= 0;
+          } catch {
+            return false;
+          }
+        }),
+      { timeout: 60_000, timeoutMsg: "the editor window never took over from the greeting" },
+    );
+  },
+
   onComplete: async () => {
     tauriDriver?.kill();
     fs.rmSync(workspace, { recursive: true, force: true });

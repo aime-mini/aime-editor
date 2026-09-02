@@ -67,6 +67,79 @@ pub async fn fetch_and_unpack(
     Ok(())
 }
 
+/// Downloads an archive whose payload is one executable rather than a folder.
+///
+/// The sibling of `fetch_and_unpack`, and separate because the "already here?"
+/// test differs: a release that unpacks to a bare binary has no folder to look
+/// for, and treating a file as a directory would re-download it every time.
+///
+/// The expected file name is checked after unpacking rather than assumed. Only
+/// the Windows archive of the Supabase CLI was opened by hand (it holds
+/// `supabase.exe` and `supabase-go.exe` at the root, no folder), so on the other
+/// platforms this is the assertion that turns a wrong guess into one clear
+/// sentence instead of a CLI that silently never appears.
+pub async fn fetch_binary(
+    url: &str,
+    dir: &Path,
+    binary: &str,
+    label: &str,
+    mut report: impl FnMut(String),
+) -> Result<std::path::PathBuf, String> {
+    let target = dir.join(binary);
+    if target.is_file() {
+        return Ok(target);
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+
+    let partial = dir.join(format!("{label}.part"));
+    report(format!("$ curl --fail --location {url}"));
+    run(
+        "curl",
+        &[
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--output",
+            &partial.to_string_lossy(),
+            url,
+        ],
+    )
+    .await
+    .map_err(|e| format!("Could not download {label}: {e}"))?;
+
+    report(format!("$ tar -xf {label}"));
+    let extracted = run(
+        &unpacker(),
+        &["-xf", &partial.to_string_lossy(), "-C", &dir.to_string_lossy()],
+    )
+    .await;
+    let _ = std::fs::remove_file(&partial);
+    extracted.map_err(|e| format!("Could not unpack {label}: {e}"))?;
+
+    if !target.is_file() {
+        return Err(format!(
+            "The {label} archive did not contain {binary} - it unpacked into {}",
+            dir.display()
+        ));
+    }
+    // tar carries the mode, but an archive built without it would leave a file
+    // nothing can execute, and the failure then arrives much later as "command
+    // not found" from a shell.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut mode = std::fs::metadata(&target)
+            .map_err(|e| format!("Could not read {}: {e}", target.display()))?
+            .permissions();
+        mode.set_mode(0o755);
+        std::fs::set_permissions(&target, mode)
+            .map_err(|e| format!("Could not make {} executable: {e}", target.display()))?;
+    }
+    report(format!("{label} is ready"));
+    Ok(target)
+}
+
 /// The archiver to unpack with.
 ///
 /// Windows ships bsdtar as the `tar.exe` in its System32 folder, and bsdtar
