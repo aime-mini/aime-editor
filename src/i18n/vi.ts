@@ -438,9 +438,11 @@ export const vi: Record<TranslationKey, string> = {
   "run.implemented": "Code đã viết xong, kèm {tests} test",
   "run.noChange": "Lượt chạy kết thúc mà không sửa file nào.",
   "run.confirming": "Suite đang đỏ đã xanh - chạy lại toàn bộ suite một lượt nữa",
+  "run.casesUnproven": "Còn {count} case chưa chứng minh được trên phần mềm đang chạy sau {rounds} vòng",
   "run.nothingToDeploy": "Không có gì để build, và thay đổi này không cần deploy để chứng minh",
   "run.builtOnly": "{count} lệnh build xanh; thay đổi này không cần deploy để chứng minh",
-  "run.implementedPartly": "Code đã viết xong, nhưng {missing} test trong plan không thấy đâu",
+  "run.testsNeverWritten":
+    "Còn {count} test trong plan chưa có sau {rounds} vòng - case không có test thì không thể chứng minh",
   "run.testsMissingAttempt": "Lần {attempt}: vẫn chưa có file test ở {detail}",
   "run.nothingToMeasure": "Dự án này không khai lệnh test lẫn lệnh kiểm nào.",
   "run.checksOnly":
@@ -484,7 +486,6 @@ export const vi: Record<TranslationKey, string> = {
     "Không có gì trên đĩa cho thấy phần mềm deploy xong có chạy - tức là chưa bàn giao được gì",
   "run.deliverNoProofShort": "chưa có bằng chứng deploy",
   "run.deliverOwedAttempt": "Lần {attempt}: còn nợ - {detail}",
-  "run.deliverUnproven": "Các case không có bằng chứng từ phần mềm đang chạy - ghi là chưa chứng minh:",
   "run.trashHeading": "Dọn dẹp sau lượt này",
   "run.trashPreview": "Liệt kê những gì lượt này để lại",
   "run.trashEmpty": "Lượt này không để lại gì.",

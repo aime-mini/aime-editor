@@ -1273,17 +1273,19 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
   ].join("\n");
 
   const tried: string[] = [];
-  // What the next attempt is told it still owes: nothing on the first go, then
+  // The signature of each round's shortfall, so a round that changed nothing
+  // ends the loop rather than being tried eleven more times.
+  const rounds: string[] = [];
+  // What the next round is told it still owes: nothing on the first go, then
   // the exact test files the plan promised and the tree does not have.
   let owed = "";
-  let missing: Plan["tests"] = [];
-  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
-    if (attempt > 1) note(set, "implement", translate("run.tryingAgain", { attempt, of: ATTEMPTS }));
+  for (let round = 1; round <= MAX_ROUNDS; round += 1) {
+    if (round > 1) note(set, "implement", translate("run.tryingAgain", { attempt: round, of: MAX_ROUNDS }));
     const code = await runAgent(context, owed === "" ? prompt : `${prompt}\n\n${owed}`, set);
     // A cancel is the one answer not worth repeating.
     if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
     if (code !== 0) {
-      if (attempt === ATTEMPTS) return { state: "blocked", summary: translate("run.agentFailed", { code }) };
+      if (round === ATTEMPTS) return { state: "blocked", summary: translate("run.agentFailed", { code }) };
       tried.push(translate("run.agentFailed", { code }));
       continue;
     }
@@ -1291,7 +1293,7 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
     const diff = await invoke<string>("git_worktree_diff", { root: context.workRoot });
     if (diff.trim() === "") return { state: "blocked", summary: translate("run.noChange") };
 
-    missing = testsNotWritten(plan, await existingFiles(context.workRoot));
+    const missing = testsNotWritten(plan, await existingFiles(context.workRoot));
     if (missing.length === 0) {
       return {
         state: "passed",
@@ -1299,23 +1301,26 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
         detail: tried.join("\n"),
       };
     }
-    if (attempt === ATTEMPTS) break;
-    tried.push(
-      translate("run.testsMissingAttempt", {
-        attempt,
-        detail: missing.map((test) => test.file).join(", "),
-      }),
-    );
-    owed = [TESTS_MISSING, ...missing.map((test) => `- ${test.file} :: ${test.name}`)].join("\n");
+
+    // Every criterion has a case and every case has a test, agreed on the page
+    // the reader approved - so a case with no test file is a requirement this
+    // change does not cover, and the run may not walk past it.
+    const signature = missing.map((test) => test.file).join("|");
+    const detail = missing.map((test) => `- ${test.file} :: ${test.name}`);
+    if (stalled(rounds, signature) || round === MAX_ROUNDS) {
+      return {
+        state: "blocked",
+        summary: translate("run.testsNeverWritten", { count: missing.length, rounds: round }),
+        detail: [...tried, ...detail].join("\n"),
+      };
+    }
+    rounds.push(signature);
+    tried.push(translate("run.testsMissingAttempt", { attempt: round, detail: signature }));
+    owed = [TESTS_MISSING, ...detail].join("\n");
   }
-  // The code is written and the tree changed, so the run goes on - but the
-  // cases whose test never appeared cannot earn a PASS in the report, and the
-  // summary says so rather than reporting a clean finish.
-  return {
-    state: "passed",
-    summary: translate("run.implementedPartly", { missing: missing.length }),
-    detail: [...tried, ...missing.map((test) => `- ${test.file} :: ${test.name}`)].join("\n"),
-  };
+  // Unreachable: the loop returns on every path out of its last round. Here so
+  // a future edit cannot fall through into a silent pass.
+  return { state: "blocked", summary: translate("run.testsNeverWritten", { count: 0, rounds: MAX_ROUNDS }) };
 }
 
 /**
@@ -1383,7 +1388,10 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
   // The suites a round re-runs: null until something fails, then exactly the
   // ones that did.
   let focus: Set<string> | null = null;
-  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+  // One signature per round, so a round that leaves exactly what the last one
+  // left ends the loop instead of burning the whole ceiling.
+  const rounds: string[] = [];
+  for (let round = 1; round <= MAX_ROUNDS; round += 1) {
     // The checks first: they are the cheap ones, and a tree that does not
     // typecheck has nothing to tell a suite that takes nine minutes.
     let stale: CheckRun[] = [];
@@ -1397,18 +1405,16 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
       const broke = newlyFailing(checksBefore, now);
       stale = alreadyFailing(checksBefore, now);
       if (broke.length > 0) {
-        if (attempt === ATTEMPTS) {
+        const labels = broke.map((check) => check.label).join(", ");
+        if (stalled(rounds, `check:${labels}`) || round === MAX_ROUNDS) {
           return {
             state: "blocked",
-            summary: translate("run.qualityFailed", {
-              count: broke.length,
-              detail: broke.map((check) => check.label).join(", "),
-            }),
+            summary: translate("run.qualityFailed", { count: broke.length, detail: labels }),
             detail: [...tried, checkEvidence(broke)].join("\n"),
           };
         }
-        const labels = broke.map((check) => check.label).join(", ");
-        tried.push(translate("run.qualityFixing", { attempt, detail: labels }));
+        rounds.push(`check:${labels}`);
+        tried.push(translate("run.qualityFixing", { attempt: round, detail: labels }));
         mended.push(labels);
         note(set, "verify", tried[tried.length - 1]);
         const code = await runAgent(
@@ -1457,31 +1463,37 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
       return {
         state: "passed",
         summary:
-          attempt === 1
+          round === 1
             ? summarise(verdict)
-            : translate("run.repaired", { attempts: attempt - 1, detail: mended.join("; ") }),
+            : translate("run.repaired", { attempts: round - 1, detail: mended.join("; ") }),
         detail: [...tried, describeChecks({ checks: stale }), differences(verdict)]
           .filter(Boolean)
           .join("\n"),
       };
     }
-    if (attempt === ATTEMPTS) {
+    // The whole point of the loop: a broken test is not a reason to hand the
+    // work back, it is a reason to keep fixing. What ends it is the failures
+    // coming back unchanged - a round that mended nothing will not mend
+    // anything on its eleventh go either.
+    const failures = `suite:${brokenNames(verdict).join("|")}`;
+    if (stalled(rounds, failures) || round === MAX_ROUNDS) {
       return {
         state: "blocked",
-        summary: translate("run.repairGaveUp", { attempts: ATTEMPTS, detail: summarise(verdict) }),
+        summary: translate("run.repairGaveUp", { attempts: round, detail: summarise(verdict) }),
         detail: [...tried, differences(verdict)].filter(Boolean).join("\n"),
       };
     }
-    tried.push(translate("run.repairAttempt", { attempt, detail: summarise(verdict) }));
+    rounds.push(failures);
+    tried.push(translate("run.repairAttempt", { attempt: round, detail: summarise(verdict) }));
     mended.push(brokenNames(verdict).join(", ") || summarise(verdict));
     focus = failingSuites(verdict);
-    note(set, "verify", translate("run.repairing", { attempt, of: ATTEMPTS }));
+    note(set, "verify", translate("run.repairing", { attempt: round, of: MAX_ROUNDS }));
     const code = await runAgent(context, repairPrompt(verdict), set, "verify");
     if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
   }
   // Unreachable: every path out of the loop above returns. Here so that a future
   // edit to the loop cannot fall through into a silent pass.
-  return { state: "blocked", summary: translate("run.repairGaveUp", { attempts: ATTEMPTS, detail: "" }) };
+  return { state: "blocked", summary: translate("run.repairGaveUp", { attempts: MAX_ROUNDS, detail: "" }) };
 }
 
 /**
@@ -1514,7 +1526,8 @@ async function buildAndProve(context: Context, set: Setter, get: Getter): Promis
 
   // The declared builds first, run by Aime itself: code that does not build has
   // nothing to deploy, and the agent deserves the real output, not a summary.
-  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+  const buildRounds: string[] = [];
+  for (let round = 1; round <= MAX_ROUNDS; round += 1) {
     const failing: { task: TaskDef; outcome: CommandOutcome }[] = [];
     for (const task of builds) {
       const outcome = await runCommand(set, "verify")(
@@ -1527,14 +1540,15 @@ async function buildAndProve(context: Context, set: Setter, get: Getter): Promis
     }
     if (failing.length === 0) break;
     const labels = failing.map((one) => one.task.label).join(", ");
-    if (attempt === ATTEMPTS) {
+    if (stalled(buildRounds, labels) || round === MAX_ROUNDS) {
       return {
         state: "blocked",
         summary: translate("run.buildFailed", { detail: labels }),
         detail: tried.join("\n"),
       };
     }
-    tried.push(translate("run.buildFixing", { attempt, detail: labels }));
+    buildRounds.push(labels);
+    tried.push(translate("run.buildFixing", { attempt: round, detail: labels }));
     note(set, "verify", tried[tried.length - 1]);
     const evidence = failing
       .map((one) => [`$ ${one.task.command}`, allOutput(one.outcome).slice(-SUITE_OUTPUT_LIMIT)].join("\n"))
@@ -1558,11 +1572,10 @@ async function buildAndProve(context: Context, set: Setter, get: Getter): Promis
   // still owed is told back verbatim - the missing case ids, the missing
   // deployment proof - because "try again" without the list is a wish.
   const caseIds = (cases?.cases ?? []).map((one) => one.id);
-  let missing: TestCase[] = [];
-  let proofs: string[] = [];
+  const proofRounds: string[] = [];
   let owed = "";
-  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
-    if (attempt > 1) note(set, "verify", translate("run.tryingAgain", { attempt, of: ATTEMPTS }));
+  for (let round = 1; round <= MAX_ROUNDS; round += 1) {
+    if (round > 1) note(set, "verify", translate("run.tryingAgain", { attempt: round, of: MAX_ROUNDS }));
     const code = await runAgent(
       context,
       [deliverPrompt(cases, get), owed].filter(Boolean).join("\n\n"),
@@ -1572,46 +1585,46 @@ async function buildAndProve(context: Context, set: Setter, get: Getter): Promis
     if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
 
     const evidence = await caseEvidence(context.workRoot, caseIds, since);
-    missing = (cases?.cases ?? []).filter((one) => (evidence.get(one.id) ?? []).length === 0);
-    proofs = await deployProof(context.workRoot, since);
-    if (proofs.length > 0 && missing.length === 0) break;
-    if (attempt === ATTEMPTS) break;
+    const missing = (cases?.cases ?? []).filter((one) => (evidence.get(one.id) ?? []).length === 0);
+    const proofs = await deployProof(context.workRoot, since);
+    if (proofs.length > 0 && missing.length === 0) {
+      return {
+        state: "passed",
+        summary: translate("run.delivered", { proved: caseIds.length, total: caseIds.length }),
+        detail: [...tried, ...proofs.map((path) => `- ${path}`)].join("\n"),
+      };
+    }
+
+    // Nothing is waved through here. A case with no artifact is a requirement
+    // this change never proved, and the page the reader agreed to gave every
+    // criterion a case - so the run either proves all of them or stops and
+    // names the ones it could not, and the loop ends only when a round leaves
+    // exactly what the last one left.
+    const short = [
+      proofs.length === 0 ? translate("run.deliverNoProofShort") : "",
+      missing.map((one) => one.id).join(", "),
+    ]
+      .filter(Boolean)
+      .join("; ");
+    if (stalled(proofRounds, short) || round === MAX_ROUNDS) {
+      return {
+        state: "blocked",
+        summary:
+          proofs.length === 0
+            ? translate("run.deliverNoProof")
+            : translate("run.casesUnproven", { count: missing.length, rounds: round }),
+        detail: [...tried, ...missing.map(oneLine)].join("\n"),
+      };
+    }
+    proofRounds.push(short);
     owed = [
       ...(proofs.length === 0 ? [NO_DEPLOY_PROOF] : []),
       ...(missing.length > 0 ? [EVIDENCE_MISSING, ...missing.map(oneLine)] : []),
     ].join("\n");
-    tried.push(
-      translate("run.deliverOwedAttempt", {
-        attempt,
-        detail: [
-          proofs.length === 0 ? translate("run.deliverNoProofShort") : "",
-          missing.map((one) => one.id).join(", "),
-        ]
-          .filter(Boolean)
-          .join("; "),
-      }),
-    );
+    tried.push(translate("run.deliverOwedAttempt", { attempt: round, detail: short }));
   }
-  if (proofs.length === 0) {
-    return {
-      state: "blocked",
-      summary: translate("run.deliverNoProof"),
-      detail: tried.join("\n"),
-    };
-  }
-  return {
-    state: "passed",
-    summary: translate("run.delivered", {
-      proved: caseIds.length - missing.length,
-      total: caseIds.length,
-    }),
-    detail: [
-      ...tried,
-      ...proofs.map((path) => `- ${path}`),
-      ...(missing.length > 0 ? ["", translate("run.deliverUnproven")] : []),
-      ...missing.map(oneLine),
-    ].join("\n"),
-  };
+  // Unreachable: the loop returns on every path out of its last round.
+  return { state: "blocked", summary: translate("run.deliverNoProof") };
 }
 
 /**
@@ -1863,16 +1876,37 @@ const DIFF_LIMIT = 12_000;
 const SUITE_OUTPUT_LIMIT = 8_000;
 
 /**
- * How many times a phase tries before it admits it cannot.
+ * How many times a phase re-asks for an answer it could not use.
  *
- * The run's job is to finish the task, so nothing here refuses on its first
- * disappointment: a model that answered with prose is asked again, a plan that
- * missed a case is sent back with the case it missed, an agent that exited badly
- * is given another go. What the bound buys is the other half - three failures at
- * the same thing is a loop, not bad luck, and a loop left alone overnight is
- * what makes an unattended run frightening rather than useful.
+ * For questions, not for repairs: a model that replied with prose, a plan that
+ * missed a case, a branch name git refused. Three is plenty, because the fourth
+ * identical request buys nothing the third did not.
  */
 const ATTEMPTS = 3;
+
+/**
+ * The ceiling on a loop that is fixing something, rather than re-asking.
+ *
+ * Deliberately far above ATTEMPTS. A run exists to finish the task, so a broken
+ * test is not a reason to hand the work back after three tries - it is a reason
+ * to keep fixing. What stops these loops is `stalled` below, not a tally: a
+ * round that leaves exactly the failures the last one left is not close to
+ * succeeding, and this number is only the backstop for a loop that keeps
+ * *looking* like progress without ever arriving.
+ */
+const MAX_ROUNDS = 12;
+
+/**
+ * Whether a fixing loop has stopped getting anywhere.
+ *
+ * The honest test for "keep going" is movement, not attempts. Two consecutive
+ * rounds that end with the same outstanding set mean the agent is circling, and
+ * circling unattended is how a run spends a night and a fortune - so `history`
+ * carries a signature per round and a repeat ends the loop.
+ */
+function stalled(history: readonly string[], now: string): boolean {
+  return history.length > 0 && history[history.length - 1] === now;
+}
 
 /**
  * Tries something that can come back empty, until it does not.

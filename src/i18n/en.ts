@@ -440,9 +440,11 @@ export const en = {
   "run.implemented": "The code is written, with {tests} test(s) beside it",
   "run.noChange": "The run finished without changing a single file.",
   "run.confirming": "The suites that were red are green - running every suite once more",
+  "run.casesUnproven": "{count} case(s) still unproved against the running software after {rounds} rounds",
   "run.nothingToDeploy": "Nothing to build, and no deployment needed to prove this change",
   "run.builtOnly": "{count} build(s) pass; this change needed no deployment to be proved",
-  "run.implementedPartly": "The code is written, but {missing} planned test(s) never appeared",
+  "run.testsNeverWritten":
+    "{count} planned test(s) still missing after {rounds} rounds - a case with no test cannot be proved",
   "run.testsMissingAttempt": "Attempt {attempt}: still no test file at {detail}",
   "run.nothingToMeasure": "This project declares neither a test command nor a check command.",
   "run.checksOnly":
@@ -488,7 +490,6 @@ export const en = {
   "run.deliverNoProof": "Nothing on disk shows the deployed software running - so nothing was delivered",
   "run.deliverNoProofShort": "no deployment proof",
   "run.deliverOwedAttempt": "Attempt {attempt}: still owed - {detail}",
-  "run.deliverUnproven": "Cases with no artifact from the running software - reported unproven:",
   "run.trashHeading": "Clean up after this run",
   "run.trashPreview": "List what this run left behind",
   "run.trashEmpty": "This run left nothing behind.",

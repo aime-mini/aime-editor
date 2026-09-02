@@ -812,7 +812,10 @@ ${suite.output}`,
       "the run stopped without saying it had tried",
       240_000,
     );
-    assert.match(gave, /Still broken after 3 attempts/, `the attempts were not reported: ${gave}`);
+    // The number is not fixed: the loop keeps fixing while it is getting
+    // somewhere and stops the moment a round leaves exactly what the last one
+    // left. An agent that does nothing is caught by that, not by a tally.
+    assert.match(gave, /Still broken after \d+ attempts/, `the attempts were not reported: ${gave}`);
     await waitForText("stopped here", "a change that broke a passing test was not stopped", 240_000);
     assert.equal(
       (await $("body").getText()).toLowerCase().includes("finished, and every gate agreed"),
