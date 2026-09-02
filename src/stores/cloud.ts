@@ -27,6 +27,8 @@ export interface CloudStatus {
   account: string | null;
   signInHint: string;
   installHint: string;
+  /** Whether Aime could run that install here - see the Rust `CloudStatus`. */
+  installable: boolean;
 }
 
 /** Mirror of the Rust `MemoryPaths` (memory.rs), as far as a project needs it. */

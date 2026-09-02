@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Check, Cloud, Copy, Loader2, Radar, TriangleAlert } from "lucide-react";
+import { Check, Cloud, Copy, Download, Loader2, Radar, TriangleAlert, X } from "lucide-react";
 import { useT } from "../i18n";
 import { useCloud, type CloudStatus } from "../stores/cloud";
+import { useLayout } from "../stores/layout";
 import { useWorkspace } from "../stores/workspace";
 
 /**
@@ -23,9 +24,17 @@ export function CloudRows() {
   const rootPath = useWorkspace((s) => s.rootPath);
   const t = useT();
 
+  const installing = useLayout((s) => s.installerTools.length > 0);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Re-probed when the installer window closes: a CLI installed a moment ago
+  // must stop being reported as missing without anyone reopening this page.
+  useEffect(() => {
+    if (!installing) void refresh();
+  }, [installing, refresh]);
 
   if (!ready) {
     return (
@@ -83,6 +92,39 @@ function CloudRow({
   // stops at "signed in?" rather than claiming either answer - see cloud.rs.
   const command = !cloud.installed ? cloud.installHint : cloud.signedIn === false ? cloud.signInHint : null;
   const canDiscover = cloud.installed && cloud.signedIn !== false;
+  const [asking, setAsking] = useState(false);
+
+  // Asked before anything is installed, and the question carries the exact
+  // command: installing on somebody's machine is their decision, and a
+  // confirmation that does not say what will run is not a decision.
+  if (asking) {
+    return (
+      <div className="flex items-center gap-2 py-0.5 text-[12px]">
+        <Download size={12} className="shrink-0 text-accent" />
+        <span className="min-w-0 flex-1 truncate">
+          {t("cloud.installAsk", { command: cloud.installHint })}
+        </span>
+        <button
+          onClick={() => {
+            setAsking(false);
+            useLayout.getState().setInstallerTools([cloud.id]);
+          }}
+          className="shrink-0 rounded border border-accent px-2 py-0.5 text-[11px] text-accent hover:bg-elevated"
+        >
+          {t("cloud.installYes")}
+        </button>
+        <button
+          onClick={() => {
+            setAsking(false);
+          }}
+          title={t("cloud.installNo")}
+          className="shrink-0 rounded p-1 text-muted hover:bg-elevated hover:text-fg"
+        >
+          <X size={11} />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-center gap-2 py-0.5 text-[12px]">
@@ -91,6 +133,17 @@ function CloudRow({
       <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
         {command ?? cloud.account ?? t("cloud.signedInUnknown")}
       </span>
+      {cloud.installable && (
+        <button
+          onClick={() => {
+            setAsking(true);
+          }}
+          title={t("cloud.install")}
+          className="shrink-0 rounded p-1 text-muted hover:bg-elevated hover:text-accent"
+        >
+          <Download size={11} />
+        </button>
+      )}
       {command !== null && <CopyButton text={command} />}
       {canDiscover && (
         <button

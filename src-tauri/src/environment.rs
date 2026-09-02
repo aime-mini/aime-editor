@@ -259,6 +259,9 @@ fn install_command_for(tool_id: &str) -> Option<String> {
     if let Some(spec) = crate::lsp::spec_for(tool_id) {
         return Some(spec.install_hint.to_string());
     }
+    if let Some(hint) = crate::cloud::install_hint_for(tool_id) {
+        return Some(hint);
+    }
     PROVIDERS
         .iter()
         .find(|(id, _, _)| *id == tool_id)

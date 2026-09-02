@@ -37,6 +37,10 @@ pub struct CloudStatus {
     /// How to get the CLI; a page rather than a command where no package
     /// manager on this platform carries it.
     pub install_hint: String,
+    /// Whether Aime could run that install here: the hint is a command, and the
+    /// program it runs is on this machine. One rule shared with the environment
+    /// rows, so the two can never disagree about whether a button would work.
+    pub installable: bool,
 }
 
 /// A cloud Aime knows how to look for.
@@ -69,8 +73,12 @@ const CLOUDS: [Cloud; 4] = [
         label: "Google Cloud",
         command: "gcloud",
         sign_in_hint: "gcloud auth login",
-        install_hint: "https://cloud.google.com/sdk/docs/install",
+        install_hint: "winget install -e --id Google.CloudSDK",
     },
+    // The one page rather than a command, and measured rather than assumed:
+    // `winget search supabase` finds nothing, and the documented Windows route
+    // is a scoop bucket plus an install - two commands, which is not an install
+    // hint. A button that ran half of it would leave a mess.
     Cloud {
         id: "supabase",
         label: "Supabase",
@@ -89,26 +97,43 @@ pub async fn cloud_report() -> Vec<CloudStatus> {
     let mut report = Vec::with_capacity(CLOUDS.len());
     for cloud in CLOUDS {
         let version = crate::environment::version_of(cloud.command).await;
-        let identity = if version.is_some() {
+        let installed = version.is_some();
+        let identity = if installed {
             identity_of(cloud.id).await
         } else {
             // Nothing to ask. A missing CLI is not a signed-out one, and
             // saying "not signed in" here would send a reader to the wrong fix.
             None
         };
+        // Only asked when there is something to offer: a machine that already
+        // has the CLI does not need its package manager probed.
+        let installable = !installed && crate::environment::can_run_install(cloud.install_hint).await;
         report.push(CloudStatus {
             id: cloud.id.to_string(),
             label: cloud.label.to_string(),
             command: cloud.command.to_string(),
-            installed: version.is_some(),
+            installed,
             version,
             signed_in: identity.as_ref().map(|found| found.signed_in),
             account: identity.and_then(|found| found.account),
             sign_in_hint: cloud.sign_in_hint.to_string(),
+            installable,
             install_hint: cloud.install_hint.to_string(),
         });
     }
     report
+}
+
+/// The install command for one cloud, for the installer that runs it.
+///
+/// Exists so `install_tool` can reach these the same way it reaches a language
+/// server or an AI CLI: one queue, one log window, one place that decides
+/// nothing is ever installed that Aime did not itself offer.
+pub(crate) fn install_hint_for(id: &str) -> Option<String> {
+    CLOUDS
+        .iter()
+        .find(|cloud| cloud.id == id)
+        .map(|cloud| cloud.install_hint.to_string())
 }
 
 /// What a sign-in probe found.
@@ -221,6 +246,23 @@ mod tests {
         // `isDefault` is a boolean. Reading it as a string would put "true," or
         // half the rest of the document into an account label.
         assert_eq!(json_string(AZ, "isDefault"), None);
+    }
+
+    #[test]
+    fn the_installer_can_reach_every_cloud_that_has_a_command() {
+        // Verified with `winget show --exact` rather than remembered: all three
+        // package ids exist. Supabase is a page, and answering a page here is
+        // what stops the row from offering a button that cannot work.
+        assert_eq!(
+            install_hint_for("azure").as_deref(),
+            Some("winget install -e --id Microsoft.AzureCLI")
+        );
+        assert_eq!(
+            install_hint_for("gcp").as_deref(),
+            Some("winget install -e --id Google.CloudSDK")
+        );
+        assert!(install_hint_for("supabase").is_some_and(|hint| hint.starts_with("https://")));
+        assert_eq!(install_hint_for("not-a-cloud"), None);
     }
 
     #[test]

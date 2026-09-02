@@ -258,6 +258,10 @@ export const vi: Record<TranslationKey, string> = {
   "settings.cloud": "Cloud",
   "settings.cloudHint":
     "Kết nối nghĩa là đăng nhập bằng CLI của chính cloud đó - Aime không bao giờ hỏi key. Đăng nhập xong, nó tự đi tìm những gì đang chạy ở đó và ghi vào bộ nhớ AI của dự án này.",
+  "cloud.install": "Cài giúp tôi",
+  "cloud.installAsk": "Cài bằng lệnh: {command}?",
+  "cloud.installYes": "Cài",
+  "cloud.installNo": "Thôi",
   "cloud.looking": "Đang tìm CLI cloud trên máy…",
   "cloud.discover": "Tìm những gì đang chạy, và ghi vào bộ nhớ AI của dự án",
   "cloud.copy": "Copy lệnh",

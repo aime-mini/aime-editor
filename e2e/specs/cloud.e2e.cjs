@@ -90,6 +90,18 @@ async function discoverButton(label) {
   return null;
 }
 
+/** The first row offering an install, or null when none does on this machine. */
+async function installRow() {
+  const rows = await $$("div.flex.items-center");
+  for (const row of rows) {
+    const buttons = await row.$$("button");
+    for (const button of buttons) {
+      if ((await button.getAttribute("title")) === "Install it for me") return row;
+    }
+  }
+  return null;
+}
+
 describe("Cloud", () => {
   const saved = {};
   let project = "";
@@ -104,6 +116,22 @@ describe("Cloud", () => {
     // A note of the user's own, so the splice can be proved not to eat it.
     fs.writeFileSync(path.join(project, "AGENTS.md"), "# Notes\n\nDo not rename the store keys.\n");
     fs.writeFileSync(path.join(project, "package.json"), '{ "name": "cloud-probe" }\n');
+
+    // The greeting window is a page of its own and its document has no storage
+    // access, so a spec that reaches for localStorage the moment the driver
+    // attaches can land on it. Waiting for a document that answers is the only
+    // honest way to tell "not ready yet" from "broken".
+    await browser.waitUntil(
+      async () =>
+        browser.execute(() => {
+          try {
+            return localStorage.length >= 0;
+          } catch {
+            return false;
+          }
+        }),
+      { timeout: 60_000, timeoutMsg: "the editor window never took over from the greeting" },
+    );
 
     await browser.execute((recent) => {
       localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: recent, openedAt: Date.now() }]));
@@ -148,6 +176,38 @@ describe("Cloud", () => {
       assert.ok(row.includes(label), `no row for ${label}`);
       assert.ok(row.replace(label, "").trim().length > 0, `the ${label} row offers nothing: "${row}"`);
     }
+  });
+
+  it("asks before installing anything, and takes no for an answer", async () => {
+    // Never clicks Install: that would put a cloud SDK on the machine running
+    // the suite. What is proved here is the half that matters - the question
+    // is asked, it carries the exact command, and declining changes nothing.
+    const row = await installRow();
+    if (row === null) {
+      // Every CLI is already here, or no package manager can carry the ones
+      // that are not. Then the rows must still say how to get them by hand.
+      for (const label of ["Google Cloud", "Supabase"]) {
+        const text = await cloudRow(label);
+        assert.ok(text.length > label.length, `the ${label} row says nothing about its CLI`);
+      }
+      return;
+    }
+
+    await (await row.$("button")).click();
+    await browser.waitUntil(
+      async () => (await browser.execute(() => document.body.textContent ?? "")).includes("Install with:"),
+      { timeout: 10_000, timeoutMsg: "the download button installed without asking" },
+    );
+    const question = await browser.execute(() => document.body.textContent ?? "");
+    assert.match(question, /winget install/, "the confirmation does not say what it would run");
+
+    // Declining leaves the row exactly as it was, and nothing gets installed.
+    await (await $('button[title="Leave it"]')).click();
+    await browser.waitUntil(
+      async () =>
+        !(await browser.execute(() => document.body.textContent ?? "")).includes("Install with:"),
+      { timeout: 10_000, timeoutMsg: "the question stayed on screen after declining" },
+    );
   });
 
   it("writes what the discovery found into the project's own memory file", async () => {

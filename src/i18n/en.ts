@@ -257,6 +257,10 @@ export const en = {
   "settings.cloud": "Cloud",
   "settings.cloudHint":
     "Connecting means signing into that cloud's own CLI - Aime never asks for a key. Once you are signed in, it can go and find what is already running there and write it into this project's AI memory.",
+  "cloud.install": "Install it for me",
+  "cloud.installAsk": "Install with: {command}?",
+  "cloud.installYes": "Install",
+  "cloud.installNo": "Leave it",
   "cloud.looking": "Looking for cloud CLIs on this machine…",
   "cloud.discover": "Find what is running, and write it into this project's AI memory",
   "cloud.copy": "Copy the command",
