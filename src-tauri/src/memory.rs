@@ -27,6 +27,24 @@ pub struct MemoryPaths {
     pub bridge_path: Option<String>,
 }
 
+/// One project's memory file, and the pointer file Claude reads it through.
+///
+/// Provider-free on purpose. The canonical project file is `AGENTS.md` for
+/// every CLI, so asking which provider is selected to find it invents a
+/// dependency - and that dependency bites: `memory_paths` resolves a *global*
+/// path through the provider's adapter, so a user on a CLI they added
+/// themselves cannot be given a project path at all. Anything that only needs
+/// the project's own file asks for this instead.
+#[tauri::command]
+pub fn project_memory_paths(root_path: String) -> MemoryPaths {
+    let root = Path::new(&root_path);
+    MemoryPaths {
+        global_path: String::new(),
+        project_path: Some(root.join(PROJECT_MEMORY_FILE).to_string_lossy().to_string()),
+        bridge_path: Some(root.join(CLAUDE_PROJECT_FILE).to_string_lossy().to_string()),
+    }
+}
+
 /// Resolves where the selected provider reads its memory from.
 #[tauri::command]
 pub fn memory_paths(

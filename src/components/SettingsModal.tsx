@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, Cpu, Eye, Monitor, Settings2, Shield, ShieldOff, Sparkles, X } from "lucide-react";
+import { Check, Cloud, Cpu, Eye, Monitor, Settings2, Shield, ShieldOff, Sparkles, X } from "lucide-react";
 import { useI18n, useT } from "../i18n";
 import { errorLogPath } from "../lib/diagnostics";
 import { buildAddProviderPrompt } from "../lib/aiProvider";
 import { capabilitiesOf, effortsOf } from "../lib/providers";
 import { PERMISSION_ORDER, type Permission } from "../lib/types";
+import { CloudRows } from "./CloudRows";
 import { PluginsSection } from "./PluginsSection";
 import { useAi, type ApiKeyRoute } from "../stores/ai";
 import { INLINE_AI_MODES, UPDATE_CHANNELS, useSettings } from "../stores/settings";
@@ -470,6 +471,12 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               </span>
             </button>
           </Row>
+
+          <p className={section}>
+            <Cloud size={12} /> {t("settings.cloud")}
+          </p>
+          <p className="pb-1 text-[11px] text-muted">{t("settings.cloudHint")}</p>
+          <CloudRows />
 
           <p className={section}>
             <Settings2 size={12} /> {t("settings.advanced")}

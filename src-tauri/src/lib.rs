@@ -2,6 +2,7 @@ mod aime_dir;
 mod archive;
 mod checkpoint;
 mod cli;
+mod cloud;
 mod dap;
 mod diagnostics;
 mod environment;
@@ -66,6 +67,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cli::initial_folder,
+            cloud::cloud_report,
             splash::splash_shown,
             splash::splash_hold,
             splash::splash_skip,
@@ -151,6 +153,7 @@ pub fn run() {
             session::load_ai_sessions,
             session::save_ai_sessions,
             memory::memory_paths,
+            memory::project_memory_paths,
             memory::ensure_memory_bridge,
             tasks::detect_tasks,
             exec::exec_run,

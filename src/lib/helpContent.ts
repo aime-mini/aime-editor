@@ -174,6 +174,14 @@ const EN: HelpTopic[] = [
     keywords: "memory agents.md claude.md global project knowledge notes brain",
   },
   {
+    id: "cloud",
+    section: "AI",
+    title: "Connect a cloud, and let the AI know what is already there",
+    body: "Settings has a Cloud section listing Azure, AWS, Google Cloud and Supabase. Connecting means signing into that cloud's own CLI - Aime never asks for a key, a secret or a password, and stores none: each of those CLIs already owns its sign-in (device codes, SSO, refresh tokens, your keychain) and re-implementing that would mean holding credentials Aime has no business holding. A row with no CLI shows the command that installs it; a CLI nobody has signed into shows the command that signs in - copyable rather than a button, because `az login` opens a browser and waits for a person. A signed-in row shows who the CLI says it is, read from the CLI itself: `az account show` names your subscription, `aws sts get-caller-identity` names your account and role. Two of the four say nothing about sign-in on purpose - Aime had no machine with gcloud or the Supabase CLI on it to measure those commands against, and a probe written from memory of a CLI's flags is the kind of guess that answers 'not signed in' to somebody who is. Then the useful half: the radar button asks the AI to find out what is ALREADY RUNNING in that account - read-only, listing and describing commands only - and Aime writes what comes back into your project's AGENTS.md, the one file every AI CLI reads on every turn. So the next time you ask for a deployment, an environment or help chasing a bug into a running service, the AI starts from your real web apps, databases, buckets and queues, spelled exactly as the cloud spells them, rather than from what a project of your kind usually has. Every discovery also has to say what it could NOT see - a command that failed, a permission you lack, a region it did not check - because a map that does not say where it ends gets read as complete. It replaces its own section each time rather than stacking, never touches your own notes in that file, and writes nothing at all if the answer comes back unreadable: a note nobody can trust is worse there than no note.",
+    keywords:
+      "cloud azure aws gcp google supabase connect sign in login cli account subscription discover inventory architecture infrastructure deploy devops memory agents.md read-only secrets",
+  },
+  {
     id: "mcp",
     section: "AI",
     title: "MCP servers (the AI's plugins)",
@@ -547,6 +555,14 @@ const VI: HelpTopic[] = [
     title: "Sửa bộ nhớ của AI",
     body: "Nút hình não trên khung chat (hoặc 'Sửa bộ nhớ AI' trong command palette) mở trình sửa memory. Tab Dự án sửa một file AGENTS.md duy nhất trong repo (quy ước, kiến trúc - chia sẻ qua git): Codex đọc thẳng, còn Aime giữ dòng import @AGENTS.md trong CLAUDE.md để Claude đọc đúng file đó - không nhân bản nên không bao giờ lệch nhau. Tab Toàn cục sửa file người dùng của chính CLI đang chọn (~/.claude/CLAUDE.md hoặc ~/.codex/AGENTS.md). AI đọc lại mỗi lượt nên lưu xong là có hiệu lực ngay.",
     keywords: "memory agents.md claude.md toàn cục dự án kiến thức ghi chú não",
+  },
+  {
+    id: "cloud",
+    section: "AI",
+    title: "Kết nối cloud, và cho AI biết ở đó đang có gì",
+    body: "Trong Settings có mục Cloud liệt kê Azure, AWS, Google Cloud và Supabase. Kết nối nghĩa là đăng nhập bằng CLI của chính cloud đó - Aime không bao giờ hỏi key, secret hay mật khẩu, và không lưu cái nào: mấy CLI đó đã tự quản đăng nhập của mình (device code, SSO, refresh token, keychain của máy), viết lại phần đó nghĩa là Aime giữ credential mà nó không có việc gì phải giữ. Dòng nào chưa có CLI thì hiện lệnh cài; CLI có rồi mà chưa đăng nhập thì hiện lệnh đăng nhập - dạng copy được chứ không phải cái nút, vì `az login` mở browser và đứng chờ người. Dòng đã đăng nhập thì hiện CLI đang là ai, đọc từ chính CLI: `az account show` cho biết subscription, `aws sts get-caller-identity` cho biết account và role. Hai trong bốn cái cố tình không nói gì về đăng nhập - máy làm ra tính năng này không có gcloud lẫn Supabase CLI để đo lệnh thật, mà viết phép dò theo trí nhớ về cờ của một CLI chính là kiểu đoán trả lời 'chưa đăng nhập' cho người đang đăng nhập. Rồi tới nửa hữu ích: nút radar nhờ AI đi tìm những gì ĐANG CHẠY trong account đó - chỉ đọc, chỉ lệnh list và describe - và Aime ghi kết quả vào AGENTS.md của dự án, file mà mọi AI CLI đều đọc mỗi lượt. Nên lần sau anh nhờ deploy, dựng môi trường, hay lần theo một con bug vào service đang chạy, AI bắt đầu từ đúng web app, database, bucket, queue thật của anh, viết đúng tên cloud đặt, chứ không phải từ 'dự án kiểu này thường có gì'. Mỗi lượt dò còn buộc phải nói rõ nó KHÔNG thấy được gì - lệnh nào lỗi, quyền nào thiếu, vùng nào chưa kiểm - vì một tấm bản đồ không nói nó hết ở đâu sẽ bị đọc thành đầy đủ. Nó thay đúng phần của mình mỗi lần chứ không chồng lên nhau, không bao giờ đụng vào ghi chú của anh trong file đó, và nếu câu trả lời về không đọc được thì nó ghi đúng không gì cả: một ghi chú không tin được nằm trong file đó còn tệ hơn là không có ghi chú.",
+    keywords:
+      "cloud azure aws gcp google supabase kết nối đăng nhập cli account subscription dò kiến trúc hạ tầng deploy devops bộ nhớ agents.md chỉ đọc bảo mật",
   },
   {
     id: "mcp",
