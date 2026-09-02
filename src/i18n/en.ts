@@ -145,6 +145,7 @@ export const en = {
   "ai.usage.cacheWrite": "Cache write",
   "ai.usage.cost": "Total cost",
   "ai.thinking": "Thinking…",
+  "ai.thinkingFor": "Thinking… {seconds}s",
   "ai.emptyPrompt": "What would you like to do with this project?",
   "ai.inputPlaceholder": "Ask AI about your project… (Enter to send)",
   "ai.inputPlaceholderNoFolder": "Open a project folder first",

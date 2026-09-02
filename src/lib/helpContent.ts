@@ -120,8 +120,9 @@ const EN: HelpTopic[] = [
     id: "ai-chat",
     section: "AI",
     title: "Chat with the AI",
-    body: "With a folder open, type a prompt and press Enter. The AI reads and edits your project and runs commands; tool calls appear as chips, cost and duration after each turn. Stop cancels a running turn. Shift+Enter adds a line, and the divider above the box drags it taller when the prompt is a paragraph rather than a sentence - where you leave it is remembered.",
-    keywords: "prompt send claude agent tool resize taller height drag",
+    body: "With a folder open, type a prompt and press Enter. The AI reads and edits your project and runs commands; tool calls appear as chips, cost and duration after each turn. While a turn is running the panel says which kind of waiting it is: three dots and a clock counting seconds until the first word arrives, a blinking caret behind text that is still coming, and a spinner on the tool chip while its command runs - when the turn ends, all three go. Stop cancels a running turn. Shift+Enter adds a line, and the divider above the box drags it taller when the prompt is a paragraph rather than a sentence - where you leave it is remembered.",
+    keywords:
+      "prompt send claude agent tool resize taller height drag waiting thinking dots caret spinner streaming",
   },
   {
     id: "ai-model",
@@ -488,8 +489,8 @@ const VI: HelpTopic[] = [
     id: "ai-chat",
     section: "AI",
     title: "Chat với AI",
-    body: "Mở thư mục xong, gõ yêu cầu và Enter. AI đọc/sửa dự án và chạy lệnh; tool hiện thành chip, chi phí và thời gian hiện sau mỗi lượt. Nút Stop hủy lượt đang chạy. Shift+Enter để xuống dòng, và thanh chia phía trên ô nhập kéo được để ô cao lên khi yêu cầu dài cả đoạn - kéo tới đâu Aime nhớ tới đó.",
-    keywords: "prompt gửi claude agent kéo chiều cao ô nhập",
+    body: "Mở thư mục xong, gõ yêu cầu và Enter. AI đọc/sửa dự án và chạy lệnh; tool hiện thành chip, chi phí và thời gian hiện sau mỗi lượt. Trong lúc lượt đang chạy, khung chat nói rõ đang chờ kiểu gì: ba dấu chấm kèm đồng hồ đếm giây khi chưa có chữ nào, con trỏ nhấp nháy sau phần chữ đang chảy tới, và spinner trên chip tool khi lệnh của nó đang chạy - lượt xong thì cả ba biến mất. Nút Stop hủy lượt đang chạy. Shift+Enter để xuống dòng, và thanh chia phía trên ô nhập kéo được để ô cao lên khi yêu cầu dài cả đoạn - kéo tới đâu Aime nhớ tới đó.",
+    keywords: "prompt gửi claude agent kéo chiều cao ô nhập chờ hiệu ứng dấu chấm con trỏ spinner đang chạy",
   },
   {
     id: "ai-model",

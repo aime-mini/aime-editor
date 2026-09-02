@@ -146,6 +146,7 @@ export const vi: Record<TranslationKey, string> = {
   "ai.usage.cacheWrite": "Ghi cache",
   "ai.usage.cost": "Tổng chi phí",
   "ai.thinking": "Đang suy nghĩ…",
+  "ai.thinkingFor": "Đang suy nghĩ… {seconds}s",
   "ai.emptyPrompt": "Bạn muốn làm gì với dự án này?",
   "ai.inputPlaceholder": "Hỏi AI về dự án… (Enter để gửi)",
   "ai.inputPlaceholderNoFolder": "Mở thư mục dự án trước",

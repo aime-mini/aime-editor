@@ -39,6 +39,7 @@ import { ResizeHandle } from "./ResizeHandle";
 import { capabilitiesOf, effortsOf, type ProviderOption } from "../lib/providers";
 import type { ChatMessage, Permission, TokenUsage } from "../lib/types";
 import type { TranslationKey } from "../i18n/en";
+import { StreamingCaret, ThinkingDots } from "./Waiting";
 
 /**
  * The three permission levels, in the order the shield chip cycles through.
@@ -277,9 +278,48 @@ function TurnChanges({ message, index }: { message: ChatMessage; index: number }
   );
 }
 
-function MessageBubble({ message, index }: { message: ChatMessage; index: number }) {
+/**
+ * Whole seconds since `active` last turned true; 0 while it is false.
+ *
+ * A turn that writes nothing for half a minute is the one moment the panel has
+ * nothing to show, and a number that keeps climbing is the difference between
+ * "this is slow" and "this is stuck".
+ */
+function useSecondsSince(active: boolean): number {
+  const [seconds, setSeconds] = useState(0);
+  // Nothing resets the count, and nothing has to: every turn is a new pair of
+  // messages, so the bubble that carries it is a fresh instance starting at 0.
+  useEffect(() => {
+    if (!active) return;
+    const startedAt = Date.now();
+    const ticking = setInterval(() => {
+      setSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => {
+      clearInterval(ticking);
+    };
+  }, [active]);
+  return active ? seconds : 0;
+}
+
+/**
+ * @param live this is the turn the AI is writing right now, so its tail carries
+ *   whichever mark says what is happening: nothing written yet, text still
+ *   arriving, or a tool still running.
+ */
+function MessageBubble({ message, index, live }: { message: ChatMessage; index: number; live: boolean }) {
   const isUser = message.role === "user";
   const t = useT();
+  const lastPart = message.parts.at(-1);
+  const beforeFirstWord = live && lastPart === undefined;
+  const seconds = useSecondsSince(beforeFirstWord);
+
+  // A turn the CLI ended without writing a word - it failed to start, or it was
+  // cancelled before it said anything. The error box under the conversation says
+  // why; an empty bubble would only be a second, emptier answer, and the
+  // "Thinking…" this used to keep forever was an untrue one.
+  if (!isUser && lastPart === undefined && !live) return null;
+
   return (
     <div className={`flex flex-col gap-1.5 ${isUser ? "items-end" : "items-start"}`}>
       <div
@@ -290,8 +330,11 @@ function MessageBubble({ message, index }: { message: ChatMessage; index: number
           isUser ? "bg-accent-soft text-fg" : "bg-elevated text-fg"
         }`}
       >
-        {message.parts.length === 0 && !isUser && (
-          <span className="animate-pulse text-muted">{t("ai.thinking")}</span>
+        {beforeFirstWord && (
+          <span className="flex items-center gap-2 text-muted">
+            <ThinkingDots />
+            {seconds > 0 ? t("ai.thinkingFor", { seconds }) : t("ai.thinking")}
+          </span>
         )}
         {message.parts.map((part, i) =>
           part.kind === "text" ? (
@@ -307,12 +350,20 @@ function MessageBubble({ message, index }: { message: ChatMessage; index: number
               className="my-1 flex w-fit max-w-full items-center gap-1.5 rounded-md border border-line bg-panel px-2 py-0.5 font-mono text-[11px] text-muted"
               title={part.detail}
             >
-              <Wrench size={11} className="shrink-0 text-accent" />
+              {live && i === message.parts.length - 1 ? (
+                // The chip the AI is inside right now: a command that takes a
+                // minute is the other long silence in this panel, and it is the
+                // chip that has to say so, not the empty space under it.
+                <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+              ) : (
+                <Wrench size={11} className="shrink-0 text-accent" />
+              )}
               <span className="shrink-0">{part.name}</span>
               {part.detail && <span className="min-w-0 truncate">· {part.detail}</span>}
             </span>
           ),
         )}
+        {live && lastPart?.kind === "text" && <StreamingCaret />}
       </div>
       <TurnChanges message={message} index={index} />
       {message.costUsd !== undefined && (
@@ -720,7 +771,9 @@ export function AiPanel() {
                 </div>
               )}
               {messages.map((m, i) => (
-                <MessageBubble key={i} message={m} index={i} />
+                // Only the last turn can be the one being written, and only
+                // while the CLI is still running.
+                <MessageBubble key={i} message={m} index={i} live={running && i === messages.length - 1} />
               ))}
               {lastError && (
                 <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-danger">
