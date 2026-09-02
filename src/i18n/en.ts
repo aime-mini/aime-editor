@@ -13,6 +13,13 @@ export const en = {
   "welcome.recent": "Recent",
   "welcome.noRecent": "Nothing yet - open a folder to get started.",
 
+  "home.updates": "Updates",
+  "home.news": "News",
+  "home.upToDate": "You are on the latest version",
+  "home.updateAvailable": "Version {version} is available",
+  "home.updateHint": "The bar at the top of the window installs it.",
+  "home.version": "Currently {version}",
+
   "env.title": "This machine",
   "env.checking": "Checking what is installed…",
   "env.settingUp": "setting up code intelligence for you…",

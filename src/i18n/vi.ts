@@ -15,6 +15,13 @@ export const vi: Record<TranslationKey, string> = {
   "welcome.recent": "Gần đây",
   "welcome.noRecent": "Chưa có gì - mở một thư mục để bắt đầu.",
 
+  "home.updates": "Cập nhật",
+  "home.news": "Tin tức",
+  "home.upToDate": "Anh đang dùng bản mới nhất",
+  "home.updateAvailable": "Đã có bản {version}",
+  "home.updateHint": "Thanh trên cùng cửa sổ sẽ cài giúp anh.",
+  "home.version": "Bản đang dùng: {version}",
+
   "env.title": "Máy này có gì",
   "env.checking": "Đang kiểm tra những gì đã cài…",
   "env.settingUp": "đang tự cài code intelligence cho bạn…",

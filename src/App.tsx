@@ -31,6 +31,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 import { useT } from "./i18n";
 import { startAutoSave } from "./lib/autoSave";
 import { EnvironmentCheck } from "./components/EnvironmentCheck";
+import { HomeNews } from "./components/HomeNews";
 import { CommandPalette } from "./components/CommandPalette";
 import { HelpModal } from "./components/HelpModal";
 import { InstallerModal } from "./components/InstallerModal";
@@ -123,76 +124,116 @@ function WelcomeScreen() {
   return (
     // Centred while it fits, scrollable the moment it does not - otherwise a
     // long environment report pushes the logo off the top of the window.
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex min-h-full w-full max-w-2xl items-center px-8 py-10">
-        <div className="w-full">
-          <div className="flex flex-col items-center gap-3">
-            <img src={logo} alt="Aime" className="size-20 drop-shadow-lg" />
-            <h1 className="mt-2 text-2xl font-semibold tracking-tight">Aime</h1>
-            <p className="max-w-sm text-center text-muted">{t("app.tagline")}</p>
-          </div>
-
-          <div className="mt-10 grid grid-cols-2 gap-10">
-            <section>
-              <h2 className="text-[11px] font-semibold tracking-wider text-muted uppercase">
-                {t("welcome.start")}
-              </h2>
-              <div className="mt-3 flex flex-col gap-2">
-                <button
-                  onClick={() => void openFolder()}
-                  className="flex w-full items-center gap-2 rounded-lg bg-accent-strong px-4 py-2 font-medium text-white hover:opacity-90"
-                >
-                  <FolderOpen size={16} /> {t("welcome.openFolder")}
-                </button>
-                <button onClick={() => void pickNewProjectLocation()} className={actionButton}>
-                  <FolderPlus size={16} /> {t("welcome.newProject")}
-                </button>
-                <button
-                  onClick={() => {
-                    setCloneUrl("");
-                  }}
-                  disabled={cloning}
-                  className={actionButton}
-                  title={t("welcome.cloneHint")}
-                >
-                  {cloning ? <Loader2 size={16} className="animate-spin" /> : <GitBranch size={16} />}
-                  {t("welcome.clone")}
-                </button>
-                <button
-                  onClick={() => void openNewWindow()}
-                  className={actionButton}
-                  title={t("welcome.newWindowHint")}
-                >
-                  <AppWindow size={16} /> {t("welcome.newWindow")}
-                </button>
-              </div>
-            </section>
-
-            <section>
-              <h2 className="text-[11px] font-semibold tracking-wider text-muted uppercase">
-                {t("welcome.recent")}
-              </h2>
-              <div className="mt-3 flex flex-col gap-1">
-                {folders.length === 0 && <p className="py-2 text-muted">{t("welcome.noRecent")}</p>}
-                {folders.map((f) => (
-                  <button
-                    key={f.path}
-                    onClick={() => void openRecent(f.path)}
-                    title={f.path}
-                    className="flex flex-col rounded-md px-2 py-1.5 text-left hover:bg-elevated"
-                  >
-                    <span className="font-medium text-accent">{folderNameOf(f.path)}</span>
-                    <span className="truncate text-[11px] text-muted">{f.path}</span>
-                  </button>
-                ))}
-              </div>
-            </section>
-          </div>
-
-          <EnvironmentCheck />
+    <div className="relative h-full overflow-y-auto">
+      {/*
+       * Three columns: Aime, the welcome screen, the news.
+       *
+       * They were absolutely positioned into the margins at first, which meant
+       * every window size had to be argued about separately - and the panel that
+       * could not shrink like a picture ended up jumping above or below the
+       * screen it belongs beside. A grid states the whole arrangement once: the
+       * middle takes up to 42rem and no more, both sides have a floor they never
+       * go under, and the leftover space is split between them. Nothing moves at
+       * any width; it only gets narrower.
+       */}
+      <div className="grid min-h-full grid-cols-[minmax(6rem,1fr)_minmax(0,42rem)_minmax(12rem,1fr)]">
+        {/*
+         * Her own column, and she is absolute inside it so the column's width is
+         * the only thing that decides her size - no arithmetic against the
+         * middle's width, and nothing to keep in step when that changes.
+         */}
+        <div className="relative">
+          <img
+            src="/splash/aime.webp"
+            alt=""
+            aria-hidden
+            className="pointer-events-none absolute bottom-0 left-0 h-[78%] w-full object-contain object-bottom opacity-90 select-none"
+          />
         </div>
-      </div>
+        <div className="flex items-center px-8 py-10">
+          <div className="w-full">
+            <div className="flex flex-col items-center gap-3">
+              <img src={logo} alt="Aime" className="size-20 drop-shadow-lg" />
+              <h1 className="mt-2 text-2xl font-semibold tracking-tight">Aime</h1>
+              <p className="max-w-sm text-center text-muted">{t("app.tagline")}</p>
+            </div>
 
+            <div className="mt-10 grid grid-cols-2 gap-10">
+              <section>
+                <h2 className="text-[11px] font-semibold tracking-wider text-muted uppercase">
+                  {t("welcome.start")}
+                </h2>
+                <div className="mt-3 flex flex-col gap-2">
+                  <button
+                    onClick={() => void openFolder()}
+                    className="flex w-full items-center gap-2 rounded-lg bg-accent-strong px-4 py-2 font-medium text-white hover:opacity-90"
+                  >
+                    <FolderOpen size={16} /> {t("welcome.openFolder")}
+                  </button>
+                  <button onClick={() => void pickNewProjectLocation()} className={actionButton}>
+                    <FolderPlus size={16} /> {t("welcome.newProject")}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setCloneUrl("");
+                    }}
+                    disabled={cloning}
+                    className={actionButton}
+                    title={t("welcome.cloneHint")}
+                  >
+                    {cloning ? <Loader2 size={16} className="animate-spin" /> : <GitBranch size={16} />}
+                    {t("welcome.clone")}
+                  </button>
+                  <button
+                    onClick={() => void openNewWindow()}
+                    className={actionButton}
+                    title={t("welcome.newWindowHint")}
+                  >
+                    <AppWindow size={16} /> {t("welcome.newWindow")}
+                  </button>
+                </div>
+              </section>
+
+              <section>
+                <h2 className="text-[11px] font-semibold tracking-wider text-muted uppercase">
+                  {t("welcome.recent")}
+                </h2>
+                {/*
+                 * The list scrolls, not the page.
+                 *
+                 * Measured on a 650px-tall window: eight recent folders put the
+                 * welcome screen 31px past the viewport, which gave the whole
+                 * screen a scrollbar for the sake of one row. The page keeps its
+                 * own scrolling for the one thing that can still outgrow it - an
+                 * expanded environment report - and everything else stays put.
+                 */}
+                <div className="mt-3 flex max-h-[38vh] flex-col gap-1 overflow-y-auto pr-1">
+                  {folders.length === 0 && <p className="py-2 text-muted">{t("welcome.noRecent")}</p>}
+                  {folders.map((f) => (
+                    <button
+                      key={f.path}
+                      onClick={() => void openRecent(f.path)}
+                      title={f.path}
+                      className="flex flex-col rounded-md px-2 py-1.5 text-left hover:bg-elevated"
+                    >
+                      <span className="font-medium text-accent">{folderNameOf(f.path)}</span>
+                      <span className="truncate text-[11px] text-muted">{f.path}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            </div>
+
+            <EnvironmentCheck />
+          </div>
+        </div>
+
+        <aside className="flex items-center px-6 py-10">
+          <div className="w-full">
+            <HomeNews />
+          </div>
+        </aside>
+      </div>
       {cloneUrl !== null && (
         <PromptModal
           title={t("modal.cloneTitle")}

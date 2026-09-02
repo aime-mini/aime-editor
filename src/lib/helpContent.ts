@@ -20,8 +20,8 @@ const EN: HelpTopic[] = [
     id: "open-project",
     section: "Getting started",
     title: "Open a project",
-    body: "On the welcome screen: Open Folder picks any folder, Recent reopens the last 8 workspaces, New Project creates a folder and opens it in one step, and Clone Repository takes a git URL, asks where to put it, and opens the clone - no terminal needed. A single quiet line at the bottom reports what Aime found on this machine - it either says everything is ready or names what is missing, and opens the full list (both AI CLIs with their sign-in state, Git, Node, language servers) with the exact command to fix each one.",
-    keywords: "workspace recent folder start clone git url github",
+    body: "On the welcome screen: Open Folder picks any folder, Recent reopens the last 8 workspaces, New Project creates a folder and opens it in one step, and Clone Repository takes a git URL, asks where to put it, and opens the clone - no terminal needed. A single quiet line at the bottom reports what Aime found on this machine - it either says everything is ready or names what is missing, and opens the full list (both AI CLIs with their sign-in state, Git, Node, language servers) with the exact command to fix each one. Aime stands in the space to the left of the list, the same greeting she gives on the starting window - on a narrow window there is no room for her and she steps out rather than crowd the buttons.",
+    keywords: "workspace recent folder start clone git url github character",
   },
   {
     id: "updates",
@@ -397,8 +397,8 @@ const VI: HelpTopic[] = [
     id: "open-project",
     section: "Bắt đầu",
     title: "Mở dự án",
-    body: "Ở màn hình chào: Open Folder chọn thư mục bất kỳ, Recent mở lại 8 workspace gần nhất, New Project tạo thư mục mới và mở luôn.",
-    keywords: "workspace recent folder mở thư mục",
+    body: "Ở màn hình chào: Open Folder chọn thư mục bất kỳ, Recent mở lại 8 workspace gần nhất, New Project tạo thư mục mới và mở luôn. Aime đứng ở khoảng trống bên trái danh sách, vẫn lời chào như ở cửa sổ khởi động - cửa sổ hẹp thì không đủ chỗ nên cô ấy lui ra thay vì chen vào các nút.",
+    keywords: "workspace recent folder mở thư mục nhân vật",
   },
   {
     id: "updates",
