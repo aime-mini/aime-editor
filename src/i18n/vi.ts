@@ -298,6 +298,7 @@ export const vi: Record<TranslationKey, string> = {
 
   "menu.filter": "Lọc…",
   "menu.noMatch": "Không có gì khớp",
+  "menu.more": "Còn {count} mục nữa - gõ để lọc",
   "menu.newFile": "Tạo file…",
   "menu.newFolder": "Tạo thư mục…",
   "menu.open": "Mở",

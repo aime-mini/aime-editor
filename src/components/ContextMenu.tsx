@@ -27,6 +27,17 @@ interface ContextMenuProps {
  */
 const FILTER_FROM = 12;
 
+/**
+ * How many entries are put into the DOM at once. A repository a team has lived
+ * in offers well over a thousand branches, and every row past the first
+ * screenful is layout the browser does for nobody: the menu has to measure its
+ * own height before it can be placed, so even the rows never shown are paid
+ * for. What is cut off is not lost - the filter box above searches the whole
+ * list, Enter takes the best match wherever it sits, and the line under the
+ * last row says how much of it is waiting there.
+ */
+const RENDER_CAP = 200;
+
 /** Custom right-click menu — replaces the webview's default browser menu. */
 export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
@@ -48,6 +59,9 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
         : items,
     [entries, items, needle, searchable],
   );
+
+  const rendered = useMemo(() => shown.slice(0, RENDER_CAP), [shown]);
+  const hidden = shown.length - rendered.length;
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -122,7 +136,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
           {shown.length === 0 ? (
             <div className="px-3 py-1.5 text-muted">{t("menu.noMatch")}</div>
           ) : (
-            shown.map((item, index) =>
+            rendered.map((item, index) =>
               item === SEPARATOR ? (
                 <hr key={`separator-${String(index)}`} role="separator" className="my-1 border-line" />
               ) : (
@@ -141,6 +155,11 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
                 </button>
               ),
             )
+          )}
+          {hidden > 0 && (
+            // Not a menu item: there is nothing to click here, only the count
+            // of what the filter box above still reaches.
+            <div className="px-3 py-1.5 text-muted">{t("menu.more", { count: hidden })}</div>
           )}
         </div>
       </div>

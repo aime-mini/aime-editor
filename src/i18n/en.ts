@@ -297,6 +297,7 @@ export const en = {
 
   "menu.filter": "Filter…",
   "menu.noMatch": "Nothing matches",
+  "menu.more": "{count} more - type to filter",
   "menu.newFile": "New File…",
   "menu.newFolder": "New Folder…",
   "menu.open": "Open",

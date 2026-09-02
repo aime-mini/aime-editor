@@ -94,15 +94,44 @@ git("fetch", "-q", "origin");
 const crowded = fs.mkdtempSync(path.join(os.tmpdir(), "aime-e2e-crowded-"));
 const LOCAL_BRANCHES = 100;
 const REMOTE_ONLY_BRANCHES = 1600;
-/** Late in the list on purpose: it can only be reached by scrolling or typing. */
-const DEEP_BRANCH = "feature/branch-0057";
 /**
- * A guard against a tenfold regression, not a target. Measured 2026-08-26 at
- * 1705 branches: the menu opens in ~3s, of which ~2.3s is `git_branches` -
- * `%(refname:short)` makes git disambiguate every ref against every other one.
- * Bringing that down is the next piece of work on this menu.
+ * Far past the point the menu stops rendering rows, so the only way to it is to
+ * type it. Remote-only, so picking it also has to check it out as a local
+ * branch that tracks it.
  */
-const MENU_BUDGET_MS = 8000;
+const DEEP_BRANCH = "origin/team/theirs-1500";
+const DEEP_BRANCH_LOCAL = "team/theirs-1500";
+/** What `ContextMenu` puts in the DOM at once - the rest is behind the filter. */
+const MENU_RENDER_CAP = 200;
+/**
+ * A guard against a regression, not a target - the number this run prints is
+ * the one to read. Measured 2026-08-27 over 1705 branches, on the same harness
+ * that measured ~3000ms the day before: runs gave 1265 to 2316ms, the low ones
+ * warm. Nearly all of it is `git_branches` on a debug build - see
+ * BRANCH_LISTING_BUDGET_MS - and that call took ~2300ms before
+ * `%(refname:short)` left its format.
+ */
+const MENU_BUDGET_MS = 5000;
+/**
+ * The one call the whole menu waits on, measured on its own so a collapse in it
+ * cannot hide inside the menu's total - which also carries WebDriver's own
+ * round-trips and a cold first open.
+ *
+ * Every number here is from a **debug** binary, which is what e2e runs and is
+ * most of what it costs: the identical code, timed standalone over the same 1701
+ * refs on 2026-08-27, took 232-262ms compiled release and 868-1868ms compiled
+ * debug (parse 3ms, serialising the 110KB answer 17ms - neither matters). In the
+ * app the same call best-of-five came to 1280-1366ms, against 163-250ms on a
+ * one-branch repository: ~200ms is the fixed cost of a call, the rest scales
+ * with the number of refs.
+ *
+ * So this budget is a net for a collapse, not a ruler: the spread across runs is
+ * already 1280-2117ms, and a budget tight enough to notice a 20% regression
+ * would flake every other run. The narrow guard is a Rust unit test instead -
+ * `never_asks_git_to_shorten_ref_names` - which states the rule directly.
+ */
+const BRANCH_LISTING_BUDGET_MS = 3000;
+const BRANCH_LISTING_ROUNDS = 3;
 
 gitIn(crowded, "init", "-b", "main");
 gitIn(crowded, "config", "user.email", "e2e@aime.test");
@@ -125,6 +154,12 @@ execFileSync("git", ["update-ref", "--stdin"], {
   input: refs.join(String.fromCharCode(10)) + String.fromCharCode(10),
   stdio: "pipe",
 });
+// Refs written by hand are not enough to check one out as tracking: without a
+// remote configured git answers "starting point is not a branch" (measured
+// 2026-08-27). A clone has that configuration; this fixture gets it too. The
+// URL is never contacted - only its refspec is read - so the repository stands
+// in for its own remote.
+gitIn(crowded, "remote", "add", "origin", crowded);
 
 async function waitForText(text, message) {
   const needle = text.toLowerCase();
@@ -190,6 +225,7 @@ async function openBranchMenu() {
           scrollHeight: list.scrollHeight,
           clientHeight: list.clientHeight,
           items: el.querySelectorAll('[role="menuitem"]').length,
+          text: el.textContent ?? "",
         };
       });
       return box && box.items > 0 ? box : false;
@@ -294,14 +330,35 @@ describe("The branch menu on a repository a team has been working in", () => {
     }
   });
 
+  it("lists a thousand branches in a time a menu can be opened on", async () => {
+    const times = await browser.execute(
+      async (root, rounds) => {
+        const measured = [];
+        for (let i = 0; i < rounds; i += 1) {
+          const startedAt = performance.now();
+          await window.__TAURI_INTERNALS__.invoke("git_branches", { root });
+          measured.push(Math.round(performance.now() - startedAt));
+        }
+        return measured;
+      },
+      crowded,
+      BRANCH_LISTING_ROUNDS,
+    );
+    console.log(`[git-branch-switch.e2e] git_branches over IPC: ${times.join(", ")} ms`);
+    const best = Math.min(...times);
+    assert.ok(
+      best <= BRANCH_LISTING_BUDGET_MS,
+      `listing ${LOCAL_BRANCHES + REMOTE_ONLY_BRANCHES + 1} branches took ${best} ms at best (${times.join(", ")})`,
+    );
+  });
+
   it("puts every branch inside the window, however many there are", async () => {
     const expected = LOCAL_BRANCHES + 1 + REMOTE_ONLY_BRANCHES;
     const menu = await openBranchMenu();
-    console.log(`[git-branch-switch.e2e] ${menu.items} entries, menu open in ${menu.elapsed} ms`);
-    assert.ok(menu.items >= expected, `the menu offered ${menu.items} entries where ${expected} branches exist`);
+    console.log(`[git-branch-switch.e2e] ${menu.items} rows rendered, menu open in ${menu.elapsed} ms`);
     assert.ok(
       menu.elapsed <= MENU_BUDGET_MS,
-      `the menu took ${menu.elapsed} ms to open with ${menu.items} entries`,
+      `the menu took ${menu.elapsed} ms to open over ${expected} branches`,
     );
     assert.ok(
       menu.top >= 0 && menu.bottom <= menu.viewport + 1,
@@ -311,9 +368,26 @@ describe("The branch menu on a repository a team has been working in", () => {
       menu.scrollHeight > menu.clientHeight,
       "a list taller than the window has to scroll, or every branch below the fold is unreachable",
     );
+
+    // The actions are what a menu is opened for as often as the list is; below
+    // a thousand branches they would be past the last row that gets rendered.
+    assert.ok(menu.text.includes("New branch"), `the actions are not on the menu: ${menu.text.slice(0, 120)}`);
+
+    // Rendered rows are capped - and what is not rendered is accounted for, in
+    // a line that says how much of the list the filter box still reaches.
+    assert.ok(
+      menu.items > LOCAL_BRANCHES && menu.items <= MENU_RENDER_CAP,
+      `${menu.items} rows rendered: the local branches must all fit, the cap must still hold`,
+    );
+    const rest = /(\d+) more/.exec(menu.text);
+    assert.ok(rest, `the menu never said how many entries it left out: ${menu.text.slice(-200)}`);
+    assert.ok(
+      menu.items + Number(rest[1]) >= expected,
+      `${menu.items} rows plus ${rest[1]} more do not account for ${expected} branches`,
+    );
   });
 
-  it("narrows a long list to the branch that was typed, and checks it out", async () => {
+  it("narrows a long list to a branch no scroll would reach, and checks it out", async () => {
     await openBranchMenu();
     await fill(await $('[role="menu"] input'), DEEP_BRANCH);
     await browser.waitUntil(async () => (await $$('[role="menu"] [role="menuitem"]')).length === 1, {
@@ -323,9 +397,15 @@ describe("The branch menu on a repository a team has been working in", () => {
 
     await (await $('[role="menu"] [role="menuitem"]')).click();
     await browser
-      .waitUntil(() => currentBranch(crowded) === DEEP_BRANCH, { timeout: 30_000 })
+      .waitUntil(() => currentBranch(crowded) === DEEP_BRANCH_LOCAL, { timeout: 30_000 })
       .catch(() => {
         assert.fail(`picking ${DEEP_BRANCH} left the repository on ${currentBranch(crowded)}`);
       });
+    const upstream = execFileSync("git", ["rev-parse", "--abbrev-ref", `${DEEP_BRANCH_LOCAL}@{upstream}`], {
+      cwd: crowded,
+    })
+      .toString()
+      .trim();
+    assert.equal(upstream, DEEP_BRANCH, "the branch reached by typing tracks nothing");
   });
 });

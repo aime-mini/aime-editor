@@ -566,38 +566,16 @@ export function GitPanel() {
     const remote = branches.filter(
       (branch) => branch.remote && !localNames.has(branch.name.split("/").slice(1).join("/")),
     );
-    const items: (MenuItem | typeof SEPARATOR)[] = local.map((branch) => ({
-      label: branch.name,
-      icon: branch.current ? (
-        <Check size={13} className="text-accent" />
-      ) : (
-        <span className="inline-block w-[13px]" />
-      ),
-      onClick: () => {
-        if (!branch.current) void git.checkout(branch.name);
-      },
-    }));
-    if (remote.length > 0) {
-      // Below the local ones, the branches that so far exist only on the
-      // remote - the whole of a fresh clone's team work. Picking one checks it
-      // out as a local branch that tracks it.
-      items.push(
-        SEPARATOR,
-        ...remote.map((branch) => ({
-          label: branch.name,
-          icon: <Cloud size={13} className="text-muted" />,
-          onClick: () => {
-            void git.checkoutTracking(branch.name);
-          },
-        })),
-      );
-    }
-    items.push(SEPARATOR);
     const others = local.filter((branch) => !branch.current);
     // git names the checked-out branch itself; the status is only a fallback
     // for the moment right after a checkout, before it is re-read.
     const current = local.find((branch) => branch.current)?.name ?? git.status?.branch ?? "";
-    items.push(
+
+    // The actions come first and the branches under them, the order VS Code
+    // gives the same menu. On a repository a team has lived in the list is
+    // longer than anyone scrolls and longer than the menu renders, so an action
+    // placed below it is an action the user can no longer find.
+    const items: (MenuItem | typeof SEPARATOR)[] = [
       {
         label: t("git.newBranch"),
         icon: <GitBranchPlus size={13} />,
@@ -633,7 +611,34 @@ export function GitPanel() {
           });
         },
       },
-    );
+      SEPARATOR,
+      ...local.map((branch) => ({
+        label: branch.name,
+        icon: branch.current ? (
+          <Check size={13} className="text-accent" />
+        ) : (
+          <span className="inline-block w-[13px]" />
+        ),
+        onClick: () => {
+          if (!branch.current) void git.checkout(branch.name);
+        },
+      })),
+    ];
+    if (remote.length > 0) {
+      // Below the local ones, the branches that so far exist only on the
+      // remote - the whole of a fresh clone's team work. Picking one checks it
+      // out as a local branch that tracks it.
+      items.push(
+        SEPARATOR,
+        ...remote.map((branch) => ({
+          label: branch.name,
+          icon: <Cloud size={13} className="text-muted" />,
+          onClick: () => {
+            void git.checkoutTracking(branch.name);
+          },
+        })),
+      );
+    }
     setBranchMenu({ x, y, items });
   };
 
