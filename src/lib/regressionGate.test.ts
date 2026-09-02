@@ -108,18 +108,6 @@ describe("runSuites", () => {
     expect(again).not.toHaveBeenCalled();
   });
 
-  it("stops early once the caller's question is already answered", async () => {
-    const run = vi.fn().mockResolvedValue(outcome({ stdout: FAILING, code: 101 }));
-    const baseline = await runSuites([UNIT, E2E], "C:/work", nextId, run, new Set(), () => true);
-
-    // What the red-then-green proof relies on: the first suite that fails has
-    // proved the point, and a nine-minute browser run adds nothing to it.
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(baseline.suites).toHaveLength(1);
-  });
-});
-
-describe("judge", () => {
   it("blocks a test that was passing and is not any more, naming its suite", async () => {
     const before = await pass([UNIT, E2E], [[PASSING, 0] as const, [PASSING, 0] as const]);
     const after = await pass([UNIT, E2E], [[PASSING, 0] as const, [FAILING, 101] as const]);

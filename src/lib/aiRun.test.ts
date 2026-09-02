@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  blockingFindings,
   casesWithoutProof,
+  fixableFindings,
   parseBrief,
   parsePlan,
   parseReview,
@@ -120,6 +122,18 @@ describe("parseSolution", () => {
   it("refuses a reason with no way to carry it out", () => {
     expect(parseSolution(REPLY.replace(/"how": "[^"]*"/, '"how": ""'))).toBeNull();
   });
+
+  it("takes the run as needing a deployment unless it plainly says otherwise", () => {
+    // The safe direction for a question about proof is the one that asks for
+    // more of it: a forgotten field must not be how a change skips being
+    // proved where it runs.
+    expect(parseSolution(REPLY)?.needsDeploy).toBe(true);
+    expect(parseSolution(REPLY.replace("}", ', "needsDeploy": "no"}'))?.needsDeploy).toBe(true);
+  });
+
+  it("believes an explicit no, which is what keeps a one-line change cheap", () => {
+    expect(parseSolution(REPLY.replace("}", ', "needsDeploy": false}'))?.needsDeploy).toBe(false);
+  });
 });
 
 describe("parseTestCases", () => {
@@ -234,5 +248,47 @@ describe("parseReview", () => {
     const review = parseReview('{"risks": [], "findings": []}');
     expect(review.findings).toEqual([]);
     expect(review.raw).toContain("findings");
+  });
+
+  it("reads the kind, and takes the harmless one when none was given", () => {
+    const kinds = parseReview(
+      `{"findings": [{"file": "a.ts", "line": 1, "severity": "issue", "kind": "security",
+                      "message": "no auth check", "check": "call it signed out"},
+                     {"file": "b.ts", "line": 2, "severity": "issue", "kind": "nonsense",
+                      "message": "no kind at all", "check": "read it"}]}`,
+    ).findings.map((finding) => finding.kind);
+    // Unlike needsDeploy, defaulting here loses nothing: the finding is still
+    // reported and still handed to the phase that fixes it.
+    expect(kinds).toEqual(["security", "correctness"]);
+  });
+});
+
+describe("blockingFindings", () => {
+  const REVIEW = parseReview(
+    `{"findings": [{"file": "a.ts", "line": 1, "severity": "issue", "kind": "architecture",
+                    "message": "invoke called straight from a component", "check": "grep the layer"},
+                   {"file": "b.ts", "line": 2, "severity": "issue", "kind": "security",
+                    "message": "query built by concatenation", "check": "send a quote"},
+                   {"file": "c.ts", "line": 3, "severity": "issue", "kind": "style",
+                    "message": "the name reads oddly", "check": "read it aloud"},
+                   {"file": "d.ts", "line": 4, "severity": "issue", "kind": "architecture",
+                    "message": "a hunch about the layering", "check": ""}]}`,
+  );
+
+  it("keeps only what a run may not be finished with", () => {
+    // Code in the wrong layer does not belong in the repository however well it
+    // works, and neither does a hole an attacker can use. A reviewer's taste is
+    // the one voice here that can simply be wrong.
+    expect(blockingFindings(REVIEW).map((finding) => finding.file)).toEqual(["a.ts", "b.ts"]);
+  });
+
+  it("will not stop a run over an architecture hunch with no way to check it", () => {
+    // The parser has already demoted it to a suggestion, which is what keeps
+    // "kind" from becoming a way to add weight to a preference.
+    expect(blockingFindings(REVIEW).some((finding) => finding.file === "d.ts")).toBe(false);
+  });
+
+  it("hands the fixer every issue, not only the fatal ones", () => {
+    expect(fixableFindings(REVIEW).map((finding) => finding.file)).toEqual(["a.ts", "b.ts", "c.ts"]);
   });
 });

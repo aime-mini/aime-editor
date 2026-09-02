@@ -125,6 +125,12 @@ export interface ReportInput {
   verdict: GateVerdict | null;
   outcomes: ReadonlyMap<string, CaseVerdict>;
   evidence: string[];
+  /**
+   * Whether this change had to be deployed to be believed. It changes what PASS
+   * means, so the footnote states the conditions this run actually applied
+   * rather than the longest set it could have.
+   */
+  evidenceRequired: boolean;
 }
 
 /**
@@ -135,10 +141,29 @@ export interface ReportInput {
 const GAPS: Record<CaseGap, string> = {
   noTestPlanned: "no test cites it",
   testMissing: "its test never appeared in the tree",
-  neverRed: "its test was never seen failing first",
   suitesNotGreen: "a suite is red",
   noEvidence: "no artifact from the running software names it",
 };
+
+/**
+ * What PASS meant in this run, spelled under the table.
+ *
+ * Two versions because the conditions genuinely differ, and printing the longer
+ * one for a change that was never deployed would be the report claiming a
+ * check that nobody made.
+ */
+const PASS_MEANS = {
+  deployed: [
+    "_PASS is earned three times over: a test naming the case exists in the tree, every suite that_",
+    "_answered is green, and an artifact made against the running software names the case. Anything_",
+    "_less says what is missing — this table never guesses in the reader's favour._",
+  ],
+  suitesOnly: [
+    "_PASS is earned twice over: a test naming the case exists in the tree, and every suite that_",
+    "_answered is green. This run agreed the change needed no deployment to be believed, so no_",
+    "_artifact from running software was asked of it. Anything less says what is missing._",
+  ],
+} as const;
 
 /** One outcome as the table spells it, with the reason where there is one. */
 function mark(verdict: CaseVerdict | undefined): string {
@@ -157,6 +182,7 @@ function mark(verdict: CaseVerdict | undefined): string {
  */
 export function renderReport(input: ReportInput): string {
   const { run, brief, solution, cases, plan, review, verdict, outcomes, evidence } = input;
+  const { evidenceRequired } = input;
   const lines: string[] = [
     `# Task run — ${run?.itemTitle ?? ""}`,
     "",
@@ -194,13 +220,7 @@ export function renderReport(input: ReportInput): string {
         )} |`,
       );
     }
-    lines.push(
-      "",
-      "_PASS is earned five times over: a test naming the case exists in the tree, that test was seen_",
-      "_failing before the code, every suite that answered is green, and an artifact made against the_",
-      "_running software names the case. Anything less says what is missing — this table never guesses_",
-      "_in the reader's favour._",
-    );
+    lines.push("", ...(evidenceRequired ? PASS_MEANS.deployed : PASS_MEANS.suitesOnly));
   }
   if (verdict !== null) {
     lines.push(
@@ -230,7 +250,7 @@ export function renderReport(input: ReportInput): string {
       lines.push("", "Findings:");
       for (const finding of review.findings) {
         lines.push(
-          `- \`${finding.file}:${String(finding.line)}\` **${finding.severity}** — ${finding.message}`,
+          `- \`${finding.file}:${String(finding.line)}\` **${finding.severity} · ${finding.kind}** — ${finding.message}`,
         );
       }
     }

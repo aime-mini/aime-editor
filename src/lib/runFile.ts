@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { TaskDef } from "../stores/tasks";
 import type { Brief, Plan, Review, Solution, Survey, TestCases } from "./aiRun";
 import type { Radius } from "./blastRadius";
+import type { RuleFile } from "./projectRules";
 import type { CheckPass } from "./qualityGate";
 import type { Baseline, GateVerdict, SuiteRun } from "./regressionGate";
 import type { Run } from "./runPlan";
@@ -49,7 +50,7 @@ const KEEP_OUTPUT = 8_000;
 /** Everything a run needs to be picked back up, and to be read months later. */
 export interface SavedRun {
   /** Bumped when the shape changes, so an old file is ignored rather than misread. */
-  version: 4;
+  version: 5;
   run: Run;
   brief: Brief | null;
   /** The files and the conventions read out of the repository. */
@@ -74,8 +75,8 @@ export interface SavedRun {
    * suites runs these too.
    */
   discovered: TaskDef[];
-  /** The cases whose own test was seen failing before the code existed. */
-  redCases: string[];
+  /** The rules this project wrote down, as they read when the run started. */
+  rules: RuleFile[];
   /**
    * Git's untracked list as it stood at the baseline. What is untracked at
    * cleanup time and not in here is what this run created — the only files the
@@ -91,7 +92,7 @@ export interface SavedRun {
   workRoot?: string;
 }
 
-const VERSION = 4;
+const VERSION = 5;
 
 /** What a run is called on disk. The id carries the time, so names sort by age. */
 function fileFor(root: string, id: string): string {

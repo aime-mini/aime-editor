@@ -17,6 +17,7 @@ const SOLUTION: Solution = {
   how: "store the language on the profile row and read it at sign-in",
   why: "it has to survive a new sign-in, which localStorage cannot do",
   decisions: ["the language column goes on the profile row"],
+  needsDeploy: true,
   raw: "",
 };
 
@@ -40,7 +41,7 @@ const PLAN: Plan = {
   raw: "",
 };
 
-function reportOf(verdict: CaseVerdict, evidence: string[] = []): string {
+function reportOf(verdict: CaseVerdict, evidence: string[] = [], evidenceRequired = true): string {
   return renderReport({
     run: RUN,
     brief: BRIEF,
@@ -51,6 +52,7 @@ function reportOf(verdict: CaseVerdict, evidence: string[] = []): string {
     verdict: null,
     outcomes: new Map<string, CaseVerdict>([["TC1", verdict]]),
     evidence,
+    evidenceRequired,
   });
 }
 
@@ -74,9 +76,19 @@ describe("renderReport", () => {
     expect(page).toContain("| unproven — no artifact from the running software names it |");
     expect(page).not.toContain("| PASS |");
 
-    expect(reportOf({ outcome: "unknown", gap: "neverRed" })).toContain(
-      "| unproven — its test was never seen failing first |",
+    expect(reportOf({ outcome: "unknown", gap: "suitesNotGreen" })).toContain(
+      "| unproven — a suite is red |",
     );
+  });
+
+  it("says what PASS meant in this run, and never more than that", () => {
+    // A change that was never deployed has no running software to photograph,
+    // so printing the longer set of conditions would be the report claiming a
+    // check nobody made.
+    expect(reportOf(PASSED, [], true)).toContain("an artifact made against the running software");
+    const suitesOnly = reportOf(PASSED, [], false);
+    expect(suitesOnly).toContain("needed no deployment to be believed");
+    expect(suitesOnly).not.toContain("an artifact made against the running software");
   });
 
   it("escapes a pipe, which would otherwise split the row it sits in", () => {
@@ -113,6 +125,7 @@ describe("renderReport", () => {
       verdict: null,
       outcomes: new Map(),
       evidence: [],
+      evidenceRequired: true,
     });
 
     expect(bare).toContain("# Task run — Login forgets the language");

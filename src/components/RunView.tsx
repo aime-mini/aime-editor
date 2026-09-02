@@ -28,7 +28,7 @@ import {
   type PhaseState,
   type Run,
 } from "../lib/runPlan";
-import { useRun } from "../stores/run";
+import { PHASE_LABELS, useRun } from "../stores/run";
 
 /**
  * A Task Run while it runs, and after.
@@ -615,19 +615,6 @@ function Mark({ state }: { state: PhaseState }) {
       );
   }
 }
-
-const PHASE_LABELS: Record<PhaseId, TranslationKey> = {
-  baseline: "run.phase.baseline",
-  understand: "run.phase.understand",
-  design: "run.phase.design",
-  tests: "run.phase.tests",
-  implement: "run.phase.implement",
-  verify: "run.phase.verify",
-  review: "run.phase.review",
-  polish: "run.phase.polish",
-  deliver: "run.phase.deliver",
-  report: "run.phase.report",
-};
 
 const WORKER_LABELS = {
   tools: "run.worker.tools",

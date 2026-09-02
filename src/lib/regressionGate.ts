@@ -112,16 +112,11 @@ export async function runSuites(
   nextId: () => string,
   run: RunCommand,
   skip: ReadonlySet<string> = new Set(),
-  enough?: (soFar: Baseline) => boolean,
 ): Promise<Baseline> {
   const suites: SuiteAttempt[] = [];
   for (const task of testTasksOf(tasks)) {
     if (skip.has(task.id)) continue;
     suites.push(await runOne(task, root, nextId(), run));
-    // Some questions are answered by the first suite that answers them - "did
-    // the new tests fail?" is one. Asking the remaining suites, when one of them
-    // is a nine-minute browser run, would be paying for an answer already given.
-    if (enough?.({ suites }) === true) break;
   }
   return { suites };
 }

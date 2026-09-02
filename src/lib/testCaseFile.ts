@@ -20,9 +20,9 @@ export const TEST_CASES_MD = ".aime/test-cases.md";
 /** How a case ended up, once the suites have spoken. */
 export type CaseOutcome =
   /**
-   * Earned, not defaulted: a test citing this case exists on disk, that test
-   * was seen failing before the code and every suite that answered is green
-   * now, and an artifact made against the running software names the case.
+   * Earned, not defaulted: a test citing this case exists on disk, every suite
+   * that answered is green now, and - for a change that had to be deployed to
+   * be believed - an artifact made against the running software names the case.
    */
   | "passed"
   /** A test citing this case is named among the failures. */
@@ -46,12 +46,6 @@ export type CaseGap =
   | "noTestPlanned"
   /** The planned test's file never appeared in the tree. */
   | "testMissing"
-  /**
-   * The case's own test was never seen failing before the code existed —
-   * either it did not fail, or the runner's output names no tests, in which
-   * case nothing can be attributed to any case.
-   */
-  | "neverRed"
   /** A suite that answered is red, so nothing may be called proved. */
   | "suitesNotGreen"
   /** No artifact made against the running software names this case. */
@@ -157,19 +151,23 @@ export function renderTestCases(cases: TestCases, brief: Brief, heading: string)
  *
  * Deliberately hard to satisfy — this is the QC's signature line. A case counts
  * as passed only when a planned test cites it, that test's file exists on disk,
- * that very test was seen failing before the code existed, every suite that
- * answered is green now, and an artifact made against the running software
- * names the case. Anything less is "unknown", with the first missing condition
- * attached: a table that reads "passed" because nothing contradicted it would
- * be the most expensive lie in the report.
+ * every suite that answered is green now, and an artifact made against the
+ * running software names the case. Anything less is "unknown", with the first
+ * missing condition attached: a table that reads "passed" because nothing
+ * contradicted it would be the most expensive lie in the report.
+ *
+ * `evidenceRequired` is the last condition's switch, and it is the run's own
+ * answer to "did this change have to be deployed to be believed?". A renamed
+ * constant has no running software to photograph, and holding its cases at
+ * "unproven" forever would teach a reader to ignore the column.
  */
 export function caseOutcomes(
   cases: TestCases,
   plan: Plan | null,
   verdict: GateVerdict | null,
   existingFiles: ReadonlySet<string>,
-  provenRed: ReadonlySet<string>,
   evidence: ReadonlyMap<string, string[]>,
+  evidenceRequired: boolean,
 ): Map<string, CaseVerdict> {
   const failing = (verdict?.suites ?? []).flatMap((suite) => [
     ...suite.after.report.failed,
@@ -193,33 +191,26 @@ export function caseOutcomes(
         ? "noTestPlanned"
         : written.length === 0
           ? "testMissing"
-          : !provenRed.has(one.id)
-            ? "neverRed"
-            : !everythingGreen
-              ? "suitesNotGreen"
-              : (evidence.get(one.id) ?? []).length === 0
-                ? "noEvidence"
-                : null;
+          : !everythingGreen
+            ? "suitesNotGreen"
+            : evidenceRequired && (evidence.get(one.id) ?? []).length === 0
+              ? "noEvidence"
+              : null;
     outcomes.set(one.id, gap === null ? { outcome: "passed", gap: null } : { outcome: "unknown", gap });
   }
   return outcomes;
 }
 
 /**
- * The cases whose own test is among these failure names.
+ * The planned tests whose file never appeared in the tree.
  *
- * How red-then-green becomes a per-case fact rather than a suite-level one: the
- * `tests` phase passes it the names that went red, and only a case found here
- * may ever be reported as proved. A runner whose output names no tests yields
- * an empty set — attributing an anonymous failure to a case would be guessing
- * in the report's favour.
+ * The cheap, mechanical half of "the tests were actually written": the plan
+ * named a file for every case, so a file that is not there is a case nobody
+ * wrote a test for. It says nothing about whether the test inside asserts
+ * anything - that is what the review phase reads the diff for.
  */
-export function casesProvenRed(plan: Plan | null, broken: readonly string[]): Set<string> {
-  const proven = new Set<string>();
-  for (const test of plan?.tests ?? []) {
-    if (broken.some((name) => mentions(name, test.name))) proven.add(test.case);
-  }
-  return proven;
+export function testsNotWritten(plan: Plan | null, existingFiles: ReadonlySet<string>): Plan["tests"] {
+  return (plan?.tests ?? []).filter((test) => !existingFiles.has(test.file));
 }
 
 /**

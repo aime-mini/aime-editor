@@ -47,7 +47,7 @@ function fullRun(id: string, ended: boolean) {
       raw: "{}",
     },
     radius: { changing: ["src/cart.js"], dependents: ["src/checkout.js"], unknown: [] },
-    solution: { how: "h", why: "w", decisions: ["d"], raw: "{}" },
+    solution: { how: "h", why: "w", decisions: ["d"], needsDeploy: true, raw: "{}" },
     cases: {
       cases: [{ id: "TC1", criterion: "AC1", prove: "a unit test", given: "g", when: "w", then: "t" }],
       raw: "{}",
@@ -73,7 +73,7 @@ function fullRun(id: string, ended: boolean) {
     },
     evidence: ["C:/work/test-results/one.png"],
     discovered: [{ id: "ai-suite-1", label: "make test", kind: "test" as const, command: "make test" }],
-    redCases: ["TC1"],
+    rules: [{ path: "AGENTS.md", text: "state lives in a store", truncated: false }],
     untrackedBefore: ["notes.txt"],
   };
 }
@@ -110,8 +110,8 @@ describe("saveRun", () => {
         "evidence",
         "plan",
         "radius",
-        "redCases",
         "review",
+        "rules",
         "run",
         "solution",
         "survey",
@@ -120,7 +120,7 @@ describe("saveRun", () => {
         "version",
       ].sort(),
     );
-    expect(parsed.version).toBe(4);
+    expect(parsed.version).toBe(5);
   });
 
   it("cuts the command output down instead of writing megabytes of build chatter", async () => {
@@ -164,8 +164,8 @@ describe("listRuns", () => {
 
   it("lists what the project kept, newest first", async () => {
     projectWith([
-      { name: "run-1000.json", content: JSON.stringify({ version: 4, ...fullRun("run-1000", true) }) },
-      { name: "run-3000.json", content: JSON.stringify({ version: 4, ...fullRun("run-3000", true) }) },
+      { name: "run-1000.json", content: JSON.stringify({ version: 5, ...fullRun("run-1000", true) }) },
+      { name: "run-3000.json", content: JSON.stringify({ version: 5, ...fullRun("run-3000", true) }) },
     ]);
 
     const runs = await listRuns("C:/work");
@@ -174,9 +174,9 @@ describe("listRuns", () => {
 
   it("skips a file from an older shape rather than half-reading it", async () => {
     projectWith([
-      { name: "run-1000.json", content: JSON.stringify({ version: 3, run: { id: "run-1000" } }) },
+      { name: "run-1000.json", content: JSON.stringify({ version: 4, run: { id: "run-1000" } }) },
       { name: "run-2000.json", content: "{ not json" },
-      { name: "run-3000.json", content: JSON.stringify({ version: 4, ...fullRun("run-3000", true) }) },
+      { name: "run-3000.json", content: JSON.stringify({ version: 5, ...fullRun("run-3000", true) }) },
     ]);
 
     const runs = await listRuns("C:/work");
@@ -190,8 +190,8 @@ describe("listRuns", () => {
 
   it("finds the run that was cut off mid-phase, which is the one worth offering", async () => {
     projectWith([
-      { name: "run-1000.json", content: JSON.stringify({ version: 4, ...fullRun("run-1000", false) }) },
-      { name: "run-3000.json", content: JSON.stringify({ version: 4, ...fullRun("run-3000", true) }) },
+      { name: "run-1000.json", content: JSON.stringify({ version: 5, ...fullRun("run-1000", false) }) },
+      { name: "run-3000.json", content: JSON.stringify({ version: 5, ...fullRun("run-3000", true) }) },
     ]);
 
     const live = await interruptedRun("C:/work");
@@ -203,7 +203,7 @@ describe("listRuns", () => {
 
 describe("loadRun", () => {
   it("reads one run by the name it was written under", async () => {
-    invoke.mockResolvedValue(JSON.stringify({ version: 4, ...fullRun("run-1000", true) }));
+    invoke.mockResolvedValue(JSON.stringify({ version: 5, ...fullRun("run-1000", true) }));
 
     const saved = await loadRun("C:/work", "run-1000");
     expect(saved?.cases?.cases[0].id).toBe("TC1");

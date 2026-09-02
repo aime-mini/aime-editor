@@ -12,25 +12,21 @@
  * cheapest mistakes to catch come first.
  */
 
-export type PhaseId =
-  | "baseline"
-  | "understand"
-  | "design"
-  | "tests"
-  | "implement"
-  | "verify"
-  | "review"
-  | "polish"
-  | "deliver"
-  | "report";
+export type PhaseId = "understand" | "design" | "implement" | "verify" | "review" | "report";
 
-/** Who does the work of a phase, which decides what it is allowed to touch. */
+/**
+ * The model a phase runs, which decides what that model is allowed to touch.
+ *
+ * It describes the model, not the phase: Aime's own tool work - taking a
+ * branch, running the declared suites, reading files off disk - happens in
+ * whichever phase needs it and is never a model's doing.
+ */
 export type PhaseWorker =
-  /** Tools only: no model runs, so nothing can be imagined. */
+  /** No model runs at all, so nothing in this phase can be imagined. */
   | "tools"
   /** A model that may only read. */
   | "reader"
-  /** A model that may edit files. Only two phases ever get this. */
+  /** A model that may edit files. */
   | "writer";
 
 export interface Phase {
@@ -41,56 +37,61 @@ export interface Phase {
 }
 
 /**
- * The phases in order.
+ * The phases in order: the six steps a developer already takes.
  *
- * The shape of it: **understand what is asked and the ground it stands on,
- * decide how and what proof looks like, get it confirmed, then write — and prove
- * every claim with something that is not the author.**
+ * Understand the task and the code it lands in, decide the approach, write it,
+ * test it until the bugs are out, check your own work, hand it over. Named that
+ * way on purpose - a run whose steps a person does not recognise is a run they
+ * cannot judge the progress of.
  *
- * There are ten of them because a phase is a *gate*, not a chapter heading:
- * splitting one question into three costs three model calls and buys nothing a
- * reader can act on. So `understand` reads the ticket and the code together —
- * the ground a change stands on is part of understanding it — and `design`
- * settles the approach, the test cases and the plan in one answer, which is the
- * page the reader is asked to agree to. Anything a person could not redirect on
- * its own is not worth stopping for.
+ * A phase is a *gate*, not a chapter heading, and gates are cheap: two of these
+ * run no model at all in their own right. What is not cheap is a model call, so
+ * questions that share one answer share one phase. `understand` reads the ticket
+ * and the code together, because what a change is for cannot be settled without
+ * the code it will live in. `design` settles the approach, the test cases and
+ * the plan in one page - the page the reader is asked to agree to - because a
+ * plan can be flawless about the wrong approach.
  *
- * `tests` stays separate so red-then-green can be *measured*: the tests go in
- * first and the suites must get worse, because a test that passes before the
- * code exists is testing nothing. `implement` then has to turn that red green.
- *
- * The rest are what make walking away rational. `verify` is the one that
- * cannot be argued with: the project's own checks and every suite it declares,
- * measured against the baseline, with what this change broke fixed and measured
- * again until it holds. `review` is a reader with a clean context, `polish` acts
- * on what it found, `deliver` builds, deploys and proves every case against the
- * running software, and `report` is what a person comes back to. A run that
- * downed tools at the first red gate would hand back homework, so every gate
- * here tries again before it refuses, and refusing is the last resort.
+ * The last three are what make walking away rational. `verify` cannot be
+ * argued with: the project's own checks and every suite it declares, measured
+ * against the baseline taken in step one, what this change broke put right and
+ * measured again, and then the thing built, deployed and driven where a case
+ * needs the running software to be believed. `review` is a reader with a clean
+ * context that then fixes what it found. `report` is what a person comes back
+ * to. A run that downed tools at the first red gate would hand back homework,
+ * so every gate here tries again before it refuses, and refusing is the last
+ * resort.
  */
 export const PHASES: Phase[] = [
-  { id: "baseline", worker: "tools", blocking: true },
+  // Aime's own work comes first inside this one: a branch of its own, and every
+  // suite and check as they stand. Without that baseline "your change broke
+  // this" and "this was already broken" are the same sentence, which is the
+  // sentence that makes every later gate untrustworthy.
   { id: "understand", worker: "reader", blocking: true },
   { id: "design", worker: "reader", blocking: true },
-  { id: "tests", worker: "writer", blocking: true },
+  // The tests are written here with the code, not in a phase of their own. The
+  // hole that leaves - a test asserting nothing passes just as well - is what
+  // `review` reads the diff for.
   { id: "implement", worker: "writer", blocking: true },
   // Measuring and mending are one phase, not three: finding a regression and
   // then reporting it is what handing back homework looks like. Its own loops
   // live inside - the checks are fixed until they pass, the suites until they
-  // are no worse than the baseline - and only what will not mend stops the run.
+  // are no worse than the baseline, the declared builds until they build - and
+  // only what will not mend stops the run.
   { id: "verify", worker: "writer", blocking: true },
-  { id: "review", worker: "reader", blocking: false },
-  // A finding the polish phase could not fix is reported, not fatal: a reviewer
-  // is the one voice here that can be wrong, so it never gets to end the work.
-  { id: "polish", worker: "writer", blocking: false },
-  // "Done" means deployed and seen working, not green on a dev machine: the
-  // declared builds run, the software is deployed the way this project deploys,
-  // and every agreed case is proved against the running thing - with artifacts
-  // on disk, because Aime checks files, not claims. Last of the writers so that
-  // what gets deployed is the polished code, not a draft of it.
-  { id: "deliver", worker: "writer", blocking: true },
+  // Blocking, but selectively: what stops a run here is an unfixed finding
+  // about architecture or security, because a change sitting in the wrong layer
+  // does not belong in the repository however well it works. A reviewer's taste
+  // is the one voice here that can simply be wrong, so everything else it found
+  // is reported and never fatal.
+  { id: "review", worker: "writer", blocking: true },
   { id: "report", worker: "tools", blocking: false },
 ];
+
+// A run saved by a build that had ten phases is not translated into these six:
+// its journal is a version behind and `readRun` ignores it outright, which is
+// the mechanism this file already uses for a shape change (see SavedRun's
+// version). Half-reading someone's record would be worse than not offering it.
 
 /** Where a phase stands. */
 export type PhaseState =
@@ -178,9 +179,10 @@ export function phaseAt(id: PhaseId): Phase {
 /**
  * Whether a run may go on after this result.
  *
- * A blocked phase stops the run only when that phase is a blocking one — a
- * review that found something worth saying is worth saying, not worth stopping
- * a finished change over.
+ * A blocked phase stops the run only when that phase is a blocking one. Which
+ * findings are worth stopping for is the phase's own judgement, not this
+ * function's: `review` decides that an unfixed architecture or security finding
+ * is, and that its opinion of a name is not.
  */
 export function mayContinue(id: PhaseId, result: PhaseResult): boolean {
   if (result.state === "cancelled") return false;

@@ -3,7 +3,7 @@ import type { Brief, Plan, TestCases } from "./aiRun";
 import type { CommandOutcome } from "./exec";
 import type { GateVerdict } from "./regressionGate";
 import { readTestOutput } from "./testReport";
-import { caseOutcomes, casesProvenRed, renderTestCases } from "./testCaseFile";
+import { caseOutcomes, renderTestCases, testsNotWritten } from "./testCaseFile";
 
 const BRIEF: Brief = {
   goal: "Keep the chosen language after a reload",
@@ -104,54 +104,55 @@ describe("renderTestCases", () => {
 
 /** The full set of conditions a PASS needs, to be weakened one at a time. */
 const IN_TREE = new Set(["src/i18n/index.test.ts"]);
-const WAS_RED = new Set(["TC1"]);
 const HAS_PROOF = new Map([["TC1", ["C:/repo/.aime/evidence/TC1.png"]]]);
 const NO_PROOF = new Map<string, string[]>([["TC1", []]]);
+/** Whether an artifact from running software is one of the conditions. */
+const DEPLOYED = true;
 
 describe("caseOutcomes", () => {
   it("calls a case proved only when every condition holds at once", () => {
-    const proved = caseOutcomes(CASES, PLAN, GREEN, IN_TREE, WAS_RED, HAS_PROOF);
+    const proved = caseOutcomes(CASES, PLAN, GREEN, IN_TREE, HAS_PROOF, DEPLOYED);
     expect(proved.get("TC1")).toEqual({ outcome: "passed", gap: null });
   });
 
   it("will not call a case proved when the test file is not in the tree", () => {
     // The planned test was never written. Everything else looks identical from
     // here - which is exactly why this is checked rather than assumed.
-    const held = caseOutcomes(CASES, PLAN, GREEN, new Set(), WAS_RED, HAS_PROOF).get("TC1");
+    const held = caseOutcomes(CASES, PLAN, GREEN, new Set(), HAS_PROOF, DEPLOYED).get("TC1");
     expect(held).toEqual({ outcome: "unknown", gap: "testMissing" });
   });
 
   it("will not call a case proved while any suite is red", () => {
     const elsewhere = verdictOf("test a::one ... FAILED\ntest result: FAILED. 0 passed; 1 failed;", 101);
-    const held = caseOutcomes(CASES, PLAN, elsewhere, IN_TREE, WAS_RED, HAS_PROOF).get("TC1");
+    const held = caseOutcomes(CASES, PLAN, elsewhere, IN_TREE, HAS_PROOF, DEPLOYED).get("TC1");
     expect(held).toEqual({ outcome: "unknown", gap: "suitesNotGreen" });
   });
 
-  it("will not call a case proved whose own test was never seen failing", () => {
-    // Red-then-green is a per-case fact: a case whose test never failed first
-    // has a test that proves nothing, however green everything is now.
-    const held = caseOutcomes(CASES, PLAN, GREEN, IN_TREE, new Set(), HAS_PROOF).get("TC1");
-    expect(held).toEqual({ outcome: "unknown", gap: "neverRed" });
+  it("asks for no artifact when the change needed no deploying to be proved", () => {
+    // A renamed constant has no running software to photograph. Holding its
+    // cases at "unproven" forever would teach a reader to ignore the column.
+    const held = caseOutcomes(CASES, PLAN, GREEN, IN_TREE, NO_PROOF, false).get("TC1");
+    expect(held).toEqual({ outcome: "passed", gap: null });
   });
 
   it("will not call a case proved without an artifact from the running software", () => {
-    const held = caseOutcomes(CASES, PLAN, GREEN, IN_TREE, WAS_RED, NO_PROOF).get("TC1");
+    const held = caseOutcomes(CASES, PLAN, GREEN, IN_TREE, NO_PROOF, DEPLOYED).get("TC1");
     expect(held).toEqual({ outcome: "unknown", gap: "noEvidence" });
   });
 
   it("calls a case failed when the failing test is the one that cites it", () => {
-    const held = caseOutcomes(CASES, PLAN, RED, IN_TREE, WAS_RED, HAS_PROOF).get("TC1");
+    const held = caseOutcomes(CASES, PLAN, RED, IN_TREE, HAS_PROOF, DEPLOYED).get("TC1");
     expect(held).toEqual({ outcome: "failed", gap: null });
   });
 
   it("says which case no test cites at all", () => {
     const unplanned: Plan = { ...PLAN, tests: [] };
-    const held = caseOutcomes(CASES, unplanned, GREEN, new Set(), WAS_RED, HAS_PROOF).get("TC1");
+    const held = caseOutcomes(CASES, unplanned, GREEN, new Set(), HAS_PROOF, DEPLOYED).get("TC1");
     expect(held).toEqual({ outcome: "unknown", gap: "noTestPlanned" });
   });
 
   it("says unknown when there was no verdict to read", () => {
-    const held = caseOutcomes(CASES, PLAN, null, IN_TREE, WAS_RED, HAS_PROOF).get("TC1");
+    const held = caseOutcomes(CASES, PLAN, null, IN_TREE, HAS_PROOF, DEPLOYED).get("TC1");
     expect(held?.outcome).toBe("unknown");
   });
 
@@ -165,7 +166,7 @@ describe("caseOutcomes", () => {
       ),
       1,
     );
-    expect(caseOutcomes(CASES, PLAN, spelled, IN_TREE, WAS_RED, HAS_PROOF).get("TC1")?.outcome).toBe(
+    expect(caseOutcomes(CASES, PLAN, spelled, IN_TREE, HAS_PROOF, DEPLOYED).get("TC1")?.outcome).toBe(
       "failed",
     );
 
@@ -173,24 +174,22 @@ describe("caseOutcomes", () => {
       ["FAIL  src/i18n/index.test.ts > i18n > falls back to English", "Tests  1 failed (1)"].join("\n"),
       1,
     );
-    expect(caseOutcomes(CASES, PLAN, other, IN_TREE, WAS_RED, HAS_PROOF).get("TC1")?.outcome).toBe("unknown");
+    expect(caseOutcomes(CASES, PLAN, other, IN_TREE, HAS_PROOF, DEPLOYED).get("TC1")?.outcome).toBe(
+      "unknown",
+    );
   });
 });
 
-describe("casesProvenRed", () => {
-  it("credits a case whose planned test is among the named failures", () => {
-    const red = casesProvenRed(PLAN, ["src/i18n/index.test.ts > keeps Vietnamese after a reload"]);
-    expect(red.has("TC1")).toBe(true);
+describe("testsNotWritten", () => {
+  it("names the planned test whose file never appeared", () => {
+    expect(testsNotWritten(PLAN, new Set())).toEqual(PLAN.tests);
   });
 
-  it("credits nothing from an anonymous failure", () => {
-    // A runner that names no tests can attribute nothing to any case, and an
-    // empty failure list must never be read as "every case failed as planned".
-    expect(casesProvenRed(PLAN, []).size).toBe(0);
-    expect(casesProvenRed(PLAN, ["some unrelated words"]).size).toBe(0);
+  it("is empty once every planned file is in the tree", () => {
+    expect(testsNotWritten(PLAN, IN_TREE)).toEqual([]);
   });
 
   it("answers empty with no plan at all", () => {
-    expect(casesProvenRed(null, ["anything"]).size).toBe(0);
+    expect(testsNotWritten(null, new Set())).toEqual([]);
   });
 });

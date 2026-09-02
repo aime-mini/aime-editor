@@ -109,6 +109,18 @@ export interface Solution {
   why: string;
   /** What this locks in: data shape, error handling, security, cost. */
   decisions: string[];
+  /**
+   * Whether proving these cases needs the software built, deployed and driven.
+   *
+   * The one thing that scales a run to the size of its task. "Done means
+   * deployed" is right for a change a person will use and absurd for a renamed
+   * constant: demanding an artifact from running software for an internal
+   * refactor either blocks honest work or gets satisfied by a token file, and
+   * the second is worse. The model decides it, because it read the project and
+   * it wrote these cases - Aime guessing from a file extension is the rigid
+   * rule already rejected once (see `casesWithoutProof`).
+   */
+  needsDeploy: boolean;
   raw: string;
 }
 
@@ -120,6 +132,7 @@ Answer ONLY with JSON, no prose and no code fence:
 {"how": "the way you will do it, one or two sentences",
  "why": "why this way, and what you rejected to get here",
  "decisions": ["what this locks in - a data shape, an error path, a permission, a query"],
+ "needsDeploy": true,
  "cases": [{"id": "TC1", "criterion": "AC1", "prove": "how this case gets checked",
             "given": "the starting state", "when": "the action", "then": "what must be true after"}],
  "steps": [{"what": "...", "files": ["src/x.ts"], "criteria": ["AC1"]}],
@@ -132,6 +145,11 @@ The approach:
 - Every decision must be one this change actually makes. Do not list principles.
 - Weigh it against the conventions of this repository, the dependent files listed below and the cost
   of getting it wrong - not against general good practice.
+- "needsDeploy" is true when believing these cases requires the software built, deployed and driven -
+  a screen, an endpoint, a command a person runs. It is false when the project's own suites are what
+  would convince a tester: a pure function, an internal refactor, a string a locale file holds. Answer
+  it for THIS change, not for the project: getting it wrong upwards makes a one-line change deploy an
+  application, and getting it wrong downwards lets a broken screen call itself proved.
 
 The test cases - write them as a tester would, before any code exists:
 - Every acceptance criterion needs at least one case. A criterion with a boundary, an empty value or
@@ -199,11 +217,23 @@ export interface Plan {
   raw: string;
 }
 
+/**
+ * What a finding is about, which is what decides whether it can stop a run.
+ *
+ * Two of these are not opinions. A change in the wrong layer does not belong in
+ * the repository however well it is written, and a hole in access control is not
+ * a matter of taste - so an unfixed finding of either kind ends the run rather
+ * than going into the report for someone to notice later. The rest are a
+ * reviewer's judgement, and a reviewer can be wrong, so they are reported.
+ */
+export type FindingKind = "architecture" | "security" | "correctness" | "performance" | "style";
+
 /** One thing a reviewer found, with the evidence that makes it checkable. */
 export interface Finding {
   file: string;
   line: number;
   severity: "issue" | "suggestion";
+  kind: FindingKind;
   message: string;
   /** How this would be proved - a test to run, an input that breaks it. */
   check: string;
@@ -235,13 +265,21 @@ Then look for each risk you named, and for these four in every case:
 
 Answer ONLY with JSON, no prose and no code fence:
 {"risks": ["..."],
- "findings": [{"file": "src/x.ts", "line": 12, "severity": "issue",
+ "findings": [{"file": "src/x.ts", "line": 12, "severity": "issue", "kind": "architecture",
                "message": "one sentence", "check": "how to prove it"}]}
 
 Rules:
 - A finding with no file and line is not a finding. Drop it.
 - "check" must say how someone could prove you right: an input, a query count, a test to write.
   If you cannot say, the severity is "suggestion", not "issue".
+- "kind" is one of: architecture, security, correctness, performance, style. Use "architecture" for
+  code that works but sits in the wrong place for this project - the wrong layer, a component
+  reaching past the boundary its neighbours respect, a rule this repository wrote down and this
+  change ignores. Use "security" only for something an attacker could use. These two end the run when
+  they cannot be fixed, so do not reach for them to add weight to a preference.
+- A test that asserts nothing is a finding, and it is "correctness": the tests here are written
+  beside the code, so a test that would pass with the feature deleted is the one thing no gate
+  after you can catch.
 - Say nothing about formatting; a formatter already ran.
 `;
 
@@ -273,6 +311,20 @@ function asArray(value: unknown): unknown[] {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+const KINDS: FindingKind[] = ["architecture", "security", "correctness", "performance", "style"];
+
+/**
+ * One of the five kinds, defaulting to the one that cannot end a run.
+ *
+ * The opposite choice from `needsDeploy`, and for the opposite reason: a field
+ * the model forgot must not invent a reason to stop the work, and nothing is
+ * lost by the default - the finding is still reported and still handed to the
+ * phase that fixes it.
+ */
+function asKind(value: unknown): FindingKind {
+  return KINDS.find((kind) => kind === value) ?? "correctness";
 }
 
 /** The brief, or null when the reply was not one. */
@@ -337,6 +389,9 @@ export function parseSolution(reply: string): Solution | null {
     how,
     why,
     decisions: asArray(object.decisions).map(asString).filter(Boolean),
+    // Absent reads as "yes, deploy it". A field the model forgot must not be
+    // the way a change quietly skips being proved where it runs.
+    needsDeploy: object.needsDeploy !== false,
     raw: reply,
   };
 }
@@ -402,6 +457,7 @@ export function parseReview(reply: string): Review {
           line: Number.isFinite(line) ? line : 0,
           // Only a finding that says how to prove it may call itself an issue.
           severity: row.severity === "issue" && check !== "" ? ("issue" as const) : ("suggestion" as const),
+          kind: asKind(row.kind),
           message: asString(row.message),
           check,
         };
@@ -448,4 +504,28 @@ export function uncoveredCases(cases: TestCases, plan: Plan): TestCase[] {
  */
 export function casesWithoutProof(cases: TestCases): TestCase[] {
   return cases.cases.filter((one) => one.prove === "");
+}
+
+/**
+ * The findings a run may not be finished with.
+ *
+ * The half of the senior bar that was missing: the prompts said "follow this
+ * project's architecture - that is a rule, not advice", and then a reviewer who
+ * found the rule broken wrote it into a report and the run reported success
+ * anyway. Which made it advice. These are the findings that end a run instead,
+ * and they are deliberately few - an issue, said to be about architecture or
+ * security, with a way to check it. Everything else a reviewer thinks is
+ * reported, because a reviewer can be wrong and a change made to please a
+ * mistaken one is worse than the finding.
+ */
+export function blockingFindings(review: Review): Finding[] {
+  return review.findings.filter(
+    (finding) =>
+      finding.severity === "issue" && (finding.kind === "architecture" || finding.kind === "security"),
+  );
+}
+
+/** The findings worth handing to a fixer: an issue with a way to check it. */
+export function fixableFindings(review: Review): Finding[] {
+  return review.findings.filter((finding) => finding.severity === "issue");
 }

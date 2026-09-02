@@ -9,14 +9,15 @@
  *
  * 1. The confirmation gate: the approach, the test cases and the plan are on
  *    screen with NOTHING written yet, and the run waits.
- * 2. Red-then-green as a measurement, per CASE: the tests go in first, the
- *    suite has to get worse, and the failure has to carry the case's own test
- *    by name - the case table says PASS only because all of that happened.
+ * 2. The code and its tests written together, and the case table earning its
+ *    PASS from them: the planned test file has to appear in the tree, every
+ *    suite that answered has to be green, and an artifact from the running
+ *    software has to name the case.
  * 3. The project's own checks: a change that breaks `npm run check` is caught
  *    and fixed, not reported and abandoned.
  * 4. The record: a finished run is still there after a reload, and can be
  *    opened again.
- * 5. Delivery as a gate: the deliver phase must leave an artifact per case and
+ * 5. Delivery as a gate: the run must leave an artifact per case and
  *    proof the deployed software answered - files Aime checks on disk - and
  *    the cleanup button lists only what the run created and deletes only what
  *    is ticked, never the evidence by default.
@@ -85,10 +86,10 @@ const SOUND = cart(ADDS_UP, ROUNDS);
 const BREAKS = cart(RUINED, ROUNDS);
 const SLOPPY = cart(ADDS_UP, ROUNDS, 'const debug = () => console.log("here");\n');
 
-// The suite as the tests phase leaves it: rounding now asserted, and results
-// printed the way vitest prints them - the one JS format Aime reads failing
-// test NAMES out of. The names are what let the red proof be credited to TC1
-// itself rather than to "the suite", which is the per-case bar the report holds.
+// The suite as the implementing phase leaves it: rounding now asserted, and
+// results printed the way vitest prints them - the one JS format Aime reads
+// failing test NAMES out of. Those names are what let a failure be attributed
+// to TC1's own test rather than to "the suite".
 const TEST_WITH_ROUNDING =
   'const assert = require("node:assert");\n' +
   'const { pathToFileURL } = require("node:url");\n' +
@@ -144,6 +145,9 @@ if (prompt.includes("answer both questions at once")) {
     how: "round the total inside withTax, where the maths already lives",
     why: "one place to be right, and no caller can forget it; rounding at every screen cannot be enforced",
     decisions: ["withTax returns money, rounded to two places"],
+    // This change is proved by driving the built thing, so the delivery half of
+    // the verify step applies and the evidence gate has something to check.
+    needsDeploy: true,
     cases: [
       {
         id: "TC1",
@@ -157,17 +161,16 @@ if (prompt.includes("answer both questions at once")) {
     steps: [{ what: "Round in withTax", files: ["src/cart.js"], criteria: ["AC1"] }],
     tests: [{ name: "rounds to two places", file: "test.cjs", case: "TC1" }],
   });
-} else if (prompt.includes("Write the tests for this change")) {
-  // Tests only, and no production code: the suite must go red on the strength
-  // of the assertion alone, which is the thing the phase after this measures.
-  fs.writeFileSync(here("test.cjs"), TEST_WITH_ROUNDING);
-  process.stdout.write("tests written\n");
 } else if (prompt.includes("Implement this work item")) {
-  // "repairs" and "breaks" both break something here; they differ in what the
-  // repair phase does about it afterwards.
+  // The code and its tests in one phase, in that order - which is the order the
+  // user works in. "repairs" and "breaks" both break something here; they
+  // differ in what the repair rounds do about it afterwards.
   const breaks = mode === "breaks" || mode === "repairs";
   const source = breaks ? BREAKS : mode === "sloppy" ? SLOPPY : SOUND;
   fs.writeFileSync(here("src", "cart.js"), source);
+  // The file the plan named. Aime checks it exists before the phase may pass,
+  // which is the mechanical half of "the tests were actually written".
+  fs.writeFileSync(here("test.cjs"), TEST_WITH_ROUNDING);
   // And the kind of droppings an agent leaves behind: an untracked scratch
   // file, which the cleanup button must offer and the baseline snapshot must
   // not blame on anything that was already there.
@@ -187,8 +190,8 @@ if (prompt.includes("answer both questions at once")) {
 // Matched on a phrase that sits on ONE line of the prompt: the prompts are
 // wrapped template literals, and a phrase spanning a wrap point never matches.
 } else if (prompt.includes("build it, deploy it, and prove it works where it runs")) {
-  // The deliver phase: deploy proof plus one artifact per case, which is what
-  // the gate reads off the disk - the words in stdout prove nothing to it.
+  // The delivery half of verify: deploy proof plus one artifact per case,
+  // which is what the gate reads off the disk - stdout proves nothing to it.
   fs.mkdirSync(here(".aime", "evidence", "deploy"), { recursive: true });
   fs.writeFileSync(here(".aime", "evidence", "TC1.txt"), "node test.cjs: rounds to two places passed\n");
   fs.writeFileSync(here(".aime", "evidence", "deploy", "health.txt"), "served on 4173, / answered 200\n");
@@ -596,14 +599,14 @@ describe("Task run", () => {
     return sampleProject(options);
   }
 
-  it("agrees the approach and the cases before it writes anything, then proves the tests red", async () => {
+  it("agrees the approach and the cases before it writes anything, then writes both", async () => {
     fs.writeFileSync(MODE_FILE, "sound");
     repo = freshRepo(repo);
     await startRun(repo);
 
-    // Phase 0 is real work before a single token is spent: a branch of its own,
-    // and every suite and check as they stand.
-    await waitForText("baseline", "the run never started");
+    // Step one starts with Aime's own work, before a single token is spent: a
+    // branch of its own, and every suite and check as they stand.
+    await waitForText("understand the task", "the run never started");
     await browser.waitUntil(() => currentBranch(repo).startsWith("bugfix/12-"), {
       timeout: 60_000,
       timeoutMsg: `the run did not start a branch of its own: on ${currentBranch(repo)}`,
@@ -614,7 +617,7 @@ describe("Task run", () => {
     // imports `cart.js`, and the only thing in the app that can know it is the
     // server - the fake CLI never mentions that file.
     const ground = await waitForPhase(
-      "Read the item and the code",
+      "Understand the task and the code",
       "depending on them",
       "the phase never reported a radius",
     );
@@ -628,7 +631,7 @@ describe("Task run", () => {
     // a person can read and edit, which is the whole difference between "there
     // is a test" and "we agreed what proof is".
     await waitForPhase(
-      "Decide the approach, the cases and the plan",
+      "Plan the approach and what proof looks like",
       "test case(s) covering",
       "the approach and the cases were never decided",
     );
@@ -645,9 +648,15 @@ describe("Task run", () => {
     // itself asserts the second half of that.
     await approve(repo);
 
-    // Red-then-green, measured: the tests went in alone and the suite got worse.
-    const tests = await waitForPhase("Write the tests", "as they must", "the tests were never proved red");
-    assert.match(tests, /fail as they must/, `the red proof was not reported: ${tests}`);
+    // The code and its tests, in one step. The gate is mechanical: the file the
+    // plan named has to be in the tree, so a case nobody wrote a test for is
+    // asked for again rather than counted.
+    const written = await waitForPhase(
+      "Write the code and its tests",
+      "beside it",
+      "the code and its tests were never written",
+    );
+    assert.match(written, /1 test\(s\) beside it/, `the planned test was not accounted for: ${written}`);
 
     await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
     assert.match(
@@ -657,14 +666,14 @@ describe("Task run", () => {
     );
 
     // The table a tester would sign, and the one word in it that has to be
-    // earned: a test naming the case exists, that test was seen failing first,
-    // every suite is green, and an artifact from the running software names it.
+    // earned: a test naming the case exists in the tree, every suite that
+    // answered is green, and an artifact from the running software names it.
     const [report] = reportsIn(repo);
     assert.ok(report, "the run left no report behind");
     assert.match(report, /\| TC1 \| AC1 \|/, `the case table is missing its row: ${report}`);
     assert.match(report, /\| PASS \|/, `the case was not recorded as proved: ${report}`);
 
-    // The deliver phase's evidence is real files Aime checked, not a claim:
+    // The delivery evidence is real files Aime checked, not a claim:
     // one artifact named after the case, and proof the deployed thing answered.
     assert.ok(
       fs.existsSync(path.join(repo, ".aime", "evidence", "TC1.txt")),
@@ -704,7 +713,7 @@ describe("Task run", () => {
     await approve(repo);
 
     const repair = await waitForPhase(
-      "Measure everything, and fix what broke",
+      "Test it until the bugs are out",
       "Fixed in",
       "the phase never reported putting it right",
       240_000,
@@ -732,7 +741,7 @@ ${suite.output}`,
     await approve(repo);
 
     const quality = await waitForPhase(
-      "Measure everything, and fix what broke",
+      "Test it until the bugs are out",
       "Fixed in",
       "the project's own check was not fixed",
       240_000,
@@ -771,23 +780,18 @@ ${suite.output}`,
     // them. The model is asked how this project is really tested, and Aime
     // believes the answer only after running it. Everything downstream is the
     // proof that this worked: without the discovered suite there is no
-    // baseline, the tests phase would skip, and TC1 could never be proved red.
+    // baseline, nothing downstream could be measured, and TC1 could never be
+    // recorded as proved.
     fs.writeFileSync(MODE_FILE, "sound");
     repo = freshRepo(repo, { declaresTest: false });
     await startRun(repo);
 
     await waitForPhase(
-      "Baseline",
+      "Understand the task and the code",
       "declares no test command",
       "the baseline hid that the gate had nothing to run",
     );
     await approve(repo);
-    const tests = await waitForPhase(
-      "Write the tests",
-      "as they must",
-      "the discovered command never carried the red proof",
-    );
-    assert.match(tests, /fail as they must/, `red was not proved through the discovered suite: ${tests}`);
 
     await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
     const [report] = reportsIn(repo);
@@ -803,7 +807,7 @@ ${suite.output}`,
     await approve(repo);
 
     const gave = await waitForPhase(
-      "Measure everything, and fix what broke",
+      "Test it until the bugs are out",
       "Still broken after",
       "the run stopped without saying it had tried",
       240_000,
