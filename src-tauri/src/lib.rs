@@ -15,6 +15,7 @@ mod memory;
 mod plugins;
 mod providers;
 mod session;
+mod splash;
 mod tasks;
 mod terminal;
 mod trackers;
@@ -38,12 +39,13 @@ pub fn run() {
         .manage(lsp::LspState::default())
         .manage(dap::DapState::default())
         .manage(exec::ExecState::default())
+        .manage(splash::SplashState::default())
         .setup(|app| {
-            // The main window is configured hidden; size it to the real
-            // monitor work area, maximize and show (see fit_and_maximize).
-            if let Some(window) = app.get_webview_window("main") {
-                window_cmds::fit_and_maximize(&window);
-            }
+            // The editor stays hidden behind the splash window until the
+            // frontend reports its first screen painted; splash.rs owns that
+            // handover, and shows the editor straight away when there is no
+            // splash to show (see splash::start).
+            splash::start(app.handle());
             // User-defined AI CLIs: a bad file costs its own providers, never
             // the built-in ones. Watched from here on, so a CLI added while
             // Aime runs - by the user or by the agent doing it for them -
@@ -64,6 +66,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cli::initial_folder,
+            splash::splash_shown,
+            splash::splash_hold,
+            splash::splash_skip,
+            splash::app_ready,
             checkpoint::checkpoint_create,
             checkpoint::checkpoint_diff,
             checkpoint::checkpoint_restore,

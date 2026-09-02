@@ -16,6 +16,13 @@ export default defineConfig(async () => ({
 
   build: {
     rollupOptions: {
+      // Two pages, not one. The splash has to be on screen in the first few
+      // milliseconds, so it gets an entry of its own rather than a route inside
+      // the editor's bundle - see splash.html and src-tauri/src/splash.rs.
+      input: {
+        main: "index.html",
+        splash: "splash.html",
+      },
       output: {
         // Monaco is most of the bundle and changes only when it is upgraded.
         // Splitting it out lets the window paint without waiting for the whole

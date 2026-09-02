@@ -31,6 +31,13 @@ const EN: HelpTopic[] = [
     keywords: "update upgrade version release auto-update signed",
   },
   {
+    id: "splash",
+    section: "Getting started",
+    title: "The starting window",
+    body: "Aime greets you while it starts, in a small window of its own, instead of putting an empty editor on screen and filling it in later. Aime herself is on the card: she looks up, waves, glances over at her own name and nods. The greeting stays for about four seconds, and it is not idle time - the project folder is opened and the editor's whole bundle is loaded behind it, so what replaces the greeting is a finished editor rather than a shell that fills itself in. She also says hello out loud, once per launch, in whatever language Aime is set to - switch language in Settings and she greets you in it from the next launch. The voice ships with Aime, so it is the same on every machine rather than whichever voices Windows happens to have installed. Press any key or click to go straight through, and the voice stops with it. If something goes wrong while starting, the greeting steps aside on its own and lets the editor show you what happened.",
+    keywords: "splash startup launch start screen logo skip loading character wave animation",
+  },
+  {
     id: "cli",
     section: "Getting started",
     title: "Open from the terminal",
@@ -399,6 +406,13 @@ const VI: HelpTopic[] = [
     title: "Cập nhật",
     body: "Mỗi lần mở app Aime kiểm tra một lần xem có bản mới chưa. Có thì hiện một thanh trên cùng cửa sổ kèm số phiên bản - không tải gì cho tới khi anh bấm Cập nhật ngay, bấm X thì im tới lần mở sau. Bản cập nhật có ký số, nên bản dựng không phải do quy trình phát hành của dự án tạo ra sẽ bị từ chối.",
     keywords: "cập nhật update phiên bản release ký số",
+  },
+  {
+    id: "splash",
+    section: "Bắt đầu",
+    title: "Cửa sổ khởi động",
+    body: "Trong lúc khởi động, Aime chào anh bằng một cửa sổ riêng thay vì bày ra một editor trống rồi mới điền dần. Chính Aime đứng trên tấm thẻ đó: cô ấy ngẩng lên, vẫy tay chào, liếc sang tên mình rồi gật đầu. Lời chào ở lại khoảng bốn giây, và đó không phải thời gian chết - phía sau nó thư mục dự án được mở và toàn bộ bundle của editor được nạp xong, nên thứ thay chỗ lời chào là một editor hoàn chỉnh chứ không phải cái vỏ rồi điền dần. Cô ấy còn chào bằng giọng nói, mỗi lần mở app một lần, theo đúng ngôn ngữ đang đặt cho Aime - đổi ngôn ngữ trong Settings thì từ lần mở sau cô ấy chào bằng ngôn ngữ đó. Giọng đi kèm bản cài nên máy nào cũng giống nhau, không phụ thuộc giọng có sẵn trong Windows. Bấm phím bất kỳ hoặc click là vào thẳng app, giọng nói tắt theo. Nếu khởi động có chuyện, lời chào tự nhường chỗ để editor nói cho anh biết chuyện gì.",
+    keywords: "splash khởi động màn hình chào logo bỏ qua đang tải nhân vật vẫy tay hoạt hình",
   },
   {
     id: "cli",

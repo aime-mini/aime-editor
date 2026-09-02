@@ -10,8 +10,24 @@ import logo from "./assets/logo.svg";
  * Monaco alone is 4.4 MB of JavaScript. The welcome screen has no editor on
  * it, so waiting for that parse before showing anything is time the user
  * pays for nothing.
+ *
+ * Named rather than inlined because the startup effect below warms the same
+ * import while the greeting is on screen: one module, fetched once, and by the
+ * time `lazy` asks for it the answer is already there.
  */
-const Workbench = lazy(() => import("./components/Workbench"));
+const loadWorkbench = () => import("./components/Workbench");
+const Workbench = lazy(loadWorkbench);
+
+/**
+ * The longest the greeting is asked to wait for the first screen to be ready.
+ *
+ * Chosen against the splash's own floor of three seconds (src-tauri/src/splash.rs):
+ * a release start finishes well inside it, and a slow one still puts the editor
+ * on screen within five seconds rather than holding a picture up indefinitely.
+ */
+const STARTUP_BUDGET_MS = 5000;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 import { useT } from "./i18n";
 import { startAutoSave } from "./lib/autoSave";
 import { EnvironmentCheck } from "./components/EnvironmentCheck";
@@ -235,15 +251,47 @@ export default function App() {
   const { installerTools, setInstallerTools } = useLayout();
   const { settingsOpen, setSettingsOpen } = useLayout();
 
-  // `aime <folder>` launch: adopt the CLI folder unless the user beat us to the dialog.
+  // `aime <folder>` launch: adopt the CLI folder unless the user beat us to the
+  // dialog - and then release the splash window.
+  //
+  // Everything the first screen needs is done here, while the greeting is up:
+  // the CLI folder is opened, its tree read, and the editor's own bundle
+  // fetched and parsed. The window that replaces the greeting is therefore a
+  // finished editor rather than a shell that fills itself in afterwards, which
+  // is the whole point of having a greeting at all.
+  //
+  // Only two frames after that, since one frame means the layout has been
+  // computed - the second is the one that has been painted.
   useEffect(() => {
-    invoke<string | null>("initial_folder")
-      .then((folder) => {
-        if (folder && useWorkspace.getState().rootPath === null) {
-          void useWorkspace.getState().adoptFolder(folder);
-        }
-      })
-      .catch(console.error);
+    let cancelled = false;
+
+    const warmUp = async () => {
+      const folder = await invoke<string | null>("initial_folder").catch((error: unknown) => {
+        console.error(error);
+        return null;
+      });
+      if (folder && useWorkspace.getState().rootPath === null) {
+        await useWorkspace.getState().adoptFolder(folder);
+      }
+      await loadWorkbench().catch(console.error);
+    };
+
+    // The greeting waits for the warm-up, but never on it: under `tauri dev`
+    // the first load of Monaco is the dev server transforming 4.4 MB and has
+    // been measured past eight seconds. Whatever is unfinished by then finishes
+    // behind the editor's own Suspense fallback instead of behind a picture.
+    void Promise.race([warmUp(), sleep(STARTUP_BUDGET_MS)]).finally(() => {
+      if (cancelled) return;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          invoke("app_ready").catch(console.error);
+        });
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Plugins the user switched on, started once per window.

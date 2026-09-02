@@ -21,7 +21,7 @@ const UNATTENDED_VAR: &str = "AIME_UNATTENDED";
 /// while staying a real, rendered window — the tests need it to paint.
 const PARKED_AT: (i32, i32) = (-4000, -4000);
 
-fn unattended() -> bool {
+pub fn unattended() -> bool {
     std::env::var_os(UNATTENDED_VAR).is_some()
 }
 

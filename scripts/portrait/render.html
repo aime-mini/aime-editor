@@ -1,0 +1,791 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Aime portrait renderer</title>
+    <!--
+      Renders the splash portrait out of a 3D model, one deterministic frame at a
+      time, on a transparent background.
+
+      It is a page rather than a Node script because the only 3D renderer this
+      machine has is the one inside a browser - and `scripts/render-portrait.mjs`
+      drives it headless, so nobody has to open it by hand. Frames leave through
+      `window.__portrait`, which is the whole interface between the two.
+
+      The camera and the pose are computed from the model's own humanoid bones, so
+      a different model can be dropped in without touching numbers here.
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: transparent;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/node_modules/three/build/three.module.js",
+          "three/addons/": "/node_modules/three/examples/jsm/",
+          "@pixiv/three-vrm": "/node_modules/@pixiv/three-vrm/lib/three-vrm.module.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <script type="module">
+      import * as THREE from "three";
+      import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+      import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+
+      const params = new URLSearchParams(location.search);
+      const number = (name, fallback) => Number(params.get(name) ?? fallback);
+
+      const WIDTH = number("w", 660);
+      const HEIGHT = number("h", 714);
+      const FRAMES = number("frames", 120);
+      const FPS = number("fps", 24);
+      const MODEL = params.get("model") ?? "/model.vrm";
+
+      /** Seconds one loop lasts - every motion below is a whole number of these. */
+      const LOOP_SECONDS = FRAMES / FPS;
+      /**
+       * Loops run before the first captured frame. Hair and skirt are spring
+       * bones with inertia, so an untouched rig starts from rest and the first
+       * cycle does not match the last - which is exactly the seam a looping
+       * portrait must not have. Three cycles is enough for them to settle into
+       * the motion's own period (measured: the fourth and fifth are identical to
+       * the eye).
+       */
+      const WARMUP_LOOPS = 3;
+      /**
+       * The largest step the hair and skirt springs stay stable at.
+       *
+       * Measured: advanced at the capture rate of 1/18 s, the springs overshot
+       * on the first pose and never came back - hair stood out sideways in every
+       * frame. A frame is therefore advanced in sub-steps of at most this,
+       * whatever the capture rate happens to be.
+       */
+      const MAX_SPRING_STEP = 1 / 60;
+
+      /**
+       * How much of the body is in frame, measured from the model's own bones.
+       *
+       * The room above her head is not composition for its own sake: the
+       * greeting below puts an open hand up beside her face, and measured at
+       * 0.24 the fingertips were cut off by the top edge.
+       */
+      const CROP = { aboveHead: 0.32, belowHips: 0.06 };
+      /** A slight turn, so she is not standing to attention at the lens. */
+      const CAMERA_YAW = 0.32;
+      /**
+       * How far the frame slides towards the arm she waves with, in model units.
+       *
+       * The camera distance is worked out from her height, and the width that
+       * comes with it is whatever the canvas aspect gives - which said nothing
+       * about a raised arm. Measured on the shipped loop: during the wave the
+       * figure reached x = 661 of 662, so her forearm was being cut off by the
+       * canvas, and on the welcome screen that reads exactly like the panel
+       * beside her is covering it. Dead space on her other side pays for this.
+       *
+       * Measured after the shift, at 740 x 800: the widest frame of the wave
+       * reaches 93% of the canvas and the quiet frames start 20px in, so nothing
+       * touches an edge at either end of the loop.
+       */
+      const CAMERA_SHIFT = 0.13;
+      const FIELD_OF_VIEW = 27;
+
+      const renderer = new THREE.WebGLRenderer({
+        alpha: true,
+        antialias: true,
+        // The frame is read back with toDataURL after the draw call, which is
+        // the one case where the drawing buffer has to survive it.
+        preserveDrawingBuffer: true,
+      });
+      renderer.setPixelRatio(1);
+      renderer.setSize(WIDTH, HEIGHT);
+      renderer.setClearAlpha(0);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      document.body.append(renderer.domElement);
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(FIELD_OF_VIEW, WIDTH / HEIGHT, 0.1, 20);
+
+      /*
+       * One key, one rim, one fill - and a bright ambient, which is the part that
+       * matters most here. The portrait sits on a near-black card, so a figure
+       * lit "realistically" for a dark room disappears into it; measured on the
+       * splash, an earlier flat-shaded attempt was invisible for exactly that
+       * reason. The rim is the app's accent blue, so she stands in the card's
+       * own light.
+       */
+      scene.add(new THREE.AmbientLight(0x8494b8, 0.55));
+      const key = new THREE.DirectionalLight(0xfff4e8, 1.45);
+      key.position.set(-1.3, 1.8, 1.6);
+      scene.add(key);
+      const rim = new THREE.DirectionalLight(0x6c8cff, 2.8);
+      rim.position.set(-1.7, 1.3, -1.5);
+      scene.add(rim);
+      const fill = new THREE.DirectionalLight(0x4c5fd7, 0.34);
+      fill.position.set(1.6, 0.7, 0.9);
+      scene.add(fill);
+
+      /** Rotations applied once, to turn an A-pose into a stance. */
+      const BASE_POSE = [
+        // A VRM arrives in an A-pose with everything level and everything
+        // straight. Every line below exists to break one of those symmetries,
+        // because symmetry is what reads as a shop dummy: the shoulders tilt,
+        // the elbows differ, the weight sits on one leg and the spine answers it,
+        // and the head tilts off the vertical.
+        ["leftShoulder", { z: 0.07 }],
+        ["rightShoulder", { z: -0.02 }],
+        ["leftUpperArm", { z: 1.3, x: 0.17, y: -0.12 }],
+        ["rightUpperArm", { z: -1.2, x: 0.1, y: 0.15 }],
+        // Bent elbows, and the near hand carried in towards the waist rather
+        // than hanging in clear air.
+        ["leftLowerArm", { z: 0.26, y: -0.46 }],
+        ["rightLowerArm", { z: -0.42, y: 0.64 }],
+        ["leftHand", { z: 0.1, x: 0.16 }],
+        ["rightHand", { z: -0.2, x: 0.18 }],
+        // Contrapposto: hips off the horizontal, the spine curving back the
+        // other way, one leg carrying her and the other easy.
+        ["hips", { z: -0.13, y: 0.16 }],
+        ["spine", { z: 0.07, y: -0.06, x: -0.02 }],
+        ["chest", { z: 0.05, y: -0.04 }],
+        ["upperChest", { z: 0.03 }],
+        ["leftUpperLeg", { z: 0.04 }],
+        ["rightUpperLeg", { z: -0.07, x: -0.05 }],
+        ["rightLowerLeg", { x: 0.13 }],
+        ["rightFoot", { x: -0.08 }],
+        // The head tilt is the single strongest cue that somebody is present
+        // rather than parked - and the yaw is positive, towards the lens, because
+        // the body is turned three quarters away and a face that follows it reads
+        // as looking past you. Every quiet frame of the loop is this pose.
+        ["neck", { y: 0.06, x: 0.05, z: 0.04 }],
+        ["head", { y: 0.12, z: 0.07, x: -0.02 }],
+      ];
+
+      /**
+       * The smile she carries the whole loop, before any gesture warms it. Set
+       * so that the quietest frame of the loop still reads as friendly - she is
+       * on screen for a second and a half at a time, and a neutral mouth in that
+       * second is the difference between a greeting and a passport photograph.
+       */
+      const SMILE = 0.22;
+      /** Every expression this animation drives, at its resting value. */
+      const EXPRESSION_REST = { happy: SMILE, Surprised: 0, blink: 0, blinkRight: 0 };
+
+      /**
+       * Blinks, as phases of the loop. Deliberately uneven, and two of them make
+       * a double: a blink on a regular beat reads as a mechanism, and the eye is
+       * very good at finding a beat.
+       *
+       * None of them falls inside the greeting below. Measured, and it looked
+       * exactly as bad as it sounds: she waved with her eyes shut.
+       */
+      const BLINK_AT = [0.4, 0.44, 0.62, 0.83];
+      /**
+       * How long one blink lasts, in seconds - a lid, not a shutter. At the
+       * capture rate this is four frames, which is the floor for a blink you can
+       * actually see happen rather than one that is simply gone on one frame.
+       */
+      const BLINK_SECONDS = 0.22;
+      /** The share of that spent closing: lids shut fast and open slowly. */
+      const BLINK_CLOSING = 0.34;
+
+      /**
+       * How far behind the pose each bone drags, as a share of the loop.
+       *
+       * Nothing on a body arrives at once: the shoulder leads, the forearm
+       * follows, the hand arrives last. Every joint hitting its key on the same
+       * frame is the single loudest thing that reads as a machine imitating a
+       * person, and it costs one lookup per bone to fix.
+       */
+      const FOLLOW_THROUGH = {
+        leftLowerArm: 0.012,
+        leftHand: 0.026,
+        neck: 0.004,
+        head: 0.008,
+      };
+
+      const mix = (a, b, t) => a + (b - a) * t;
+      /** Smoothstep. Keyframes are held poses, and a linear join reads as a jerk. */
+      const ease = (t) => {
+        const u = Math.min(1, Math.max(0, t));
+        return u * u * (3 - 2 * u);
+      };
+      const ZERO = { x: 0, y: 0, z: 0 };
+
+      /*
+       * The arm, at the heights the greeting passes through, and the head with
+       * it. Every number below was measured by rendering candidate poses and
+       * looking at them, because the normalized rig's axes are not guessable: on
+       * this arm the shoulder's `z` raises it sideways, the elbow's `z` bends the
+       * forearm - but which way the forearm then travels depends on the
+       * shoulder's `y`, and at `y: 0` it goes forward across the chest instead of
+       * up.
+       *
+       * The wave lives inside the canvas, which is the other constraint the
+       * measurements settled: an arm extended straight out puts the hand outside
+       * the frame, so the greeting is a bent arm with the hand beside her head.
+       *
+       * The head turn is not decoration. The stance leaves her at three quarters
+       * to the lens, which is right for standing there and wrong for saying
+       * hello - measured on the card, a wave from a face turned away reads as a
+       * wave at somebody else. Every waving key turns the head, the neck and a
+       * little of the chest back towards the viewer.
+       */
+      const FACING = {
+        neck: { y: 0.1, x: -0.04 },
+        head: { y: 0.16 },
+        spine: { y: 0.08 },
+        chest: { y: 0.06 },
+      };
+      const ARM_LIFTING = {
+        leftUpperArm: { z: -0.25, y: -0.2 },
+        leftLowerArm: { z: -0.55 },
+      };
+      const ARM_HALFWAY = {
+        ...FACING,
+        leftShoulder: { z: 0.08 },
+        leftUpperArm: { z: -0.5, y: -0.4 },
+        leftLowerArm: { z: -1.1 },
+        leftHand: { z: 0.1 },
+        head: { y: 0.15, z: 0.05 },
+      };
+      /*
+       * The two ends of the rock, and the pose it settles on. They are named
+       * because the clip visits them more than once: one rock is a twitch, three
+       * is a greeting, and six would be a performance.
+       */
+      const WAVE_OUT = {
+        ...FACING,
+        leftShoulder: { z: 0.12 },
+        leftUpperArm: { z: -0.8, y: -0.5 },
+        leftLowerArm: { z: -1.55 },
+        leftHand: { z: 0.35 },
+        head: { y: 0.15, z: 0.07 },
+      };
+      const WAVE_BACK = {
+        ...FACING,
+        leftShoulder: { z: 0.14 },
+        leftUpperArm: { z: -0.9, y: -0.7 },
+        leftLowerArm: { z: -1.85 },
+        leftHand: { z: -0.25 },
+        head: { y: 0.18, z: 0.03 },
+      };
+      const WAVE_HELD = {
+        ...FACING,
+        leftShoulder: { z: 0.13 },
+        leftUpperArm: { z: -0.85, y: -0.6 },
+        leftLowerArm: { z: -1.7 },
+        leftHand: { z: 0.05 },
+        head: { y: 0.16, z: 0.05 },
+      };
+
+      /**
+       * She notices you, waves, winks, and goes back to standing there.
+       *
+       * Keyframes rather than more sines: a wave has beats, and a sum of sines
+       * has none. `at` is a position along the clip; the first and last key are
+       * empty, so however large the gesture in the middle, the clip contributes
+       * nothing at the seam and the loop stays seamless. A key states a whole
+       * pose, not a change to the one before it - a key that named only an
+       * expression would drop the arm to her side while the face carried on.
+       *
+       * It is timed to land early. The splash holds for three seconds and the
+       * portrait fades in over the first of them, so a greeting peaking at four
+       * seconds is one most launches would never show.
+       */
+      const GREETING = {
+        from: 0.01,
+        to: 0.5,
+        keys: [
+          { at: 0 },
+          {
+            // Anticipation. The hand drops and turns in before it goes up, because
+            // a limb that starts straight for its destination looks fired rather
+            // than moved.
+            at: 0.05,
+            bones: { leftUpperArm: { z: 0.08, y: 0.04 }, leftShoulder: { z: -0.03 } },
+          },
+          {
+            // The noticing, before the wave: head up and round to the lens, eyes
+            // wide. `Surprised` is what opens them - the smile alone narrows
+            // them, which is the whole reason the peak is kept where it is.
+            at: 0.11,
+            bones: {
+              ...ARM_LIFTING,
+              neck: { x: -0.07, y: 0.08 },
+              head: { x: -0.06, y: 0.12, z: -0.04 },
+              upperChest: { y: 0.04, x: 0.02 },
+            },
+            expressions: { Surprised: 0.12, happy: 0.1 },
+            gaze: { y: 0.04 },
+          },
+          {
+            // Half way up, and the body answers the arm with a turn and a shift
+            // of weight - an arm that moves on its own belongs to a puppet.
+            at: 0.24,
+            bones: { ...ARM_HALFWAY, hips: { z: 0.025 } },
+            expressions: { happy: 0.14, Surprised: 0.08 },
+            gaze: { y: 0.03 },
+          },
+          { at: 0.36, bones: WAVE_OUT, expressions: { happy: 0.18, Surprised: 0.06 } },
+          { at: 0.46, bones: WAVE_BACK, expressions: { happy: 0.2, Surprised: 0.04 } },
+          { at: 0.56, bones: WAVE_OUT, expressions: { happy: 0.2 } },
+          // The wink, on the held pose: the hand stops moving for it, because two
+          // things at once is one thing nobody sees.
+          { at: 0.64, bones: WAVE_HELD, expressions: { happy: 0.2 } },
+          { at: 0.69, bones: WAVE_HELD, expressions: { happy: 0.22, blinkRight: 1 } },
+          { at: 0.74, bones: WAVE_HELD, expressions: { happy: 0.22, blinkRight: 1 } },
+          { at: 0.79, bones: WAVE_HELD, expressions: { happy: 0.2 } },
+          {
+            // Down again, and slower than it went up, so the hand settles rather
+            // than snapping back to the hip.
+            at: 0.9,
+            bones: { ...ARM_LIFTING, head: { y: 0.06, z: 0.03 }, neck: { y: 0.04 } },
+            expressions: { happy: 0.1 },
+          },
+          { at: 1 },
+        ],
+      };
+
+      /**
+       * The second beat: a small bow. She dips forward from the waist and comes
+       * back up, the way somebody says hello without saying it twice.
+       *
+       * It replaced a glance away towards the wordmark. Measured on the card and
+       * reported by the first person to watch it: whatever the glance did for
+       * liveliness, it ended with her looking off to one side, and a portrait
+       * that finishes its loop looking away reads as distracted. Every beat now
+       * keeps her eyes on the viewer.
+       */
+      const BOW = {
+        from: 0.52,
+        to: 0.68,
+        keys: [
+          { at: 0 },
+          {
+            at: 0.4,
+            bones: {
+              spine: { x: 0.1 },
+              chest: { x: 0.06 },
+              upperChest: { x: 0.03 },
+              neck: { x: 0.08 },
+              head: { x: 0.1, z: 0.04 },
+            },
+            expressions: { happy: 0.08 },
+          },
+          {
+            at: 0.66,
+            bones: { spine: { x: 0.03 }, chest: { x: 0.02 }, neck: { x: -0.03 }, head: { x: -0.04 } },
+            expressions: { happy: 0.1 },
+          },
+          { at: 1 },
+        ],
+      };
+
+      /**
+       * The third beat: a shrug. Both shoulders up and a tilt of the head - "so,
+       * what are we working on". It is the only beat that changes her silhouette
+       * without moving an arm, which is what makes it worth having next to a
+       * wave.
+       */
+      const SHRUG = {
+        from: 0.7,
+        to: 0.86,
+        keys: [
+          { at: 0 },
+          {
+            at: 0.42,
+            bones: {
+              leftShoulder: { z: 0.16 },
+              rightShoulder: { z: -0.16 },
+              neck: { x: 0.04, z: 0.05 },
+              head: { z: 0.09, x: 0.03 },
+              upperChest: { x: 0.02 },
+            },
+            expressions: { happy: 0.1 },
+          },
+          {
+            at: 0.7,
+            bones: { leftShoulder: { z: 0.05 }, rightShoulder: { z: -0.05 }, head: { z: 0.04 } },
+            expressions: { happy: 0.06 },
+          },
+          { at: 1 },
+        ],
+      };
+
+      /**
+       * The third beat, and the one that closes the loop: she comes back from the
+       * glance and nods, twice, the way somebody says "ready when you are". The
+       * tail of the loop was measured at a third of the movement of the greeting
+       * - two seconds of a portrait standing still, which is where a loop starts
+       * looking like a photograph again.
+       */
+      const NOD = {
+        from: 0.87,
+        to: 0.99,
+        keys: [
+          { at: 0 },
+          {
+            at: 0.26,
+            bones: { neck: { x: 0.1, y: 0.05 }, head: { x: 0.14, y: 0.08 }, upperChest: { x: 0.02 } },
+            expressions: { happy: 0.06 },
+          },
+          {
+            at: 0.5,
+            bones: { neck: { x: -0.03, y: 0.05 }, head: { x: -0.05, y: 0.08 } },
+            expressions: { happy: 0.08 },
+          },
+          {
+            at: 0.74,
+            bones: { neck: { x: 0.07, y: 0.03 }, head: { x: 0.1, y: 0.05 } },
+            expressions: { happy: 0.06 },
+          },
+          { at: 1 },
+        ],
+      };
+
+      /** Every gesture, played on top of the idle layer in order. */
+      const CLIPS = [GREETING, BOW, SHRUG, NOD];
+
+      function applyPose(vrm) {
+        for (const [bone, angles] of BASE_POSE) {
+          const node = vrm.humanoid.getNormalizedBoneNode(bone);
+          if (!node) continue;
+          node.rotation.x += angles.x ?? 0;
+          node.rotation.y += angles.y ?? 0;
+          node.rotation.z += angles.z ?? 0;
+        }
+      }
+
+      /** Frames the model from its own head and hip positions. */
+      function frameCamera(vrm) {
+        const head = vrm.humanoid.getNormalizedBoneNode("head");
+        const hips = vrm.humanoid.getNormalizedBoneNode("hips");
+        const top = new THREE.Vector3();
+        const bottom = new THREE.Vector3();
+        head.getWorldPosition(top);
+        hips.getWorldPosition(bottom);
+        const highest = top.y + CROP.aboveHead;
+        const lowest = bottom.y - CROP.belowHips;
+        const centre = (highest + lowest) / 2;
+        const span = highest - lowest;
+        const distance = span / 2 / Math.tan((FIELD_OF_VIEW * Math.PI) / 360);
+        // Aimed part way towards where her head actually is, not at the rig's
+        // origin: a pose with weight on one hip leans, and a camera pointed at
+        // the origin leaves that lean as empty canvas on one side. Plus the
+        // shift that makes room for the arm she waves with.
+        const lean = top.x * 0.55 + CAMERA_SHIFT;
+        camera.position.set(lean + Math.sin(CAMERA_YAW) * distance, centre, Math.cos(CAMERA_YAW) * distance);
+        camera.lookAt(lean, centre, 0);
+      }
+
+      /** How closed the eyes are at this phase of the loop, 0 to 1. */
+      function blinkAt(phase) {
+        const length = BLINK_SECONDS / LOOP_SECONDS;
+        let closed = 0;
+        for (const at of BLINK_AT) {
+          const t = (phase - at) / length;
+          if (t < 0 || t > 1) continue;
+          const shut =
+            t < BLINK_CLOSING ? ease(t / BLINK_CLOSING) : ease(1 - (t - BLINK_CLOSING) / (1 - BLINK_CLOSING));
+          closed = Math.max(closed, shut);
+        }
+        return closed;
+      }
+
+      /**
+       * Where the eyes flick to, and when. Held for a beat, then back - the shape
+       * of a real saccade, which is a jump and a hold rather than a slide.
+       */
+      const SACCADES = [
+        { at: 0.14, x: -0.035, y: 0.012 },
+        { at: 0.39, x: 0.03, y: -0.01 },
+        { at: 0.71, x: -0.025, y: -0.015 },
+        { at: 0.89, x: 0.02, y: 0.014 },
+      ];
+      /** How long the eyes stay away, in phase, and how fast they get there. */
+      const SACCADE_HOLD = 0.06;
+      const SACCADE_TRAVEL = 0.012;
+
+      function saccadeAt(phase) {
+        for (const flick of SACCADES) {
+          const since = phase - flick.at;
+          if (since < 0 || since > SACCADE_HOLD) continue;
+          const strength =
+            since < SACCADE_TRAVEL
+              ? ease(since / SACCADE_TRAVEL)
+              : ease(1 - (since - SACCADE_TRAVEL) / (SACCADE_HOLD - SACCADE_TRAVEL));
+          return { x: flick.x * strength, y: flick.y * strength };
+        }
+        return { x: 0, y: 0 };
+      }
+
+      /**
+       * The always-on layer: breath, weight, and the drift of a head that is
+       * attached to somebody. A function of the loop's phase rather than of real
+       * time, so the same frame number always produces the same frame, and every
+       * motion completes a whole number of cycles per loop.
+       *
+       * Amplitudes are roughly three times what they first were. Measured on the
+       * splash at the size she is actually shown: at a degree and a half she read
+       * as a photograph, not as a person.
+       *
+       * Returns where the gaze should drift to, which is the one part of this
+       * layer that is not a rotation.
+       */
+      function idle(add, phase) {
+        const turn = phase * Math.PI * 2;
+        const breath = Math.sin(turn);
+        // Off the breath's phase, so the two never look like one movement.
+        const sway = Math.sin(turn - 1.1);
+        // Half the frequency, which is what keeps a five second loop from
+        // reading as a five second loop.
+        const slow = Math.sin(turn * 0.5 - 0.4);
+
+        add("chest", { x: breath * 0.055 });
+        add("upperChest", { x: breath * 0.035 });
+        add("spine", { x: breath * 0.028, y: sway * 0.05 });
+        // The hips carry the whole figure, so this is also what feeds the hair
+        // and skirt springs - secondary motion nobody has to author.
+        add("hips", { y: sway * 0.06, z: sway * 0.022, x: breath * 0.012 });
+        add("leftShoulder", { z: breath * 0.03 });
+        add("rightShoulder", { z: breath * -0.03 });
+        add("leftUpperArm", { z: sway * 0.035, x: breath * 0.02 });
+        add("rightUpperArm", { z: sway * -0.03, x: breath * 0.02 });
+        // Three times the breath's rate and a tenth of its size: a head that
+        // holds perfectly still between gestures is the other half of what reads
+        // as a puppet, and this is too small to see and impossible to miss.
+        const flutter = Math.sin(turn * 3 + 0.7);
+        const tremor = Math.sin(turn * 5 - 1.9);
+        add("neck", { x: breath * -0.03 + flutter * 0.006, y: sway * 0.06 + tremor * 0.005 });
+        add("neck", { z: slow * 0.025 });
+        add("head", {
+          y: sway * 0.075 + flutter * 0.012,
+          z: breath * 0.02 + slow * 0.03 + tremor * 0.008,
+          x: slow * -0.02 + flutter * -0.007,
+        });
+
+        // A gaze locked to the millimetre is its own kind of dead, and so is one
+        // that only ever drifts: real eyes flick, hold, and flick again.
+        return {
+          x: sway * 0.05 + saccadeAt(phase).x,
+          y: slow * 0.035 + saccadeAt(phase).y,
+        };
+      }
+
+      /** Where a clip stands at this phase: bone deltas, expressions and gaze. */
+      function sampleClip(clip, phase) {
+        const empty = { bones: {}, expressions: {}, gaze: { x: 0, y: 0 } };
+        if (phase <= clip.from || phase >= clip.to) return empty;
+        const along = (phase - clip.from) / (clip.to - clip.from);
+        const index = clip.keys.findIndex((key) => key.at >= along);
+        const to = clip.keys[index];
+        const from = clip.keys[Math.max(0, index - 1)];
+        const blend = to.at === from.at ? 1 : ease((along - from.at) / (to.at - from.at));
+
+        // A bone named in one key and not the other interpolates from rest, so a
+        // key only has to state what it changes.
+        const bones = {};
+        for (const bone of new Set([...Object.keys(from.bones ?? {}), ...Object.keys(to.bones ?? {})])) {
+          const a = from.bones?.[bone] ?? ZERO;
+          const b = to.bones?.[bone] ?? ZERO;
+          bones[bone] = {
+            x: mix(a.x ?? 0, b.x ?? 0, blend),
+            y: mix(a.y ?? 0, b.y ?? 0, blend),
+            z: mix(a.z ?? 0, b.z ?? 0, blend),
+          };
+        }
+
+        const expressions = {};
+        for (const name of new Set([
+          ...Object.keys(from.expressions ?? {}),
+          ...Object.keys(to.expressions ?? {}),
+        ])) {
+          expressions[name] = mix(from.expressions?.[name] ?? 0, to.expressions?.[name] ?? 0, blend);
+        }
+
+        return {
+          bones,
+          expressions,
+          gaze: {
+            x: mix(from.gaze?.x ?? 0, to.gaze?.x ?? 0, blend),
+            y: mix(from.gaze?.y ?? 0, to.gaze?.y ?? 0, blend),
+          },
+        };
+      }
+
+      /**
+       * Adds one clip's contribution, each bone read at its own time.
+       *
+       * A lagged bone is sampled from the clip's own past. That is safe at the
+       * ends because the first and last keys are empty: a bone still catching up
+       * when the clip finishes is catching up to rest, which is where it was
+       * going anyway.
+       */
+      function playClip(clip, phase, add, expressions, gazeOffset) {
+        const now = sampleClip(clip, phase);
+        const lagged = new Map();
+        for (const [bone, angles] of Object.entries(now.bones)) {
+          const lag = FOLLOW_THROUGH[bone];
+          if (!lag) {
+            add(bone, angles);
+            continue;
+          }
+          const behind = lagged.get(lag) ?? sampleClip(clip, phase - lag);
+          lagged.set(lag, behind);
+          add(bone, behind.bones[bone] ?? ZERO);
+        }
+        // A bone that has only just left rest is missing from `now` but present
+        // in its own lagged past - the tail of the movement, which is exactly the
+        // part follow-through exists to keep.
+        for (const behind of lagged.values()) {
+          for (const [bone, angles] of Object.entries(behind.bones)) {
+            if (!(bone in now.bones) && FOLLOW_THROUGH[bone]) add(bone, angles);
+          }
+        }
+
+        for (const [name, value] of Object.entries(now.expressions)) {
+          expressions[name] = (expressions[name] ?? 0) + value;
+        }
+        gazeOffset.x += now.gaze.x;
+        gazeOffset.y += now.gaze.y;
+      }
+
+      /**
+       * Poses the whole rig for one phase of the loop: the idle layer, then every
+       * clip on top of it, then the face.
+       */
+      function poseFrame(vrm, phase, rest, gaze, camera) {
+        const deltas = new Map();
+        const add = (bone, angles) => {
+          const total = deltas.get(bone) ?? { x: 0, y: 0, z: 0 };
+          total.x += angles.x ?? 0;
+          total.y += angles.y ?? 0;
+          total.z += angles.z ?? 0;
+          deltas.set(bone, total);
+        };
+
+        const gazeOffset = idle(add, phase);
+        const expressions = { ...EXPRESSION_REST, blink: blinkAt(phase) };
+        for (const clip of CLIPS) playClip(clip, phase, add, expressions, gazeOffset);
+
+        // Every bone is written every frame, from the stance plus this frame's
+        // delta - never from wherever the previous frame left it.
+        for (const [bone, base] of rest) {
+          const node = vrm.humanoid.getNormalizedBoneNode(bone);
+          if (!node) continue;
+          const delta = deltas.get(bone) ?? ZERO;
+          node.rotation.set(base.x + delta.x, base.y + delta.y, base.z + delta.z);
+        }
+
+        // Her eyes stay on whoever is looking, which is most of the difference
+        // between a figure standing there and somebody noticing you.
+        gaze.position.set(
+          camera.position.x + gazeOffset.x,
+          camera.position.y + gazeOffset.y,
+          camera.position.z,
+        );
+
+        const manager = vrm.expressionManager;
+        if (!manager) return;
+        for (const [name, value] of Object.entries(expressions)) {
+          // Drive what this rig actually has, not what a spec says it should.
+          if (!manager.getExpression(name)) continue;
+          manager.setValue(name, Math.min(1, Math.max(0, value)));
+        }
+      }
+
+      /** Moves the rig forward by `seconds`, in steps the springs survive. */
+      function advance(vrm, seconds) {
+        const steps = Math.max(1, Math.ceil(seconds / MAX_SPRING_STEP));
+        for (let i = 0; i < steps; i += 1) vrm.update(seconds / steps);
+      }
+
+      async function load() {
+        const loader = new GLTFLoader();
+        loader.register((parser) => new VRMLoaderPlugin(parser));
+        const gltf = await loader.loadAsync(MODEL);
+        const vrm = gltf.userData.vrm;
+
+        VRMUtils.removeUnnecessaryVertices(gltf.scene);
+        VRMUtils.combineSkeletons(gltf.scene);
+        // A VRM 0.x model faces away from the camera until this is applied.
+        if (vrm.meta?.metaVersion === "0") VRMUtils.rotateVRM0(vrm);
+
+        scene.add(vrm.scene);
+
+        // three-vrm aims the eyes at whatever this object is, every update.
+        const gaze = new THREE.Object3D();
+        scene.add(gaze);
+        if (vrm.lookAt) vrm.lookAt.target = gaze;
+
+        applyPose(vrm);
+        vrm.humanoid.update();
+        frameCamera(vrm);
+
+        // The stance is the zero point every frame's motion is added to. Every
+        // bone the rig has is captured, not only the posed ones, so a clip may
+        // reach for any of them without a second list to keep in step.
+        const rest = new Map();
+        for (const bone of Object.keys(vrm.humanoid.humanBones)) {
+          const node = vrm.humanoid.getNormalizedBoneNode(bone);
+          if (node) rest.set(bone, node.rotation.clone());
+        }
+
+        const step = 1 / FPS;
+        const settle = (frames) => {
+          for (let i = 0; i < frames; i += 1) {
+            poseFrame(vrm, (i % FRAMES) / FRAMES, rest, gaze, camera);
+            advance(vrm, step);
+          }
+        };
+        settle(FRAMES * WARMUP_LOOPS);
+
+        return { vrm, rest, step, gaze };
+      }
+
+      const loaded = load();
+
+      window.__portrait = {
+        /** Resolves with what the driver needs to know before asking for frames. */
+        ready: loaded.then(({ vrm }) => ({
+          width: WIDTH,
+          height: HEIGHT,
+          frames: FRAMES,
+          fps: FPS,
+          loopSeconds: LOOP_SECONDS,
+          title: vrm.meta?.title ?? vrm.meta?.name ?? "",
+          licence: vrm.meta?.licenseName ?? vrm.meta?.licenseUrl ?? "",
+          commercial: vrm.meta?.commercialUssageName ?? vrm.meta?.commercialUsage ?? "",
+          // What this particular rig actually offers, so the animation drives
+          // what exists rather than what a spec says should.
+          expressions: Object.keys(vrm.expressionManager?.expressionMap ?? {}),
+          hasLookAt: Boolean(vrm.lookAt),
+          bones: ["leftShoulder", "leftUpperLeg", "leftLowerLeg", "leftFoot", "upperChest"].filter((bone) =>
+            Boolean(vrm.humanoid.getNormalizedBoneNode(bone)),
+          ),
+        })),
+
+        /**
+         * One frame as a PNG data URL. Frames are asked for in order; each one
+         * advances the rig by exactly one step, so the sequence the driver
+         * receives is the sequence the loop is made of.
+         */
+        async frame(index) {
+          const { vrm, rest, step, gaze } = await loaded;
+          poseFrame(vrm, index / FRAMES, rest, gaze, camera);
+          advance(vrm, step);
+          renderer.render(scene, camera);
+          return renderer.domElement.toDataURL("image/png");
+        },
+      };
+    </script>
+  </body>
+</html>
