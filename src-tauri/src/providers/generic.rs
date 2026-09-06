@@ -312,7 +312,7 @@ fn guard() -> RwLockWriteGuard<'static, Vec<Arc<GenericAdapter>>> {
 #[cfg(test)]
 mod tests {
     use super::{expand, GenericAdapter, MemoryStrategy, ParserKind, ProviderConfig};
-    use crate::providers::adapter::{Adapter, ApiKeyRoute, Permission, TurnRequest};
+    use crate::providers::adapter::{Adapter, ApiKeyRoute, Permission, ToolSet, TurnRequest};
 
     fn adapter(args: &[&str], resume: &[&str], parser: ParserKind) -> GenericAdapter {
         GenericAdapter {
@@ -377,6 +377,7 @@ mod tests {
             model: None,
             effort: None,
             permission: Permission::Full,
+            tools: ToolSet::Everything,
         }
     }
 

@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { translate } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
@@ -29,7 +28,7 @@ import {
   type TestCases,
 } from "../lib/aiRun";
 import { aiOneshot } from "../lib/aiOneshot";
-import { createEventParser } from "../lib/aiParsers";
+import { agentTurn, cancelAgentTurn } from "../lib/agentTurn";
 import { radiusFrom, radiusIsComplete, type Radius } from "../lib/blastRadius";
 import { allOutput, execCancel, type CommandOutcome } from "../lib/exec";
 import {
@@ -90,7 +89,6 @@ import {
   type Run,
 } from "../lib/runPlan";
 import { branchNameFor } from "../lib/workItems";
-import { useAi } from "./ai";
 import { useGit } from "./git";
 import { folderOf, type TaskDef } from "./tasks";
 import { useTrackers, type WorkItem } from "./trackers";
@@ -258,7 +256,6 @@ interface RunState {
  */
 interface Engine {
   inFlight: { kind: "command" | "agent"; id: string } | null;
-  unlisten: UnlistenFn[];
   /** True from start to the run's resting place; guards dismissal and rivals. */
   driving: boolean;
 }
@@ -268,7 +265,7 @@ const engines = new Map<string, Engine>();
 function engineFor(id: string): Engine {
   const found = engines.get(id);
   if (found !== undefined) return found;
-  const fresh: Engine = { inFlight: null, unlisten: [], driving: false };
+  const fresh: Engine = { inFlight: null, driving: false };
   engines.set(id, fresh);
   return fresh;
 }
@@ -276,17 +273,15 @@ function engineFor(id: string): Engine {
 /**
  * Pulls whatever one run has in flight.
  *
- * The listeners are deliberately left alone: a cancelled agent still reports
- * its exit through them, and that event is what resolves the promise the
- * driving phase is awaiting. Tearing them down here would leave that await
- * hanging forever — the exact trap the listen-before-spawn rule exists for.
- * `runCli` removes its own listeners the moment its exit arrives.
+ * Only the process is stopped: a cancelled agent still reports its exit through
+ * the turn's own listener, and that event is what resolves the promise the
+ * driving phase is awaiting (`lib/agentTurn`).
  */
 async function stopEngine(id: string): Promise<void> {
   const engine = engines.get(id);
   if (engine === undefined) return;
   if (engine.inFlight?.kind === "command") await execCancel(engine.inFlight.id);
-  if (engine.inFlight?.kind === "agent") await invoke("ai_cancel", { runId: engine.inFlight.id });
+  if (engine.inFlight?.kind === "agent") await cancelAgentTurn(engine.inFlight.id);
   engine.inFlight = null;
   engine.driving = false;
 }
@@ -2295,18 +2290,13 @@ function runCommand(set: Setter, phase: PhaseId) {
 }
 
 /**
- * Runs the coding agent and waits for it, outside the user's conversation.
- *
- * Answers the exit code, or null when it was cancelled — which the backend
- * reports as an exit with no code at all.
- */
-/**
  * Runs the CLI as an agent - with tools, in the project - and waits for it.
  *
  * The permission is the phase's, not the run's: a phase that only has to read
  * the repository is launched read-only, and the two that change it are the only
  * ones ever launched with edits. That is a real constraint at the CLI rather
- * than a sentence in a prompt.
+ * than a sentence in a prompt. The turn itself - listen before spawn, attribute
+ * by run id, report the real exit - is `lib/agentTurn`, shared with the deploy.
  *
  * Answers the exit code and whatever the agent said, or a null code when it was
  * cancelled - which the backend reports as an exit carrying no code at all.
@@ -2319,101 +2309,22 @@ async function runCli(
   permission: "readOnly" | "edits",
 ): Promise<{ code: number | null; text: string }> {
   const engine = engineFor(context.id);
-  /**
-   * Listening happens *before* the CLI is started, and what arrives before its
-   * id is known is kept.
-   *
-   * `ai_send_prompt` hands the id back only once the process has been spawned,
-   * and a short-lived CLI can be over before that promise settles - measured
-   * here with a stand-in CLI that exits in milliseconds, which left the run
-   * hanging at this phase forever. A listener registered afterwards is a
-   * listener that missed the event.
-   */
-  let runId: string | null = null;
-  const early: { id: string; code: number | null }[] = [];
-  // Wired before the listeners below, so reporting is never a maybe: nothing
-  // can arrive for a run whose id is not known yet, and the id is only set
-  // after the promise exists.
-  let report: (code: number | null) => void = () => undefined;
-  const finished = new Promise<number | null>((resolve) => {
-    report = resolve;
+  const outcome = await agentTurn({
+    prompt,
+    cwd: context.workRoot,
+    permission,
+    onToolCall: (line) => {
+      note(set, phase, line, "output");
+    },
+    onStderr: (line) => {
+      note(set, phase, line, "output");
+    },
+    onStarted: (runId) => {
+      engine.inFlight = { kind: "agent", id: runId };
+    },
   });
-
-  const ai = useAi.getState();
-  const provider = ai.providers.find((candidate) => candidate.id === ai.providerId);
-  const parse = createEventParser({
-    id: ai.providerId,
-    parser: provider?.parser,
-    textField: provider?.textField,
-  });
-  let said = "";
-
-  // Until the spawn answers with this run's id, nothing can be attributed:
-  // another run's CLI may be streaming at the same moment, and reading its
-  // events here would splice one run's words into another's answer. So events
-  // are held back, then replayed for the id that turned out to be ours.
-  const held: { run_id: string; event: unknown }[] = [];
-  const take = (payload: { run_id: string; event: unknown }) => {
-    for (const one of parse(payload.event)) {
-      if (one.kind === "message-delta") said += one.text;
-      if (one.kind === "done" && one.resultText !== undefined) said = one.resultText;
-      if (one.kind === "tool-call") note(set, phase, `${one.name} ${one.detail}`.trim(), "output");
-    }
-  };
-  engine.unlisten.push(
-    await listen<{ run_id: string; event: unknown }>("ai:stream", (event) => {
-      if (runId === null) held.push(event.payload);
-      else if (event.payload.run_id === runId) take(event.payload);
-    }),
-  );
-  engine.unlisten.push(
-    await listen<{ run_id: string; code: number | null }>("ai:exit", (event) => {
-      if (runId === null) {
-        early.push({ id: event.payload.run_id, code: event.payload.code });
-        return;
-      }
-      if (event.payload.run_id === runId) report(event.payload.code);
-    }),
-  );
-  const heldErr: { run_id: string; event: string }[] = [];
-  engine.unlisten.push(
-    await listen<{ run_id: string; event: string }>("ai:stderr", (event) => {
-      if (runId === null) heldErr.push(event.payload);
-      else if (event.payload.run_id === runId) note(set, phase, event.payload.event, "output");
-    }),
-  );
-
-  try {
-    runId = await invoke<string>("ai_send_prompt", {
-      providerId: ai.providerId,
-      prompt,
-      cwd: context.workRoot,
-      // No session id: this must never join or resume the user's chat.
-      sessionId: null,
-      options: { model: ai.model || null, effort: ai.effort || null, permission },
-    });
-  } catch (error: unknown) {
-    stopListening(engine);
-    throw error;
-  }
-  engine.inFlight = { kind: "agent", id: runId };
-
-  // Whatever streamed or ended while nobody knew which run to listen for.
-  for (const payload of held) {
-    if (payload.run_id === runId) take(payload);
-  }
-  held.length = 0;
-  for (const payload of heldErr) {
-    if (payload.run_id === runId) note(set, phase, payload.event, "output");
-  }
-  heldErr.length = 0;
-  const already = early.find((exit) => exit.id === runId);
-  if (already !== undefined) report(already.code);
-
-  const code = await finished;
-  stopListening(engine);
   engine.inFlight = null;
-  return { code, text: said };
+  return outcome;
 }
 
 /** The phases that change the project, each in its own run's tree. */
@@ -2439,11 +2350,6 @@ async function readRepository(
 ): Promise<string> {
   const { text } = await runCli(context, prompt, set, phase, "readOnly");
   return text;
-}
-
-function stopListening(engine: Engine): void {
-  for (const off of engine.unlisten) off();
-  engine.unlisten = [];
 }
 
 /** Holds the run where it is, waiting on the reader rather than ending. */

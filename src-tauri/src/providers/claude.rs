@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 use super::adapter::{
-    explicit, Adapter, ApiKeyRoute, Invocation, Permission, TurnRequest, PROGRESS_MEMORY_PROMPT,
+    explicit, Adapter, ApiKeyRoute, Invocation, Permission, ToolSet, TurnRequest, PROGRESS_MEMORY_PROMPT,
 };
 use crate::mcp::{tokenize_command, McpServer, McpServerSpec};
 
@@ -21,16 +21,30 @@ const API_KEY_VARIABLE: &str = "ANTHROPIC_API_KEY";
 const ONESHOT_SYSTEM_PROMPT: &str = "You are a precise assistant inside a code editor. \
 Answer exactly what is asked, with no preamble, no explanation and no markdown fences.";
 
+/// The tools a files-only turn keeps: reading, searching and editing the
+/// project. Measured 2026-09-06 with `-p --permission-mode plan --tools
+/// Read,Glob,Grep`: the CLI answered that Bash "was not available" - the tool is
+/// gone, not merely refused - where plan mode alone had run the command.
+const FILE_TOOLS: &str = "Read,Glob,Grep,Edit,Write";
+
+/// A read-only files turn has no writing tool at all. Plan mode alone lets
+/// `Write` put the CLI's own plan file under `~/.claude/plans` (seen in the
+/// first real deploy survey, 2026-09-06); without the tool there is nothing
+/// to write it with.
+const READ_TOOLS: &str = "Read,Glob,Grep";
+
 /// `-p` combined with `--output-format stream-json` requires `--verbose`.
 /// The permission level maps onto `--permission-mode` (choices verified
 /// against 2.1.220): full bypass (headless-verified with
 /// `permission_denials: []`), auto-accepted edits, or plan mode, which
-/// researches and answers without touching the working tree.
+/// researches and answers without touching the working tree - but still runs
+/// commands, which is what `tools` is for.
 pub fn build_args(
     session_id: Option<&str>,
     model: Option<&str>,
     effort: Option<&str>,
     permission: Permission,
+    tools: ToolSet,
 ) -> Vec<String> {
     let permission_mode = match permission {
         Permission::Full => "bypassPermissions",
@@ -49,6 +63,17 @@ pub fn build_args(
         "--append-system-prompt".into(),
         PROGRESS_MEMORY_PROMPT.into(),
     ];
+    if tools == ToolSet::FilesOnly {
+        args.push("--tools".into());
+        args.push(
+            if permission == Permission::ReadOnly {
+                READ_TOOLS
+            } else {
+                FILE_TOOLS
+            }
+            .into(),
+        );
+    }
     if let Some(model) = explicit(model) {
         args.push("--model".into());
         args.push(model.into());
@@ -93,9 +118,13 @@ impl Adapter for ClaudeAdapter {
 
     fn chat_invocation(&self, req: &TurnRequest<'_>) -> Invocation {
         Invocation::piped(
-            build_args(req.session_id, req.model, req.effort, req.permission),
+            build_args(req.session_id, req.model, req.effort, req.permission, req.tools),
             req.prompt,
         )
+    }
+
+    fn restricts_tools(&self) -> bool {
+        true
     }
 
     fn oneshot_invocation(&self, prompt: &str, model: Option<&str>) -> Invocation {
@@ -204,11 +233,11 @@ impl Adapter for ClaudeAdapter {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_args, Adapter, ApiKeyRoute, ClaudeAdapter, McpServerSpec, Permission};
+    use super::{build_args, Adapter, ApiKeyRoute, ClaudeAdapter, McpServerSpec, Permission, ToolSet};
 
     #[test]
     fn fresh_session_has_progress_memory_but_no_resume() {
-        let args = build_args(None, None, None, Permission::Full);
+        let args = build_args(None, None, None, Permission::Full, ToolSet::Everything);
         assert!(args.contains(&"--append-system-prompt".to_string()));
         assert!(!args.contains(&"--resume".to_string()));
     }
@@ -216,7 +245,7 @@ mod tests {
     #[test]
     fn each_permission_level_maps_to_its_own_cli_mode() {
         let mode_of = |permission| {
-            let args = build_args(None, None, None, permission);
+            let args = build_args(None, None, None, permission, ToolSet::Everything);
             let at = args
                 .iter()
                 .position(|a| a == "--permission-mode")
@@ -229,8 +258,33 @@ mod tests {
     }
 
     #[test]
+    fn a_files_only_turn_names_its_tools_and_a_full_one_does_not() {
+        let cut = build_args(None, None, None, Permission::Edits, ToolSet::FilesOnly);
+        let at = cut.iter().position(|a| a == "--tools").expect("--tools present");
+        assert_eq!(cut[at + 1], "Read,Glob,Grep,Edit,Write");
+        assert!(
+            !cut[at + 1].contains("Bash"),
+            "the shell is the tool being removed"
+        );
+
+        let whole = build_args(None, None, None, Permission::Edits, ToolSet::Everything);
+        assert!(!whole.contains(&"--tools".to_string()));
+
+        let reading = build_args(None, None, None, Permission::ReadOnly, ToolSet::FilesOnly);
+        let at = reading
+            .iter()
+            .position(|a| a == "--tools")
+            .expect("--tools present");
+        assert_eq!(
+            reading[at + 1],
+            "Read,Glob,Grep",
+            "nothing that writes, not even a plan file"
+        );
+    }
+
+    #[test]
     fn resumed_session_appends_resume_id_last() {
-        let args = build_args(Some("abc-123"), None, None, Permission::Full);
+        let args = build_args(Some("abc-123"), None, None, Permission::Full, ToolSet::Everything);
         let resume_at = args
             .iter()
             .position(|a| a == "--resume")
@@ -249,7 +303,13 @@ mod tests {
 
     #[test]
     fn model_and_effort_are_forwarded_when_set() {
-        let args = build_args(None, Some("opus"), Some("high"), Permission::Full);
+        let args = build_args(
+            None,
+            Some("opus"),
+            Some("high"),
+            Permission::Full,
+            ToolSet::Everything,
+        );
         let model_at = args.iter().position(|a| a == "--model").expect("--model present");
         assert_eq!(args.get(model_at + 1).map(String::as_str), Some("opus"));
         let effort_at = args
@@ -261,7 +321,7 @@ mod tests {
 
     #[test]
     fn empty_overrides_fall_back_to_cli_defaults() {
-        let args = build_args(None, Some(""), Some(""), Permission::Full);
+        let args = build_args(None, Some(""), Some(""), Permission::Full, ToolSet::Everything);
         assert!(!args.contains(&"--model".to_string()));
         assert!(!args.contains(&"--effort".to_string()));
     }

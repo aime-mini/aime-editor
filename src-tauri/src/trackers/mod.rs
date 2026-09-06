@@ -15,7 +15,7 @@ pub mod clickup;
 pub mod config;
 pub mod connector;
 pub mod github;
-mod http;
+pub(crate) mod http;
 pub mod jira;
 mod rich_text;
 #[cfg(test)]

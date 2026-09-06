@@ -386,9 +386,25 @@ pub(crate) fn path_of(id: &str) -> &str {
 }
 
 /// One proposed read, proven against this machine or refused with a reason.
-async fn check_read(program: &str, cloud_id: &str, read: &PlannedRead) -> Result<PlannedRead, String> {
+pub(super) async fn check_read(
+    program: &str,
+    cloud_id: &str,
+    read: &PlannedRead,
+) -> Result<PlannedRead, String> {
+    check_read_allowing(program, cloud_id, read, &[]).await
+}
+
+/// `check_read` for a caller that fills none of the placeholders and so lets
+/// the plan carry some of the flags Aime otherwise adds - the deploy, whose
+/// reads name their own `--region` because no resource is there to fill one.
+pub(super) async fn check_read_allowing(
+    program: &str,
+    cloud_id: &str,
+    read: &PlannedRead,
+    allowed: &[&str],
+) -> Result<PlannedRead, String> {
     let verbs = read_verbs_of(cloud_id).ok_or_else(|| format!("Aime does not check reads for {cloud_id}"))?;
-    let line = CommandLine::parse(&read.args, verbs)?;
+    let line = CommandLine::parse_allowing(&read.args, verbs, allowed)?;
     match cloud_id {
         "aws" => check_aws(&line)?,
         "azure" => check_azure(&line).await?,
@@ -432,7 +448,10 @@ impl<'a> CommandLine<'a> {
     /// narrow, and anything else is refused with the token named. `read_verbs`
     /// are the CLI's own, so the parser knows where the command ends and its
     /// arguments begin.
-    fn parse(args: &'a [String], read_verbs: &[&str]) -> Result<Self, String> {
+    /// Splits and vets the tokens; `allowed` names the flags in `OWN_FLAGS` this
+    /// caller does not add itself and therefore lets the plan carry (none, for
+    /// a resource read).
+    fn parse_allowing(args: &'a [String], read_verbs: &[&str], allowed: &[&str]) -> Result<Self, String> {
         if args.is_empty() {
             return Err("an empty command".into());
         }
@@ -444,7 +463,7 @@ impl<'a> CommandLine<'a> {
                 if !is_command_word(flag) {
                     return Err(format!("`{token}` is not a flag"));
                 }
-                if OWN_FLAGS.contains(&token.as_str()) {
+                if OWN_FLAGS.contains(&token.as_str()) && !allowed.contains(&token.as_str()) {
                     return Err(format!("`{token}` is Aime's to add"));
                 }
                 if REFUSED_FLAGS.contains(&token.as_str()) {
@@ -499,7 +518,7 @@ fn starts_with_a_verb(word: &str, verbs: &[&str]) -> bool {
 }
 
 /// `describe-secret`, `s3api`, `show-connection-string`: lower-case, digits, dashes.
-fn is_command_word(word: &str) -> bool {
+pub(super) fn is_command_word(word: &str) -> bool {
     let mut chars = word.chars();
     chars.next().is_some_and(|first| first.is_ascii_lowercase())
         && word
@@ -514,7 +533,7 @@ fn is_command_word(word: &str) -> bool {
 /// punctuation identifiers and URLs are made of - nothing a shell reads as
 /// structure, because on Windows `az` is a batch shim and every argument goes
 /// through cmd.exe's parser.
-fn is_safe_value(value: &str) -> bool {
+pub(super) fn is_safe_value(value: &str) -> bool {
     let mut stripped = value.to_string();
     for placeholder in PLACEHOLDERS {
         stripped = stripped.replace(placeholder, "");
@@ -891,14 +910,14 @@ mod tests {
     #[test]
     fn a_command_line_is_words_then_flags_with_values() {
         let tokens = args("lambda get-function --function-name <name>");
-        let parsed = CommandLine::parse(&tokens, &AWS_READ_VERBS).expect("parsed");
+        let parsed = CommandLine::parse_allowing(&tokens, &AWS_READ_VERBS, &[]).expect("parsed");
         assert_eq!(parsed.words, ["lambda", "get-function"]);
         assert_eq!(parsed.flags, [("--function-name", Some("<name>"))]);
         assert!(parsed.positionals.is_empty());
 
         // A flag with no value is a switch, and the next flag starts fresh.
         let tokens = args("ssm get-parameter --with-decryption --name <name>");
-        let parsed = CommandLine::parse(&tokens, &AWS_READ_VERBS).expect("parsed");
+        let parsed = CommandLine::parse_allowing(&tokens, &AWS_READ_VERBS, &[]).expect("parsed");
         assert_eq!(
             parsed.flags,
             [("--with-decryption", None), ("--name", Some("<name>"))]
@@ -912,18 +931,18 @@ mod tests {
     #[test]
     fn what_follows_the_read_verb_is_a_positional_and_nothing_before_it_may_be() {
         let tokens = args("compute instances describe <path>");
-        let parsed = CommandLine::parse(&tokens, &GCLOUD_READ_VERBS).expect("parsed");
+        let parsed = CommandLine::parse_allowing(&tokens, &GCLOUD_READ_VERBS, &[]).expect("parsed");
         assert_eq!(parsed.words, ["compute", "instances", "describe"]);
         assert_eq!(parsed.positionals, ["<path>"]);
 
         let tokens = args("secrets versions access latest --secret <name>");
-        let parsed = CommandLine::parse(&tokens, &GCLOUD_READ_VERBS).expect("parsed");
+        let parsed = CommandLine::parse_allowing(&tokens, &GCLOUD_READ_VERBS, &[]).expect("parsed");
         assert_eq!(parsed.words, ["secrets", "versions", "access"]);
         assert_eq!(parsed.positionals, ["latest"]);
         assert_eq!(parsed.flags, [("--secret", Some("<name>"))]);
 
         let tokens = args("storage buckets describe gs://<name>");
-        let parsed = CommandLine::parse(&tokens, &GCLOUD_READ_VERBS).expect("parsed");
+        let parsed = CommandLine::parse_allowing(&tokens, &GCLOUD_READ_VERBS, &[]).expect("parsed");
         assert_eq!(parsed.positionals, ["gs://<name>"]);
 
         for refused in [
@@ -932,14 +951,14 @@ mod tests {
             "compute instances describe --zone <region> <path>",
         ] {
             assert!(
-                CommandLine::parse(&args(refused), &GCLOUD_READ_VERBS).is_err(),
+                CommandLine::parse_allowing(&args(refused), &GCLOUD_READ_VERBS, &[]).is_err(),
                 "{refused}"
             );
         }
         // The AWS CLI takes every argument as a flag, so a positional there is
         // a command the CLI will refuse with a usage block - refused earlier.
         let tokens = args("lambda get-function <name>");
-        let parsed = CommandLine::parse(&tokens, &AWS_READ_VERBS).expect("parsed");
+        let parsed = CommandLine::parse_allowing(&tokens, &AWS_READ_VERBS, &[]).expect("parsed");
         assert!(check_aws(&parsed).is_err());
     }
 
@@ -962,7 +981,7 @@ mod tests {
         ];
         for line in refused {
             assert!(
-                CommandLine::parse(&args(line), &AZURE_READ_VERBS).is_err(),
+                CommandLine::parse_allowing(&args(line), &AZURE_READ_VERBS, &[]).is_err(),
                 "{line} should be refused"
             );
         }
@@ -995,13 +1014,17 @@ mod tests {
             } else {
                 &AWS_READ_VERBS[..]
             };
-            assert!(CommandLine::parse(&args(line), verbs).is_err(), "{line}");
+            assert!(
+                CommandLine::parse_allowing(&args(line), verbs, &[]).is_err(),
+                "{line}"
+            );
         }
         // gcloud also accepts `--flag=value`; a plan spelled that way is refused
         // as "not a flag" rather than passed through half-parsed.
-        assert!(CommandLine::parse(
+        assert!(CommandLine::parse_allowing(
             &args("compute instances describe <path> --zone=<region>"),
-            &GCLOUD_READ_VERBS
+            &GCLOUD_READ_VERBS,
+            &[]
         )
         .is_err());
     }
@@ -1009,6 +1032,26 @@ mod tests {
     /// Only the ending decides, and only these endings read: `gcloud compute
     /// instances delete` and `gcloud run deploy` are refused before the CLI is
     /// ever asked, and so is `export`, which writes a file.
+    #[test]
+    fn a_caller_that_fills_no_placeholder_may_let_the_plan_name_the_region() {
+        let tokens = args("run services describe web --region asia-southeast1");
+        assert!(
+            CommandLine::parse_allowing(&tokens, &GCLOUD_READ_VERBS, &[]).is_err(),
+            "a resource read gets its region from the resource"
+        );
+        let parsed = CommandLine::parse_allowing(&tokens, &GCLOUD_READ_VERBS, &["--region"]).expect("parsed");
+        assert_eq!(parsed.flags, vec![("--region", Some("asia-southeast1"))]);
+        assert!(
+            CommandLine::parse_allowing(
+                &args("run services describe web --project p"),
+                &GCLOUD_READ_VERBS,
+                &["--region"]
+            )
+            .is_err(),
+            "the allowance is per flag"
+        );
+    }
+
     #[test]
     fn a_gcloud_command_has_to_end_in_a_read_verb() {
         assert!(check_gcloud_shape(&["compute", "instances", "describe"]).is_ok());
@@ -1063,7 +1106,12 @@ mod tests {
         assert!(check_supabase_shape(&["secrets", "set"]).is_err());
         assert!(looks_sensitive(&["projects", "api-keys"]));
         // The flag Aime adds for Supabase may not come from a plan either.
-        assert!(CommandLine::parse(&args("functions list --project-ref abc"), &SUPABASE_READ_VERBS).is_err());
+        assert!(CommandLine::parse_allowing(
+            &args("functions list --project-ref abc"),
+            &SUPABASE_READ_VERBS,
+            &[]
+        )
+        .is_err());
     }
 
     /// `<path>` is what every `gcloud … describe` takes: the full resource name
@@ -1174,7 +1222,7 @@ mod tests {
         let model = secretsmanager_model();
         let ok = |line: &str| {
             let tokens = args(line);
-            let parsed = CommandLine::parse(&tokens, &AWS_READ_VERBS).expect("parsed");
+            let parsed = CommandLine::parse_allowing(&tokens, &AWS_READ_VERBS, &[]).expect("parsed");
             check_aws_against(&model, parsed.words[1], &parsed.flags)
         };
         assert!(ok("secretsmanager describe-secret --secret-id <id>").is_ok());

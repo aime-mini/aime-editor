@@ -19,6 +19,7 @@
 //! answers "not signed in" is worse than one that says nothing.
 
 pub mod credentials;
+pub mod deploy;
 mod gcp;
 pub mod reads;
 pub mod sign_in;
@@ -903,7 +904,7 @@ pub(crate) async fn read_cli(command: &str, args: &[&str]) -> Result<String, Str
 /// `AWS_PAGER` is emptied for the reason `probe` gives; `gcloud` asks questions
 /// at its prompt - enable this API?, take this survey? - and with prompts
 /// disabled it takes the default and says what it did on stderr instead.
-fn quiet(cmd: &mut tokio::process::Command) {
+pub(super) fn quiet(cmd: &mut tokio::process::Command) {
     cmd.env("AWS_PAGER", "");
     cmd.env("CLOUDSDK_CORE_DISABLE_PROMPTS", "1");
 }

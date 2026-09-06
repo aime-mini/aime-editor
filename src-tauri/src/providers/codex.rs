@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 use super::adapter::{
-    explicit, Adapter, ApiKeyRoute, Invocation, Permission, TurnRequest, PROGRESS_MEMORY_PROMPT,
+    explicit, Adapter, ApiKeyRoute, Invocation, Permission, ToolSet, TurnRequest, PROGRESS_MEMORY_PROMPT,
 };
 use crate::mcp::{tokenize_command, McpServer, McpServerSpec};
 
@@ -19,6 +19,10 @@ pub const COMMAND: &str = "codex";
 const SANDBOX_WORKSPACE: &str = "sandbox_mode=workspace-write";
 const SANDBOX_READ_ONLY: &str = "sandbox_mode=read-only";
 const APPROVAL_NEVER: &str = "approval_policy=never";
+/// Codex cannot drop its shell, so a files-only turn keeps the sandbox and
+/// closes the network: a command it runs then reaches nothing outside the
+/// working tree - not a cloud, not a package registry.
+const NETWORK_OFF: &str = "sandbox_workspace_write.network_access=false";
 
 /// Codex has no `--append-system-prompt`, and overriding its base instructions
 /// file would replace them wholesale — so the journal rule rides along with the
@@ -103,20 +107,28 @@ impl Adapter for CodexAdapter {
         args.push("--json".into());
         args.push("--skip-git-repo-check".into());
 
-        match req.permission {
-            Permission::Full => args.push("--dangerously-bypass-approvals-and-sandbox".into()),
+        match (req.permission, req.tools) {
+            (Permission::Full, ToolSet::Everything) => {
+                args.push("--dangerously-bypass-approvals-and-sandbox".into());
+            }
             // `exec resume` accepts no --sandbox/--ask-for-approval flags, so the
             // guarded levels are expressed as config overrides, which both accept.
-            Permission::Edits | Permission::ReadOnly => {
-                let sandbox = if req.permission == Permission::Edits {
-                    SANDBOX_WORKSPACE
-                } else {
+            // A files-only turn is guarded whatever its permission says: the
+            // sandbox is the only fence this CLI has.
+            (permission, tools) => {
+                let sandbox = if permission == Permission::ReadOnly {
                     SANDBOX_READ_ONLY
+                } else {
+                    SANDBOX_WORKSPACE
                 };
                 args.push("-c".into());
                 args.push(sandbox.into());
                 args.push("-c".into());
                 args.push(APPROVAL_NEVER.into());
+                if tools == ToolSet::FilesOnly {
+                    args.push("-c".into());
+                    args.push(NETWORK_OFF.into());
+                }
             }
         }
         if let Some(model) = explicit(req.model) {
@@ -135,6 +147,10 @@ impl Adapter for CodexAdapter {
             args.push(id.into());
         }
         Invocation::piped(args, prompt_with_progress_rule(req.prompt))
+    }
+
+    fn restricts_tools(&self) -> bool {
+        true
     }
 
     fn oneshot_invocation(&self, prompt: &str, model: Option<&str>) -> Invocation {
@@ -230,7 +246,7 @@ impl Adapter for CodexAdapter {
 #[cfg(test)]
 mod tests {
     use super::super::adapter::{Adapter, ApiKeyRoute, TurnRequest};
-    use super::{CodexAdapter, McpServerSpec, Permission};
+    use super::{CodexAdapter, McpServerSpec, Permission, ToolSet};
 
     #[test]
     fn codex_takes_a_key_only_through_its_own_login() {
@@ -268,7 +284,24 @@ mod tests {
             model: None,
             effort: None,
             permission,
+            tools: ToolSet::Everything,
         }
+    }
+
+    #[test]
+    fn a_files_only_turn_keeps_the_sandbox_and_closes_the_network() {
+        let args = CodexAdapter
+            .chat_invocation(&TurnRequest {
+                tools: ToolSet::FilesOnly,
+                ..turn(None, Permission::Full)
+            })
+            .args;
+        assert!(
+            !args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()),
+            "full permission does not lift the fence of a files-only turn"
+        );
+        assert!(args.contains(&"sandbox_mode=workspace-write".to_string()));
+        assert!(args.contains(&"sandbox_workspace_write.network_access=false".to_string()));
     }
 
     fn index_of(args: &[String], needle: &str) -> Option<usize> {

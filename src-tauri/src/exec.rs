@@ -118,12 +118,57 @@ pub async fn exec_run(
     cwd: String,
     timeout_ms: Option<u64>,
 ) -> Result<CommandOutcome, String> {
+    if command.trim().is_empty() {
+        return Err("no command to run".into());
+    }
+    run_registered(
+        &app,
+        &state,
+        &id,
+        &command,
+        shell_command(&command),
+        &cwd,
+        timeout_ms,
+    )
+    .await
+}
+
+/// Runs one program with its own arguments and no shell in between.
+///
+/// For a caller inside the crate that has resolved the program and vetted every
+/// argument itself - the cloud deploy runs `gcloud` this way, so a value can
+/// never be re-read by a shell as structure. Same id registry, same
+/// `exec:output` stream, same `exec_cancel` as `exec_run`: the frontend treats
+/// the two alike.
+pub(crate) async fn run_program(
+    app: &AppHandle,
+    state: &ExecState,
+    id: &str,
+    label: &str,
+    program: Command,
+    cwd: &str,
+    timeout_ms: Option<u64>,
+) -> Result<CommandOutcome, String> {
+    run_registered(app, state, id, label, program, cwd, timeout_ms).await
+}
+
+/// The shared middle of `exec_run` and `run_program`: registered for cancel,
+/// streamed as `exec:output`, held to the ceiling.
+async fn run_registered(
+    app: &AppHandle,
+    state: &ExecState,
+    id: &str,
+    label: &str,
+    command: Command,
+    cwd: &str,
+    timeout_ms: Option<u64>,
+) -> Result<CommandOutcome, String> {
     let (kill_tx, kill_rx) = oneshot::channel();
-    register(&state, &id, kill_tx);
+    register(state, id, kill_tx);
 
     let emitting = {
         let app = app.clone();
-        let id = id.clone();
+        let id = id.to_string();
         move |stream: &'static str, line: &str| {
             let _ = app.emit(
                 "exec:output",
@@ -136,16 +181,17 @@ pub async fn exec_run(
         }
     };
 
-    let outcome = run_capturing(
-        &command,
-        &cwd,
+    let outcome = run_child(
+        label,
+        command,
+        cwd,
         timeout_ms.unwrap_or(MAX_TIMEOUT_MS).min(MAX_TIMEOUT_MS),
         kill_rx,
         emitting,
     )
     .await;
 
-    forget(&state, &id);
+    forget(state, id);
     outcome
 }
 
@@ -158,11 +204,10 @@ pub fn exec_cancel(state: State<'_, ExecState>, id: String) {
     }
 }
 
-/// Everything `exec_run` does apart from talking to Tauri.
-///
-/// Split out so the behaviour that matters can be tested against real
-/// processes without an `AppHandle`: emitting is the only part that needs one,
-/// and it is the least interesting part.
+/// `run_child` for a command line, so the behaviour that matters can be tested
+/// against real processes without an `AppHandle`: emitting is the only part
+/// that needs one, and it is the least interesting part.
+#[cfg(test)]
 async fn run_capturing<Sink>(
     command: &str,
     cwd: &str,
@@ -176,15 +221,32 @@ where
     if command.trim().is_empty() {
         return Err("no command to run".into());
     }
+    run_child(command, shell_command(command), cwd, timeout_ms, kill_rx, sink).await
+}
+
+/// Spawns a prepared command, streams both pipes, and answers with its real
+/// exit status. `label` is what the command is called in an error: the command
+/// line for a shell run, the program and its arguments for a direct one.
+async fn run_child<Sink>(
+    label: &str,
+    mut command: Command,
+    cwd: &str,
+    timeout_ms: u64,
+    kill_rx: oneshot::Receiver<()>,
+    sink: Sink,
+) -> Result<CommandOutcome, String>
+where
+    Sink: Fn(&'static str, &str) + Send + 'static,
+{
     let started = Instant::now();
-    let mut child = shell_command(command)
+    let mut child = command
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|error| format!("could not run `{command}` in {cwd}: {error}"))?;
+        .map_err(|error| format!("could not run `{label}` in {cwd}: {error}"))?;
 
     // One channel for both streams, drained by a task of its own, so a line is
     // handed on the moment it arrives instead of at the end of the run.
@@ -311,13 +373,13 @@ fn drop_point(text: &str, wanted: usize) -> usize {
         .unwrap_or(text.len())
 }
 
-fn register(state: &State<'_, ExecState>, id: &str, kill: oneshot::Sender<()>) {
+fn register(state: &ExecState, id: &str, kill: oneshot::Sender<()>) {
     if let Ok(mut running) = state.running.lock() {
         running.insert(id.to_string(), kill);
     }
 }
 
-fn forget(state: &State<'_, ExecState>, id: &str) {
+fn forget(state: &ExecState, id: &str) {
     if let Ok(mut running) = state.running.lock() {
         running.remove(id);
     }

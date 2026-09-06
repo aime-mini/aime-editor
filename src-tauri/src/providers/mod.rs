@@ -5,7 +5,7 @@ pub mod generic;
 pub mod keys;
 
 use crate::program::Program;
-use adapter::{adapter_for, Adapter, ApiKeyRoute, Invocation, Permission, TurnRequest};
+use adapter::{adapter_for, Adapter, ApiKeyRoute, Invocation, Permission, ToolSet, TurnRequest};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -43,6 +43,9 @@ pub struct PromptOptions {
     /// How much the agent may do on its own; defaults to the least guarded.
     #[serde(default)]
     pub permission: Permission,
+    /// Which tools the turn has at all; defaults to all of them.
+    #[serde(default)]
+    pub tools: ToolSet,
 }
 
 #[derive(Clone, Serialize)]
@@ -198,6 +201,11 @@ pub async fn ai_send_prompt(
     let run_id = format!("run-{}", RUN_COUNTER.fetch_add(1, Ordering::Relaxed));
 
     let adapter = adapter_for(&provider_id)?;
+    // A guarantee the adapter cannot give is refused, not approximated: the
+    // frontend maps the prefix to a sentence naming the CLIs that can.
+    if options.tools == ToolSet::FilesOnly && !adapter.restricts_tools() {
+        return Err(format!("TOOLS_UNRESTRICTED::{provider_id}"));
+    }
     let invocation = adapter.chat_invocation(&TurnRequest {
         prompt: &prompt,
         cwd: &cwd,
@@ -205,6 +213,7 @@ pub async fn ai_send_prompt(
         model: options.model.as_deref(),
         effort: options.effort.as_deref(),
         permission: options.permission,
+        tools: options.tools,
     });
     prompt_can_travel(adapter.command(), &invocation)?;
     let mut cmd = cli_command(adapter.command(), &invocation.args);

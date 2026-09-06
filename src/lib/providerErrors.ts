@@ -16,5 +16,8 @@ export function formatProviderError(error: unknown): string {
   const needsStdin = /^PROMPT_NEEDS_STDIN::(.+)$/.exec(raw);
   if (needsStdin) return translate("ai.promptNeedsStdin", { cli: needsStdin[1] });
 
+  const unrestricted = /^TOOLS_UNRESTRICTED::(.+)$/.exec(raw);
+  if (unrestricted) return translate("ai.toolsUnrestricted", { cli: unrestricted[1] });
+
   return raw;
 }

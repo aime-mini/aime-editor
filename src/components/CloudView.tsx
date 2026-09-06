@@ -17,6 +17,7 @@ import {
   Network,
   Radar,
   RefreshCw,
+  Rocket,
   Search,
   Star,
   TriangleAlert,
@@ -29,8 +30,10 @@ import { useT } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
 import { GROUPINGS, iconOfGrouping, shortKind, type Grouping } from "../lib/cloudIcons";
 import { commandLabel } from "../lib/cloudReads";
+import { DEPLOYABLE } from "../lib/deploy";
 import { CloudDetail, CopyButton, Note } from "./CloudDetail";
 import { CloudMap, KindChip, ServiceBadge } from "./CloudMap";
+import { DeployPane } from "./DeployPane";
 import {
   slotOf,
   useCloud,
@@ -40,6 +43,7 @@ import {
   type CloudViewMode,
   type ResourceState,
 } from "../stores/cloud";
+import { useDeploy } from "../stores/deploy";
 import { useLayout } from "../stores/layout";
 import { useWorkspace } from "../stores/workspace";
 
@@ -364,6 +368,11 @@ function AccountPane({ cloud, account }: { cloud: CloudStatus; account: CloudAcc
   const state = useCloud((s) => s.resources[slot]);
   const reload = useCloud((s) => s.reload);
   const [filter, setFilter] = useState("");
+  const deployOpen = useDeploy((s) => s.open === slot);
+
+  // A deploy in progress or waiting to be confirmed stands in for the
+  // resources it is about; Back brings them forward again without ending it.
+  if (deployOpen) return <DeployPane slot={slot} />;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -386,6 +395,7 @@ function AccountPane({ cloud, account }: { cloud: CloudStatus; account: CloudAcc
         </div>
         {state?.kind === "loaded" && (
           <>
+            {DEPLOYABLE.has(cloud.id) && <DeployButton cloud={cloud} account={account} slot={slot} />}
             <DiscoverButton cloud={cloud} />
             <button
               onClick={() => void reload(cloud.id, account.id)}
@@ -414,6 +424,34 @@ function AccountPane({ cloud, account }: { cloud: CloudStatus; account: CloudAcc
         <LoadedAccount cloud={cloud} slot={slot} state={state} filter={filter} onFilter={setFilter} />
       )}
     </div>
+  );
+}
+
+/**
+ * Deploy the open project to this account: the AI plans, the person confirms
+ * on the page that follows, Aime runs and proves (`stores/deploy.ts`). A deploy
+ * already in hand for this account is shown again rather than started twice.
+ */
+function DeployButton({ cloud, account, slot }: { cloud: CloudStatus; account: CloudAccount; slot: string }) {
+  const t = useT();
+  const start = useDeploy((s) => s.start);
+  const show = useDeploy((s) => s.show);
+  const inHand = useDeploy((s) => s.slots[slot]);
+  const hasProject = useWorkspace((s) => s.rootPath !== null);
+  const busy = inHand !== undefined && inHand.stage.kind !== "done" && inHand.stage.kind !== "blocked";
+  return (
+    <button
+      onClick={() => {
+        if (inHand !== undefined) show(slot);
+        else void start(cloud.id, account);
+      }}
+      disabled={!hasProject}
+      title={hasProject ? t("deploy.buttonTitle") : t("deploy.needsProject")}
+      className="flex shrink-0 items-center gap-1.5 rounded border border-accent/60 px-2 py-1 text-accent hover:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {busy ? <Loader2 size={11} className="animate-spin" /> : <Rocket size={11} />}
+      {t("deploy.button")}
+    </button>
   );
 }
 

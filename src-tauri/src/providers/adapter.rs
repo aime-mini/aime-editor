@@ -17,8 +17,28 @@ pub enum Permission {
     Full,
     /// File edits run unprompted; commands stay sandboxed to the workspace.
     Edits,
-    /// Reads and explains only: no file changes, no writes anywhere.
+    /// No file changes. Commands may still run - see `ToolSet` for the level
+    /// that removes them.
     ReadOnly,
+}
+
+/// Which of the CLI's tools a turn has at all.
+///
+/// Orthogonal to `Permission`, which says how freely the tools act: measured
+/// 2026-09-06, Claude Code's plan mode (`ReadOnly`) still ran a command through
+/// its Bash tool, so "read-only" is a statement about files, and a turn that
+/// must not reach a cloud, a network or a shell needs the tools themselves cut
+/// down. Only the files-only shape exists because only one caller - the deploy,
+/// whose commands Aime runs itself - needs a guarantee the prompt cannot give.
+#[derive(serde::Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolSet {
+    /// Everything the CLI has.
+    #[default]
+    Everything,
+    /// Reading, searching and editing files in the project - no shell, no
+    /// network. `Permission` still decides whether the edits happen.
+    FilesOnly,
 }
 
 /// Everything an adapter needs to build the arguments of one chat turn.
@@ -32,6 +52,7 @@ pub struct TurnRequest<'a> {
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub permission: Permission,
+    pub tools: ToolSet,
 }
 
 /// One call to a CLI: its arguments, and the prompt when that travels on stdin.
@@ -94,6 +115,15 @@ pub trait Adapter: Send + Sync {
 
     /// One streaming chat turn.
     fn chat_invocation(&self, req: &TurnRequest<'_>) -> Invocation;
+
+    /// Whether `ToolSet::FilesOnly` is a real constraint at this CLI.
+    ///
+    /// False by default: a CLI Aime knows only from a configuration file has no
+    /// flag to map it onto, and a turn that needs the guarantee must be refused
+    /// rather than launched with a sentence in the prompt standing in for it.
+    fn restricts_tools(&self) -> bool {
+        false
+    }
 
     /// One side-effect-free call (e.g. commit messages).
     fn oneshot_invocation(&self, prompt: &str, model: Option<&str>) -> Invocation;
