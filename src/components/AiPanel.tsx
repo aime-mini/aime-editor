@@ -9,8 +9,10 @@ import {
   Cpu,
   Eye,
   History,
+  FolderPlus,
   KeyRound,
   MessageSquare,
+  Paperclip,
   Plug,
   Plus,
   Loader2,
@@ -22,10 +24,14 @@ import {
   Undo2,
   Wrench,
 } from "lucide-react";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useT } from "../i18n";
+import { usePathDrag } from "../stores/pathDrag";
 import { hasReadme, startersFor } from "../lib/aiStarters";
 import { fuzzyFilter } from "../lib/fuzzy";
 import { activeMention, applyMention } from "../lib/mentions";
+import { currentView, describeView } from "../lib/viewContext";
 import { projectFiles } from "../lib/projectFiles";
 import { useGit } from "../stores/git";
 import { useTasks } from "../stores/tasks";
@@ -396,6 +402,22 @@ const MessageBubble = memo(function MessageBubble({
   );
 });
 
+/**
+ * Whether a drop reported by Tauri landed on the prompt box.
+ *
+ * Tauri gives the pointer in **physical** pixels while `getBoundingClientRect`
+ * answers in CSS pixels, so the ratio has to be divided out - on a 150% display
+ * the two differ by half the window, which would make every drop miss.
+ */
+function isOverBox(box: HTMLElement | null, point: { x: number; y: number }): boolean {
+  if (box === null) return false;
+  const ratio = window.devicePixelRatio || 1;
+  const x = point.x / ratio;
+  const y = point.y / ratio;
+  const rect = box.getBoundingClientRect();
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
 export function AiPanel() {
   const {
     messages,
@@ -433,6 +455,11 @@ export function AiPanel() {
   const [caret, setCaret] = useState(0);
   /** Which mention suggestion is selected, or null when the picker is closed. */
   const [mentionIndex, setMentionIndex] = useState<number | null>(null);
+  /** True while a dragged path is over the prompt box, so it says so. */
+  const [dropping, setDropping] = useState(false);
+  /** The path being dragged out of the file tree, if any. */
+  const treeDrag = usePathDrag((s) => s.path);
+  const boxRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [historyMenu, setHistoryMenu] = useState<{ x: number; y: number } | null>(null);
   const [usageOpen, setUsageOpen] = useState(false);
@@ -583,6 +610,85 @@ export function AiPanel() {
     });
   };
 
+  /**
+   * A path dragged out of the file tree, written into the prompt.
+   *
+   * The same channel `@` uses: what an AI CLI needs is a path, and dropping a
+   * folder is the fastest way to say "read this". Appended rather than
+   * inserted at the caret, and with a space after it, so dropping several
+   * things in a row builds a list instead of overwriting itself.
+   *
+   * Only drags that began in Aime's own tree are accepted (`DRAG_MIME`).
+   * A file dragged from the desktop cannot be: this window turns Tauri's
+   * native drop handling off so the tree can do its own moves, and without it
+   * the webview is handed a file with no path on disk to give the CLI.
+   */
+  const dropPath = (path: string) => {
+    setInput((current) => {
+      const spaced = current === "" || current.endsWith(" ") || current.endsWith("\n");
+      return `${current}${spaced ? "" : " "}@${path} `;
+    });
+    setMentionIndex(null);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      const end = inputRef.current?.value.length ?? 0;
+      inputRef.current?.setSelectionRange(end, end);
+      setCaret(end);
+    });
+  };
+
+  /**
+   * Files and folders dropped from outside Aime - Explorer, Finder, a desktop.
+   *
+   * Tauri delivers these with their paths on disk, which no webview does: the
+   * DOM drop event hands over a `File` whose path is deliberately hidden, and
+   * a path is the one thing an AI CLI can act on. The drop only counts when it
+   * lands on the prompt box itself, so dropping a folder on the editor still
+   * means what it means there.
+   */
+  useEffect(() => {
+    const window = getCurrentWebviewWindow();
+    const stop = window.onDragDropEvent((event) => {
+      if (event.payload.type === "over") {
+        setDropping(isOverBox(boxRef.current, event.payload.position));
+        return;
+      }
+      if (event.payload.type === "leave") {
+        setDropping(false);
+        return;
+      }
+      const wanted = isOverBox(boxRef.current, event.payload.position);
+      setDropping(false);
+      if (!wanted) return;
+      for (const path of event.payload.paths) dropPath(path);
+    });
+    return () => {
+      void stop.then((unlisten) => {
+        unlisten();
+      });
+    };
+    // Subscribed once. `dropPath` only appends to the prompt, so re-running
+    // this on every keystroke would drop events for nothing.
+  }, []);
+
+  /**
+   * Files or a folder chosen from anywhere on this machine.
+   *
+   * Beside dropping, not instead of it: a drop is faster when the thing is
+   * already on screen, and a picker is the only way to reach something that
+   * is not - and the one place a keyboard can get to. Both end in the same
+   * place, a real path appended to the prompt.
+   */
+  const attach = async (directory: boolean) => {
+    const chosen = await open({
+      directory,
+      multiple: true,
+      title: t(directory ? "ai.attachFolderTitle" : "ai.attachFileTitle"),
+    });
+    const paths = typeof chosen === "string" ? [chosen] : (chosen ?? []);
+    for (const path of paths) dropPath(path);
+  };
+
   const starters = startersFor({
     openFileName: openFilePath?.split(/[\\/]/).pop() ?? null,
     changedFiles,
@@ -590,12 +696,19 @@ export function AiPanel() {
     hasReadme: hasReadme(files),
   });
 
+  /** The prompt plus what the editor is showing - the file, the selection, the cloud panel. */
+  const send = (prompt: string) => {
+    if (!rootPath) return;
+    const view = currentView();
+    void sendPrompt(prompt, rootPath, view === null ? null : describeView(view));
+  };
+
   const submit = () => {
     const prompt = input.trim();
     if (!prompt || running || !rootPath || !inputEnabled) return;
     setInput("");
     setMentionIndex(null);
-    void sendPrompt(prompt, rootPath);
+    send(prompt);
   };
 
   return (
@@ -779,7 +892,7 @@ export function AiPanel() {
                     <button
                       key={starter.key}
                       onClick={() => {
-                        if (rootPath) void sendPrompt(t(starter.promptKey, starter.params), rootPath);
+                        send(t(starter.promptKey, starter.params));
                       }}
                       disabled={!rootPath || running}
                       className="rounded-lg border border-line px-3 py-2 text-left text-muted hover:border-accent hover:text-fg disabled:opacity-50"
@@ -843,7 +956,22 @@ export function AiPanel() {
                   ))}
                 </ul>
               )}
-              <div className="flex min-h-0 flex-1 items-stretch gap-1.5 rounded-lg border border-line bg-elevated px-2 py-1.5 focus-within:border-accent">
+              <div
+                ref={boxRef}
+                onPointerEnter={() => {
+                  if (treeDrag !== null) setDropping(true);
+                }}
+                onPointerLeave={() => {
+                  setDropping(false);
+                }}
+                onPointerUp={() => {
+                  setDropping(false);
+                  if (treeDrag !== null) dropPath(treeDrag);
+                }}
+                className={`flex min-h-0 flex-1 items-stretch gap-1.5 rounded-lg border bg-elevated px-2 py-1.5 focus-within:border-accent ${
+                  dropping ? "border-accent bg-accent-soft" : "border-line"
+                }`}
+              >
                 <textarea
                   ref={inputRef}
                   value={input}
@@ -891,6 +1019,22 @@ export function AiPanel() {
                   // the browser's own corner grip would fight the divider for it.
                   className="min-h-0 flex-1 resize-none bg-transparent outline-none placeholder:text-muted disabled:opacity-50"
                 />
+                <button
+                  onClick={() => void attach(false)}
+                  disabled={!inputEnabled}
+                  className="self-end rounded p-1.5 text-muted hover:bg-panel hover:text-fg disabled:opacity-40"
+                  title={t("ai.attachFile")}
+                >
+                  <Paperclip size={15} />
+                </button>
+                <button
+                  onClick={() => void attach(true)}
+                  disabled={!inputEnabled}
+                  className="self-end rounded p-1.5 text-muted hover:bg-panel hover:text-fg disabled:opacity-40"
+                  title={t("ai.attachFolder")}
+                >
+                  <FolderPlus size={15} />
+                </button>
                 {running ? (
                   <button
                     onClick={() => void cancel()}

@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => undefined) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: () => Promise.resolve(null) }));
 
-const { useWorkspace } = await import("./workspace");
+const { CLOUD_TAB, useWorkspace } = await import("./workspace");
 
 const A = "C:\\project\\src\\a.ts";
 const B = "C:\\project\\src\\b.ts";
@@ -129,5 +129,127 @@ describe("editor tabs", () => {
     expect(state.openTabs).toEqual([]);
     expect(state.buffers).toEqual({});
     expect(state.openFilePath).toBeNull();
+  });
+});
+
+describe("the cloud panel as a tab", () => {
+  beforeEach(() => {
+    useWorkspace.setState({
+      rootPath: "C:\\project",
+      openTabs: [],
+      buffers: {},
+      openFilePath: null,
+      fileContent: "",
+      savedContent: "",
+      dirty: false,
+      cloudOpen: false,
+    });
+  });
+
+  it("opens as a tab, once, and stays in the strip when a file opens over it", async () => {
+    useWorkspace.getState().openCloud();
+    useWorkspace.getState().openCloud();
+    expect(useWorkspace.getState().openTabs).toEqual([CLOUD_TAB]);
+    expect(useWorkspace.getState().cloudOpen).toBe(true);
+
+    await openAll(A);
+    const state = useWorkspace.getState();
+    expect(state.cloudOpen).toBe(false);
+    expect(state.openFilePath).toBe(A);
+    expect(state.openTabs).toEqual([CLOUD_TAB, A]);
+  });
+
+  it("comes back when its tab is clicked, keeping the file behind it", async () => {
+    useWorkspace.getState().openCloud();
+    await openAll(A);
+    useWorkspace.getState().activateTab(CLOUD_TAB);
+
+    const state = useWorkspace.getState();
+    expect(state.cloudOpen).toBe(true);
+    expect(state.openFilePath).toBe(A);
+    expect(state.fileContent).toBe(`content of ${A}`);
+  });
+
+  it("comes back when the last file beside it is closed", async () => {
+    useWorkspace.getState().openCloud();
+    await openAll(A);
+    useWorkspace.getState().closeTab(A);
+
+    const state = useWorkspace.getState();
+    expect(state.cloudOpen).toBe(true);
+    expect(state.openFilePath).toBeNull();
+    expect(state.openTabs).toEqual([CLOUD_TAB]);
+  });
+
+  it("closes only from its own X, and the file behind it shows again", async () => {
+    await openAll(A);
+    useWorkspace.getState().openCloud();
+    useWorkspace.getState().closeTab(CLOUD_TAB);
+
+    const state = useWorkspace.getState();
+    expect(state.cloudOpen).toBe(false);
+    expect(state.openTabs).toEqual([A]);
+    expect(state.openFilePath).toBe(A);
+  });
+});
+
+describe("special views over the cloud panel", () => {
+  beforeEach(() => {
+    useWorkspace.setState({
+      openTabs: [],
+      openFilePath: null,
+      cloudOpen: false,
+      commitHash: null,
+      diffPath: null,
+    });
+  });
+
+  it("a commit opened while the panel is up shows the commit and keeps the panel's tab", () => {
+    useWorkspace.getState().openCloud();
+    useWorkspace.getState().openCommit("abc123");
+
+    const state = useWorkspace.getState();
+    expect(state.cloudOpen).toBe(false);
+    expect(state.commitHash).toBe("abc123");
+    expect(state.openTabs).toEqual([CLOUD_TAB]);
+  });
+
+  it("every opener puts the panel behind, and the panel's tab brings it back over any of them", () => {
+    const store = useWorkspace.getState();
+    const openers = [
+      () => {
+        store.openDiff("a.ts");
+      },
+      () => {
+        store.openCommit("abc123");
+      },
+      () => {
+        store.openConflict("a.ts");
+      },
+      () => {
+        store.openBlame("a.ts");
+      },
+      () => {
+        store.openWorkItem("42");
+      },
+      () => {
+        store.openRun();
+      },
+    ];
+    for (const open of openers) {
+      store.openCloud();
+      open();
+      expect(useWorkspace.getState().cloudOpen).toBe(false);
+      store.activateTab(CLOUD_TAB);
+      const after = useWorkspace.getState();
+      expect(after.cloudOpen).toBe(true);
+      expect([
+        after.diffPath,
+        after.commitHash,
+        after.conflictPath,
+        after.blamePath,
+        after.workItemId,
+      ]).toEqual([null, null, null, null, null]);
+    }
   });
 });

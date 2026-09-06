@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useT } from "../i18n";
 import { useGit } from "../stores/git";
+import { usePathDrag } from "../stores/pathDrag";
 import { useWorkspace } from "../stores/workspace";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { PromptModal } from "./PromptModal";
@@ -31,8 +32,16 @@ type ModalAction =
   | { kind: "delete"; entry: DirEntry }
   | { kind: "untrack"; entry: DirEntry };
 
-/** Custom MIME type so the tree only accepts drags that started inside it. */
-const DRAG_MIME = "application/x-aime-path";
+/**
+ * Moving something in the tree is a pointer gesture, not an HTML5 drag.
+ *
+ * Not a preference: this window has Tauri's native drop handling on, because
+ * that is the only way a file dropped from Explorer arrives with its path on
+ * disk - and with it on, the webview's own DOM drag-and-drop never fires
+ * (Tauri v2: "Tauri's internal drag and drop system is enabled, and DOM drag
+ * and drop is disabled"). `usePathDrag` does the same job with pointer events,
+ * and the chat box reads the same store, so one gesture serves both.
+ */
 
 interface TreeDnd {
   /** Folder currently hovered as a drop target (for highlighting). */
@@ -107,6 +116,9 @@ function TreeNode({
   const active = openFilePath === entry.path;
   const isDropTarget = entry.is_dir && dnd.dropTarget === entry.path;
 
+  const press = usePathDrag((s) => s.press);
+  const dragging = usePathDrag((s) => s.path);
+
   return (
     <div>
       <button
@@ -115,29 +127,23 @@ function TreeNode({
           e.preventDefault();
           onMenu({ entry, ignored, x: e.clientX, y: e.clientY });
         }}
-        draggable
-        onDragStart={(e) => {
-          e.dataTransfer.setData(DRAG_MIME, entry.path);
-          e.dataTransfer.effectAllowed = "move";
+        onPointerDown={(e) => {
+          // Left button only: a right-click opens the menu and a middle-click
+          // is not a drag either.
+          if (e.button === 0) press(entry.path, e.clientX, e.clientY);
         }}
-        onDragOver={(e) => {
-          if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
-          e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
-          dnd.onHover(entry.is_dir ? entry.path : null);
+        onPointerEnter={() => {
+          if (dragging !== null && dragging !== entry.path) {
+            dnd.onHover(entry.is_dir ? entry.path : null);
+          }
         }}
-        onDragLeave={() => {
+        onPointerLeave={() => {
           if (isDropTarget) dnd.onHover(null);
         }}
-        onDragEnd={() => {
-          dnd.onHover(null);
-        }}
-        onDrop={(e) => {
-          const source = e.dataTransfer.getData(DRAG_MIME);
-          if (!source) return;
-          e.preventDefault();
+        onPointerUp={(e) => {
+          if (dragging === null || dragging === entry.path) return;
           e.stopPropagation();
-          dnd.onDropInto(source, entry);
+          dnd.onDropInto(dragging, entry);
           dnd.onHover(null);
         }}
         title={ignored ? t("tree.ignored") : undefined}
@@ -191,6 +197,27 @@ function TreeNode({
   );
 }
 
+/**
+ * The label that follows the pointer while something is being dragged.
+ *
+ * An HTML5 drag draws its own ghost; a pointer drag draws nothing, and a
+ * gesture with no feedback reads as a gesture that failed. Rendered once, at
+ * the tree root, and positioned rather than reflowed so dragging costs no
+ * layout.
+ */
+function DragGhost() {
+  const { path, x, y } = usePathDrag();
+  if (path === null) return null;
+  return (
+    <span
+      className="pointer-events-none fixed z-50 rounded border border-accent bg-panel px-1.5 py-0.5 text-[11px] text-fg shadow-lg"
+      style={{ left: x + 10, top: y + 10 }}
+    >
+      {path.split(/[\\/]/).pop()}
+    </span>
+  );
+}
+
 export function FileTree() {
   const { rootPath, treeVersion, refreshTree, handlePathDeleted, handlePathRenamed } = useWorkspace();
   const { openFolder, closeFolder, openFile, openBlame } = useWorkspace();
@@ -199,6 +226,8 @@ export function FileTree() {
   const [menu, setMenu] = useState<MenuTarget | null>(null);
   const [modal, setModal] = useState<ModalAction | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const dragging = usePathDrag((s) => s.path);
+  const cancelDrag = usePathDrag((s) => s.cancel);
   const t = useT();
 
   /** Moves `sourcePath` into `targetDir` (same-name, VS Code semantics). */
@@ -471,7 +500,15 @@ export function FileTree() {
   };
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto py-1 pr-1 select-none">
+    <div
+      className="flex h-full flex-col overflow-y-auto py-1 pr-1 select-none"
+      onPointerUp={() => {
+        // A release that reached no target ends the drag rather than leaving
+        // the ghost following the pointer around.
+        if (dragging !== null) cancelDrag();
+      }}
+    >
+      <DragGhost />
       <div
         className={`group flex items-center gap-1 px-2 py-1 text-[11px] font-semibold tracking-wider text-muted uppercase ${
           dropTarget === rootPath ? "bg-accent-soft text-accent" : ""
@@ -485,20 +522,15 @@ export function FileTree() {
             y: e.clientY,
           });
         }}
-        onDragOver={(e) => {
-          if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
-          e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
-          setDropTarget(rootPath);
+        onPointerEnter={() => {
+          if (dragging !== null) setDropTarget(rootPath);
         }}
-        onDragLeave={() => {
+        onPointerLeave={() => {
           if (dropTarget === rootPath) setDropTarget(null);
         }}
-        onDrop={(e) => {
-          const source = e.dataTransfer.getData(DRAG_MIME);
-          if (!source) return;
-          e.preventDefault();
-          void moveInto(source, rootPath);
+        onPointerUp={() => {
+          if (dragging === null) return;
+          void moveInto(dragging, rootPath);
           setDropTarget(null);
         }}
       >

@@ -1,7 +1,7 @@
 ﻿import { useCallback, useEffect, useRef, useState } from "react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
-import { Lightbulb, Sparkles, TriangleAlert, X } from "lucide-react";
+import { Cloud, Lightbulb, Sparkles, TriangleAlert, X } from "lucide-react";
 import { KeyCode, KeyMod, Range as MonacoRange, type editor as MonacoEditor } from "monaco-editor";
 import "../lib/monaco";
 import { translate, useT } from "../i18n";
@@ -18,10 +18,11 @@ import { useGit } from "../stores/git";
 import { useSetup } from "../stores/setup";
 import { monacoThemeOf, useTheme } from "../stores/theme";
 import { useSettings } from "../stores/settings";
-import { useWorkspace } from "../stores/workspace";
+import { CLOUD_TAB, useWorkspace } from "../stores/workspace";
 import { CommitView } from "./CommitView";
 import { ConflictView } from "./ConflictView";
 import { RunView } from "./RunView";
+import { CloudView } from "./CloudView";
 import { WorkItemView } from "./WorkItemView";
 import { DebugToolbar } from "./DebugToolbar";
 import { useDebugGutter } from "./useDebugGutter";
@@ -134,24 +135,31 @@ function fileNameOf(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
 
-/** One tab per open file: name, unsaved dot, close on hover or middle-click. */
+/**
+ * One tab per open file - name, unsaved dot, close on hover or middle-click -
+ * and one for the cloud panel when it is open, so a file opened over the panel
+ * puts it behind instead of closing it (see `CLOUD_TAB`).
+ */
 function EditorTabs() {
-  const { openTabs, openFilePath, buffers, dirty, activateTab, closeTab } = useWorkspace();
+  const { openTabs, openFilePath, cloudOpen, buffers, dirty, activateTab, closeTab } = useWorkspace();
   const t = useT();
   if (openTabs.length === 0) return null;
 
   const isDirty = (path: string) =>
-    path === openFilePath
-      ? dirty
-      : (() => {
-          const buffer = buffers[path];
-          return buffer ? buffer.content !== buffer.savedContent : false;
-        })();
+    path === CLOUD_TAB
+      ? false
+      : path === openFilePath
+        ? dirty
+        : (() => {
+            const buffer = buffers[path];
+            return buffer ? buffer.content !== buffer.savedContent : false;
+          })();
+  const isActive = (path: string) => (path === CLOUD_TAB ? cloudOpen : path === openFilePath && !cloudOpen);
 
   return (
     <div className="flex items-stretch gap-0.5 overflow-x-auto border-b border-line bg-panel px-1 pt-1">
       {openTabs.map((path) => {
-        const active = path === openFilePath;
+        const active = isActive(path);
         return (
           <div
             key={path}
@@ -165,12 +173,13 @@ function EditorTabs() {
                 closeTab(path);
               }
             }}
-            title={path}
+            title={path === CLOUD_TAB ? t("cloud.openPanel") : path}
             className={`group flex max-w-52 shrink-0 items-center gap-1.5 rounded-t px-2 py-1 text-[11.5px] ${
               active ? "bg-elevated text-fg" : "cursor-pointer text-muted hover:bg-elevated/50"
             }`}
           >
-            <span className="truncate">{fileNameOf(path)}</span>
+            {path === CLOUD_TAB && <Cloud size={11} className="shrink-0" />}
+            <span className="truncate">{path === CLOUD_TAB ? t("cloud.panelTitle") : fileNameOf(path)}</span>
             {isDirty(path) && <span className="size-1.5 shrink-0 rounded-full bg-accent" />}
             <button
               onClick={(e) => {
@@ -561,6 +570,7 @@ export function EditorPane() {
     blamePath,
     workItemId,
     runOpen,
+    cloudOpen,
     fileContent,
     dirty,
     rootPath,
@@ -688,6 +698,19 @@ export function EditorPane() {
       stale = true;
     };
   }, [openFilePath, rootPath, treeVersion, renderBlameForLine]);
+
+  if (cloudOpen) {
+    // The strip stays: the panel is one of the tabs, and the files behind it
+    // are one click away.
+    return (
+      <div className="flex h-full flex-col">
+        <EditorTabs />
+        <div className="min-h-0 flex-1">
+          <CloudView />
+        </div>
+      </div>
+    );
+  }
 
   if (runOpen) {
     // A run owns the area while it goes: it is minutes of work with evidence

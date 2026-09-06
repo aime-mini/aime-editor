@@ -32,6 +32,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(providers::ProviderState::default())
@@ -42,6 +43,8 @@ pub fn run() {
         .manage(dap::DapState::default())
         .manage(exec::ExecState::default())
         .manage(splash::SplashState::default())
+        .manage(cloud::sign_in::SignInState::default())
+        .manage(cloud::credentials::CredentialWatch::default())
         .setup(|app| {
             // The editor stays hidden behind the splash window until the
             // frontend reports its first screen painted; splash.rs owns that
@@ -69,6 +72,19 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             cli::initial_folder,
             cloud::cloud_report,
+            cloud::cloud_status,
+            cloud::cloud_accounts,
+            cloud::cloud_resources,
+            cloud::cloud_set_account,
+            cloud::reads::cloud_read_plan,
+            cloud::reads::cloud_forget_plan,
+            cloud::reads::cloud_check_reads,
+            cloud::reads::cloud_run_read,
+            cloud::reads::cloud_read_catalog,
+            cloud::sign_in::cloud_sign_in,
+            cloud::sign_in::cloud_sign_in_code,
+            cloud::sign_in::cloud_sign_in_cancel,
+            cloud::credentials::cloud_watch_credentials,
             splash::splash_shown,
             splash::splash_hold,
             splash::splash_skip,

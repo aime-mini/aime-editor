@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -14,6 +15,31 @@ interface TermDataPayload {
 
 interface TermExitPayload {
   term_id: number;
+}
+
+/** The right button's two jobs: copy what is selected, else paste. */
+function copyOrPaste(term: Terminal): Promise<void> {
+  return term.hasSelection() ? copySelection(term) : pasteClipboard(term);
+}
+
+async function copySelection(term: Terminal): Promise<void> {
+  try {
+    await writeText(term.getSelection());
+    term.clearSelection();
+  } catch (error: unknown) {
+    console.warn("terminal copy:", error);
+  }
+}
+
+async function pasteClipboard(term: Terminal): Promise<void> {
+  try {
+    const text = await readText();
+    if (text !== "") term.paste(text);
+  } catch (error: unknown) {
+    // A clipboard the OS would not hand over is not the shell's problem;
+    // saying so inside the terminal would corrupt whatever is running there.
+    console.warn("terminal paste:", error);
+  }
 }
 
 /**
@@ -149,6 +175,26 @@ export function TerminalPane({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
+    // Ctrl+V / Ctrl+Shift+V paste and Ctrl+Shift+C copies, through Tauri's
+    // clipboard rather than the browser's paste event: one path for the keys
+    // and the right button, and no dependence on what WebView2 lets a key do.
+    // `preventDefault` matters - xterm stops at a handler that says no, but the
+    // browser would still paste on its own and the text would land twice.
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown" || !(event.ctrlKey || event.metaKey)) return true;
+      const key = event.key.toLowerCase();
+      if (key === "v") {
+        event.preventDefault();
+        void pasteClipboard(term);
+        return false;
+      }
+      if (key === "c" && event.shiftKey && term.hasSelection()) {
+        event.preventDefault();
+        void copySelection(term);
+        return false;
+      }
+      return true;
+    });
     termRef.current = term;
 
     let termId: number | null = null;
@@ -226,6 +272,23 @@ export function TerminalPane({
     };
     connect().catch((err: unknown) => {
       term.write(`\x1b[31mFailed to start shell: ${String(err)}\x1b[0m\r\n`);
+    });
+
+    // Right-click copies the selection or pastes, the way Windows Terminal and
+    // VS Code on Windows behave. Ctrl+V and Ctrl+Shift+V already paste through
+    // the browser's own paste event (measured in the app, 2026-09-05); what a
+    // person used to a Windows shell reaches for first is the right button,
+    // and reported the same day: a verification code that would not go into
+    // the Supabase sign-in. The clipboard is read through Tauri, not
+    // `navigator.clipboard.readText()`, which WebView2 answers with a
+    // permission prompt.
+    const onContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+      void copyOrPaste(term);
+    };
+    container.addEventListener("contextmenu", onContextMenu);
+    cleanups.push(() => {
+      container.removeEventListener("contextmenu", onContextMenu);
     });
 
     // Fires once on observe() and on every size change after (panel drag,

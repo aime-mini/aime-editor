@@ -40,6 +40,8 @@ interface WorkspaceState {
   workItemId: string | null;
   /** True while a Task Run has the editor area. */
   runOpen: boolean;
+  /** True while the cloud panel has the editor area. */
+  cloudOpen: boolean;
   fileContent: string;
   /** Content as last loaded/saved — dirty is a comparison against this, so undoing back to it clears the flag. */
   savedContent: string;
@@ -66,6 +68,8 @@ interface WorkspaceState {
   /** Gives the editor area to the running Task Run. */
   openRun: () => void;
   closeRun: () => void;
+  openCloud: () => void;
+  closeCloud: () => void;
   setContent: (content: string) => void;
   saveFile: () => Promise<void>;
   /**
@@ -82,13 +86,34 @@ interface WorkspaceState {
   handlePathRenamed: (from: string, to: string) => void;
 }
 
-/** Opening a file leaves whatever special view was showing. */
+/**
+ * Opening a file leaves whatever special view was showing.
+ *
+ * Every view that can own the editor area belongs here. One that is added to
+ * the openers by hand instead gets missed by exactly the paths nobody thought
+ * of - `cloudOpen` was, and a file opened while the cloud panel was up simply
+ * did not appear.
+ */
 const CLOSE_SPECIAL_VIEWS = {
   diffPath: null,
   commitHash: null,
   conflictPath: null,
   blamePath: null,
+  workItemId: null,
+  cloudOpen: false,
 } as const;
+
+/**
+ * The cloud panel's place in the tab strip.
+ *
+ * It sits in `openTabs` beside the files, under a name no file can have, so a
+ * file opened over it puts it behind rather than closing it, and closing the
+ * last file brings it back the way any neighbouring tab comes back. Reported
+ * 2026-09-04: the panel vanished the moment a file was opened and had to be
+ * reopened from the status bar every time. Only the X on the tab, or on the
+ * panel itself, closes it.
+ */
+export const CLOUD_TAB = "aime://cloud";
 
 /** True for the path itself and for anything inside it, on either separator. */
 function isUnder(path: string, ancestor: string): boolean {
@@ -144,6 +169,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     blamePath: null,
     workItemId: null,
     runOpen: false,
+    cloudOpen: false,
     fileContent: "",
     savedContent: "",
     dirty: false,
@@ -214,6 +240,10 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     },
 
     activateTab: (path: string) => {
+      if (path === CLOUD_TAB) {
+        get().openCloud();
+        return;
+      }
       const state = get();
       if (state.openFilePath === path) {
         set(CLOSE_SPECIAL_VIEWS);
@@ -234,6 +264,10 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     },
 
     closeTab: (path: string) => {
+      if (path === CLOUD_TAB) {
+        get().closeCloud();
+        return;
+      }
       const state = get();
       const openTabs = state.openTabs.filter((tab) => tab !== path);
       const buffers = without(state.buffers, path);
@@ -244,8 +278,16 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       // The active tab went: show the one that took its place, else the last.
       const index = state.openTabs.indexOf(path);
       const next = openTabs[index] ?? openTabs[openTabs.length - 1];
-      if (!next) {
-        set({ openTabs, buffers, openFilePath: null, fileContent: "", savedContent: "", dirty: false });
+      if (!next || next === CLOUD_TAB) {
+        set({
+          openTabs,
+          buffers,
+          openFilePath: null,
+          fileContent: "",
+          savedContent: "",
+          dirty: false,
+          cloudOpen: next === CLOUD_TAB,
+        });
         return;
       }
       const buffer = buffers[next];
@@ -259,68 +301,55 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       });
     },
 
+    // Every opener below starts from CLOSE_SPECIAL_VIEWS and names only its
+    // own view. Listing the others by hand is how `openCommit` came to leave
+    // `cloudOpen` alone - and a commit clicked while the cloud panel was up did
+    // nothing at all (reported 2026-09-04).
     openDiff: (relativePath: string) => {
-      set({
-        diffPath: relativePath,
-        commitHash: null,
-        conflictPath: null,
-        blamePath: null,
-        workItemId: null,
-      });
+      set({ ...CLOSE_SPECIAL_VIEWS, diffPath: relativePath });
     },
 
     closeDiff: () => {
-      set({ diffPath: null, commitHash: null, conflictPath: null, blamePath: null, workItemId: null });
+      set(CLOSE_SPECIAL_VIEWS);
     },
 
     openCommit: (hash: string) => {
-      set({ commitHash: hash, diffPath: null, conflictPath: null, blamePath: null, workItemId: null });
+      set({ ...CLOSE_SPECIAL_VIEWS, commitHash: hash });
     },
 
     openConflict: (relativePath: string) => {
-      set({
-        conflictPath: relativePath,
-        diffPath: null,
-        commitHash: null,
-        blamePath: null,
-        workItemId: null,
-      });
+      set({ ...CLOSE_SPECIAL_VIEWS, conflictPath: relativePath });
     },
 
     openBlame: (relativePath: string) => {
-      set({
-        blamePath: relativePath,
-        diffPath: null,
-        commitHash: null,
-        conflictPath: null,
-        workItemId: null,
-      });
+      set({ ...CLOSE_SPECIAL_VIEWS, blamePath: relativePath });
     },
 
     openWorkItem: (id: string) => {
-      set({
-        workItemId: id,
-        runOpen: false,
-        diffPath: null,
-        commitHash: null,
-        conflictPath: null,
-        blamePath: null,
-      });
+      set({ ...CLOSE_SPECIAL_VIEWS, workItemId: id, runOpen: false });
     },
 
     openRun: () => {
-      set({
-        runOpen: true,
-        workItemId: null,
-        diffPath: null,
-        commitHash: null,
-        conflictPath: null,
-        blamePath: null,
-      });
+      set({ ...CLOSE_SPECIAL_VIEWS, runOpen: true });
     },
 
     closeRun: () => {
       set({ runOpen: false });
+    },
+
+    openCloud: () => {
+      set((s) => ({
+        ...CLOSE_SPECIAL_VIEWS,
+        cloudOpen: true,
+        runOpen: false,
+        openTabs: s.openTabs.includes(CLOUD_TAB) ? s.openTabs : [...s.openTabs, CLOUD_TAB],
+      }));
+    },
+
+    closeCloud: () => {
+      // The file that was behind the panel is still `openFilePath`, so it
+      // shows again on its own.
+      set((s) => ({ cloudOpen: false, openTabs: s.openTabs.filter((tab) => tab !== CLOUD_TAB) }));
     },
 
     setContent: (content: string) => {

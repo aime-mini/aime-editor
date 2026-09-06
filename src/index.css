@@ -24,6 +24,32 @@
   --danger: #e5534b;
   --warn: #daaa3f;
   --ok: #57ab5a;
+
+  /*
+   * One hue per family of cloud service, so a resource list reads at a glance
+   * the way a cloud console does - compute is one colour, data another, and
+   * the eye finds the databases without reading a word.
+   *
+   * These are Aime's own colours, not any vendor's. AWS states its icon set is
+   * for "architecture diagrams... whitepapers, presentations, data sheets and
+   * posters" rather than a third-party product's interface, and Microsoft ships
+   * its Azure artwork under its own terms, so neither set is redistributed
+   * here (see the asset rule in ARCHITECTURE.md). What the colour carries is
+   * the KIND of thing, which is what a reader is actually scanning for.
+   *
+   * Picked to hold up on the near-black panel and to stay distinguishable for
+   * the common forms of colour blindness: the pairs that matter most - compute
+   * vs data, storage vs network - differ in lightness as well as hue.
+   */
+  --svc-compute: #6c8cff;
+  --svc-data: #b98cff;
+  --svc-storage: #45b8c4;
+  --svc-network: #4fb0e8;
+  --svc-security: #daaa3f;
+  --svc-identity: #ef7a9b;
+  --svc-observe: #57ab5a;
+  --svc-integrate: #e8894a;
+  --svc-other: #8b919d;
 }
 
 :root[data-theme="light"] {
@@ -39,6 +65,17 @@
   --danger: #cf222e;
   --warn: #9a6700;
   --ok: #1a7f37;
+
+  /* The same families, darkened to carry on white (see the dark block). */
+  --svc-compute: #3f5bd6;
+  --svc-data: #7c3fd0;
+  --svc-storage: #0f7f8c;
+  --svc-network: #1170ad;
+  --svc-security: #8a5d00;
+  --svc-identity: #c03f66;
+  --svc-observe: #1a7f37;
+  --svc-integrate: #b45309;
+  --svc-other: #6b7280;
 }
 
 @theme {
@@ -48,6 +85,15 @@
   --color-line: var(--border);
   --color-fg: var(--text);
   --color-muted: var(--text-muted);
+  --color-svc-compute: var(--svc-compute);
+  --color-svc-data: var(--svc-data);
+  --color-svc-storage: var(--svc-storage);
+  --color-svc-network: var(--svc-network);
+  --color-svc-security: var(--svc-security);
+  --color-svc-identity: var(--svc-identity);
+  --color-svc-observe: var(--svc-observe);
+  --color-svc-integrate: var(--svc-integrate);
+  --color-svc-other: var(--svc-other);
   --color-accent: var(--accent);
   --color-accent-strong: var(--accent-strong);
   --color-accent-soft: var(--accent-soft);

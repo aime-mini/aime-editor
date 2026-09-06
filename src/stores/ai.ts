@@ -196,7 +196,11 @@ interface AiState {
   hydrate: (rootPath: string) => Promise<void>;
   /** Unbinds from the workspace (folder closed): flushes, then resets to a clean slate. */
   closeProject: () => void;
-  sendPrompt: (prompt: string, cwd: string) => Promise<void>;
+  /**
+   * Sends one turn. `context` - what the editor is showing, see `lib/viewContext` -
+   * travels with the prompt but is never shown as the user's words.
+   */
+  sendPrompt: (prompt: string, cwd: string, context?: string | null) => Promise<void>;
   cancel: () => Promise<void>;
   /** Puts the project back to how it was before that turn. */
   undoTurn: (messageIndex: number) => Promise<void>;
@@ -508,7 +512,7 @@ export const useAi = create<AiState>((set, get) => {
       });
     },
 
-    sendPrompt: async (prompt, cwd) => {
+    sendPrompt: async (prompt, cwd, context = null) => {
       await ensureListeners();
       lastStderrLine = "";
       const provider = get().providers.find((candidate) => candidate.id === get().providerId);
@@ -539,7 +543,7 @@ export const useAi = create<AiState>((set, get) => {
       try {
         const runId = await invoke<string>("ai_send_prompt", {
           providerId: get().providerId,
-          prompt,
+          prompt: context === null ? prompt : `${context}\n\n${prompt}`,
           cwd,
           sessionId: get().sessionId,
           options: {

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Check, Download, Loader2, TriangleAlert, X } from "lucide-react";
 import { useT } from "../i18n";
+import { useCloud } from "../stores/cloud";
 import { useLsp } from "../stores/lsp";
 
 interface InstallLine {
@@ -57,6 +58,11 @@ export function InstallerModal({ tools, onClose }: { tools: string[]; onClose: (
           if (code === 0) {
             // A freshly installed server should be picked up without a restart.
             useLsp.getState().forget(toolId);
+            // And a freshly downloaded cloud CLI without a click: reported
+            // 2026-09-05, the Supabase CLI landed in Aime's folder and the
+            // panel kept saying "not on this machine" until reopened.
+            const clouds = useCloud.getState();
+            if (clouds.clouds.some((cloud) => cloud.id === toolId)) void clouds.refresh();
             setResults((current) => [...current, { toolId, ok: true }]);
           } else {
             setResults((current) => [...current, { toolId, ok: false, failure: { kind: "exit", code } }]);

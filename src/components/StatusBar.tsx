@@ -5,6 +5,7 @@ import {
   ArrowUp,
   Bot,
   Braces,
+  Cloud as CloudIcon,
   CircleDollarSign,
   CircleHelp,
   FlaskConical,
@@ -107,6 +108,8 @@ export function StatusBar() {
   const setSidebarView = useLayout((s) => s.setSidebarView);
   const gitStatus = useGit((s) => s.status);
   const openFilePath = useWorkspace((s) => s.openFilePath);
+  const openCloud = useWorkspace((s) => s.openCloud);
+  const cloudOpen = useWorkspace((s) => s.cloudOpen);
   const lspLanguages = useLsp((s) => s.languages);
   const setupRunning = useSetup((s) => s.running);
   const setupSubject = useSetup((s) => s.subject);
@@ -185,6 +188,13 @@ export function StatusBar() {
               title={t("tasks.menu")}
             >
               <Play size={11} />
+            </button>
+            <button
+              onClick={openCloud}
+              className={`rounded px-1 py-0.5 hover:bg-elevated hover:text-fg ${cloudOpen ? "text-accent" : ""}`}
+              title={t("cloud.openPanel")}
+            >
+              <CloudIcon size={11} />
             </button>
           </>
         )}
