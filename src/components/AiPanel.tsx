@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   Bot,
@@ -35,6 +35,7 @@ import { runInTerminal } from "../stores/terminals";
 import { useWorkspace } from "../stores/workspace";
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { Markdown } from "./Markdown";
 import { ResizeHandle } from "./ResizeHandle";
 import { capabilitiesOf, effortsOf, type ProviderOption } from "../lib/providers";
 import type { ChatMessage, Permission, TokenUsage } from "../lib/types";
@@ -307,7 +308,15 @@ function useSecondsSince(active: boolean): number {
  *   whichever mark says what is happening: nothing written yet, text still
  *   arriving, or a tool still running.
  */
-function MessageBubble({ message, index, live }: { message: ChatMessage; index: number; live: boolean }) {
+const MessageBubble = memo(function MessageBubble({
+  message,
+  index,
+  live,
+}: {
+  message: ChatMessage;
+  index: number;
+  live: boolean;
+}) {
   const isUser = message.role === "user";
   const t = useT();
   const lastPart = message.parts.at(-1);
@@ -338,7 +347,19 @@ function MessageBubble({ message, index, live }: { message: ChatMessage; index: 
         )}
         {message.parts.map((part, i) =>
           part.kind === "text" ? (
-            <span key={i}>{part.text}</span>
+            // The AI writes Markdown - tables, headings, code - and it was shown
+            // as the raw characters (reported 2026-09-04). What the person typed
+            // stays as typed. The caret rides inside the last block, where the
+            // next character will land.
+            isUser ? (
+              <span key={i}>{part.text}</span>
+            ) : (
+              <Markdown
+                key={i}
+                text={part.text}
+                tail={live && i === message.parts.length - 1 ? <StreamingCaret /> : undefined}
+              />
+            )
           ) : (
             // A tool call is one line that must fit the bubble: the tool's
             // name always, then as much of the command as there is room for.
@@ -363,7 +384,6 @@ function MessageBubble({ message, index, live }: { message: ChatMessage; index: 
             </span>
           ),
         )}
-        {live && lastPart?.kind === "text" && <StreamingCaret />}
       </div>
       <TurnChanges message={message} index={index} />
       {message.costUsd !== undefined && (
@@ -374,7 +394,7 @@ function MessageBubble({ message, index, live }: { message: ChatMessage; index: 
       )}
     </div>
   );
-}
+});
 
 export function AiPanel() {
   const {

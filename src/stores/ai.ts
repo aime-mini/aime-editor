@@ -5,6 +5,7 @@ import { translate } from "../i18n";
 import { createEventParser, type EventParser } from "../lib/aiParsers";
 import { formatProviderError } from "../lib/providerErrors";
 import { effortsOf } from "../lib/providers";
+import { Typewriter } from "../lib/typewriter";
 import { useWorkspace } from "./workspace";
 import {
   addUsage,
@@ -232,6 +233,9 @@ let listenersReady = false;
 let lastStderrLine = "";
 /** Parser of the turn in flight; parsers carry per-run state, so it is rebuilt each turn. */
 let activeParser: EventParser = () => [];
+/** Streamed text waiting to be shown, and the frame that will show the next of it. */
+const typewriter = new Typewriter();
+let revealHandle: number | null = null;
 /** Interval id of the sign-in watcher; at most one runs at a time. */
 let signInPollId: number | null = null;
 /** Whether the `providers.json` listener is up; it is registered once. */
@@ -296,13 +300,40 @@ export const useAi = create<AiState>((set, get) => {
     }
   };
 
+  const showText = (text: string) => {
+    if (text === "") return;
+    set((s) => ({ messages: patchLastAssistant(s.messages, (m) => appendText(m, text)) }));
+  };
+
+  /**
+   * Text streams in chunks (see `lib/typewriter`); one frame at a time it is
+   * moved onto the screen at the pace it arrives. Anything that is not text -
+   * a tool chip, the end of the turn - first shows every character still
+   * waiting, so the transcript keeps the CLI's own order.
+   */
+  const revealFrame = () => {
+    revealHandle = null;
+    showText(typewriter.take(performance.now()));
+    if (typewriter.pending) scheduleReveal();
+  };
+  const scheduleReveal = () => {
+    revealHandle ??= requestAnimationFrame(revealFrame);
+  };
+  const revealEverything = () => {
+    if (revealHandle !== null) cancelAnimationFrame(revealHandle);
+    revealHandle = null;
+    showText(typewriter.flush());
+  };
+
   const applyUiEvent = (ev: UiAiEvent) => {
+    if (ev.kind !== "message-delta") revealEverything();
     switch (ev.kind) {
       case "session-info":
         set({ sessionId: ev.sessionId });
         break;
       case "message-delta":
-        set((s) => ({ messages: patchLastAssistant(s.messages, (m) => appendText(m, ev.text)) }));
+        typewriter.push(ev.text, performance.now());
+        scheduleReveal();
         break;
       case "tool-call":
         set((s) => ({
@@ -340,6 +371,7 @@ export const useAi = create<AiState>((set, get) => {
     });
     await listen<ExitPayload>("ai:exit", ({ payload }) => {
       if (payload.run_id !== get().runId) return;
+      revealEverything();
       set({ running: false, runId: null });
       void recordChangedFiles();
       if (payload.code !== null && payload.code !== 0) {
@@ -526,6 +558,7 @@ export const useAi = create<AiState>((set, get) => {
     cancel: async () => {
       const { runId } = get();
       if (runId) await invoke("ai_cancel", { runId });
+      revealEverything();
       set({ running: false, runId: null });
       void persist();
     },

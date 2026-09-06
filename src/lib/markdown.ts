@@ -28,13 +28,18 @@ export interface ListItem {
   spans: Inline[];
 }
 
+/** Where a column's text sits, as its delimiter row said; null is the renderer's default. */
+export type Alignment = "left" | "center" | "right" | null;
+
 export type Block =
   | { kind: "heading"; level: number; spans: Inline[] }
   | { kind: "paragraph"; spans: Inline[] }
   | { kind: "list"; ordered: boolean; items: ListItem[] }
   | { kind: "code"; language: string | null; text: string }
   | { kind: "quote"; spans: Inline[] }
-  | { kind: "rule" };
+  | { kind: "rule" }
+  /** A pipe table: header cells, one alignment per column, then the body rows. */
+  | { kind: "table"; header: Inline[][]; align: Alignment[]; rows: Inline[][][] };
 
 /** How many spaces of indentation make one level of nesting. */
 const INDENT_WIDTH = 2;
@@ -45,6 +50,10 @@ const BULLET = /^(\s*)[-*+]\s+(.*)$/;
 const NUMBERED = /^(\s*)\d+[.)]\s+(.*)$/;
 const QUOTE = /^\s*>\s?(.*)$/;
 const RULE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/;
+/** The row under a table header: `---`, `:--`, `--:` or `:-:` per column, pipes between. */
+const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;
+/** A pipe that is a column boundary - not one escaped as `\|`. */
+const CELL_SPLIT = /(?<!\\)\|/;
 
 /** The blocks a piece of Markdown is made of, in the order they read. */
 export function parseMarkdown(source: string): Block[] {
@@ -95,6 +104,25 @@ export function parseMarkdown(source: string): Block[] {
       continue;
     }
 
+    // A table is a header line with a pipe, then the delimiter row; the body is
+    // every following line that still has a pipe. A lone line with a pipe in
+    // it - a shell command, a type union - is prose, and stays prose.
+    const next = index + 1 < lines.length ? lines[index + 1] : "";
+    if (line.includes("|") && next.includes("|") && TABLE_DELIMITER.test(next)) {
+      endParagraph();
+      const header = cellsOf(line).map(parseInline);
+      const align = cellsOf(next).map(alignmentOf);
+      const rows: Inline[][][] = [];
+      index += 2;
+      while (index < lines.length && lines[index].includes("|") && lines[index].trim() !== "") {
+        rows.push(cellsOf(lines[index]).map(parseInline));
+        index += 1;
+      }
+      index -= 1;
+      blocks.push({ kind: "table", header, align, rows });
+      continue;
+    }
+
     const item = itemOn(line);
     if (item !== null) {
       endParagraph();
@@ -117,6 +145,22 @@ export function parseMarkdown(source: string): Block[] {
   }
   endParagraph();
   return blocks;
+}
+
+/** The cells of one table row, outer pipes dropped, `\|` read as a literal pipe. */
+function cellsOf(line: string): string[] {
+  const inner = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return inner.split(CELL_SPLIT).map((cell) => cell.trim().replaceAll("\\|", "|"));
+}
+
+/** What one delimiter cell says about its column: colons on the left, right, or both. */
+function alignmentOf(cell: string): Alignment {
+  const left = cell.startsWith(":");
+  const right = cell.endsWith(":");
+  if (left && right) return "center";
+  if (right) return "right";
+  if (left) return "left";
+  return null;
 }
 
 /** One list line, whichever of the two kinds of marker it carries. */

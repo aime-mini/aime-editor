@@ -5,6 +5,8 @@ import { parseInline, parseMarkdown, type Block } from "./markdown";
 function words(block: Block): string {
   if (block.kind === "code") return block.text;
   if (block.kind === "rule") return "";
+  if (block.kind === "table")
+    return [block.header, ...block.rows].map((row) => row.map((cell) => text(cell)).join(" | ")).join("\n");
   if (block.kind === "list")
     return block.items.map((item) => `${"  ".repeat(item.depth)}${text(item.spans)}`).join("\n");
   return text(block.spans);
@@ -93,5 +95,54 @@ describe("parseInline", () => {
       { kind: "link", text: "https://x.test/a?b=1", href: "https://x.test/a?b=1" },
       { kind: "text", text: "." },
     ]);
+  });
+});
+
+describe("tables", () => {
+  /** The shape the AI answered in on 2026-09-04, which the chat showed as raw pipes. */
+  const TABLE = [
+    "| Phần | Nội dung |",
+    "|---|:---:|",
+    "| `:root` (dòng 14) | Token màu — **đọc từ biến**, kèm fallback |",
+    "| `.iodm-help-panel` | Panel trượt từ phải. Tự viết, không dùng off-canvas |",
+    "| Media queries | Dưới 40rem thì full width; a \\| b |",
+  ].join("\n");
+
+  it("reads a pipe table as header, alignment and rows, with markup inside the cells", () => {
+    const [table] = parseMarkdown(TABLE);
+    expect(table.kind).toBe("table");
+    if (table.kind !== "table") return;
+    expect(table.align).toEqual([null, "center"]);
+    expect(words(table)).toBe(
+      [
+        "Phần | Nội dung",
+        ":root (dòng 14) | Token màu — đọc từ biến, kèm fallback",
+        ".iodm-help-panel | Panel trượt từ phải. Tự viết, không dùng off-canvas",
+        "Media queries | Dưới 40rem thì full width; a | b",
+      ].join("\n"),
+    );
+    expect(table.rows[0]?.[0]?.[0]).toMatchObject({ kind: "code", text: ":root" });
+    expect(table.rows[0]?.[1]).toContainEqual({
+      kind: "strong",
+      spans: [{ kind: "text", text: "đọc từ biến" }],
+    });
+  });
+
+  it("ends the table at a blank line and reads what follows as prose", () => {
+    const blocks = parseMarkdown(`${TABLE}\n\nnhưng hiện lên không có format.`);
+    expect(blocks.map((block) => block.kind)).toEqual(["table", "paragraph"]);
+  });
+
+  it("leaves a line with a pipe but no delimiter row as prose", () => {
+    const blocks = parseMarkdown("type Mode = 'a' | 'b'\nls | grep x");
+    expect(blocks.map((block) => block.kind)).toEqual(["paragraph"]);
+  });
+
+  it("reads left and right alignment and a header without outer pipes", () => {
+    const [table] = parseMarkdown("a | b | c\n:-- | --: | ---\n1 | 2 | 3");
+    expect(table.kind).toBe("table");
+    if (table.kind !== "table") return;
+    expect(table.align).toEqual(["left", "right", null]);
+    expect(words(table)).toBe("a | b | c\n1 | 2 | 3");
   });
 });
