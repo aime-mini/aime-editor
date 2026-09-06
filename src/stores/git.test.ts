@@ -17,8 +17,14 @@ function statusOfCall(call: number): GitStatus {
   return { is_repo: true, branch: `branch-${String(call)}`, upstream: null, ahead: 0, behind: 0, files: [] };
 }
 
+/** What git_pending_diff answers; tests set it to the case they are about. */
+let pendingDiff = "";
+/** Prompts handed to the AI, so a test can assert what the model was asked. */
+const oneshotPrompts: string[] = [];
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (command: string) => {
+    if (command === "git_pending_diff") return Promise.resolve(pendingDiff);
     if (command !== "git_status") return Promise.resolve([]);
     statusCalls += 1;
     const answer = statusOfCall(statusCalls);
@@ -32,7 +38,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => undefined) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: () => Promise.resolve(null) }));
-vi.mock("../lib/aiOneshot", () => ({ aiOneshot: () => Promise.resolve("") }));
+vi.mock("../lib/aiOneshot", () => ({
+  aiOneshot: (prompt: string) => {
+    oneshotPrompts.push(prompt);
+    return Promise.resolve("feat: add the thing");
+  },
+}));
 
 const { useGit } = await import("./git");
 const { useWorkspace } = await import("./workspace");
@@ -77,5 +88,56 @@ describe("git refresh single-flight", () => {
     await second;
 
     expect(statusCalls).toBe(2); // sequential calls are not folded
+  });
+});
+
+/**
+ * The AI chores read one diff, and it has to be the whole uncommitted change.
+ * A tree whose only change was a new file used to answer "nothing staged" —
+ * `git diff` never shows an untracked file — so the button failed on exactly
+ * the change a person is most likely to want described.
+ */
+describe("AI chores read the pending diff", () => {
+  beforeEach(async () => {
+    gated = false;
+    useWorkspace.setState({ rootPath: "C:\\repo" });
+    await settle();
+    oneshotPrompts.length = 0;
+    useGit.setState({ lastError: null, commitMessage: "" });
+  });
+
+  it("describes a change the backend reports, whether or not it is staged", async () => {
+    pendingDiff = "diff --git a/feature.ts b/feature.ts\nnew file mode 100644\n+export const answer = 42;";
+
+    await useGit.getState().generateCommitMessage();
+
+    expect(useGit.getState().commitMessage).toBe("feat: add the thing");
+    expect(useGit.getState().lastError).toBeNull();
+    expect(oneshotPrompts).toHaveLength(1);
+    expect(oneshotPrompts[0]).toContain("export const answer = 42;");
+  });
+
+  it("says there is nothing to describe, and asks the model nothing", async () => {
+    pendingDiff = "   \n";
+
+    await useGit.getState().generateCommitMessage();
+
+    expect(oneshotPrompts).toHaveLength(0);
+    expect(useGit.getState().lastError).toBe(
+      "Nothing to describe - this working tree has no uncommitted change.",
+    );
+    expect(useGit.getState().commitMessage).toBe("");
+  });
+
+  it("clips a diff too large for one prompt, and says it clipped", async () => {
+    pendingDiff = `+${"x".repeat(20_000)}`;
+
+    await useGit.getState().generateCommitMessage();
+
+    const prompt = oneshotPrompts[0] ?? "";
+    expect(prompt).toContain("[diff truncated]");
+    // Prompt = instructions + 12 000 characters of diff + the marker, so the
+    // ceiling is what bounds it rather than the 20 001 characters available.
+    expect(prompt.length).toBeLessThan(13_000);
   });
 });

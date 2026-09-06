@@ -1290,7 +1290,7 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
       continue;
     }
 
-    const diff = await invoke<string>("git_worktree_diff", { root: context.workRoot });
+    const diff = await invoke<string>("git_pending_diff", { root: context.workRoot });
     if (diff.trim() === "") return { state: "blocked", summary: translate("run.noChange") };
 
     const missing = testsNotWritten(plan, await existingFiles(context.workRoot));
@@ -1661,7 +1661,7 @@ function needsDeploy(get: Getter): boolean {
  * reported for a person to judge, because a reviewer can simply be wrong.
  */
 async function reviewPhase(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
-  const diff = await invoke<string>("git_worktree_diff", { root: context.workRoot });
+  const diff = await invoke<string>("git_pending_diff", { root: context.workRoot });
   if (diff.trim() === "") return { state: "skipped", summary: translate("run.nothingChanged") };
 
   const asking = [

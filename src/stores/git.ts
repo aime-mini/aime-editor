@@ -1,7 +1,9 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { translate } from "../i18n";
+import type { TranslationKey } from "../i18n/en";
 import { aiOneshot } from "../lib/aiOneshot";
+import { formatProviderError } from "../lib/providerErrors";
 import { parseReview, REVIEW_PROMPT, type Review } from "../lib/aiReview";
 import { useWorkspace } from "./workspace";
 
@@ -68,6 +70,8 @@ interface GitState {
    */
   ignored: string[];
   busy: boolean;
+  /** What that operation is, named for the user; null when idle. */
+  busyLabel: string | null;
   lastError: string | null;
   commitMessage: string;
   /** true = the next commit rewrites the last one (--amend). */
@@ -133,20 +137,46 @@ export interface GitRemote {
  */
 export type ResetMode = "soft" | "mixed" | "hard";
 
-/** Serializes a git operation: run, surface errors, then re-read status. */
-async function runOp(set: (partial: Partial<GitState>) => void, op: () => Promise<unknown>) {
-  set({ busy: true, lastError: null });
+/**
+ * Serializes a git operation: run, surface errors, then re-read status.
+ *
+ * `busy` is not enough on its own, which is what `busyLabel` is for. Fetch,
+ * pull, push and merge talk to a remote and take seconds on a real repository,
+ * and before this the panel showed nothing at all while they did - the button
+ * simply did not respond, which reads as an editor that is not working rather
+ * than one that is. Every op therefore says what it is doing, by name.
+ */
+async function runOp(
+  set: (partial: Partial<GitState>) => void,
+  label: TranslationKey,
+  op: () => Promise<unknown>,
+) {
+  set({ busy: true, busyLabel: translate(label), lastError: null });
   try {
     await op();
   } catch (err: unknown) {
     set({ lastError: String(err) });
   } finally {
-    set({ busy: false });
+    set({ busy: false, busyLabel: null });
     await useGit.getState().refresh();
   }
 }
 
 const DIFF_PROMPT_LIMIT = 12_000;
+
+const COMMIT_MESSAGE_PROMPT =
+  "Write a git commit message for the changes below. Output ONLY the message - no quotes, no code fences. " +
+  "Imperative subject line under 72 characters; add a short body only when the change needs explanation.\n\n";
+
+/**
+ * The uncommitted change, ready for a prompt: an empty string when there is
+ * nothing to describe, so callers test one thing instead of trimming twice.
+ */
+async function pendingDiff(root: string): Promise<string> {
+  const diff = (await invoke<string>("git_pending_diff", { root })).trim();
+  if (!diff) return "";
+  return diff.length > DIFF_PROMPT_LIMIT ? `${diff.slice(0, DIFF_PROMPT_LIMIT)}\n[diff truncated]` : diff;
+}
 
 /**
  * Auto-refresh: treeVersion bumps on every fs change (watcher + tree ops),
@@ -210,6 +240,7 @@ export const useGit = create<GitState>((set, get) => {
     stashes: [],
     ignored: [],
     busy: false,
+    busyLabel: null,
     lastError: null,
     commitMessage: "",
     amend: false,
@@ -245,18 +276,18 @@ export const useGit = create<GitState>((set, get) => {
 
     stage: async (paths) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_stage", { root, paths }));
+      if (root) await runOp(set, "git.busy.stage", () => invoke("git_stage", { root, paths }));
     },
 
     unstage: async (paths) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_unstage", { root, paths }));
+      if (root) await runOp(set, "git.busy.unstage", () => invoke("git_unstage", { root, paths }));
     },
 
     discard: async (file) => {
       const root = useWorkspace.getState().rootPath;
       if (!root) return;
-      await runOp(set, () =>
+      await runOp(set, "git.busy.discard", () =>
         invoke("git_discard", { root, path: file.path, untracked: file.unstaged === "?" }),
       );
     },
@@ -264,7 +295,7 @@ export const useGit = create<GitState>((set, get) => {
     discardMany: async (files) => {
       const root = useWorkspace.getState().rootPath;
       if (!root || files.length === 0) return;
-      await runOp(set, async () => {
+      await runOp(set, "git.busy.discard", async () => {
         for (const file of files) {
           await invoke("git_discard", { root, path: file.path, untracked: file.unstaged === "?" });
         }
@@ -273,19 +304,19 @@ export const useGit = create<GitState>((set, get) => {
 
     ignore: async (paths) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_ignore", { root, paths }));
+      if (root) await runOp(set, "git.busy.ignore", () => invoke("git_ignore", { root, paths }));
     },
 
     untrackAndIgnore: async (paths) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_untrack_and_ignore", { root, paths }));
+      if (root) await runOp(set, "git.busy.untrack", () => invoke("git_untrack_and_ignore", { root, paths }));
     },
 
     commit: async () => {
       const root = useWorkspace.getState().rootPath;
       const message = get().commitMessage.trim();
       if (!root || (!message && !get().amend)) return; // amend may reuse the old message
-      await runOp(set, async () => {
+      await runOp(set, "git.busy.commit", async () => {
         // Smart commit (VS Code parity): nothing staged → stage all changes first.
         const files = get().status?.files ?? [];
         if (!files.some(isStaged)) {
@@ -299,37 +330,37 @@ export const useGit = create<GitState>((set, get) => {
 
     push: async () => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_push", { root }));
+      if (root) await runOp(set, "git.busy.push", () => invoke("git_push", { root }));
     },
 
     pull: async () => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_pull", { root }));
+      if (root) await runOp(set, "git.busy.pull", () => invoke("git_pull", { root }));
     },
 
     init: async () => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_init", { root }));
+      if (root) await runOp(set, "git.busy.init", () => invoke("git_init", { root }));
     },
 
     stashPush: async (message) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_stash_push", { root, message }));
+      if (root) await runOp(set, "git.busy.stash", () => invoke("git_stash_push", { root, message }));
     },
 
     stashApply: async (index) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_stash_apply", { root, index }));
+      if (root) await runOp(set, "git.busy.stash", () => invoke("git_stash_apply", { root, index }));
     },
 
     stashPop: async (index) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_stash_pop", { root, index }));
+      if (root) await runOp(set, "git.busy.stash", () => invoke("git_stash_pop", { root, index }));
     },
 
     stashDrop: async (index) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_stash_drop", { root, index }));
+      if (root) await runOp(set, "git.busy.stash", () => invoke("git_stash_drop", { root, index }));
     },
 
     listBranches: async () => {
@@ -345,22 +376,22 @@ export const useGit = create<GitState>((set, get) => {
 
     checkout: async (name) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_checkout", { root, name }));
+      if (root) await runOp(set, "git.busy.checkout", () => invoke("git_checkout", { root, name }));
     },
 
     checkoutTracking: async (name) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_checkout_tracking", { root, name }));
+      if (root) await runOp(set, "git.busy.checkout", () => invoke("git_checkout_tracking", { root, name }));
     },
 
     createBranch: async (name) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_create_branch", { root, name }));
+      if (root) await runOp(set, "git.busy.branch", () => invoke("git_create_branch", { root, name }));
     },
 
     renameBranch: async (from, to) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_rename_branch", { root, from, to }));
+      if (root) await runOp(set, "git.busy.branch", () => invoke("git_rename_branch", { root, from, to }));
     },
 
     deleteBranch: async (name, force = false) => {
@@ -385,12 +416,12 @@ export const useGit = create<GitState>((set, get) => {
 
     mergeBranch: async (name) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_merge_branch", { root, name }));
+      if (root) await runOp(set, "git.busy.merge", () => invoke("git_merge_branch", { root, name }));
     },
 
     fetch: async () => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_fetch", { root }));
+      if (root) await runOp(set, "git.busy.fetch", () => invoke("git_fetch", { root }));
     },
 
     listRemotes: async () => {
@@ -406,7 +437,7 @@ export const useGit = create<GitState>((set, get) => {
 
     setRemote: async (name, url) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_set_remote", { root, name, url }));
+      if (root) await runOp(set, "git.busy.remote", () => invoke("git_set_remote", { root, name, url }));
     },
 
     listTags: async () => {
@@ -422,32 +453,32 @@ export const useGit = create<GitState>((set, get) => {
 
     createTag: async (name, message) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_create_tag", { root, name, message }));
+      if (root) await runOp(set, "git.busy.tag", () => invoke("git_create_tag", { root, name, message }));
     },
 
     deleteTag: async (name) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_delete_tag", { root, name }));
+      if (root) await runOp(set, "git.busy.tag", () => invoke("git_delete_tag", { root, name }));
     },
 
     pushTags: async () => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_push_tags", { root }));
+      if (root) await runOp(set, "git.busy.pushTags", () => invoke("git_push_tags", { root }));
     },
 
     revertCommit: async (sha) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_revert_commit", { root, sha }));
+      if (root) await runOp(set, "git.busy.revert", () => invoke("git_revert_commit", { root, sha }));
     },
 
     cherryPick: async (sha) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_cherry_pick", { root, sha }));
+      if (root) await runOp(set, "git.busy.cherryPick", () => invoke("git_cherry_pick", { root, sha }));
     },
 
     resetTo: async (sha, mode) => {
       const root = useWorkspace.getState().rootPath;
-      if (root) await runOp(set, () => invoke("git_reset_to", { root, sha, mode }));
+      if (root) await runOp(set, "git.busy.reset", () => invoke("git_reset_to", { root, sha, mode }));
     },
 
     reviewChanges: async () => {
@@ -455,19 +486,14 @@ export const useGit = create<GitState>((set, get) => {
       if (!root || get().reviewing) return;
       set({ reviewing: true, lastError: null, review: null });
       try {
-        // Staged changes are what a commit will contain; with nothing staged,
-        // the worktree is what the user is about to stage anyway.
-        let diff = await invoke<string>("git_staged_diff", { root });
-        if (!diff.trim()) diff = await invoke<string>("git_worktree_diff", { root });
-        if (!diff.trim()) {
+        const diff = await pendingDiff(root);
+        if (!diff) {
           set({ lastError: translate("git.clean") });
           return;
         }
-        const clipped =
-          diff.length > DIFF_PROMPT_LIMIT ? `${diff.slice(0, DIFF_PROMPT_LIMIT)}\n[diff truncated]` : diff;
-        set({ review: parseReview(await aiOneshot(REVIEW_PROMPT + clipped, root)) });
+        set({ review: parseReview(await aiOneshot(REVIEW_PROMPT + diff, root)) });
       } catch (err: unknown) {
-        set({ lastError: String(err) });
+        set({ lastError: formatProviderError(err) });
       } finally {
         set({ reviewing: false });
       }
@@ -486,25 +512,15 @@ export const useGit = create<GitState>((set, get) => {
       if (!root || get().generating) return;
       set({ generating: true, lastError: null });
       try {
-        // Prefer the staged diff; fall back to unstaged changes (smart commit
-        // will stage them anyway when the user commits with nothing staged).
-        let diff = await invoke<string>("git_staged_diff", { root });
-        if (!diff.trim()) diff = await invoke<string>("git_worktree_diff", { root });
-        if (!diff.trim()) {
-          set({ lastError: translate("git.nothingStaged") });
+        const diff = await pendingDiff(root);
+        if (!diff) {
+          set({ lastError: translate("git.nothingToDescribe") });
           return;
         }
-        const clipped =
-          diff.length > DIFF_PROMPT_LIMIT ? `${diff.slice(0, DIFF_PROMPT_LIMIT)}\n[diff truncated]` : diff;
-        const message = await aiOneshot(
-          "Write a git commit message for the staged diff below. Output ONLY the message - no quotes, no code fences. Imperative subject line under 72 characters; add a short body only when the change needs explanation.\n\n" +
-            clipped,
-          root,
-          true,
-        );
+        const message = await aiOneshot(COMMIT_MESSAGE_PROMPT + diff, root, true);
         set({ commitMessage: message });
       } catch (err: unknown) {
-        set({ lastError: String(err) });
+        set({ lastError: formatProviderError(err) });
       } finally {
         set({ generating: false });
       }
@@ -519,6 +535,7 @@ export const useGit = create<GitState>((set, get) => {
         ignored: [],
         commitMessage: "",
         amend: false,
+        busyLabel: null,
         lastError: null,
       });
     },

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { translate } from "../i18n";
 import { createEventParser, type EventParser } from "../lib/aiParsers";
+import { formatProviderError } from "../lib/providerErrors";
 import { effortsOf } from "../lib/providers";
 import { useWorkspace } from "./workspace";
 import {
@@ -148,13 +149,6 @@ function isSessionFile(value: unknown): value is SessionFile {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as { version?: unknown; sessions?: unknown };
   return candidate.version === 1 && Array.isArray(candidate.sessions);
-}
-
-/** Maps the backend's structured spawn error to a localized message. */
-function formatSendError(e: unknown): string {
-  const raw = String(e);
-  const missing = /^CLI_MISSING::(.+?)::([\s\S]*)$/.exec(raw);
-  return missing ? translate("ai.cliMissing", { cli: missing[1], error: missing[2] }) : raw;
 }
 
 interface AiState {
@@ -524,7 +518,7 @@ export const useAi = create<AiState>((set, get) => {
         });
         set({ runId });
       } catch (e) {
-        set({ running: false, lastError: formatSendError(e) });
+        set({ running: false, lastError: formatProviderError(e) });
         void persist();
       }
     },

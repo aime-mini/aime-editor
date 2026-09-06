@@ -14,6 +14,7 @@ mod lsp;
 mod mcp;
 mod memory;
 mod plugins;
+mod program;
 mod providers;
 mod session;
 mod splash;
@@ -116,8 +117,7 @@ pub fn run() {
             git::git_pull,
             git::git_init,
             git::git_show_head,
-            git::git_staged_diff,
-            git::git_worktree_diff,
+            git::git_pending_diff,
             git::git_file_diff,
             git::git_ignored,
             git::git_log,
@@ -159,6 +159,9 @@ pub fn run() {
             exec::exec_run,
             exec::exec_cancel,
             tasks::task_command_line,
+            tasks::check_task_commands,
+            tasks::save_tasks,
+            tasks::task_profile_exists,
             tasks::worktree_setup_command,
             mcp::mcp_list,
             mcp::mcp_add,

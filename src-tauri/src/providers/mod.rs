@@ -4,6 +4,7 @@ pub mod codex;
 pub mod generic;
 pub mod keys;
 
+use crate::program::Program;
 use adapter::{adapter_for, Adapter, ApiKeyRoute, Invocation, Permission, TurnRequest};
 use serde::Serialize;
 use serde_json::Value;
@@ -56,26 +57,51 @@ struct ExitPayload {
     code: Option<i32>,
 }
 
-/// Builds a process for a CLI. On Windows, npm-installed CLIs are `.cmd`
-/// shims — they must be run through `cmd /C`.
+/// Builds a process for a CLI, spawning it the one way that name can be run.
+///
+/// A resolved executable is spawned directly, so every argument arrives as
+/// written; only a batch shim (`.cmd`/`.bat`, how npm installs a Node CLI on
+/// Windows) goes through cmd.exe, and then by absolute path so a folder with a
+/// space in its name stays one argument. `program.rs` carries the measurement
+/// that made this the shape it is.
 pub fn cli_command<I, S>(program: &str, args: I) -> Command
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    #[cfg(target_os = "windows")]
-    {
+    let resolved = Program::resolve(program);
+    let mut cmd = if resolved.is_batch_shim() {
         let mut cmd = Command::new("cmd");
-        cmd.arg("/C").arg(program).args(args);
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        cmd.arg("/C").arg(resolved.path()).args(args);
         cmd
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let mut cmd = Command::new(program);
+    } else {
+        let mut cmd = Command::new(resolved.path());
         cmd.args(args);
         cmd
+    };
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    cmd
+}
+
+/// Refuses a turn whose prompt could not survive the trip.
+///
+/// A prompt carried in an argument cannot reach a batch shim: cmd.exe ends a
+/// command line at the first newline, and measured on Windows (2026-09-03) the
+/// shim then receives an *empty* argument tail while exiting 0 — the prompt is
+/// lost and the run looks successful. Saying so beats answering from nothing,
+/// and the message names the one setting that fixes it.
+fn prompt_can_travel(command: &str, invocation: &Invocation) -> Result<(), String> {
+    if prompt_would_be_lost(invocation, Program::resolve(command).is_batch_shim()) {
+        return Err(format!("PROMPT_NEEDS_STDIN::{command}"));
     }
+    Ok(())
+}
+
+/// The decision itself, apart from the machine it is asked about: all three
+/// conditions have to hold, and stdin clears it whatever the target is.
+fn prompt_would_be_lost(invocation: &Invocation, through_shell: bool) -> bool {
+    through_shell && invocation.stdin.is_none() && invocation.args.iter().any(|arg| arg.contains('\n'))
 }
 
 /// Aime's own config folder, where `providers.json` and `api-keys.json` live.
@@ -180,6 +206,7 @@ pub async fn ai_send_prompt(
         effort: options.effort.as_deref(),
         permission: options.permission,
     });
+    prompt_can_travel(adapter.command(), &invocation)?;
     let mut cmd = cli_command(adapter.command(), &invocation.args);
     apply_api_key(&mut cmd, &app, adapter.as_ref(), &provider_id);
     cmd.current_dir(&cwd)
@@ -290,6 +317,7 @@ pub async fn ai_oneshot(
 ) -> Result<String, String> {
     let adapter = adapter_for(&provider_id)?;
     let invocation = adapter.oneshot_invocation(&prompt, model.as_deref());
+    prompt_can_travel(adapter.command(), &invocation)?;
     let mut cmd = cli_command(adapter.command(), &invocation.args);
     apply_api_key(&mut cmd, &app, adapter.as_ref(), &provider_id);
     let mut child = cmd
@@ -638,6 +666,49 @@ mod tests {
             "the CLI's own refusal was lost: {error}"
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A prompt lost on the way is worse than a refusal, because the CLI
+    /// answers from nothing and exits 0. All three conditions have to hold.
+    #[test]
+    fn only_a_multi_line_argument_through_a_shell_loses_the_prompt() {
+        let multi_line = vec!["-p".to_string(), "line one\nline two".to_string()];
+        let one_line = vec!["-p".to_string(), "just the one".to_string()];
+
+        assert!(
+            prompt_would_be_lost(&Invocation::plain(multi_line.clone()), true),
+            "cmd.exe cannot carry a newline in an argument"
+        );
+        assert!(
+            !prompt_would_be_lost(&Invocation::piped(multi_line.clone(), "line one\nline two"), true),
+            "stdin has no such limit, so a shim is fine that way"
+        );
+        assert!(
+            !prompt_would_be_lost(&Invocation::plain(multi_line), false),
+            "a directly spawned executable takes every argument as written"
+        );
+        assert!(
+            !prompt_would_be_lost(&Invocation::plain(one_line), true),
+            "a single-line argument survives cmd.exe"
+        );
+    }
+
+    /// The resolver has to keep producing something spawnable, so it is driven
+    /// against a real tool rather than trusted: `git` is on PATH wherever this
+    /// repository is, and answers the same way on all three platforms.
+    #[tokio::test]
+    async fn cli_command_runs_a_real_tool_it_resolved_itself() {
+        let output = cli_command("git", ["--version"])
+            .output()
+            .await
+            .expect("git runs through cli_command");
+
+        assert!(output.status.success(), "git --version failed");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).starts_with("git version"),
+            "unexpected answer: {:?}",
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
 }
 

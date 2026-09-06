@@ -1,6 +1,14 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { translate } from "../i18n";
+import {
+  asTaskDef,
+  buildDiscoverTasksPrompt,
+  parseDiscoveredTasks,
+  type DiscoveredTask,
+} from "../lib/aiTasks";
+import { aiOneshot } from "../lib/aiOneshot";
+import { formatProviderError } from "../lib/providerErrors";
 import { readExitCode, stripAnsi } from "../lib/taskOutput";
 import { useAi } from "./ai";
 import { useLayout } from "./layout";
@@ -49,12 +57,54 @@ function keepTail(text: string): string {
   return text.length > OUTPUT_LIMIT ? text.slice(-OUTPUT_LIMIT) : text;
 }
 
+/**
+ * Why one proposed command was not offered, in the user's language.
+ *
+ * Said rather than dropped: "the AI found nothing" and "the AI found `mvn
+ * package` but Maven is not installed" call for completely different next
+ * moves, and only the second one is one click away from being solved.
+ */
+function rejectionOf(task: DiscoveredTask, check: TaskCheck): string {
+  return check.programFound
+    ? translate("tasks.aiFolderMissing", { command: task.command, folder: task.dir })
+    : translate("tasks.aiToolMissing", { command: task.command, program: check.program });
+}
+
+/** What Aime could confirm about one command an AI proposed (Rust `TaskCheck`). */
+interface TaskCheck {
+  program: string;
+  programFound: boolean;
+  folderFound: boolean;
+}
+
+/** The five outcomes, in the order the menu shows them. */
+export const TASK_KINDS: TaskKind[] = ["run", "build", "test", "check", "publish"];
+
 interface TasksState {
   tasks: TaskDef[];
   /** Runs keyed by terminal tab, so failed output stays attached to its tab. */
   runs: Record<number, TaskRun | undefined>;
+  /** The outcome an AI discovery is working on; null when none is running. */
+  discovering: TaskKind | null;
+  /** What the last discovery could not offer, and why - shown, never swallowed. */
+  rejected: string[];
   detect: () => Promise<void>;
   run: (task: TaskDef) => Promise<void>;
+  /**
+   * Produces one outcome, whatever it takes: runs the command Aime knows, and
+   * when it knows none, has the AI read the project first and then runs what
+   * it found. The user asked for a build, not for a decision about detection.
+   */
+  runKind: (kind: TaskKind) => Promise<void>;
+  /**
+   * Has the AI read this project for the outcomes Aime could not work out.
+   *
+   * Runs by itself when a project is opened, because a developer who wanted to
+   * build should not be the one who discovers that Aime never looked. Paid for
+   * once per repository: the answer is written to `.aime/tasks.json` next to
+   * the marker that says the question was asked.
+   */
+  profile: (wantedFirst?: TaskKind) => Promise<void>;
   appendOutput: (tabKey: number, chunk: string) => void;
   dismissRun: (tabKey: number) => void;
   /** Hands the failed run's output to the AI panel as a fix request. */
@@ -64,6 +114,8 @@ interface TasksState {
 export const useTasks = create<TasksState>((set, get) => ({
   tasks: [],
   runs: {},
+  discovering: null,
+  rejected: [],
 
   detect: async () => {
     const { rootPath } = useWorkspace.getState();
@@ -76,6 +128,73 @@ export const useTasks = create<TasksState>((set, get) => ({
     } catch (err: unknown) {
       console.error("task detection failed:", err);
       set({ tasks: [] });
+    }
+  },
+
+  runKind: async (kind) => {
+    const known = get().tasks.find((task) => task.kind === kind);
+    if (known) {
+      await get().run(known);
+      return;
+    }
+    // Nothing known yet - either the background pass has not finished or it
+    // found nothing. Either way the user asked for a build, so read the
+    // project now and then do it.
+    await get().profile(kind);
+    const learned = get().tasks.find((task) => task.kind === kind);
+    if (learned) await get().run(learned);
+  },
+
+  profile: async (wantedFirst) => {
+    const { rootPath } = useWorkspace.getState();
+    if (!rootPath || get().discovering !== null) return;
+    const kind = wantedFirst ?? "build";
+    set({ discovering: kind, rejected: [] });
+    try {
+      // Only the outcomes Aime came up empty on are named as wanted, but every
+      // one the model can support is taken: a project that had to be read to
+      // find its build has had its test read at the same time, and asking
+      // again later would pay for the same reading twice.
+      const missing = TASK_KINDS.filter((candidate) => !get().tasks.some((t) => t.kind === candidate));
+      const wanted = missing.includes(kind) ? missing : [kind, ...missing];
+      const found = parseDiscoveredTasks(await aiOneshot(buildDiscoverTasksPrompt(wanted), rootPath));
+      if (found.length === 0) {
+        await invoke("save_tasks", { rootPath, tasks: [] });
+        set({ rejected: [translate("tasks.aiFoundNothing")] });
+        return;
+      }
+
+      // Nothing is offered on the model's word. A command whose tool is not
+      // installed, or whose folder is not in this repository, would fail in
+      // the user's terminal with a message about neither.
+      const checks = await invoke<TaskCheck[]>("check_task_commands", {
+        rootPath,
+        commands: found.map((task) => task.command),
+        folders: found.map((task) => task.dir),
+      });
+      // Paired once, so a check is never looked up by index again: a rejection
+      // has to name the command it is about, and an off-by-one there would
+      // blame the wrong one.
+      const judged = found.flatMap((task, index) => {
+        const check: TaskCheck | undefined = checks.at(index);
+        return check ? [{ task, check }] : [];
+      });
+      const usable = judged.filter(({ check }) => check.programFound && check.folderFound);
+      set({
+        rejected: judged
+          .filter((entry) => !usable.includes(entry))
+          .map(({ task, check }) => rejectionOf(task, check)),
+      });
+      if (usable.length === 0) return;
+
+      // Saved, so the project is only read once: `.aime/tasks.json` is the
+      // same channel a person edits by hand, and detection merges it in.
+      await invoke("save_tasks", { rootPath, tasks: usable.map(({ task }) => asTaskDef(task)) });
+      await get().detect();
+    } catch (err: unknown) {
+      set({ rejected: [formatProviderError(err)] });
+    } finally {
+      set({ discovering: null });
     }
   },
 
@@ -130,4 +249,28 @@ useWorkspace.subscribe((state, prev) => {
   if (state.rootPath !== prev.rootPath || state.treeVersion !== prev.treeVersion) {
     void useTasks.getState().detect();
   }
+  // A newly opened project is read for what Aime could not work out, once,
+  // before anyone asks. This is the whole point of the editor being AI-first:
+  // by the time the developer wants to build a Maven repository, the command
+  // is already in the menu and verified, rather than being a thing they have
+  // to go and ask for. Only on open - a file change must not re-open the
+  // question, and a repository already profiled never asks again.
+  if (state.rootPath !== null && state.rootPath !== prev.rootPath) {
+    void profileNewProject(state.rootPath);
+  }
 });
+
+/**
+ * The background pass. Silent about everything except a real finding: a
+ * developer who opened a project to read code did not ask for a report, and a
+ * provider that is not installed is not a task problem.
+ */
+async function profileNewProject(rootPath: string): Promise<void> {
+  if (await invoke<boolean>("task_profile_exists", { rootPath })) return;
+  if (useAi.getState().providerHealth !== "ok") return;
+  // Let the instant detection land first: it decides which outcomes are still
+  // missing, and asking about all five when four are known wastes the call.
+  await useTasks.getState().detect();
+  if (TASK_KINDS.every((kind) => useTasks.getState().tasks.some((task) => task.kind === kind))) return;
+  await useTasks.getState().profile();
+}

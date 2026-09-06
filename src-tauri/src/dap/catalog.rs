@@ -13,6 +13,7 @@
 
 use super::learned::{self, LearnedAdapter, LearnedTransport};
 use super::targets::DebugTarget;
+use crate::program::Program;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
@@ -347,29 +348,7 @@ async fn learned_program(adapter: &LearnedAdapter) -> Option<String> {
 
 /// Looks for an executable the way a shell would, without running it.
 fn on_path(program: &str) -> bool {
-    let candidate = Path::new(program);
-    if candidate.is_absolute() || program.contains('/') || program.contains('\\') {
-        return candidate.is_file();
-    }
-    // On Windows a bare name may be `.exe`, `.cmd` (every npm-installed tool) or
-    // `.bat`; PATHEXT is the list the shell itself uses.
-    let extensions: Vec<String> = std::env::var("PATHEXT")
-        .unwrap_or_default()
-        .split(';')
-        .filter(|extension| !extension.is_empty())
-        .map(|extension| extension.to_lowercase())
-        .collect();
-    std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| {
-                let base = dir.join(program);
-                base.is_file()
-                    || extensions
-                        .iter()
-                        .any(|extension| dir.join(format!("{program}{extension}")).is_file())
-            })
-        })
-        .unwrap_or(false)
+    Program::resolve(program).exists()
 }
 
 /// A command line ready to spawn.

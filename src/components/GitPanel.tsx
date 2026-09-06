@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -42,6 +42,37 @@ import { Panel, PanelGroup } from "react-resizable-panels";
 import { ContextMenu, SEPARATOR, type MenuItem } from "./ContextMenu";
 import { PromptModal } from "./PromptModal";
 import { ResizeHandle } from "./ResizeHandle";
+
+/**
+ * One of the three remote buttons, which says on itself that it is working.
+ *
+ * Fetch, pull and push are the operations that take seconds on a real
+ * repository, and they are started from an icon the user is already looking
+ * at - so that icon is where "this is happening" belongs. A tooltip cannot
+ * say it and a disabled button says the opposite.
+ */
+function RemoteButton({
+  onClick,
+  title,
+  busy,
+  icon,
+}: {
+  onClick: () => void;
+  title: string;
+  busy: boolean;
+  icon: ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      disabled={busy}
+      className="rounded p-1 text-muted hover:bg-elevated hover:text-fg disabled:text-accent"
+    >
+      {busy ? <Loader2 size={12} className="animate-spin" /> : icon}
+    </button>
+  );
+}
 
 /**
  * Confirmations and prompts this panel can raise. Modelled as a union so a
@@ -853,27 +884,24 @@ export function GitPanel() {
             </span>
           )}
           <span className="flex-1" />
-          <button
+          <RemoteButton
             onClick={() => void git.fetch()}
             title={t("git.fetch")}
-            className="rounded p-1 text-muted hover:bg-elevated hover:text-fg"
-          >
-            <ArrowDownToLine size={12} />
-          </button>
-          <button
+            busy={git.busyLabel === t("git.busy.fetch")}
+            icon={<ArrowDownToLine size={12} />}
+          />
+          <RemoteButton
             onClick={() => void git.pull()}
             title={t("git.pull")}
-            className="rounded p-1 text-muted hover:bg-elevated hover:text-fg"
-          >
-            <ArrowDown size={12} />
-          </button>
-          <button
+            busy={git.busyLabel === t("git.busy.pull")}
+            icon={<ArrowDown size={12} />}
+          />
+          <RemoteButton
             onClick={() => void git.push()}
             title={t("git.push")}
-            className="rounded p-1 text-muted hover:bg-elevated hover:text-fg"
-          >
-            <ArrowUp size={12} />
-          </button>
+            busy={git.busyLabel === t("git.busy.push")}
+            icon={<ArrowUp size={12} />}
+          />
           <button
             onClick={() => void git.refresh()}
             title={t("git.refresh")}
@@ -892,6 +920,13 @@ export function GitPanel() {
             <MoreHorizontal size={12} />
           </button>
         </div>
+
+        {git.busyLabel !== null && (
+          <div className="flex items-center gap-1.5 px-0.5 text-[11px] text-accent">
+            <Loader2 size={11} className="animate-spin" />
+            <span className="truncate">{git.busyLabel}</span>
+          </div>
+        )}
 
         <div className="flex flex-col gap-1.5">
           <ReviewPanel />

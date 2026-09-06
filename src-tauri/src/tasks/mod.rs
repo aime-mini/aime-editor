@@ -144,6 +144,16 @@ struct FolderFacts {
     has_dockerfile: bool,
 }
 
+/// A .NET solution, in either of the two file formats.
+///
+/// `.slnx` is not an edge case: measured 2026-09-03, `dotnet new sln` on SDK
+/// 10.0.300 produces `Name.slnx` and nothing else, so every solution created
+/// with a current SDK is one. Recognising only `.sln` left those repositories
+/// with no tasks at all.
+fn is_dotnet_solution(name: &str) -> bool {
+    name.ends_with(".sln") || name.ends_with(".slnx")
+}
+
 /// The one npm script Aime treats as "Run", most idiomatic name first.
 const NPM_RUN_SCRIPTS: [&str; 4] = ["dev", "start", "serve", "develop"];
 
@@ -317,12 +327,20 @@ fn detect_from(facts: &FolderFacts) -> Vec<TaskDef> {
     }
     if let Some(project) = &facts.dotnet_project {
         let quoted = format!("\"{project}\"");
-        tasks.push(TaskDef::new(
-            "dotnet.run",
-            "dotnet run",
-            TaskKind::Run,
-            format!("dotnet run --project {quoted}"),
-        ));
+        // `dotnet run` takes a *project*; a solution is not one. Measured
+        // 2026-09-03 against SDK 10.0.300: `run --project Classic.sln` fails
+        // with MSB4025 and `--project Solu.slnx` with MSB4068, while build,
+        // test and publish accept all three forms. So a solution is offered
+        // everything except Run — which project of twenty it should start is
+        // not a guess Aime gets to make from a file name.
+        if !is_dotnet_solution(project) {
+            tasks.push(TaskDef::new(
+                "dotnet.run",
+                "dotnet run",
+                TaskKind::Run,
+                format!("dotnet run --project {quoted}"),
+            ));
+        }
         tasks.push(TaskDef::new(
             "dotnet.build",
             "dotnet build",
@@ -464,7 +482,7 @@ fn gather_facts(root: &Path) -> FolderFacts {
         // A solution always wins over a bare project: it is what `dotnet`
         // expects, so a .csproj only counts while nothing else was picked.
         let is_dotnet_entry_point =
-            name.ends_with(".sln") || (name.ends_with(".csproj") && facts.dotnet_project.is_none());
+            is_dotnet_solution(&name) || (name.ends_with(".csproj") && facts.dotnet_project.is_none());
         if is_dotnet_entry_point {
             facts.dotnet_project = Some(name);
         }
@@ -542,6 +560,26 @@ fn member_tasks(root: &Path) -> Vec<TaskDef> {
     tasks
 }
 
+/// Whether this folder builds something of its own, or only says how to
+/// package whatever lies underneath it.
+///
+/// A Dockerfile is the one signal that says nothing about where the source is,
+/// and taking it for a project is how a whole repository ends up with a single
+/// task. Measured 2026-09-03 on a real .NET repository: its root held a
+/// `Dockerfile` and a `global.json`, its two solutions sat in `src/` and
+/// `control-plane/`, and because the Dockerfile alone made the root "already
+/// detected", the member scan never ran — the project offered `docker build`
+/// and no way to compile anything.
+fn builds_its_own_source(facts: &FolderFacts) -> bool {
+    facts.has_package_json
+        || facts.workspace_root
+        || facts.has_cargo
+        || facts.has_go_mod
+        || facts.has_python_project
+        || facts.has_main_py
+        || facts.dotnet_project.is_some()
+}
+
 /// Tasks the user defined for this project, overriding detected ones by id.
 fn custom_tasks(root: &Path) -> Vec<TaskDef> {
     std::fs::read_to_string(root.join(crate::aime_dir::AIME_DIR).join("tasks.json"))
@@ -555,12 +593,16 @@ fn custom_tasks(root: &Path) -> Vec<TaskDef> {
 #[tauri::command]
 pub fn detect_tasks(root_path: String) -> Result<Vec<TaskDef>, String> {
     let root = Path::new(&root_path);
-    let mut tasks = detect_from(&gather_facts(root));
-    // Only as a fallback: a root that builds something of its own is the
-    // project, and burying its one Test task under a member's would be worse
-    // than saying nothing about the members at all.
-    if tasks.is_empty() {
-        tasks = member_tasks(root);
+    let facts = gather_facts(root);
+    let mut tasks = detect_from(&facts);
+    // A root that builds its own source *is* the project, and burying its Test
+    // task under a member's would be worse than saying nothing about the
+    // members. A root that only knows how to package what is under it is not,
+    // so its members are asked as well — and its own tasks are kept, because
+    // `docker build` is still worth offering next to them.
+    if !builds_its_own_source(&facts) {
+        tasks.extend(member_tasks(root));
+        tasks.sort_by_key(|task| task.kind);
     }
     for custom in custom_tasks(root) {
         match tasks.iter_mut().find(|task| task.id == custom.id) {
@@ -607,11 +649,124 @@ pub fn task_command_line(command: String) -> String {
     }
 }
 
+/// What Aime could confirm about one command an AI proposed.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskCheck {
+    /// The program the command starts, as written.
+    pub program: String,
+    /// Whether that program is on this machine.
+    pub program_found: bool,
+    /// Whether the folder the command would run in exists in this repository.
+    pub folder_found: bool,
+}
+
+/// The program a command line starts, as a shell would take it.
+///
+/// Only the first word, and only when the command really begins with one: a
+/// line that opens with a redirect, a variable assignment or a pipe is not
+/// something Aime can check this way, and saying so beats checking the wrong
+/// token. Quotes are stripped because a path with a space arrives quoted.
+fn program_of(command: &str) -> Option<String> {
+    let line = command.trim_start();
+    // A quoted program runs to its closing quote, spaces and all — that is the
+    // whole reason it was quoted. Splitting on whitespace first would cut
+    // `"C:\Program Files\…"` in half and then look for a tool called
+    // `"C:\Program`.
+    let quote = line.chars().next().filter(|c| *c == '"' || *c == '\'');
+    let name = match quote {
+        Some(quote) => line[1..].split(quote).next()?,
+        None => line.split_whitespace().next()?,
+    };
+    let unusable = name.is_empty() || name.contains('=') || name.starts_with(['<', '>', '|', '&']);
+    (!unusable).then(|| name.to_string())
+}
+
+/// Checks commands an AI read out of a project, before any of them is offered.
+///
+/// Two things are checkable without running anything, and both are the failures
+/// that would otherwise reach the user: the tool is not installed on this
+/// machine, or the folder does not exist in this repository. Whether the build
+/// then *succeeds* is not Aime's question — a project that does not compile is
+/// news for the user, not a reason to hide the command that told them so.
+///
+/// Deliberately not "run it and look at the exit code": `mvn package` failing
+/// on a broken repository and `mvn` not existing are the same exit code to a
+/// shell, and telling them apart by matching error text is the kind of guess
+/// this codebase does not make.
+#[tauri::command]
+pub fn check_task_commands(root_path: String, commands: Vec<String>, folders: Vec<String>) -> Vec<TaskCheck> {
+    let root = Path::new(&root_path);
+    commands
+        .iter()
+        .zip(folders.iter().chain(std::iter::repeat(&String::new())))
+        .map(|(command, folder)| {
+            let program = program_of(command);
+            TaskCheck {
+                program_found: program
+                    .as_deref()
+                    .is_some_and(|name| crate::program::Program::resolve(name).exists()),
+                program: program.unwrap_or_default(),
+                folder_found: folder.is_empty() || folder == "." || root.join(folder).is_dir(),
+            }
+        })
+        .collect()
+}
+
+/// Writes tasks into the project's `.aime/tasks.json`, replacing entries that
+/// share an id and keeping every other one — including the user's own.
+///
+/// The file is the existing override channel (`custom_tasks`), so a task Aime
+/// learned this way survives a restart and can be edited by hand afterwards
+/// like any other. Only usable checks reach here; the caller has filtered.
+#[tauri::command]
+pub fn save_tasks(root_path: String, tasks: Vec<TaskDef>) -> Result<(), String> {
+    let root = Path::new(&root_path);
+    let dir = root.join(crate::aime_dir::AIME_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    crate::aime_dir::ensure_self_ignored(root)
+        .map_err(|e| format!("Could not keep .aime out of git: {e}"))?;
+
+    let path = dir.join("tasks.json");
+    let mut kept = custom_tasks(root);
+    for task in tasks {
+        match kept.iter_mut().find(|existing| existing.id == task.id) {
+            Some(existing) => *existing = task,
+            None => kept.push(task),
+        }
+    }
+    let text = serde_json::to_string_pretty(&kept).map_err(|e| format!("Could not write tasks: {e}"))?;
+    std::fs::write(&path, text).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+    // Stamped even when the list was empty: "asked and found nothing" and
+    // "never asked" are different, and only one of them is worth paying for a
+    // second time.
+    std::fs::write(dir.join(PROFILE_MARKER), b"")
+        .map_err(|e| format!("Could not record the task profile: {e}"))
+}
+
+/// Records that this project has been read for its tasks, so opening it again
+/// does not spend another AI call on a question already answered.
+const PROFILE_MARKER: &str = "task-profile";
+
+/// Whether the AI has already read this project's tasks.
+///
+/// Deliberately a file rather than a session flag: a developer who opens the
+/// same repository every morning should pay for that reading once, not once a
+/// day. Deleting `.aime/task-profile` asks again, which is the escape hatch
+/// for a repository that has since grown a build.
+#[tauri::command]
+pub fn task_profile_exists(root_path: String) -> bool {
+    Path::new(&root_path)
+        .join(crate::aime_dir::AIME_DIR)
+        .join(PROFILE_MARKER)
+        .exists()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        detect_from, manager_of, manifest_of, member_tasks, npm_scripts_of, FolderFacts, PackageManager,
-        TaskKind,
+        check_task_commands, detect_from, manager_of, manifest_of, member_tasks, npm_scripts_of, program_of,
+        save_tasks, task_profile_exists, FolderFacts, PackageManager, TaskDef, TaskKind,
     };
     use std::path::PathBuf;
 
@@ -895,21 +1050,120 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The shape of a real .NET repository, and the reason this rule exists: a
+    /// `Dockerfile` at the top said how to package the project, the solutions
+    /// lived a level down, and the Dockerfile alone used to make the member
+    /// scan look unnecessary — leaving `docker build` as the only task in a
+    /// repository with two solutions in it.
     #[test]
-    fn dotnet_projects_get_all_four_task_kinds() {
-        let tasks = detect_from(&FolderFacts {
-            dotnet_project: Some("App.sln".into()),
+    fn a_dockerfile_at_the_top_does_not_hide_the_projects_under_it() {
+        let root = project("packaged");
+        std::fs::write(root.join("Dockerfile"), "FROM scratch\n").expect("dockerfile");
+        std::fs::write(root.join("global.json"), r#"{"sdk":{"version":"9.0.100"}}"#).expect("sdk pin");
+        for (folder, solution) in [("src", "Shop.sln"), ("control-plane", "ControlPlane.sln")] {
+            std::fs::create_dir_all(root.join(folder)).expect("member folder");
+            std::fs::write(
+                root.join(folder).join(solution),
+                "Microsoft Visual Studio Solution File",
+            )
+            .expect("solution");
+        }
+
+        let tasks = detect_tasks_in(&root);
+        let ids: Vec<&str> = tasks.iter().map(|task| task.id.as_str()).collect();
+
+        assert!(
+            ids.contains(&"src/dotnet.build") && ids.contains(&"control-plane/dotnet.build"),
+            "both solutions must be buildable, got {ids:?}"
+        );
+        // No Run: `dotnet run` refuses a solution, and which of a solution's
+        // projects to start is what the AI discovery answers (`ai_tasks`).
+        assert!(
+            !ids.iter().any(|id| id.ends_with("dotnet.run")),
+            "a solution must not be offered a Run that cannot work: {ids:?}"
+        );
+        assert!(
+            ids.contains(&"docker.build"),
+            "the root's own packaging task is still worth offering: {ids:?}"
+        );
+        let build = tasks
+            .iter()
+            .find(|task| task.id == "src/dotnet.build")
+            .expect("src build");
+        assert_eq!(build.cwd.as_deref(), Some("src"));
+        assert_eq!(build.command, "dotnet build \"Shop.sln\"");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The half of the same rule that must not regress: a root that really is
+    /// the project keeps answering alone, members or no members.
+    #[test]
+    fn a_root_that_builds_its_own_source_answers_alone() {
+        let root = project("real-root");
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("cargo");
+        std::fs::write(root.join("Dockerfile"), "FROM scratch\n").expect("dockerfile");
+        std::fs::create_dir_all(root.join("web")).expect("member folder");
+        std::fs::write(
+            root.join("web").join("package.json"),
+            r#"{"scripts":{"dev":"vite"}}"#,
+        )
+        .expect("manifest");
+
+        let ids: Vec<String> = detect_tasks_in(&root).into_iter().map(|task| task.id).collect();
+
+        assert!(ids.contains(&"cargo.build".to_string()), "{ids:?}");
+        assert!(
+            !ids.iter().any(|id| id.starts_with("web/")),
+            "a project's own tasks must not be buried under a member's: {ids:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_dotnet_project_runs_but_a_solution_only_builds() {
+        let project = detect_from(&FolderFacts {
+            dotnet_project: Some("App.csproj".into()),
             ..FolderFacts::default()
         });
-        let kinds: Vec<TaskKind> = tasks.iter().map(|t| t.kind).collect();
         assert_eq!(
-            kinds,
+            project.iter().map(|t| t.kind).collect::<Vec<TaskKind>>(),
             vec![TaskKind::Run, TaskKind::Build, TaskKind::Test, TaskKind::Publish]
         );
         assert_eq!(
-            command_of(&tasks, "dotnet.run"),
-            "dotnet run --project \"App.sln\""
+            command_of(&project, "dotnet.run"),
+            "dotnet run --project \"App.csproj\""
         );
+
+        // Measured, not assumed: `dotnet run --project` refuses both solution
+        // formats, so offering a Run for one would offer a broken command.
+        for solution in ["App.sln", "App.slnx"] {
+            let tasks = detect_from(&FolderFacts {
+                dotnet_project: Some(solution.into()),
+                ..FolderFacts::default()
+            });
+            assert_eq!(
+                tasks.iter().map(|t| t.kind).collect::<Vec<TaskKind>>(),
+                vec![TaskKind::Build, TaskKind::Test, TaskKind::Publish],
+                "{solution} must not be offered a Run"
+            );
+            assert_eq!(
+                command_of(&tasks, "dotnet.build"),
+                format!("dotnet build \"{solution}\"")
+            );
+        }
+    }
+
+    /// The format `dotnet new sln` produces on a current SDK. Missing it left
+    /// every freshly created solution with no tasks whatsoever.
+    #[test]
+    fn a_slnx_solution_is_found_the_same_as_a_sln() {
+        let root = project("slnx");
+        std::fs::write(root.join("Shop.slnx"), "<Solution />").expect("solution");
+
+        let ids: Vec<String> = detect_tasks_in(&root).into_iter().map(|task| task.id).collect();
+
+        assert!(ids.contains(&"dotnet.build".to_string()), "{ids:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -947,6 +1201,97 @@ mod tests {
     #[test]
     fn an_unknown_folder_offers_nothing_rather_than_guessing() {
         assert!(detect_from(&FolderFacts::default()).is_empty());
+    }
+
+    #[test]
+    fn the_program_of_a_command_is_its_first_word_unquoted() {
+        assert_eq!(program_of("mvn -q package").as_deref(), Some("mvn"));
+        assert_eq!(
+            program_of("\"C:\\Program Files\\x\\g.exe\" build").as_deref(),
+            Some("C:\\Program Files\\x\\g.exe")
+        );
+        // Not something a first word can answer for, so it says so.
+        assert_eq!(program_of("").as_deref(), None);
+        assert_eq!(program_of("FOO=1 make all").as_deref(), None);
+        assert_eq!(program_of("| tee log").as_deref(), None);
+    }
+
+    /// The gate the AI's answers pass through, against this machine: `git` is
+    /// here wherever this repository is, and a made-up tool is not.
+    #[test]
+    fn a_proposed_command_is_checked_for_its_tool_and_its_folder() {
+        let root = project("checks");
+        std::fs::create_dir_all(root.join("api")).expect("member folder");
+
+        let checks = check_task_commands(
+            root.to_string_lossy().to_string(),
+            vec![
+                "git status".into(),
+                "aime-no-such-build-tool package".into(),
+                "git status".into(),
+            ],
+            vec!["api".into(), ".".into(), "nowhere".into()],
+        );
+
+        assert_eq!(checks.len(), 3);
+        assert!(
+            checks[0].program_found && checks[0].folder_found,
+            "an installed tool in a folder that exists: {:?}",
+            checks[0]
+        );
+        assert!(!checks[1].program_found, "a tool nobody has must not pass");
+        assert!(!checks[2].folder_found, "a folder the repo lacks must not pass");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A learned task has to survive a restart, and must not cost the user the
+    /// entries they wrote by hand.
+    #[test]
+    fn saving_a_learned_task_keeps_the_users_own_and_replaces_by_id() {
+        let root = project("saved");
+        let mine = TaskDef::new("mine", "my script", TaskKind::Run, "./go.sh".into());
+        let path = root.to_string_lossy().to_string();
+        save_tasks(path.clone(), vec![mine]).expect("first save");
+        save_tasks(
+            path.clone(),
+            vec![TaskDef::new(
+                "ai.build.root",
+                "mvn package",
+                TaskKind::Build,
+                "mvn -q package".into(),
+            )],
+        )
+        .expect("second save");
+        // The same id again: replaced, not duplicated.
+        save_tasks(
+            path.clone(),
+            vec![TaskDef::new(
+                "ai.build.root",
+                "mvn verify",
+                TaskKind::Build,
+                "mvn -q verify".into(),
+            )],
+        )
+        .expect("third save");
+
+        let tasks = detect_tasks_in(&root);
+        let ids: Vec<&str> = tasks.iter().map(|task| task.id.as_str()).collect();
+        assert_eq!(
+            ids.iter().filter(|id| **id == "ai.build.root").count(),
+            1,
+            "{ids:?}"
+        );
+        assert!(ids.contains(&"mine"), "the user's own task was lost: {ids:?}");
+        assert_eq!(command_of(&tasks, "ai.build.root"), "mvn -q verify");
+        assert!(
+            root.join(".aime").join(".gitignore").is_file(),
+            "a learned task must not turn up in the user's commits"
+        );
+        assert!(
+            task_profile_exists(path),
+            "without the marker every launch pays for the same reading again"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

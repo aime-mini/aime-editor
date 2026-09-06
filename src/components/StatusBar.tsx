@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useI18n, useT } from "../i18n";
+import type { TranslationKey } from "../i18n/en";
 import { languageOf } from "../lib/languages";
 import { capabilitiesOf } from "../lib/providers";
 import { useAi } from "../stores/ai";
@@ -32,12 +33,12 @@ import { useGit } from "../stores/git";
 import { useLayout } from "../stores/layout";
 import { useLsp } from "../stores/lsp";
 import { useSetup } from "../stores/setup";
-import { useTasks, type TaskKind } from "../stores/tasks";
+import { TASK_KINDS, useTasks, type TaskKind } from "../stores/tasks";
 import { useInlineAi } from "../stores/inlineAi";
 import { INLINE_AI_MODES, useSettings } from "../stores/settings";
 import { useTheme } from "../stores/theme";
 import { useWorkspace } from "../stores/workspace";
-import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { ContextMenu, SEPARATOR, type MenuItem } from "./ContextMenu";
 
 const TASK_ICONS: Record<TaskKind, typeof Play> = {
   run: Play,
@@ -45,6 +46,15 @@ const TASK_ICONS: Record<TaskKind, typeof Play> = {
   test: FlaskConical,
   check: ShieldCheck,
   publish: PackageCheck,
+};
+
+/** The outcome named in the user's language, for the "ask the AI" entries. */
+const TASK_LABELS: Record<TaskKind, TranslationKey> = {
+  run: "tasks.kindRun",
+  build: "tasks.kindBuild",
+  test: "tasks.kindTest",
+  check: "tasks.kindCheck",
+  publish: "tasks.kindPublish",
 };
 
 /**
@@ -85,7 +95,7 @@ function InlineAiChip() {
 export function StatusBar() {
   const rootPath = useWorkspace((s) => s.rootPath);
   const { running, totalCostUsd, sessionId, providerId } = useAi();
-  const { tasks, run: runTask } = useTasks();
+  const { tasks, run: runTask, runKind, discovering, rejected } = useTasks();
   const setInstallerTools = useLayout((s) => s.setInstallerTools);
   const setSettingsOpen = useLayout((s) => s.setSettingsOpen);
   const [taskMenu, setTaskMenu] = useState<{ x: number; y: number } | null>(null);
@@ -108,17 +118,37 @@ export function StatusBar() {
   const lsp = openLanguage ? lspLanguages[openLanguage] : undefined;
   const lspRestoring = useLsp((s) => (openLanguage !== null ? (s.restoring[openLanguage] ?? false) : false));
 
-  const taskItems: MenuItem[] =
-    tasks.length === 0
-      ? [{ label: t("tasks.none"), onClick: () => undefined }]
-      : tasks.map((task) => {
-          const Icon = TASK_ICONS[task.kind];
-          return {
-            label: task.label,
-            icon: <Icon size={13} className="text-accent" />,
-            onClick: () => void runTask(task),
-          };
-        });
+  // The menu offers the five OUTCOMES. Aime detects the common stacks itself;
+  // for everything else - Maven, CMake, a team's own script - the outcome is
+  // still exactly what the user wants, so the entry is there either way and
+  // reading the project is a step *inside* it, not a second button the user
+  // has to know about (ARCHITECTURE.md §5).
+  const taskItems: (MenuItem | typeof SEPARATOR)[] = TASK_KINDS.flatMap((kind) => {
+    const Icon = TASK_ICONS[kind];
+    const known = tasks.filter((task) => task.kind === kind);
+    if (known.length > 0) {
+      return known.map((task) => ({
+        label: task.label,
+        icon: <Icon size={13} className="text-accent" />,
+        onClick: () => void runTask(task),
+      }));
+    }
+    const looking = discovering === kind;
+    return [
+      {
+        label: looking ? t("tasks.working", { kind: t(TASK_LABELS[kind]) }) : t(TASK_LABELS[kind]),
+        icon: looking ? (
+          <Loader2 size={13} className="animate-spin text-accent" />
+        ) : (
+          <Icon size={13} className="text-muted" />
+        ),
+        onClick: () => void runKind(kind),
+      },
+    ];
+  });
+  if (rejected.length > 0) {
+    taskItems.push(SEPARATOR, ...rejected.map((reason) => ({ label: reason, onClick: () => undefined })));
+  }
 
   return (
     <footer className="flex h-6 items-center justify-between border-t border-line bg-panel px-3 text-[11px] text-muted">

@@ -386,10 +386,69 @@ fn without_bom(text: String) -> String {
     }
 }
 
-/// Unstaged worktree diff — fallback input for AI commit messages.
+/// How much untracked content is worth diffing. Every caller clips the text
+/// before it reaches a model, so the budget exists to bound the number of git
+/// spawns — a folder of new files must not turn one click into thousands.
+const UNTRACKED_DIFF_BUDGET: usize = 16 * 1024;
+
+/// Paths git has never seen, respecting `.gitignore`.
+async fn untracked_paths(root: &str) -> Result<Vec<String>, String> {
+    let listing = run_git(root, &["ls-files", "--others", "--exclude-standard", "-z"]).await?;
+    Ok(listing
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// A diff for one file git has never seen, taken against nothing.
+///
+/// `--no-index` exits 1 exactly when it finds a difference, which is every
+/// call here, so its status carries no information and the text is the answer.
+/// A file that cannot be read (deleted between the listing and this call, or
+/// unreadable) simply contributes nothing.
+async fn new_file_diff(root: &str, path: &str) -> String {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(root)
+        .args(["diff", "--no-index", "--", "/dev/null", path]);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+
+    match cmd.output().await {
+        Ok(output) => String::from_utf8_lossy(&output.stdout).to_string(),
+        Err(err) => {
+            eprintln!("[git] no diff for untracked {path}: {err}");
+            String::new()
+        }
+    }
+}
+
+/// Every change the next commit is about to carry, as one diff — the input for
+/// AI commit messages, AI review, and the Task Run gates.
+///
+/// The index wins whenever anything is staged: that is literally what a commit
+/// will contain. With nothing staged, the worktree is what the user is about to
+/// stage anyway — and that has to include files git has never seen. No
+/// `git diff` shows an untracked file, so before this a repository whose only
+/// change was a new file looked *clean* to every AI chore (measured 2026-09-03:
+/// `diff --cached` and `diff` both returned zero bytes while `status` listed the
+/// file). Each untracked file is therefore diffed against nothing.
 #[tauri::command]
-pub async fn git_worktree_diff(root: String) -> Result<String, String> {
-    run_git(&root, &["diff"]).await.map(without_bom)
+pub async fn git_pending_diff(root: String) -> Result<String, String> {
+    let staged = run_git(&root, &["diff", "--cached"]).await?;
+    if !staged.trim().is_empty() {
+        return Ok(without_bom(staged));
+    }
+
+    let mut diff = run_git(&root, &["diff"]).await?;
+    for path in untracked_paths(&root).await? {
+        if diff.len() >= UNTRACKED_DIFF_BUDGET {
+            break;
+        }
+        diff.push_str(&new_file_diff(&root, &path).await);
+    }
+    Ok(without_bom(diff))
 }
 
 #[tauri::command]
@@ -409,12 +468,6 @@ pub async fn git_show_head(root: String, path: String) -> Result<String, String>
         Ok(content) => Ok(without_bom(content)),
         Err(_) => Ok(String::new()),
     }
-}
-
-/// Unstaged staged diff of everything in the index — input for AI commit messages.
-#[tauri::command]
-pub async fn git_staged_diff(root: String) -> Result<String, String> {
-    run_git(&root, &["diff", "--cached"]).await.map(without_bom)
 }
 
 /// Zero-context unified diff of one file vs HEAD — parsed for editor gutter marks.
@@ -1127,6 +1180,62 @@ mod tests {
             "origin/HEAD leaked in as a branch named after the remote: {names:?}"
         );
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// The case that used to look clean to every AI chore, against a real
+    /// repository because only git can say what its own `diff` omits: a tree
+    /// whose single change is a file git has never seen. The three rules that
+    /// matter are all asserted here — the new file arrives, `.gitignore` is
+    /// obeyed, and staging something makes the index the answer instead.
+    #[tokio::test]
+    async fn a_brand_new_file_is_part_of_the_pending_diff() {
+        let repo = std::env::temp_dir().join(format!("aime-pending-{}", std::process::id()));
+        std::fs::create_dir_all(&repo).expect("mkdir");
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(repo.join(".gitignore"), "secrets.env\n").expect("write");
+        std::fs::write(repo.join("base.txt"), "base\n").expect("write");
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "one"]);
+
+        // The only change: a file git has never seen, plus one it must ignore.
+        std::fs::write(repo.join("feature.ts"), "export const answer = 42;\n").expect("write");
+        std::fs::write(repo.join("secrets.env"), "TOKEN=nope\n").expect("write");
+        let root = repo.to_string_lossy().to_string();
+
+        let diff = git_pending_diff(root.clone()).await.expect("pending diff");
+        assert!(
+            diff.contains("feature.ts") && diff.contains("export const answer = 42;"),
+            "the new file never reached the diff: {diff:?}"
+        );
+        assert!(
+            !diff.contains("secrets.env") && !diff.contains("TOKEN=nope"),
+            "an ignored file leaked into a prompt: {diff:?}"
+        );
+
+        // Once something is staged, that is what the next commit contains.
+        std::fs::write(repo.join("base.txt"), "base changed\n").expect("write");
+        git(&["add", "base.txt"]);
+        let staged = git_pending_diff(root).await.expect("pending diff");
+        assert!(
+            staged.contains("base.txt") && !staged.contains("feature.ts"),
+            "a staged index must answer alone: {staged:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
     }
 
     /// A parallel run's whole isolation rests on these two calls, so they are
