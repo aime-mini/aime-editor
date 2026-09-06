@@ -1,12 +1,24 @@
-﻿import { useCallback, useEffect, useRef, useState } from "react";
+﻿import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
-import { Cloud, Lightbulb, Sparkles, TriangleAlert, X } from "lucide-react";
+import {
+  BookOpen,
+  Cloud,
+  FileText,
+  Lightbulb,
+  ListTree,
+  Sparkles,
+  Table2,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import { KeyCode, KeyMod, Range as MonacoRange, type editor as MonacoEditor } from "monaco-editor";
 import "../lib/monaco";
 import { translate, useT } from "../i18n";
+import type { TranslationKey } from "../i18n/en";
 import { AI_ACTIONS, buildPrompt, labelOf } from "../lib/aiActions";
 import { registerInlineAi } from "../lib/aiInline";
+import { renderedViewOf, type RenderedView } from "../lib/fileViews";
 import { installableDebugger } from "../lib/dap/availability";
 import { LANGUAGES_MONACO_OUTLINES, languageOf } from "../lib/languages";
 import { setActiveEditor } from "../lib/monacoAccess";
@@ -23,6 +35,9 @@ import { CommitView } from "./CommitView";
 import { ConflictView } from "./ConflictView";
 import { RunView } from "./RunView";
 import { CloudView } from "./CloudView";
+import { CsvView } from "./CsvView";
+import { Markdown } from "./Markdown";
+import { StructuredView } from "./StructuredView";
 import { WorkItemView } from "./WorkItemView";
 import { DebugToolbar } from "./DebugToolbar";
 import { useDebugGutter } from "./useDebugGutter";
@@ -593,6 +608,13 @@ export function EditorPane() {
 
   useDebugGutter(editorInstance, openFilePath);
 
+  // A .csv opens as a table, a .md as a document, a .json or .xml as a tree;
+  // the text behind any of them is one click away. Keyed to the path, so
+  // switching files goes back to the rendered view, which is the point of it.
+  const [textBehind, setTextBehind] = useState<string | null>(null);
+  const renderedView = openFilePath === null ? null : renderedViewOf(openFilePath);
+  const showsRendered = renderedView !== null && textBehind !== openFilePath;
+
   const openLanguage = openFilePath === null ? null : languageOf(openFilePath);
   // `null` is the probe's answer for a language Aime drives no adapter for, and
   // the only one that withdraws F9. Re-run on a new editor too: a remount
@@ -752,6 +774,15 @@ export function EditorPane() {
         <span className="truncate text-muted">{openFilePath}</span>
         {dirty && <span className="size-2 shrink-0 rounded-full bg-accent" title={t("editor.unsavedHint")} />}
         <span className="flex-1" />
+        {renderedView !== null && (
+          <RenderedOrText
+            view={renderedView}
+            rendered={showsRendered}
+            onChange={(rendered) => {
+              setTextBehind(rendered ? null : openFilePath);
+            }}
+          />
+        )}
         <DebugToolbar />
       </div>
       {openFileConflicted && (
@@ -770,37 +801,97 @@ export function EditorPane() {
         <SetupOffer languageId={languageOf(openFilePath)} relativePath={relativeOpenPath} />
       )}
       <div className="min-h-0 flex-1">
-        <Editor
-          path={openFilePath}
-          language={languageOf(openFilePath)}
-          value={fileContent}
-          onChange={(v) => {
-            setContent(v ?? "");
-          }}
-          onMount={(editor) => {
-            editorRef.current = editor;
-            setEditorInstance(editor);
-            // Published for the few things that need a real editor - a plugin's
-            // edit goes through Monaco so Ctrl+Z takes it back.
-            setActiveEditor(editor);
-            registerInlineAi();
-            registerAiActions(editor);
-            debuggableRef.current = registerBreakpointAction(editor);
-            registerPaletteAction(editor);
-            decorationsRef.current = editor.createDecorationsCollection();
-            blameDecoRef.current = editor.createDecorationsCollection();
-            editor.onDidChangeCursorPosition((e) => {
-              renderBlameForLine(e.position.lineNumber);
-            });
-          }}
-          theme={monacoThemeOf(theme)}
-          options={{
-            ...editorOptions,
-            inlineSuggest: { enabled: inlineAi !== "off" },
-            stickyScroll: { enabled: hasOutline },
-          }}
-        />
+        {renderedView !== null && showsRendered ? (
+          <RenderedFile view={renderedView} text={fileContent} />
+        ) : (
+          <Editor
+            path={openFilePath}
+            language={languageOf(openFilePath)}
+            value={fileContent}
+            onChange={(v) => {
+              setContent(v ?? "");
+            }}
+            onMount={(editor) => {
+              editorRef.current = editor;
+              setEditorInstance(editor);
+              // Published for the few things that need a real editor - a plugin's
+              // edit goes through Monaco so Ctrl+Z takes it back.
+              setActiveEditor(editor);
+              registerInlineAi();
+              registerAiActions(editor);
+              debuggableRef.current = registerBreakpointAction(editor);
+              registerPaletteAction(editor);
+              decorationsRef.current = editor.createDecorationsCollection();
+              blameDecoRef.current = editor.createDecorationsCollection();
+              editor.onDidChangeCursorPosition((e) => {
+                renderBlameForLine(e.position.lineNumber);
+              });
+            }}
+            theme={monacoThemeOf(theme)}
+            options={{
+              ...editorOptions,
+              inlineSuggest: { enabled: inlineAi !== "off" },
+              stickyScroll: { enabled: hasOutline },
+            }}
+          />
+        )}
       </div>
+    </div>
+  );
+}
+
+/** The file drawn as what it is: a table, a document, a tree. */
+function RenderedFile({ view, text }: { view: RenderedView; text: string }) {
+  if (view === "table") return <CsvView text={text} />;
+  if (view === "markdown") {
+    return (
+      <div className="h-full overflow-auto px-8 py-6">
+        <div className="mx-auto max-w-3xl text-[13px] leading-relaxed">
+          <Markdown text={text} />
+        </div>
+      </div>
+    );
+  }
+  return <StructuredView text={text} kind={view} />;
+}
+
+/** What each rendered view is called on the switch, and its icon. */
+const RENDERED_SEGMENTS: Record<RenderedView, { label: TranslationKey; icon: typeof Table2 }> = {
+  table: { label: "file.viewTable", icon: Table2 },
+  markdown: { label: "file.viewPreview", icon: BookOpen },
+  json: { label: "file.viewTree", icon: ListTree },
+  xml: { label: "file.viewTree", icon: ListTree },
+};
+
+/** The rendered view or the text, for a file that is both. */
+function RenderedOrText({
+  view,
+  rendered,
+  onChange,
+}: {
+  view: RenderedView;
+  rendered: boolean;
+  onChange: (rendered: boolean) => void;
+}) {
+  const t = useT();
+  const segment = (isRendered: boolean, icon: typeof Table2, label: string) => (
+    <button
+      onClick={() => {
+        onChange(isRendered);
+      }}
+      className={`flex items-center gap-1 px-2 py-0.5 ${
+        rendered === isRendered ? "bg-elevated font-medium text-fg" : "text-muted hover:text-fg"
+      }`}
+    >
+      {createElement(icon, { size: 11 })}
+      {label}
+    </button>
+  );
+  const own = RENDERED_SEGMENTS[view];
+  return (
+    <div className="flex shrink-0 overflow-hidden rounded border border-line bg-panel">
+      {segment(true, own.icon, t(own.label))}
+      {segment(false, FileText, t("file.viewText"))}
     </div>
   );
 }
