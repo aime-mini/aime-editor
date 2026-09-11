@@ -15,6 +15,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useT } from "../i18n";
 import { commandLine, readLine, type DeployPlan, type Survey } from "../lib/deploy";
 import { shortKind } from "../lib/cloudIcons";
+import { billingOff } from "../lib/cloudErrors";
+import { BillingOffNote } from "./CloudBilling";
 import { slotOf, useCloud, type CloudAccount } from "../stores/cloud";
 import { useDeploy, type DeployLogLine, type StepRun } from "../stores/deploy";
 import { CopyButton, Note } from "./CloudDetail";
@@ -35,6 +37,9 @@ export function DeployPane({ slot }: { slot: string }) {
   if (deploy === undefined) return null;
   const { stage, account, cloudId, log } = deploy;
   const live = stage.kind !== "confirm" && stage.kind !== "done" && stage.kind !== "blocked";
+  // A deploy stopped for want of a billing account is not a failed deploy: it
+  // is a wall with one command on the other side (`lib/cloudErrors.ts`).
+  const wall = stage.kind === "blocked" ? billingOff(stage.reason) : null;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
@@ -124,10 +129,17 @@ export function DeployPane({ slot }: { slot: string }) {
         {stage.kind === "blocked" && (
           <>
             <Note icon={TriangleAlert} tone="danger">
-              <span className="font-medium">{t("deploy.blockedTitle")}</span>
+              <span className="font-medium">
+                {t(wall === null ? "deploy.blockedTitle" : "deploy.blockedBilling")}
+              </span>
               {"\n"}
               {stage.reason}
             </Note>
+            {wall !== null && (
+              <div className="mt-3 flex justify-center">
+                <BillingOffNote off={wall} project={account.id} />
+              </div>
+            )}
             <AgainOrClose
               onAgain={() => void start(cloudId, account)}
               onClose={() => {

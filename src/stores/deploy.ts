@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { translate } from "../i18n";
 import { agentTurn, cancelAgentTurn, type TurnPermission } from "../lib/agentTurn";
+import { billingOff } from "../lib/cloudErrors";
 import {
   commandLine,
   filesPrompt,
@@ -358,7 +359,22 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
         });
         return;
       }
+      if (verdict.kind === "wrongPath") {
+        blocked(ops, plan, steps, verdict.output);
+        return;
+      }
       failed = verdict.failed;
+    }
+
+    // Some failures are walls, not mistakes. Measured 2026-09-10 on the first
+    // real deploy: step one answered "Billing account for project … is not
+    // found", and no rewritten command enables an API on a project that cannot
+    // be billed. The AI was asked anyway and spent a turn of somebody's money
+    // to say so. The CLI's own words become the reason, because the panel
+    // reads them to offer the one command that fixes it (`CloudBilling.tsx`).
+    if (billingOff(failed.output) !== null) {
+      blocked(ops, plan, show(null), failed.output);
+      return;
     }
 
     // Something failed: the same failure twice is a loop, and looping
@@ -388,6 +404,8 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
 
 type Verdict =
   | { kind: "running"; url: string; probe: Probe }
+  /** Serving, but not on the path the plan chose - nothing to fix by deploying again. */
+  | { kind: "wrongPath"; output: string }
   | { kind: "failed"; failed: { label: string; command: string; output: string } };
 
 /** Asks the deployed service, the way the plan said to. */
@@ -424,12 +442,41 @@ async function prove(ops: Ops, plan: DeployPlan, steps: StepRun[]): Promise<Verd
   }
   ops.output(translate("deploy.probe", { url: target, status: probe.status, ms: probe.durationMs }));
   if (probe.status === proveRead.expect) return { kind: "running", url, probe };
+  // The path can be wrong when the service is right. Measured 2026-09-10 on a
+  // deploy that worked: Cloud Run's front end answers `/healthz` itself with
+  // Google's own 404 page and never reaches the container, while `/` and every
+  // other path answer 200. Reporting that as a failed deploy would have sent
+  // somebody hunting a service that was already serving, so the root is asked
+  // before any verdict is given.
+  const root = await answersAtRoot(url);
+  const serving = root !== null && root >= 200 && root < 400;
   const output = [
     translate("deploy.probeWrong", { status: probe.status, expect: proveRead.expect }),
+    serving ? translate("deploy.probeRoot", { url, status: root, path: proveRead.path }) : "",
     probe.bodyHead,
-  ].join("\n");
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
   ops.problem(output);
+  // Deploying again cannot change which paths Cloud Run answers for itself,
+  // and every round of that is another Cloud Build on somebody's bill.
+  if (serving) return { kind: "wrongPath", output };
   return { kind: "failed", failed: { label: `GET ${target}`, command: `GET ${target}`, output } };
+}
+
+/**
+ * What the service's own root answers, or null when even that cannot be asked.
+ *
+ * Only used to tell "nothing is deployed" apart from "the health path is not
+ * the one the plan guessed"; a failure here is not itself a verdict.
+ */
+async function answersAtRoot(url: string): Promise<number | null> {
+  try {
+    const probe = await invoke<Probe>("cloud_http_probe", { url: new URL("/", url).toString() });
+    return probe.status;
+  } catch {
+    return null;
+  }
 }
 
 /**

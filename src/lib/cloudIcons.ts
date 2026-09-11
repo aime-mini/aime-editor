@@ -437,18 +437,19 @@ const FAMILY_HUES: Record<Family, Hue> = {
  * that silently does not apply is the worst kind of styling bug: everything
  * renders, and everything is grey.
  */
-type HueClasses = { icon: string; chip: string };
+/** `bar` is the solid fill a chart needs; `chip` is the tinted background. */
+type HueClasses = { icon: string; chip: string; bar: string };
 
 const HUE_CLASSES: Record<Hue, HueClasses> = {
-  "svc-compute": { icon: "text-svc-compute", chip: "bg-svc-compute/15" },
-  "svc-data": { icon: "text-svc-data", chip: "bg-svc-data/15" },
-  "svc-storage": { icon: "text-svc-storage", chip: "bg-svc-storage/15" },
-  "svc-network": { icon: "text-svc-network", chip: "bg-svc-network/15" },
-  "svc-security": { icon: "text-svc-security", chip: "bg-svc-security/15" },
-  "svc-identity": { icon: "text-svc-identity", chip: "bg-svc-identity/15" },
-  "svc-observe": { icon: "text-svc-observe", chip: "bg-svc-observe/15" },
-  "svc-integrate": { icon: "text-svc-integrate", chip: "bg-svc-integrate/15" },
-  "svc-other": { icon: "text-svc-other", chip: "bg-svc-other/15" },
+  "svc-compute": { icon: "text-svc-compute", chip: "bg-svc-compute/15", bar: "bg-svc-compute/70" },
+  "svc-data": { icon: "text-svc-data", chip: "bg-svc-data/15", bar: "bg-svc-data/70" },
+  "svc-storage": { icon: "text-svc-storage", chip: "bg-svc-storage/15", bar: "bg-svc-storage/70" },
+  "svc-network": { icon: "text-svc-network", chip: "bg-svc-network/15", bar: "bg-svc-network/70" },
+  "svc-security": { icon: "text-svc-security", chip: "bg-svc-security/15", bar: "bg-svc-security/70" },
+  "svc-identity": { icon: "text-svc-identity", chip: "bg-svc-identity/15", bar: "bg-svc-identity/70" },
+  "svc-observe": { icon: "text-svc-observe", chip: "bg-svc-observe/15", bar: "bg-svc-observe/70" },
+  "svc-integrate": { icon: "text-svc-integrate", chip: "bg-svc-integrate/15", bar: "bg-svc-integrate/70" },
+  "svc-other": { icon: "text-svc-other", chip: "bg-svc-other/15", bar: "bg-svc-other/70" },
 };
 
 /** The icon colour and badge background for one resource type. */

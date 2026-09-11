@@ -28,7 +28,7 @@
 //! one by name, and its answer stays on the screen - never written to a file,
 //! never handed to the AI, never put in a prompt.
 
-use super::{read_cli_checked, CliFailure, CloudResource};
+use super::{bq, read_cli_checked, CliFailure, CloudResource};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
@@ -55,6 +55,15 @@ pub struct PlannedRead {
     /// The arguments after the program name, with placeholders where the
     /// resource goes; see `PLACEHOLDERS`.
     pub args: Vec<String>,
+    /// Which of the cloud's own CLIs runs this; empty for its main one.
+    ///
+    /// A cloud is not always one CLI. Google Cloud ships two that matter here -
+    /// `gcloud`, and `bq`, which reads the BigQuery datasets `gcloud` has no
+    /// command for at all - so the plan says which, and `program_of` is the
+    /// gate: a second CLI is accepted for the one service it belongs to and
+    /// refused everywhere else.
+    #[serde(default)]
+    pub program: String,
 }
 
 /// A read the AI proposed and Aime refused, with the reason said out loud.
@@ -63,6 +72,34 @@ pub struct PlannedRead {
 pub struct RejectedRead {
     pub label: String,
     pub reason: String,
+    /// The read that was refused, so the caller can ask the AI to write it
+    /// again with the reason in hand - and ask for the same PURPOSE, since a
+    /// `secret` rewritten as an overview is the credential read gone. None when
+    /// what was refused is a connection fact, which is not a command.
+    #[serde(default)]
+    pub command: Option<PlannedRead>,
+}
+
+/// One thing a developer pastes into an app, written out of the resource's own
+/// identity rather than fetched from the cloud.
+///
+/// Measured 2026-09-10 across a real Google account: for a large share of what
+/// people actually have - Pub/Sub topics and subscriptions, buckets, BigQuery
+/// datasets, App Engine apps - the "connection detail" IS the resource's name
+/// in the shape an SDK takes it, and Aime already holds every part of it from
+/// the listing. Asking the cloud for it would be a network call to be told
+/// what was already on the screen.
+///
+/// `value` is a template over the same placeholders a command uses, so one
+/// answer serves every resource of the kind. A credential is never a fact: it
+/// cannot be derived from a name, so anything claiming to be one is a read.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionFact {
+    /// What it is, in a developer's words: `Topic path`, `Bucket URI`.
+    pub label: String,
+    /// The value with placeholders where the resource goes.
+    pub value: String,
 }
 
 /// What Aime kept for one kind, and what it would not keep.
@@ -70,7 +107,33 @@ pub struct RejectedRead {
 #[serde(rename_all = "camelCase")]
 pub struct ReadPlan {
     pub reads: Vec<PlannedRead>,
+    pub facts: Vec<ConnectionFact>,
     pub rejected: Vec<RejectedRead>,
+}
+
+/// One kind's plan as it sits on disk.
+///
+/// A plan used to be a bare array of reads; a file written by an older build
+/// still parses (see `load_plan`), because throwing away every plan on this
+/// machine to add a field would cost an AI call per kind for nothing.
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredPlan {
+    pub reads: Vec<PlannedRead>,
+    #[serde(default)]
+    pub facts: Vec<ConnectionFact>,
+    /// Whether every read here has been run against a real resource and
+    /// answered.
+    ///
+    /// False when the trial run hit something that is not the command's fault -
+    /// a project with the API switched off, no billing, a sign-in that lapsed -
+    /// because the CLI refuses the right command and the wrong one with the
+    /// same sentence, and calling that proof would be the old bug wearing a new
+    /// field. An unproved plan is used, and proved again the next time a
+    /// resource of its kind is opened; a plan written by an older build is
+    /// unproved by definition.
+    #[serde(default)]
+    pub proved: bool,
 }
 
 /// The parts of a resource a planned command may name, and what fills each.
@@ -83,10 +146,12 @@ const PLACEHOLDERS: [&str; 5] = ["<id>", "<path>", "<name>", "<group>", "<region
 
 /// Flags Aime adds itself, so a plan that carries one is refused: two
 /// `--profile`s on one line is at best a CLI error and at worst the other one.
-const OWN_FLAGS: [&str; 12] = [
+const OWN_FLAGS: [&str; 13] = [
     "--profile",
     "--subscription",
     "--project",
+    // `bq`'s spelling of the same thing, which is not `--project`.
+    "--project_id",
     "--project-ref",
     "--account",
     "--agent",
@@ -173,12 +238,20 @@ const VALUE_LIMIT: usize = 200;
 /// The most reads one kind is offered; a resource is not a catalogue.
 const READS_PER_KIND: usize = 8;
 
+/// How many connection facts one kind may carry. A resource has a handful of
+/// names an SDK takes; a longer list is the model padding.
+const FACTS_PER_KIND: usize = 6;
+
+/// How long a fact's label may be: a column heading, not a sentence.
+const FACT_LABEL_LIMIT: usize = 60;
+
 /// The one read every Azure type answers, seeded so an Azure resource shows
 /// its configuration even when no AI is around to plan the rest.
 fn azure_seed() -> PlannedRead {
     PlannedRead {
         purpose: ReadPurpose::Overview,
         label: "az resource show".into(),
+        program: String::new(),
         args: ["resource", "show", "--ids", "<id>"]
             .into_iter()
             .map(String::from)
@@ -216,19 +289,55 @@ fn plan_path(app: &AppHandle, cloud_id: &str, kind: &str) -> Result<PathBuf, Str
     Ok(plans_dir(app, cloud_id)?.join(file_of_kind(kind)))
 }
 
-fn load_plan(app: &AppHandle, cloud_id: &str, kind: &str) -> Result<Option<Vec<PlannedRead>>, String> {
+fn load_plan(app: &AppHandle, cloud_id: &str, kind: &str) -> Result<Option<StoredPlan>, String> {
     let path = plan_path(app, cloud_id, kind)?;
     if !path.is_file() {
         return Ok(None);
     }
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&text).map(Some).map_err(|e| e.to_string())
+    parse_stored_plan(&text)
 }
 
-fn store_plan(app: &AppHandle, cloud_id: &str, kind: &str, reads: &[PlannedRead]) -> Result<(), String> {
+/// A plan file as an answer, or `None` when the file on disk cannot be one.
+///
+/// Two shapes have been written here. The object is an answer: the reads, the
+/// facts a developer pastes, and whether it has been proved against a real
+/// resource. The bare ARRAY an older build wrote is not - it was written before
+/// facts existed, so it says nothing about them, and it is read as "nobody has
+/// asked yet".
+///
+/// That is not tidiness. A plan file that exists is never asked about again,
+/// and half of what a kind answers is its facts: measured on this machine
+/// 2026-09-11, eight of the sixteen plans were in the old shape and so had no
+/// facts at all - every AWS and Azure kind among them - and one of the eight
+/// was `[]`, an empty array for `serviceusage.googleapis.com/Service`, which
+/// could show nothing and could never be asked again. The cost of reading them
+/// as unasked is one AI call per kind, once per machine.
+fn parse_stored_plan(text: &str) -> Result<Option<StoredPlan>, String> {
+    if let Ok(plan) = serde_json::from_str::<StoredPlan>(text) {
+        return Ok(Some(plan));
+    }
+    serde_json::from_str::<Vec<PlannedRead>>(text)
+        .map(|_| None)
+        .map_err(|e| e.to_string())
+}
+
+fn store_plan(
+    app: &AppHandle,
+    cloud_id: &str,
+    kind: &str,
+    reads: &[PlannedRead],
+    facts: &[ConnectionFact],
+    proved: bool,
+) -> Result<(), String> {
     let dir = plans_dir(app, cloud_id)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let text = serde_json::to_string_pretty(reads).map_err(|e| e.to_string())?;
+    let plan = StoredPlan {
+        reads: reads.to_vec(),
+        facts: facts.to_vec(),
+        proved,
+    };
+    let text = serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?;
     std::fs::write(plan_path(app, cloud_id, kind)?, text).map_err(|e| e.to_string())
 }
 
@@ -238,11 +347,7 @@ fn store_plan(app: &AppHandle, cloud_id: &str, kind: &str, reads: &[PlannedRead]
 /// and so the plan is per machine rather than per project: how to read a Lambda
 /// function has nothing to do with which repository is open.
 #[tauri::command]
-pub fn cloud_read_plan(
-    app: AppHandle,
-    cloud_id: String,
-    kind: String,
-) -> Result<Option<Vec<PlannedRead>>, String> {
+pub fn cloud_read_plan(app: AppHandle, cloud_id: String, kind: String) -> Result<Option<StoredPlan>, String> {
     load_plan(&app, &cloud_id, &kind)
 }
 
@@ -268,12 +373,19 @@ pub fn cloud_forget_plan(app: AppHandle, cloud_id: String, kind: String) -> Resu
 ///
 /// Azure always gets its generic overview first; the AI is asked only for what
 /// that generic read cannot answer - how to connect, and where the keys are.
+///
+/// Nothing is written to disk here. What this proves is that the CLI on this
+/// machine HAS the command - which is not the same as the command working, and
+/// the difference was costing a wrong answer per kind, for good (see
+/// `cloud_prove_read`). The caller proves each read against the resource the
+/// person opened and then calls `cloud_store_plan` with what survived.
 #[tauri::command]
 pub async fn cloud_check_reads(
     app: AppHandle,
     cloud_id: String,
     kind: String,
     proposed: Vec<PlannedRead>,
+    facts: Vec<ConnectionFact>,
 ) -> Result<ReadPlan, String> {
     let mut reads: Vec<PlannedRead> = Vec::new();
     let mut rejected = Vec::new();
@@ -288,16 +400,133 @@ pub async fn cloud_check_reads(
         if reads.iter().any(|kept| kept.args == read.args) {
             continue;
         }
-        match check_read(&program, &cloud_id, &read).await {
+        match check_read(&program, &cloud_id, &kind, &read).await {
             Ok(checked) => reads.push(checked),
             Err(reason) => rejected.push(RejectedRead {
-                label: read.label,
+                label: read.label.clone(),
                 reason,
+                command: Some(read),
             }),
         }
     }
-    store_plan(&app, &cloud_id, &kind, &reads)?;
-    Ok(ReadPlan { reads, rejected })
+    let mut kept_facts: Vec<ConnectionFact> = Vec::new();
+    for fact in facts {
+        if kept_facts.len() >= FACTS_PER_KIND {
+            break;
+        }
+        if kept_facts.iter().any(|kept| kept.value == fact.value) {
+            continue;
+        }
+        match check_fact(&fact) {
+            Ok(()) => kept_facts.push(fact),
+            Err(reason) => rejected.push(RejectedRead {
+                label: fact.label,
+                reason,
+                command: None,
+            }),
+        }
+    }
+    Ok(ReadPlan {
+        reads,
+        facts: kept_facts,
+        rejected,
+    })
+}
+
+/// Runs one candidate read against one real resource, to find out whether it
+/// actually works - before it becomes this kind's answer on this machine.
+///
+/// Why this exists. Until 2026-09-11 a read was kept on the strength of
+/// `gcloud <command> --help` exiting 0, and a plan is stored per KIND, so a
+/// command that exists but cannot address the resource was the answer for every
+/// resource of that kind until someone deleted the file. Measured over a real
+/// Google account: `iam service-accounts describe <path>` exists, and answers
+/// HTTP 404 for all 15 service accounts, because the command takes the
+/// account's email and not its relative name; `logging buckets describe <path>
+/// --location <region>` exists, and answers NOT_FOUND for all 26 log buckets.
+/// Neither failure is visible to any check that does not run the command.
+///
+/// Two rules hold here. A `secret` read is never run - a credential is read
+/// when a person asks for that one read by name, and proving a plan is not
+/// asking - so it is kept on the grammar check alone. And the read is checked
+/// again from scratch: a command line is built from what the frontend sent, so
+/// it passes the same gate as a stored one rather than being trusted for having
+/// been checked a moment ago.
+#[tauri::command]
+pub async fn cloud_prove_read(
+    app: AppHandle,
+    cloud_id: String,
+    account: String,
+    resource: CloudResource,
+    read: PlannedRead,
+) -> Result<Option<String>, String> {
+    let program = super::program_for(&app, &cloud_id);
+    let checked = check_read(&program, &cloud_id, &resource.kind, &read).await?;
+    if checked.purpose == ReadPurpose::Secret {
+        return Ok(None);
+    }
+    run_read(&app, &cloud_id, &account, &resource, &checked)
+        .await
+        .map(Some)
+}
+
+/// Writes the plan the caller settled on, after proving it.
+///
+/// Checked again rather than taken as given, for the reason `cloud_prove_read`
+/// gives: this is the file every later session reads, and what reaches it comes
+/// from the frontend.
+#[tauri::command]
+pub async fn cloud_store_plan(
+    app: AppHandle,
+    cloud_id: String,
+    kind: String,
+    reads: Vec<PlannedRead>,
+    facts: Vec<ConnectionFact>,
+    proved: bool,
+) -> Result<(), String> {
+    let program = super::program_for(&app, &cloud_id);
+    let mut checked = Vec::with_capacity(reads.len());
+    for read in reads {
+        checked.push(check_read(&program, &cloud_id, &kind, &read).await?);
+    }
+    for fact in &facts {
+        check_fact(fact)?;
+    }
+    store_plan(&app, &cloud_id, &kind, &checked, &facts, proved)
+}
+
+/// Whether a connection fact is one Aime will show.
+///
+/// Three rules, and each of them is about honesty rather than safety, since a
+/// fact runs nothing: it must be ABOUT this resource (so it has to carry at
+/// least one placeholder - a constant string is a note, not a connection
+/// detail), it must be something a person can paste (`is_safe_value`, the same
+/// grammar a command's value has), and it must not claim to be a credential,
+/// because a credential cannot be derived from a name. A model that answers
+/// "API key: <name>" is guessing, and the panel would be showing a wrong
+/// secret with a copy button next to it.
+fn check_fact(fact: &ConnectionFact) -> Result<(), String> {
+    let label = fact.label.trim();
+    if label.is_empty() || label.len() > FACT_LABEL_LIMIT {
+        return Err("a fact needs a short label".into());
+    }
+    if !PLACEHOLDERS.iter().any(|slot| fact.value.contains(slot)) {
+        return Err(format!(
+            "`{}` says the same thing for every resource of this kind, so it is not this one's \
+             connection detail",
+            fact.value
+        ));
+    }
+    if !is_safe_value(&fact.value) {
+        return Err(refuse_value(&fact.value));
+    }
+    if looks_sensitive(&[&label.to_lowercase()]) {
+        return Err(format!(
+            "`{label}` names a credential, and a credential cannot be worked out from a resource's \
+             name - it takes a read"
+        ));
+    }
+    Ok(())
 }
 
 /// Runs one checked read against one resource.
@@ -314,46 +543,72 @@ pub async fn cloud_run_read(
     resource: CloudResource,
     read: PlannedRead,
 ) -> Result<String, String> {
-    let planned = load_plan(&app, &cloud_id, &resource.kind)?.unwrap_or_default();
+    let planned = load_plan(&app, &cloud_id, &resource.kind)?
+        .unwrap_or_default()
+        .reads;
     if !planned.contains(&read) {
         return Err(format!(
             "`{}` is not a read Aime has checked for {}",
             read.label, resource.kind
         ));
     }
-    let mut args: Vec<String> = read.args.iter().map(|arg| fill(arg, &resource)).collect();
-    let program = match cloud_id.as_str() {
-        "azure" => {
-            args.extend(["--subscription".into(), account, "--output".into(), "json".into()]);
-            "az".to_string()
+    run_read(&app, &cloud_id, &account, &resource, &read).await
+}
+
+/// One read as a command line, run against one resource.
+///
+/// Shared by the read a person asked for and the trial run that proves a plan,
+/// so what is proved is the very command that will later run.
+async fn run_read(
+    app: &AppHandle,
+    cloud_id: &str,
+    account: &str,
+    resource: &CloudResource,
+    read: &PlannedRead,
+) -> Result<String, String> {
+    let account = account.to_string();
+    let mut args: Vec<String> = read.args.iter().map(|arg| fill(arg, resource)).collect();
+    let program = match program_of(cloud_id, &resource.kind, &read.program)? {
+        // `bq` refuses a flag that stands after the command's own arguments -
+        // *FATAL Flags positioning error*, measured - so its scope goes in
+        // front, as the global flags its own usage line calls for.
+        ReadProgram::Bq => {
+            args.splice(0..0, bq::scope(&account));
+            bq::PROGRAM.to_string()
         }
-        "aws" => {
-            args.extend(["--profile".into(), account]);
-            // The ARN says where the resource is, and the profile's default
-            // region may be elsewhere: a Sydney function read through a
-            // profile pointed at Virginia does not exist.
-            if !resource.location.is_empty() {
-                args.extend(["--region".into(), resource.location.clone()]);
+        ReadProgram::Main => match cloud_id {
+            "azure" => {
+                args.extend(["--subscription".into(), account, "--output".into(), "json".into()]);
+                "az".to_string()
             }
-            args.extend(["--output".into(), "json".into()]);
-            "aws".to_string()
-        }
-        "gcp" => {
-            // The location is not added here: gcloud spells it `--zone` for
-            // one kind and `--region` or `--location` for another, so the
-            // plan names the flag and `<region>` fills it.
-            args.extend(["--project".into(), account, "--format".into(), "json".into()]);
-            "gcloud".to_string()
-        }
-        "supabase" => {
-            // `--agent no`: see `supabase.rs` - the CLI's own guess about who is
-            // driving it must not decide the shape of an answer Aime parses.
-            let cli = super::supabase::cli(&app)?;
-            args.extend(["--project-ref".into(), account, "-o".into(), "json".into()]);
-            args.extend(cli.flags());
-            cli.program().to_string()
-        }
-        other => return Err(format!("Aime has no checked reads for {other}")),
+            "aws" => {
+                args.extend(["--profile".into(), account]);
+                // The ARN says where the resource is, and the profile's default
+                // region may be elsewhere: a Sydney function read through a
+                // profile pointed at Virginia does not exist.
+                if !resource.location.is_empty() {
+                    args.extend(["--region".into(), resource.location.clone()]);
+                }
+                args.extend(["--output".into(), "json".into()]);
+                "aws".to_string()
+            }
+            "gcp" => {
+                // The location is not added here: gcloud spells it `--zone` for
+                // one kind and `--region` or `--location` for another, so the
+                // plan names the flag and `<region>` fills it.
+                args.extend(["--project".into(), account, "--format".into(), "json".into()]);
+                "gcloud".to_string()
+            }
+            "supabase" => {
+                // `--agent no`: see `supabase.rs` - the CLI's own guess about who is
+                // driving it must not decide the shape of an answer Aime parses.
+                let cli = super::supabase::cli(app)?;
+                args.extend(["--project-ref".into(), account, "-o".into(), "json".into()]);
+                args.extend(cli.flags());
+                cli.program().to_string()
+            }
+            other => return Err(format!("Aime has no checked reads for {other}")),
+        },
     };
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
     match read_cli_checked(&program, &borrowed).await {
@@ -369,10 +624,22 @@ pub async fn cloud_run_read(
 }
 
 /// A planned argument with the resource put in.
+///
+/// `<name>` is the name the CLI takes, not the label the panel shows: measured
+/// 2026-09-11, a quarter of one real Google account's resources answer a
+/// display name where the command wants an identifier, and filling from the
+/// label produced `iam service-accounts describe Default compute service
+/// account`. A resource that reached Aime before that field existed falls back
+/// to its label, which is what it used to get.
 fn fill(arg: &str, resource: &CloudResource) -> String {
+    let name = if resource.cli_name.is_empty() {
+        &resource.name
+    } else {
+        &resource.cli_name
+    };
     arg.replace("<id>", &resource.id)
         .replace("<path>", path_of(&resource.id))
-        .replace("<name>", &resource.name)
+        .replace("<name>", name)
         .replace("<group>", &resource.group)
         .replace("<region>", &resource.location)
 }
@@ -389,27 +656,44 @@ pub(crate) fn path_of(id: &str) -> &str {
 pub(super) async fn check_read(
     program: &str,
     cloud_id: &str,
+    kind: &str,
     read: &PlannedRead,
 ) -> Result<PlannedRead, String> {
-    check_read_allowing(program, cloud_id, read, &[]).await
+    check_read_allowing(program, cloud_id, kind, read, &[]).await
 }
 
 /// `check_read` for a caller that fills none of the placeholders and so lets
 /// the plan carry some of the flags Aime otherwise adds - the deploy, whose
 /// reads name their own `--region` because no resource is there to fill one.
+///
+/// `kind` is the resource kind the read is for, and empty for a caller that has
+/// none: it decides nothing but which CLIs the read may run under, and no kind
+/// means the cloud's own.
 pub(super) async fn check_read_allowing(
     program: &str,
     cloud_id: &str,
+    kind: &str,
     read: &PlannedRead,
     allowed: &[&str],
 ) -> Result<PlannedRead, String> {
-    let verbs = read_verbs_of(cloud_id).ok_or_else(|| format!("Aime does not check reads for {cloud_id}"))?;
-    let line = CommandLine::parse_allowing(&read.args, verbs, allowed)?;
-    match cloud_id {
-        "aws" => check_aws(&line)?,
-        "azure" => check_azure(&line).await?,
-        "gcp" => check_gcloud(&line).await?,
-        _ => check_supabase(program, &line).await?,
+    let runs_under = program_of(cloud_id, kind, &read.program)?;
+    let args = split_joined_flags(&read.args);
+    let line = match runs_under {
+        ReadProgram::Bq => CommandLine::parse_single_word(&args)?,
+        ReadProgram::Main => {
+            let verbs =
+                read_verbs_of(cloud_id).ok_or_else(|| format!("Aime does not check reads for {cloud_id}"))?;
+            CommandLine::parse_allowing(&args, verbs, allowed)?
+        }
+    };
+    match runs_under {
+        ReadProgram::Bq => bq::check(&line.words).await?,
+        ReadProgram::Main => match cloud_id {
+            "aws" => check_aws(&line)?,
+            "azure" => check_azure(&line).await?,
+            "gcp" => check_gcloud(&line).await?,
+            _ => check_supabase(program, &line).await?,
+        },
     }
     let purpose = if looks_sensitive(&line.words) {
         ReadPurpose::Secret
@@ -423,8 +707,45 @@ pub(super) async fn check_read_allowing(
         } else {
             read.label.trim().to_string()
         },
-        args: read.args.clone(),
+        // The split form is what is kept, so the command shown, the command
+        // stored and the command checked are one and the same.
+        args,
+        program: read.program.clone(),
     })
+}
+
+/// Which CLI a read runs under.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ReadProgram {
+    /// The cloud's own: `az`, `aws`, `gcloud`, `supabase`.
+    Main,
+    /// `bq`, for the BigQuery kinds `gcloud` has no command for.
+    Bq,
+}
+
+/// The CLI a read may run under, or why it may not.
+///
+/// The AI names it, so this is a gate and not a lookup: a second CLI is
+/// accepted for the one service it belongs to, and refused for every other kind
+/// and every other name. That is what keeps "the AI plans, Aime runs" true -
+/// an answer naming a program cannot widen what Aime will run.
+fn program_of(cloud_id: &str, kind: &str, named: &str) -> Result<ReadProgram, String> {
+    if named.is_empty() {
+        return Ok(ReadProgram::Main);
+    }
+    if named != bq::PROGRAM {
+        return Err(format!(
+            "Aime does not run `{named}`: a read runs under the cloud's own CLI, or under `bq` for a \
+             BigQuery resource"
+        ));
+    }
+    if cloud_id == "gcp" && bq::reads_kind(kind) {
+        Ok(ReadProgram::Bq)
+    } else {
+        Err(format!(
+            "`bq` reads BigQuery, and `{kind}` is not a BigQuery resource - its reads are `gcloud` commands"
+        ))
+    }
 }
 
 /// The shape every read has: command words, then the positionals the read
@@ -443,15 +764,71 @@ struct CommandLine<'a> {
     flags: Vec<(&'a str, Option<&'a str>)>,
 }
 
+/// `--flag=value` as the two tokens the rest of this module reads.
+///
+/// Every CLI here takes both spellings, and a plan that used the joined one was
+/// refused and sent back to the AI to be written again - measured 2026-09-11,
+/// that is exactly what the repair round answered for a Firestore database
+/// (`--database=<name>`), so the round after it was spent on punctuation. What
+/// the checks need is the flag and its value apart, which is what this does;
+/// the first `=` separates them, so `--filter=a=b` keeps its own `=`.
+fn split_joined_flags(args: &[String]) -> Vec<String> {
+    args.iter()
+        .flat_map(|token| match token.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") && !value.is_empty() => {
+                vec![flag.to_string(), value.to_string()]
+            }
+            _ => vec![token.clone()],
+        })
+        .collect()
+}
+
+/// Where a CLI takes the command's own arguments.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArgumentOrder {
+    /// `gcloud pubsub topics describe <name> --format json`: the argument
+    /// belongs to the verb, and the flags follow it. A bare token after a
+    /// flag that already has its value is then a mistake.
+    PositionalsFirst,
+    /// `bq show --schema <name>`: `bq` refuses any flag standing after the
+    /// last argument - *FATAL Flags positioning error: Flag '--project_id'
+    /// appears after final command line argument*, measured 2026-09-11 - so
+    /// its arguments come last and a bare token after a flag is one of them.
+    FlagsFirst,
+}
+
 impl<'a> CommandLine<'a> {
+    /// Splits and vets the tokens of a CLI that takes its arguments before its
+    /// flags; see `parse_ordered`.
+    fn parse_allowing(args: &'a [String], read_verbs: &[&str], allowed: &[&str]) -> Result<Self, String> {
+        Self::parse_ordered(args, read_verbs, allowed, ArgumentOrder::PositionalsFirst)
+    }
+
+    /// The line of a CLI whose command is a SINGLE word and whose flags come
+    /// first: `bq show <name>`, `bq ls --max_results 50 <name>`.
+    ///
+    /// Everything after that word is an argument, so a word that is not a read
+    /// comes back as the command it is and can be refused by name - where a
+    /// tree-shaped parse would swallow `rm <name>` as a two-word command and
+    /// complain about the wrong token. The verb that marks the boundary is
+    /// therefore the first word itself.
+    fn parse_single_word(args: &'a [String]) -> Result<Self, String> {
+        let first = args.first().map_or("", String::as_str);
+        Self::parse_ordered(args, &[first], &[], ArgumentOrder::FlagsFirst)
+    }
+
     /// Splits and vets the tokens: the shape is fixed, the character sets are
     /// narrow, and anything else is refused with the token named. `read_verbs`
     /// are the CLI's own, so the parser knows where the command ends and its
-    /// arguments begin.
-    /// Splits and vets the tokens; `allowed` names the flags in `OWN_FLAGS` this
+    /// arguments begin, and `allowed` names the flags in `OWN_FLAGS` this
     /// caller does not add itself and therefore lets the plan carry (none, for
     /// a resource read).
-    fn parse_allowing(args: &'a [String], read_verbs: &[&str], allowed: &[&str]) -> Result<Self, String> {
+    fn parse_ordered(
+        args: &'a [String],
+        read_verbs: &[&str],
+        allowed: &[&str],
+        order: ArgumentOrder,
+    ) -> Result<Self, String> {
         if args.is_empty() {
             return Err("an empty command".into());
         }
@@ -460,7 +837,7 @@ impl<'a> CommandLine<'a> {
         let mut flags: Vec<(&str, Option<&str>)> = Vec::new();
         for token in args {
             if let Some(flag) = token.strip_prefix("--") {
-                if !is_command_word(flag) {
+                if !is_flag_name(flag) {
                     return Err(format!("`{token}` is not a flag"));
                 }
                 if OWN_FLAGS.contains(&token.as_str()) && !allowed.contains(&token.as_str()) {
@@ -472,17 +849,23 @@ impl<'a> CommandLine<'a> {
                 flags.push((token.as_str(), None));
             } else if let Some((_, value @ None)) = flags.last_mut() {
                 if !is_safe_value(token) {
-                    return Err(format!("`{token}` holds something a shell could misread"));
+                    return Err(refuse_value(token));
                 }
                 *value = Some(token.as_str());
             } else if !flags.is_empty() {
-                return Err(format!("`{token}` follows a flag that already has a value"));
+                if order == ArgumentOrder::PositionalsFirst {
+                    return Err(format!("`{token}` follows a flag that already has a value"));
+                }
+                if !is_safe_value(token) {
+                    return Err(refuse_value(token));
+                }
+                positionals.push(token.as_str());
             } else if words
                 .last()
                 .is_some_and(|last| starts_with_a_verb(last, read_verbs))
             {
                 if !is_safe_value(token) {
-                    return Err(format!("`{token}` holds something a shell could misread"));
+                    return Err(refuse_value(token));
                 }
                 positionals.push(token.as_str());
             } else if is_command_word(token) {
@@ -526,6 +909,15 @@ pub(super) fn is_command_word(word: &str) -> bool {
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
+/// A flag's name: a command word, and an underscore as well.
+///
+/// `bq` spells its flags the way Python's flag library does - `--project_id`,
+/// `--max_results` - and no command word here holds an underscore, so the two
+/// stay separate rules rather than one loose one.
+fn is_flag_name(name: &str) -> bool {
+    is_command_word(&name.replace('_', "-"))
+}
+
 /// A value the CLI can be handed on any platform.
 ///
 /// Placeholders are cut out first, so `https://sqs.<region>.amazonaws.com/<group>/<name>`
@@ -533,6 +925,23 @@ pub(super) fn is_command_word(word: &str) -> bool {
 /// punctuation identifiers and URLs are made of - nothing a shell reads as
 /// structure, because on Windows `az` is a batch shim and every argument goes
 /// through cmd.exe's parser.
+/// Why a value cannot be used, in the words that say how to fix it.
+///
+/// A model that invents its own placeholder is the common case and was worth
+/// telling apart: measured 2026-09-11, a key read came back as `iam
+/// service-accounts keys describe <name> --iam-account <account-id>`, and
+/// "holds something a shell could misread" is a true sentence that explains
+/// nothing - the fix is to use one of the five slots Aime fills.
+fn refuse_value(value: &str) -> String {
+    if value.contains('<') {
+        return format!(
+            "`{value}` uses a placeholder Aime does not fill. The placeholders are {}",
+            PLACEHOLDERS.join(", ")
+        );
+    }
+    format!("`{value}` holds something a shell could misread")
+}
+
 pub(super) fn is_safe_value(value: &str) -> bool {
     let mut stripped = value.to_string();
     for placeholder in PLACEHOLDERS {
@@ -664,12 +1073,149 @@ async fn check_gcloud(line: &CommandLine<'_>) -> Result<(), String> {
     check_gcloud_shape(&line.words)?;
     let mut args: Vec<&str> = line.words.clone();
     args.push("--help");
-    read_cli_checked("gcloud", &args).await.map(|_| ()).map_err(|_| {
+    let help = read_cli_checked("gcloud", &args).await.map_err(|_| {
         format!(
             "`gcloud {}` is not a command the Google Cloud CLI here knows",
             line.words.join(" ")
         )
-    })
+    })?;
+    refuse_missing_required(&help, line)?;
+    refuse_unwanted_positional(&help, line)
+}
+
+/// Refuses a command that leaves out a flag the CLI itself says is required.
+///
+/// Reported 2026-09-10: `gcloud logging buckets describe <path>` was kept as a
+/// LogBucket's overview read and every run of it answered *argument
+/// --location: Must be specified*. The command existed, which is all the
+/// `--help` exit code proves - and the plan is stored per kind, so one missing
+/// flag is every resource of that kind, for good.
+///
+/// The CLI says which flags are required in its own SYNOPSIS: what is optional
+/// stands inside `[...]`, what is a choice stands inside `(...)`, and what is
+/// required stands bare - measured on this machine, `gcloud logging buckets
+/// describe BUCKET_ID --location=LOCATION [--billing-account=… | …]`. So a flag
+/// named at bracket depth zero has to be on the line.
+fn refuse_missing_required(help: &str, line: &CommandLine<'_>) -> Result<(), String> {
+    for flag in required_flags(help) {
+        if !line.flags.iter().any(|(named, _)| *named == flag) {
+            return Err(format!(
+                "`gcloud {}` needs `{flag}`, which this command does not pass. Its synopsis: {}",
+                line.words.join(" "),
+                synopsis(help)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a command handed a positional it does not take.
+///
+/// The mirror of the rule above, and found the same way - by running the plans
+/// against real resources on 2026-09-11: `gcloud firestore databases describe
+/// <name>` answered *unrecognized arguments: (default)* for every database,
+/// because that command takes its database in `--database` and no positional at
+/// all. The synopsis says so plainly, and an argument the command cannot take
+/// is as provable as a flag it must have.
+///
+/// A synopsis names its positionals in capitals, and the value of a flag is
+/// written after `=`, so what is left standing alone is a positional -
+/// `pubsub topics describe TOPIC`, `run services describe (SERVICE :
+/// --namespace=NAMESPACE)` - while `firestore databases describe
+/// [--database=DATABASE]` has none. `GCLOUD_WIDE_FLAG` is every command's
+/// footer, not an argument.
+fn refuse_unwanted_positional(help: &str, line: &CommandLine<'_>) -> Result<(), String> {
+    if line.positionals.is_empty() || takes_a_positional(help) {
+        return Ok(());
+    }
+    Err(format!(
+        "`gcloud {}` takes no positional argument, and this command passes `{}`. Its synopsis: {}",
+        line.words.join(" "),
+        line.positionals.join(" "),
+        synopsis(help)
+    ))
+}
+
+/// Whether the synopsis names an argument that is not a flag's value.
+fn takes_a_positional(help: &str) -> bool {
+    let block = synopsis_block(help);
+    let mut previous_was_equals = false;
+    for word in block.split_whitespace() {
+        let bare = word.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_');
+        let is_placeholder = !bare.is_empty()
+            && bare != "GCLOUD_WIDE_FLAG"
+            && bare
+                .chars()
+                .all(|ch| ch.is_ascii_uppercase() || ch == '_' || ch.is_ascii_digit());
+        if is_placeholder && !previous_was_equals && !word.contains('=') {
+            return true;
+        }
+        previous_was_equals = word.ends_with('=');
+    }
+    false
+}
+
+/// The synopsis on one line, short enough to put in a refusal a person reads -
+/// and in the prompt that asks the AI to write the command again.
+fn synopsis(help: &str) -> String {
+    let text = synopsis_block(help)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if text.len() <= SYNOPSIS_SHOWN {
+        text
+    } else {
+        format!("{}…", &text[..SYNOPSIS_SHOWN])
+    }
+}
+
+/// How much of a synopsis a refusal carries.
+const SYNOPSIS_SHOWN: usize = 220;
+
+/// The SYNOPSIS section of a `--help`, whole: the one indented block after the
+/// heading, since the blank line that follows it starts DESCRIPTION.
+fn synopsis_block(help: &str) -> String {
+    help.replace('\r', "")
+        .split("SYNOPSIS")
+        .nth(1)
+        .map(|after| {
+            after
+                .trim_start_matches('\n')
+                .split("\n\n")
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+/// The flags the SYNOPSIS names outside any bracket, i.e. the required ones.
+fn required_flags(help: &str) -> Vec<String> {
+    let block: Vec<char> = synopsis_block(help).chars().collect();
+
+    let mut flags: Vec<String> = Vec::new();
+    let mut depth = 0_i32;
+    let mut at = 0;
+    while at < block.len() {
+        match block[at] {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth -= 1,
+            '-' if depth <= 0 && block.get(at + 1) == Some(&'-') => {
+                let name: String = block[at..]
+                    .iter()
+                    .take_while(|ch| ch.is_ascii_alphanumeric() || **ch == '-')
+                    .collect();
+                at += name.chars().count();
+                if name.len() > 2 && !flags.contains(&name) {
+                    flags.push(name);
+                }
+                continue;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    flags
 }
 
 /// The part of the Google Cloud check that needs no CLI: is this even a read.
@@ -987,6 +1533,12 @@ mod tests {
         }
         // Placeholders inside a URL are what SQS needs, and that is fine.
         assert!(is_safe_value("https://sqs.<region>.amazonaws.com/<group>/<name>"));
+        // A slot Aime does not fill would be passed to the CLI as those very
+        // characters, and the refusal says which slots there are.
+        assert!(!is_safe_value("<account-id>"));
+        let refused = refuse_value("<account-id>");
+        assert!(refused.contains("placeholder Aime does not fill"), "{refused}");
+        assert!(refused.contains("<name>"), "{refused}");
         assert!(!is_safe_value(""));
         assert!(!is_safe_value(&"x".repeat(VALUE_LIMIT + 1)));
     }
@@ -1019,14 +1571,41 @@ mod tests {
                 "{line}"
             );
         }
-        // gcloud also accepts `--flag=value`; a plan spelled that way is refused
-        // as "not a flag" rather than passed through half-parsed.
+        // A flag Aime adds itself is refused in the joined spelling too, since
+        // that is the same flag.
         assert!(CommandLine::parse_allowing(
-            &args("compute instances describe <path> --zone=<region>"),
+            &split_joined_flags(&args("compute instances describe <path> --project=shop-prod")),
             &GCLOUD_READ_VERBS,
             &[]
         )
         .is_err());
+    }
+
+    /// Every CLI here takes `--flag=value`, and the checks need the flag and
+    /// its value apart. Refusing the joined spelling cost a repair round for
+    /// punctuation alone: measured 2026-09-11, the AI's own fix for a Firestore
+    /// database came back as `--database=<name>`.
+    #[test]
+    fn a_flag_joined_to_its_value_is_read_as_the_two_it_means() {
+        assert_eq!(
+            split_joined_flags(&args("firestore databases describe --database=<name>")),
+            args("firestore databases describe --database <name>")
+        );
+        // The first `=` separates; a value with its own `=` keeps it.
+        assert_eq!(
+            split_joined_flags(&args("logging read --filter=severity=ERROR")),
+            args("logging read --filter severity=ERROR")
+        );
+        // Not a flag, not touched.
+        assert_eq!(
+            split_joined_flags(&args("pubsub topics describe a=b")),
+            args("pubsub topics describe a=b")
+        );
+
+        let tokens = split_joined_flags(&args("logging buckets describe <name> --location=<region>"));
+        let parsed = CommandLine::parse_allowing(&tokens, &GCLOUD_READ_VERBS, &[]).expect("parsed");
+        assert_eq!(parsed.positionals, ["<name>"]);
+        assert_eq!(parsed.flags, [("--location", Some("<region>"))]);
     }
 
     /// Only the ending decides, and only these endings read: `gcloud compute
@@ -1132,6 +1711,7 @@ mod tests {
         let vm = CloudResource {
             id: "//compute.googleapis.com/projects/p/zones/asia-southeast1-b/instances/web-1".into(),
             name: "web-1".into(),
+            cli_name: "web-1".into(),
             kind: "compute.googleapis.com/Instance".into(),
             location: "asia-southeast1-b".into(),
             group: "p".into(),
@@ -1146,6 +1726,32 @@ mod tests {
     }
 
     /// The distinction that decides whether a read waits for a click.
+    /// Measured 2026-09-11 on a real Google account: a service account's
+    /// display name is `Default compute service account` and `gcloud` addresses
+    /// it by its email, so a command line built from the label cannot run - and
+    /// 15 of them did not. A resource from before that field existed falls back
+    /// to the label, which is exactly what it used to get.
+    #[test]
+    fn a_command_gets_the_name_the_cli_takes_and_never_the_label() {
+        let mut account = CloudResource {
+            id: "//iam.googleapis.com/projects/p/serviceAccounts/svc@p.iam.gserviceaccount.com".into(),
+            name: "Default compute service account".into(),
+            cli_name: "svc@p.iam.gserviceaccount.com".into(),
+            kind: "iam.googleapis.com/ServiceAccount".into(),
+            location: "global".into(),
+            group: "p".into(),
+            tags: Default::default(),
+        };
+        assert_eq!(fill("<name>", &account), "svc@p.iam.gserviceaccount.com");
+        assert_eq!(
+            fill("<path>", &account),
+            "projects/p/serviceAccounts/svc@p.iam.gserviceaccount.com"
+        );
+
+        account.cli_name = String::new();
+        assert_eq!(fill("<name>", &account), "Default compute service account");
+    }
+
     #[test]
     fn a_read_of_the_credential_itself_is_raised_to_secret_and_never_lowered() {
         assert!(looks_sensitive(&["secretsmanager", "get-secret-value"]));
@@ -1254,6 +1860,7 @@ mod tests {
         let resource = CloudResource {
             id: "arn:aws:sqs:ap-southeast-2:000000000000:orders".into(),
             name: "orders".into(),
+            cli_name: "orders".into(),
             kind: "sqs".into(),
             location: "ap-southeast-2".into(),
             group: "000000000000".into(),
@@ -1265,6 +1872,220 @@ mod tests {
         );
         assert_eq!(fill("<id>", &resource), resource.id);
         assert_eq!(fill("plain", &resource), "plain");
+    }
+
+    /// Three synopses captured from `gcloud … --help` on this machine
+    /// 2026-09-10. The first is the one that caused the bug: the command
+    /// existed, so the `--help` exit code passed it, and every run of the
+    /// stored plan answered *argument --location: Must be specified*.
+    #[test]
+    fn a_flag_the_cli_calls_required_is_read_out_of_its_own_synopsis() {
+        let bucket = "NAME\n    gcloud logging buckets describe - display information about a bucket\n\nSYNOPSIS\n    gcloud logging buckets describe BUCKET_ID --location=LOCATION\n        [--billing-account=BILLING_ACCOUNT_ID | --folder=FOLDER_ID\n          | --organization=ORGANIZATION_ID | --project=PROJECT_ID]\n        [GCLOUD_WIDE_FLAG ...]\n\nDESCRIPTION\n    Display information about a bucket.\n";
+        assert_eq!(required_flags(bucket), ["--location"]);
+
+        // Nothing required: a topic takes only its name.
+        let topic =
+            "SYNOPSIS\n    gcloud pubsub topics describe TOPIC [GCLOUD_WIDE_FLAG ...]\n\nDESCRIPTION\n";
+        assert!(required_flags(topic).is_empty());
+
+        // A flag inside `( … )` is one side of a choice, not a requirement,
+        // and `[--region]` is plainly optional.
+        let service = "SYNOPSIS\n    gcloud run services describe (SERVICE : --namespace=NAMESPACE)\n        [--region=REGION] [GCLOUD_WIDE_FLAG ...]\n\nDESCRIPTION\n";
+        assert!(required_flags(service).is_empty());
+
+        assert!(required_flags("no synopsis here").is_empty());
+    }
+
+    /// The other half of the same reading, found the same way: running the
+    /// plans against real resources on 2026-09-11 caught `gcloud firestore
+    /// databases describe <name>` answering *unrecognized arguments:
+    /// (default)* for every database. Every synopsis here was captured from
+    /// this machine's own `gcloud`.
+    #[test]
+    fn a_positional_the_cli_does_not_take_is_read_out_of_its_own_synopsis() {
+        let firestore = "SYNOPSIS\n    gcloud firestore databases describe\n        [--database=DATABASE; default=\"(default)\"] [GCLOUD_WIDE_FLAG ...]\n\nDESCRIPTION\n";
+        assert!(!takes_a_positional(firestore));
+
+        // Every flag's value is written after `=`, so none of these is one.
+        let keys = "SYNOPSIS\n    gcloud iam service-accounts keys list --iam-account=IAM_ACCOUNT\n        [--created-before=CREATED_BEFORE]\n        [--managed-by=MANAGED_BY; default=\"any\"] [--filter=EXPRESSION]\n        [--limit=LIMIT] [--page-size=PAGE_SIZE] [--sort-by=[FIELD,...]]\n        [GCLOUD_WIDE_FLAG ...]\n\nDESCRIPTION\n";
+        assert!(!takes_a_positional(keys));
+
+        // `GCLOUD_WIDE_FLAG` is every command's footer, not an argument.
+        let app = "SYNOPSIS\n    gcloud app describe [GCLOUD_WIDE_FLAG ...]\n\nDESCRIPTION\n";
+        assert!(!takes_a_positional(app));
+
+        let topic =
+            "SYNOPSIS\n    gcloud pubsub topics describe TOPIC [GCLOUD_WIDE_FLAG ...]\n\nDESCRIPTION\n";
+        assert!(takes_a_positional(topic));
+
+        // One inside a choice group still is one, which is how Cloud Run
+        // spells a service that can be named or scoped.
+        let service = "SYNOPSIS\n    gcloud run services describe (SERVICE : --namespace=NAMESPACE)\n        [--region=REGION] [GCLOUD_WIDE_FLAG ...]\n\nDESCRIPTION\n";
+        assert!(takes_a_positional(service));
+
+        let refused = refuse_unwanted_positional(
+            firestore,
+            &CommandLine::parse_allowing(
+                &args("firestore databases describe <name>"),
+                &GCLOUD_READ_VERBS,
+                &[],
+            )
+            .expect("a read"),
+        )
+        .expect_err("a positional this command cannot take");
+        assert!(refused.contains("takes no positional"), "{refused}");
+        // The synopsis travels with the refusal, because it is what the AI
+        // needs to write the command again.
+        assert!(refused.contains("[--database=DATABASE"), "{refused}");
+
+        assert!(refuse_unwanted_positional(
+            topic,
+            &CommandLine::parse_allowing(&args("pubsub topics describe <name>"), &GCLOUD_READ_VERBS, &[])
+                .expect("a read"),
+        )
+        .is_ok());
+    }
+
+    /// A fact is the resource's own identity written the way an SDK takes it.
+    /// Every case here is a shape that came out of a real Google account
+    /// (2026-09-10), or a way a model can get one wrong.
+    #[test]
+    fn a_connection_fact_has_to_be_about_this_resource_and_cannot_be_a_credential() {
+        let fact = |label: &str, value: &str| {
+            check_fact(&ConnectionFact {
+                label: label.to_string(),
+                value: value.to_string(),
+            })
+        };
+        assert!(fact("Topic path", "projects/<group>/topics/<name>").is_ok());
+        assert!(fact("Bucket URI", "gs://<name>").is_ok());
+        assert!(fact("Dataset id", "<group>.<name>").is_ok());
+        assert!(fact("Endpoint", "https://<name>-<region>.run.app").is_ok());
+
+        let constant = fact("Docs", "https://cloud.google.com/pubsub").expect_err("no placeholder");
+        assert!(
+            constant.contains("every resource of this kind"),
+            "the refusal says why: {constant}"
+        );
+
+        // A credential cannot be worked out from a name; offering one with a
+        // copy button beside it would be offering a wrong secret.
+        for label in ["API key", "Password", "Access token", "Connection credential"] {
+            let refused = fact(label, "<name>").expect_err("a credential is not a fact");
+            assert!(refused.contains("it takes a read"), "{label}: {refused}");
+        }
+
+        assert!(fact("", "<name>").is_err(), "a fact needs a label");
+        assert!(fact(&"x".repeat(FACT_LABEL_LIMIT + 1), "<name>").is_err());
+        assert!(
+            fact("Shell trouble", "gs://<name>;rm -rf /").is_err(),
+            "a value is pasted by a person and must not read as shell"
+        );
+    }
+
+    /// A plan file written before facts existed is read as a kind nobody has
+    /// asked about - the only reading that lets its facts ever arrive.
+    #[test]
+    fn a_plan_file_from_an_older_build_is_asked_again() {
+        let old = r#"[{"purpose":"overview","label":"gcloud pubsub topics describe","args":["pubsub","topics","describe","<name>"]}]"#;
+        assert_eq!(
+            parse_stored_plan(old).expect("the old array shape is still valid json"),
+            None,
+            "a file that predates facts says nothing about them"
+        );
+
+        // The file this found: an empty array, which shows nothing at all and
+        // which no later open could ever have replaced.
+        assert_eq!(parse_stored_plan("[]").expect("valid json"), None);
+
+        let now = r#"{"reads":[],"facts":[{"label":"Topic path","value":"projects/<group>/topics/<name>"}]}"#;
+        let parsed = parse_stored_plan(now)
+            .expect("the object shape")
+            .expect("an answer");
+        assert_eq!(parsed.facts[0].label, "Topic path");
+        assert!(
+            !parsed.proved,
+            "a file without the field is unproved, and proved again on the next open"
+        );
+
+        // An answer with nothing in it is still an answer once this build has
+        // asked - a kind `gcloud` has no read and no fact for is written as
+        // empty lists, and re-asking that on every open would buy nothing.
+        assert_eq!(
+            parse_stored_plan(r#"{"reads":[],"facts":[],"proved":true}"#).expect("the object shape"),
+            Some(StoredPlan {
+                reads: Vec::new(),
+                facts: Vec::new(),
+                proved: true,
+            })
+        );
+
+        assert!(parse_stored_plan("not json").is_err());
+    }
+
+    /// The gate on the second CLI: `bq` for BigQuery, and nothing else
+    /// anywhere. The AI names the program, so this is the whole of what keeps
+    /// its answer from widening what Aime will run.
+    #[test]
+    fn a_second_cli_is_allowed_for_the_one_service_it_reads() {
+        assert_eq!(
+            program_of("gcp", "bigquery.googleapis.com/Dataset", "bq"),
+            Ok(ReadProgram::Bq)
+        );
+        assert_eq!(
+            program_of("gcp", "pubsub.googleapis.com/Topic", ""),
+            Ok(ReadProgram::Main)
+        );
+        assert_eq!(program_of("aws", "lambda/function", ""), Ok(ReadProgram::Main));
+
+        let wrong_kind = program_of("gcp", "pubsub.googleapis.com/Topic", "bq").expect_err("not BigQuery");
+        assert!(wrong_kind.contains("is not a BigQuery resource"), "{wrong_kind}");
+
+        let wrong_cloud =
+            program_of("aws", "bigquery.googleapis.com/Dataset", "bq").expect_err("not Google Cloud");
+        assert!(
+            wrong_cloud.contains("is not a BigQuery resource"),
+            "{wrong_cloud}"
+        );
+
+        for named in ["gsutil", "firebase", "sh", "python"] {
+            let refused = program_of("gcp", "bigquery.googleapis.com/Dataset", named)
+                .expect_err("only the CLIs Aime knows");
+            assert!(refused.contains(named), "the refusal names it: {refused}");
+        }
+    }
+
+    /// `bq` is one command word and then its arguments, and its flags carry
+    /// underscores - which no `gcloud`, `az` or `aws` flag does, and which the
+    /// parser refused as "not a flag" until it was measured.
+    #[test]
+    fn a_bigquery_command_line_is_one_word_and_may_carry_underscored_flags() {
+        let tokens = args("show <name>");
+        let parsed = CommandLine::parse_single_word(&tokens).expect("parsed");
+        assert_eq!(parsed.words, ["show"]);
+        assert_eq!(parsed.positionals, ["<name>"]);
+
+        let tokens = args("ls --max_results 50 <name>");
+        let parsed = CommandLine::parse_single_word(&tokens).expect("parsed");
+        assert_eq!(parsed.flags, [("--max_results", Some("50"))]);
+
+        // `--project_id` is `bq`'s spelling of the scope Aime adds, so a plan
+        // may not carry it any more than it may carry `--project`.
+        let tokens = args("show --project_id <group> <name>");
+        let refused = CommandLine::parse_single_word(&tokens)
+            .err()
+            .expect("`--project_id` is Aime's to add");
+        assert!(refused.contains("`--project_id` is Aime's to add"), "{refused}");
+
+        assert!(is_flag_name("max_results"));
+        assert!(
+            !is_flag_name("_leading"),
+            "a flag name still starts with a letter"
+        );
+        assert!(
+            !is_command_word("max_results"),
+            "a command word holds no underscore, and the two rules stay apart"
+        );
     }
 
     #[test]

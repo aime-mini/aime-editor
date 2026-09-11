@@ -163,7 +163,11 @@ const GCLOUD_RULES = [
     "asked (enable an API, allow unauthenticated access) must be an explicit step or flag. A command or read " +
     "that needs a location names it itself (`--region`, `asia-southeast1`).",
   "- A deployment adds and updates. Never `delete`, `destroy`, `purge`, `undelete` or a `remove-*` command; " +
-    "never the `projects`, `billing`, `organizations`, `auth`, `config` or `components` groups.",
+    "never the `projects`, `billing`, `organizations`, `auth`, `config` or `components` groups - with one " +
+    "exception: `projects add-iam-policy-binding` IS allowed, because a source build needs its service " +
+    "account to have the roles for it. Its `--member` must be a `serviceAccount:` (never a person, a group " +
+    "or `allUsers`) and its `--role` must be the narrow role that job needs - `roles/owner`, `roles/editor` " +
+    "and the IAM-admin roles are refused.",
   "- Values hold letters, digits and `_.:/=,*@+-` only - no spaces, no quotes, nothing a shell could misread.",
 ].join("\n");
 

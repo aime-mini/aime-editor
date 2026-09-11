@@ -1,18 +1,29 @@
 import { createElement, useMemo, useState } from "react";
-import { ArrowLeft, Boxes, ChevronDown, ChevronUp, TriangleAlert, type LucideIcon } from "lucide-react";
+import {
+  ArrowLeft,
+  Boxes,
+  ChevronDown,
+  ChevronUp,
+  MapPin,
+  TriangleAlert,
+  type LucideIcon,
+} from "lucide-react";
 import { useT } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
 import { classesOfKind, iconOfKind, shortKind, type Tier } from "../lib/cloudIcons";
 import {
   mapOf,
   nodesOf,
+  regionsOf,
   sameBasis,
+  shapeOf,
   UNTAGGED,
   type AppGroup,
   type Basis,
   type BasisOption,
+  type KindNode,
 } from "../lib/cloudMap";
-import type { CloudResource } from "../stores/cloud";
+import { useCloud, type CloudResource } from "../stores/cloud";
 
 /**
  * What is deployed in one account, drawn as applications rather than listed.
@@ -37,12 +48,15 @@ export function CloudMap({
   basis,
   onBasis,
   onOpen,
+  onKind,
 }: {
   resources: CloudResource[];
   /** The person's own choice, if they made one. */
   basis: Basis | undefined;
   onBasis: (basis: Basis) => void;
   onOpen: (resource: CloudResource) => void;
+  /** Shows every resource of one type, in the list where they can be opened. */
+  onKind: (kind: string) => void;
 }) {
   const t = useT();
   const map = useMemo(() => mapOf(resources, basis), [resources, basis]);
@@ -88,7 +102,7 @@ export function CloudMap({
 
       <div className="min-h-0 min-w-0 flex-1 overflow-auto">
         {focus === null ? (
-          <AppGrid apps={map.apps} onFocus={setFocusName} />
+          <EstateOverview resources={resources} apps={map.apps} onFocus={setFocusName} onKind={onKind} />
         ) : (
           <AppDiagram
             app={focus}
@@ -227,60 +241,111 @@ export const TIER_LABELS: Record<Tier, TranslationKey> = {
 };
 
 /**
- * Every application at once, each card saying what it is made of.
+ * The account before an application is picked: what it is built from, and what
+ * it could not attribute to anything.
  *
- * A card shows kinds and counts per tier rather than resource names: the
- * question at this level is "what does this estate consist of", and the names
- * are one click further in.
+ * It used to be one card per application, each card the same list of kinds -
+ * with 72 applications made mostly of Lambda that is 72 cards saying the same
+ * thing, beside a rail already listing every one of them (reported 2026-09-09:
+ * "application cũng khó nhìn, nhìn vô éo hiểu gì"). The rail answers which
+ * applications there are and how big they are, so this pane answers only what
+ * the rail cannot: how much of the account nothing claims, which services it
+ * runs on, and where they are. Nothing here repeats the rail.
  */
-function AppGrid({ apps, onFocus }: { apps: AppGroup[]; onFocus: (name: string) => void }) {
+function EstateOverview({
+  resources,
+  apps,
+  onFocus,
+  onKind,
+}: {
+  resources: CloudResource[];
+  apps: AppGroup[];
+  onFocus: (name: string) => void;
+  onKind: (kind: string) => void;
+}) {
   const t = useT();
+  const services = useMemo(() => nodesOf(resources), [resources]);
+  const regions = useMemo(() => regionsOf(resources), [resources]);
+  const unattributed = apps.find((app) => app.name === UNTAGGED);
+  const mostOfAKind = services.at(0)?.resources.length ?? 1;
+
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3 p-3">
-      {apps.map((app) => {
-        const untagged = app.name === UNTAGGED;
-        return (
-          <button
-            key={app.name}
-            onClick={() => {
-              onFocus(app.name);
-            }}
-            className={`flex flex-col rounded-xl border bg-panel text-left transition-colors hover:border-accent ${
-              untagged ? "border-dashed border-line" : "border-line"
-            }`}
-          >
-            <span className="flex items-center gap-2 border-b border-line px-3 py-2">
-              {untagged ? (
-                <TriangleAlert size={14} className="shrink-0 text-warn" />
-              ) : (
-                <Boxes size={14} className="shrink-0 text-accent" />
-              )}
-              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">
-                {untagged ? t("cloud.appUnnamed") : app.name}
+    <div className="flex flex-col gap-5 p-4">
+      {unattributed !== undefined && (
+        <button
+          onClick={() => {
+            onFocus(unattributed.name);
+          }}
+          className="flex items-start gap-2 rounded-lg border border-dashed border-warn/40 bg-warn/5 px-3 py-2 text-left hover:border-warn"
+        >
+          <TriangleAlert size={14} className="mt-0.5 shrink-0 text-warn" />
+          <span className="text-[11.5px] text-muted">
+            {t("cloud.gapRow", {
+              count: unattributed.resources.length,
+              share: Math.round((unattributed.resources.length / resources.length) * 100),
+            })}
+          </span>
+        </button>
+      )}
+
+      <section className="flex flex-col gap-2">
+        <h3 className="text-[11px] tracking-wide text-muted uppercase">{t("cloud.builtFrom")}</h3>
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-x-6 gap-y-1">
+          {services.slice(0, 24).map((node) => (
+            <button
+              key={node.kind}
+              onClick={() => {
+                onKind(node.kind);
+              }}
+              title={t("cloud.openKind", { kind: shortKind(node.kind) })}
+              className="flex items-center gap-2 rounded px-1 text-left hover:bg-elevated hover:text-fg"
+            >
+              <ServiceBadge kind={node.kind} />
+              <span className="min-w-0 flex-1 truncate" title={node.kind}>
+                {shortKind(node.kind)}
               </span>
-              <span className="shrink-0 rounded-full bg-elevated px-2 py-0.5 text-[10px] tabular-nums text-muted">
-                {t("cloud.resourceCount", { count: app.resources.length })}
+              <span className="flex h-2 w-20 shrink-0 items-center">
+                <span
+                  className={`h-full rounded-sm ${classesOfKind(node.kind).bar}`}
+                  style={barWidth(node.resources.length, mostOfAKind)}
+                />
               </span>
-            </span>
-            <span className="flex flex-col gap-1.5 px-3 py-2">
-              {app.tiers.map(([tier, owned]) => (
-                <span key={tier} className="flex items-start gap-2">
-                  <span className="w-24 shrink-0 pt-0.5 text-[10px] tracking-wide text-muted uppercase">
-                    {t(TIER_LABELS[tier])}
-                  </span>
-                  <span className="flex min-w-0 flex-1 flex-wrap gap-1">
-                    {nodesOf(owned).map((node) => (
-                      <KindChip key={node.kind} kind={node.kind} count={node.resources.length} />
-                    ))}
-                  </span>
-                </span>
-              ))}
-            </span>
-          </button>
-        );
-      })}
+              <span className="w-12 shrink-0 text-right tabular-nums text-muted">
+                {node.resources.length}
+              </span>
+            </button>
+          ))}
+        </div>
+        {services.length > 24 && (
+          <p className="text-[11px] text-muted">{t("cloud.moreKinds", { count: services.length - 24 })}</p>
+        )}
+      </section>
+
+      {regions.length > 0 && (
+        <section className="flex flex-col gap-2">
+          <h3 className="text-[11px] tracking-wide text-muted uppercase">{t("cloud.regionsHere")}</h3>
+          <div className="flex flex-wrap gap-1.5">
+            {regions.map((region) => (
+              <span
+                key={region.name}
+                className="flex items-center gap-1 rounded-md bg-elevated px-1.5 py-0.5 text-[11px]"
+              >
+                <MapPin size={10} className="shrink-0 text-muted" />
+                {region.name}
+                <span className="tabular-nums text-muted">{region.count}</span>
+              </span>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
+}
+
+/** A bar's width as a share of the biggest one, never invisible. */
+function barWidth(value: number, largest: number): { width: string } {
+  const share = largest === 0 ? 0 : value / largest;
+  return { width: `${String(Math.max(2, share * 100))}%` };
 }
 
 /** A kind and how many of it, as one small coloured chip. */
@@ -317,13 +382,15 @@ export function ServiceBadge({ kind, size = 4 }: { kind: string; size?: 4 | 5 | 
 }
 
 /**
- * One application as a diagram: lanes for its tiers, boxes for its kinds.
+ * One application as a diagram: the request path left to right, always.
  *
- * The three request-path tiers run left to right with the flow drawn between
- * them; what surrounds the application - monitoring, identity, registries -
- * sits in a band underneath, because it is not on the path a request takes.
- * A lane the application does not have is left out rather than drawn empty,
- * so a batch job with no edge is two lanes, not three with a hole.
+ * The lanes are drawn whether the application has them or not, and that is the
+ * change that made this readable (reported 2026-09-09). An application of 31
+ * functions and nothing else used to be one wide box with 31 names in it - no
+ * shape, no arrow, indistinguishable from the resource list it was supposed to
+ * replace. Now the same application is three lanes with two of them saying
+ * "nothing here", which is a fact worth seeing: nothing takes requests, nothing
+ * holds state, it is a back-end that runs on a trigger.
  */
 function AppDiagram({
   app,
@@ -335,8 +402,7 @@ function AppDiagram({
   onBack: () => void;
 }) {
   const t = useT();
-  const path = app.tiers.filter(([tier]) => tier !== "support");
-  const support = app.tiers.find(([tier]) => tier === "support");
+  const shape = useMemo(() => shapeOf(app), [app]);
   const untagged = app.name === UNTAGGED;
 
   return (
@@ -360,20 +426,27 @@ function AppDiagram({
         <span className="shrink-0 text-muted">
           {t("cloud.resourceCount", { count: app.resources.length })}
         </span>
+        {shape.regions.slice(0, 3).map((region) => (
+          <span key={region.name} className="flex shrink-0 items-center gap-1 text-[11px] text-muted">
+            <MapPin size={10} />
+            {region.name}
+          </span>
+        ))}
       </div>
 
-      {path.length > 0 && (
-        <div className="flex items-stretch">
-          {path.map(([tier, owned], index) => (
-            <div key={tier} className="flex min-w-0 flex-1 items-stretch">
-              <Lane tier={tier} resources={owned} onOpen={onOpen} />
-              {index < path.length - 1 && <FlowArrow />}
-            </div>
-          ))}
+      {/* Three lanes, top to bottom, the same shape for every application - so
+          the picture is learnt once and read thereafter. Stacked rather than
+          side by side because this panel shares its width with the file tree
+          and the chat: measured 2026-09-09, three columns in 460 px truncated
+          every lane name to "NƠI ..." and every resource to "Imp...". */}
+      {shape.path.map(([tier, nodes], index) => (
+        <div key={tier} className="flex flex-col">
+          <Lane tier={tier} nodes={nodes} onOpen={onOpen} />
+          {index < shape.path.length - 1 && <FlowArrow />}
         </div>
-      )}
+      ))}
 
-      {support !== undefined && <Lane tier="support" resources={support[1]} onOpen={onOpen} horizontal />}
+      {shape.support.length > 0 && <Lane tier="support" nodes={shape.support} onOpen={onOpen} />}
 
       <p className="text-[11px] text-muted">{t("cloud.flowNote")}</p>
     </div>
@@ -383,43 +456,49 @@ function AppDiagram({
 /** The arrow between two lanes: the direction a request travels. */
 function FlowArrow() {
   return (
-    <svg width="32" height="24" viewBox="0 0 32 24" className="shrink-0 self-center text-muted" aria-hidden>
-      <line x1="2" y1="12" x2="22" y2="12" stroke="currentColor" strokeWidth="1.5" />
-      <polygon points="21,6 31,12 21,18" fill="currentColor" />
+    <svg width="24" height="22" viewBox="0 0 24 22" className="my-1 self-center text-line" aria-hidden>
+      <line x1="12" y1="1" x2="12" y2="14" stroke="currentColor" strokeWidth="1.5" />
+      <polygon points="6,13 12,21 18,13" fill="currentColor" />
     </svg>
   );
 }
 
-/** One tier of one application, holding a box per kind. */
+/** One lane of the diagram: a box per kind, or a word for having none. */
 function Lane({
   tier,
-  resources,
+  nodes,
   onOpen,
-  horizontal = false,
 }: {
   tier: Tier;
-  resources: CloudResource[];
+  nodes: KindNode[];
   onOpen: (resource: CloudResource) => void;
-  horizontal?: boolean;
 }) {
   const t = useT();
-  const nodes = nodesOf(resources);
+  const total = nodes.reduce((sum, node) => sum + node.resources.length, 0);
+
+  // An empty lane is one thin line. It still has to be there - "nothing takes
+  // requests" is the fact the picture is for - but it must not take the room
+  // of a lane that holds something.
+  if (nodes.length === 0) {
+    return (
+      <section className="flex items-center gap-1.5 rounded-lg border border-dashed border-line/60 px-2.5 py-1.5 text-[10px] tracking-wide text-muted uppercase">
+        <span className="size-1.5 rounded-full bg-line" />
+        <span className="min-w-0 truncate">{t(TIER_LABELS[tier])}</span>
+        <span className="normal-case opacity-70">- {t("cloud.laneEmpty")}</span>
+      </section>
+    );
+  }
+
   return (
-    <section className="flex min-w-0 flex-1 flex-col rounded-xl border border-dashed border-line bg-bg/40 p-2.5">
+    <section className="flex min-w-0 flex-col rounded-xl border border-dashed border-line bg-bg/40 p-2.5">
       <header className="mb-2 flex items-center gap-1.5 px-1 text-[10px] tracking-wide text-muted uppercase">
         <span className={`size-1.5 rounded-full ${TIER_BAR[tier]}`} />
         <span className="min-w-0 flex-1 truncate">{t(TIER_LABELS[tier])}</span>
-        <span className="tabular-nums">{resources.length}</span>
+        <span className="tabular-nums">{total}</span>
       </header>
-      <div className={horizontal ? "flex flex-wrap gap-2" : "flex flex-col gap-2"}>
+      <div className="flex flex-wrap gap-2">
         {nodes.map((node) => (
-          <KindBox
-            key={node.kind}
-            kind={node.kind}
-            resources={node.resources}
-            onOpen={onOpen}
-            wide={!horizontal}
-          />
+          <KindBox key={node.kind} kind={node.kind} resources={node.resources} onOpen={onOpen} />
         ))}
       </div>
     </section>
@@ -437,21 +516,20 @@ function KindBox({
   kind,
   resources,
   onOpen,
-  wide,
 }: {
   kind: string;
   resources: CloudResource[];
   onOpen: (resource: CloudResource) => void;
-  wide: boolean;
 }) {
   const t = useT();
+  const warmPlan = useCloud((s) => s.warmPlan);
   const [open, setOpen] = useState(false);
   const classes = classesOfKind(kind);
   const shown = open ? resources : resources.slice(0, NAMES_SHOWN);
   const hidden = resources.length - shown.length;
 
   return (
-    <div className={`flex flex-col rounded-lg border border-line bg-panel shadow-sm ${wide ? "" : "w-56"}`}>
+    <div className="flex min-w-56 flex-1 flex-col rounded-lg border border-line bg-panel shadow-sm">
       <div className={`flex items-center gap-2 rounded-t-lg px-2 py-1.5 ${classes.chip}`}>
         {createElement(iconOfKind(kind), { size: 14, className: `shrink-0 ${classes.icon}` })}
         <span className="min-w-0 flex-1 truncate font-semibold" title={kind}>
@@ -467,6 +545,9 @@ function KindBox({
             key={resource.id}
             onClick={() => {
               onOpen(resource);
+            }}
+            onPointerEnter={() => {
+              warmPlan(resource);
             }}
             title={`${resource.name}${resource.location === "" ? "" : ` · ${resource.location}`}`}
             className="flex items-center gap-1.5 px-2 py-0.5 text-left hover:bg-elevated"

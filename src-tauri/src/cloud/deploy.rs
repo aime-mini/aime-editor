@@ -131,8 +131,19 @@ const OWN_FLAGS: [&str; 4] = ["--project", "--account", "--format", "--quiet"];
 /// refused `--region`, the AI dropped it, and the command would have failed).
 const LOCATION_FLAGS: [&str; 3] = ["--region", "--zone", "--location"];
 
-/// Command words no deployment needs. A deploy creates and updates; anything
-/// that removes is somebody's deliberate act, made in a terminal.
+/// A deploy's reads are not about a kind of resource, so they run under the
+/// cloud's own CLI and under no other - see `reads::program_of`.
+const NO_KIND: &str = "";
+
+/// Command words no DEPLOYMENT needs. A deploy creates and updates; removing
+/// something is a separate, deliberate act.
+///
+/// The resource panel's operations go through this same checker with
+/// `removal` set, because deleting a resource IS day-to-day work and refusing
+/// it outright only sends someone to the web console to do it with less
+/// ceremony than Aime can offer: there the command is shown in full first, and
+/// the person has to type the resource's own name before the button works
+/// (`components/CloudOps.tsx`).
 const REFUSED_WORDS: [&str; 5] = ["delete", "destroy", "undelete", "purge", "abandon"];
 const REFUSED_WORD_PREFIX: &str = "remove-";
 
@@ -146,6 +157,40 @@ const REFUSED_GROUPS: [&str; 6] = [
     "config",
     "components",
 ];
+
+/// The one command under `projects` a deployment legitimately needs.
+///
+/// Measured 2026-09-10 on the first deploy that got past billing: `gcloud run
+/// deploy --source` failed with *Build failed because the default service
+/// account is missing required IAM permissions* - the change Google made to
+/// new projects, which every source deploy now meets. The AI diagnosed it
+/// exactly and then said it was not allowed to fix it, because the fix is a
+/// project-level grant. Refusing that sends the person to the web console for
+/// the commonest failure there is, which is the opposite of the point.
+///
+/// So it is allowed, and fenced by `refuse_unsafe_grant`: only ADDING a
+/// binding, only to a service account, and never a role that hands out the
+/// right to hand out rights. The person still sees the whole command on the
+/// confirm page before anything runs.
+const PROJECT_IAM_GRANT: &str = "add-iam-policy-binding";
+
+/// Roles a plan may not grant, because each is a way to take everything else.
+///
+/// `editor` and `owner` are the blanket grants; the other four are the
+/// escalation paths - the right to change IAM, to mint service-account keys,
+/// or to become another account.
+const REFUSED_ROLES: [&str; 6] = [
+    "roles/owner",
+    "roles/editor",
+    "roles/iam.securityAdmin",
+    "roles/iam.serviceAccountKeyAdmin",
+    "roles/iam.serviceAccountTokenCreator",
+    "roles/resourcemanager.projectIamAdmin",
+];
+
+/// What a binding must name as its member: an identity that belongs to a
+/// machine, never a person, a group, a domain or `allUsers`.
+const SERVICE_ACCOUNT_MEMBER: &str = "serviceAccount:";
 
 /// Flag families that replace or wipe what a service already has (gcloud's
 /// own convention: `--set-*` replaces, `--update-*` merges, `--clear-*` wipes,
@@ -171,14 +216,16 @@ pub async fn cloud_check_deploy(
     cloud_id: String,
     existing: bool,
     plan: DeployPlan,
+    removal: Option<bool>,
 ) -> Result<CheckedPlan, String> {
     if cloud_id != GCP {
         return Err(format!("Aime does not deploy to {cloud_id} yet"));
     }
+    let removal = removal.unwrap_or(false);
     let program = program_for(&app, &cloud_id);
     let mut checked = CheckedPlan::default();
     for step in plan.steps {
-        match check_step(&program, &step, existing).await {
+        match check_step(&program, &step, existing, removal).await {
             Ok(()) => checked.steps.push(step),
             Err(reason) => checked.rejected.push(Rejected {
                 part: PlanPart::Step,
@@ -188,7 +235,7 @@ pub async fn cloud_check_deploy(
         }
     }
     for keep in plan.keep {
-        match check_read_allowing(&program, &cloud_id, &keep.read, &LOCATION_FLAGS).await {
+        match check_read_allowing(&program, &cloud_id, NO_KIND, &keep.read, &LOCATION_FLAGS).await {
             Ok(read) => checked.keep.push(KeepRead { read, ..keep }),
             Err(reason) => checked.rejected.push(Rejected {
                 part: PlanPart::Keep,
@@ -198,7 +245,7 @@ pub async fn cloud_check_deploy(
         }
     }
     if let Some(prove) = plan.prove {
-        match check_read_allowing(&program, &cloud_id, &prove.read, &LOCATION_FLAGS).await {
+        match check_read_allowing(&program, &cloud_id, NO_KIND, &prove.read, &LOCATION_FLAGS).await {
             Ok(read) => checked.prove = Some(ProveRead { read, ..prove }),
             Err(reason) => checked.rejected.push(Rejected {
                 part: PlanPart::Prove,
@@ -221,6 +268,10 @@ pub struct StepRequest {
     pub step: DeployStep,
     /// The project directory the command runs in - `--source .` means this.
     pub cwd: String,
+    /// Whether this caller is allowed to remove something: the resource
+    /// panel's operations are, a deployment is not. Absent means not.
+    #[serde(default)]
+    pub removal: bool,
 }
 
 /// Runs one confirmed step, streaming its output as `exec:output` under `id`.
@@ -239,7 +290,7 @@ pub async fn cloud_deploy_step(
         return Err(format!("Aime does not deploy to {} yet", request.cloud_id));
     }
     let line = StepLine::parse(&request.step.args, request.existing)?;
-    line.refuse_forbidden()?;
+    line.refuse_forbidden(request.removal)?;
     let program = program_for(&app, &request.cloud_id);
     let args = scoped(&request.step.args, &request.account);
     let mut command = cli_command(&program, &args);
@@ -270,7 +321,7 @@ pub async fn cloud_deploy_read(
         return Err(format!("Aime does not deploy to {cloud_id} yet"));
     }
     let program = program_for(&app, &cloud_id);
-    let checked = check_read_allowing(&program, &cloud_id, &read, &LOCATION_FLAGS).await?;
+    let checked = check_read_allowing(&program, &cloud_id, NO_KIND, &read, &LOCATION_FLAGS).await?;
     let mut args = scoped(&checked.args, &account);
     args.extend(["--format".into(), "json".into()]);
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -326,9 +377,9 @@ fn scoped(args: &[String], account: &CloudAccount) -> Vec<String> {
 }
 
 /// Every check a step has to pass: the shape rules, then the CLI's own `--help`.
-async fn check_step(program: &str, step: &DeployStep, existing: bool) -> Result<(), String> {
+async fn check_step(program: &str, step: &DeployStep, existing: bool, removal: bool) -> Result<(), String> {
     let line = StepLine::parse(&step.args, existing)?;
-    line.refuse_forbidden()?;
+    line.refuse_forbidden(removal)?;
     line.words_exist(program).await
 }
 
@@ -395,9 +446,12 @@ impl<'a> StepLine<'a> {
     }
 
     /// The words a deployment must never say, wherever they stand.
-    fn refuse_forbidden(&self) -> Result<(), String> {
+    fn refuse_forbidden(&self, removal: bool) -> Result<(), String> {
         let first = self.heads[0];
         if REFUSED_GROUPS.contains(&first) {
+            if first == "projects" && self.heads.get(1) == Some(&PROJECT_IAM_GRANT) {
+                return self.refuse_unsafe_grant();
+            }
             return Err(format!("`{first}` manages the account, not a deployment"));
         }
         if let Some(word) = self
@@ -405,8 +459,44 @@ impl<'a> StepLine<'a> {
             .iter()
             .find(|word| REFUSED_WORDS.contains(word) || word.starts_with(REFUSED_WORD_PREFIX))
         {
+            if !removal {
+                return Err(format!(
+                    "`{word}` removes something; a deployment only adds and updates"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The fence around the one project-level grant a deployment may make.
+    ///
+    /// A binding is `--member <who> --role <what>`; both have to be there and
+    /// both have to be narrow, or the step is refused with words the AI can
+    /// act on. Nothing here decides WHICH role a build needs - that is the
+    /// AI's to know and the CLI's to accept; Aime only says which grants a
+    /// deployment may never make.
+    fn refuse_unsafe_grant(&self) -> Result<(), String> {
+        let value_of = |name: &str| {
+            self.flags
+                .iter()
+                .find(|(flag, _)| *flag == name)
+                .and_then(|(_, value)| *value)
+        };
+        let Some(member) = value_of("--member") else {
+            return Err("a binding needs `--member`".into());
+        };
+        if !member.starts_with(SERVICE_ACCOUNT_MEMBER) {
             return Err(format!(
-                "`{word}` removes something; a deployment only adds and updates"
+                "`{member}` is not a service account; a deployment may grant a project role \
+                 only to a `serviceAccount:` - a person or `allUsers` is somebody's own decision"
+            ));
+        }
+        let Some(role) = value_of("--role") else {
+            return Err("a binding needs `--role`".into());
+        };
+        if REFUSED_ROLES.contains(&role) {
+            return Err(format!(
+                "`{role}` can grant every other role; name the narrow role this actually needs"
             ));
         }
         Ok(())
@@ -470,7 +560,13 @@ mod tests {
 
     fn shape(args: &[&str], existing: bool) -> Result<(), String> {
         let owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
-        StepLine::parse(&owned, existing)?.refuse_forbidden()
+        StepLine::parse(&owned, existing)?.refuse_forbidden(false)
+    }
+
+    /// The same line as the resource panel checks it: removal allowed.
+    fn op_shape(args: &[&str]) -> Result<(), String> {
+        let owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        StepLine::parse(&owned, true)?.refuse_forbidden(true)
     }
 
     #[test]
@@ -515,6 +611,96 @@ mod tests {
         let cleared = shape(&["run", "services", "update", "web", "--clear-env-vars"], true)
             .expect_err("--clear-* wipes");
         assert!(cleared.contains("--update-env-vars"));
+    }
+
+    /// The grant every source deploy needs, and the three ways it could be
+    /// abused. Written against the failure a real deploy hit 2026-09-10:
+    /// `gcloud run deploy --source` refused because
+    /// `130881371924-compute@developer.gserviceaccount.com` had no build roles.
+    #[test]
+    fn a_build_service_account_can_be_granted_its_role_but_not_the_keys_to_the_project() {
+        let grant = |member: &str, role: &str| {
+            shape(
+                &[
+                    "projects",
+                    "add-iam-policy-binding",
+                    // The project is this command's positional and the AI knows
+                    // it; `--project`, which Aime adds, is a flag and stays
+                    // Aime's.
+                    "shop-prod-1234",
+                    "--member",
+                    member,
+                    "--role",
+                    role,
+                ],
+                false,
+            )
+        };
+        let build_account = "serviceAccount:130881371924-compute@developer.gserviceaccount.com";
+        assert!(
+            grant(build_account, "roles/cloudbuild.builds.builder").is_ok(),
+            "the one grant that makes a source build work has to be possible"
+        );
+
+        for role in [
+            "roles/owner",
+            "roles/editor",
+            "roles/resourcemanager.projectIamAdmin",
+        ] {
+            let refused = grant(build_account, role).expect_err("a blanket role is refused");
+            assert!(refused.contains(role), "the refusal names the role: {refused}");
+        }
+        assert!(
+            grant("allUsers", "roles/cloudbuild.builds.builder").is_err(),
+            "a project role is for a machine identity, never for everyone"
+        );
+        assert!(
+            grant("user:someone@example.com", "roles/cloudbuild.builds.builder").is_err(),
+            "granting a person a project role is that person's own decision"
+        );
+        assert!(
+            shape(&["projects", "add-iam-policy-binding", "shop-prod-1234"], false).is_err(),
+            "a binding with no member and no role is not a binding"
+        );
+        assert!(
+            shape(
+                &["projects", "remove-iam-policy-binding", "shop-prod-1234"],
+                false
+            )
+            .is_err(),
+            "the exception is for adding only"
+        );
+        assert!(
+            shape(
+                &["projects", "set-iam-policy", "<project>", "--member", "x"],
+                false
+            )
+            .is_err(),
+            "replacing the whole policy is not adding a binding"
+        );
+    }
+
+    /// Deleting a resource is day-to-day work, and refusing it only sends
+    /// someone to the web console to do the same thing with less ceremony. So
+    /// the resource panel's operations may remove; a deployment still may not,
+    /// and neither may touch the account either way.
+    #[test]
+    fn the_resource_panel_may_remove_what_a_deployment_may_not() {
+        for command in [
+            &["run", "services", "delete", "web"][..],
+            &["run", "services", "remove-iam-policy-binding", "web"][..],
+            &["pubsub", "topics", "delete", "orders"][..],
+        ] {
+            assert!(shape(command, false).is_err(), "a deployment does not remove");
+            assert!(
+                op_shape(command).is_ok(),
+                "the panel does, with the name typed out"
+            );
+        }
+        // Allowing removal opens exactly that, and nothing else.
+        assert!(op_shape(&["auth", "revoke"]).is_err());
+        assert!(op_shape(&["config", "unset", "project"]).is_err());
+        assert!(op_shape(&["projects", "delete", "shop-prod-1234"]).is_err());
     }
 
     #[test]

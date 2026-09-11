@@ -32,6 +32,8 @@ let reads: Record<string, string[]> = {};
 /** What each successive Rust check refuses; a check past the end of the queue passes everything. */
 let refusals: { part: "step"; label: string; reason: string }[][] = [];
 let probeStatus = 200;
+/** What the service's own root answers, which the prove step asks separately. */
+let rootStatus = 200;
 
 const account: CloudAccount = {
   id: "my-project",
@@ -46,6 +48,7 @@ const account: CloudAccount = {
 const service: CloudResource = {
   id: "//run.googleapis.com/projects/my-project/locations/asia-southeast1/services/web",
   name: "web",
+  cliName: "web",
   kind: "run.googleapis.com/Service",
   location: "asia-southeast1",
   group: "my-project",
@@ -143,12 +146,17 @@ vi.mock("@tauri-apps/api/core", () => ({
           clipped: false,
         });
       }
-      case "cloud_http_probe":
+      case "cloud_http_probe": {
+        // Answered per URL: a service can serve `/` and still refuse the
+        // health path the plan chose.
+        const asked = (args as { url?: string }).url ?? "";
+        const status = asked.endsWith("/") ? rootStatus : probeStatus;
         return Promise.resolve({
-          status: probeStatus,
+          status,
           durationMs: 42,
-          bodyHead: probeStatus === 200 ? "ok" : "Service Unavailable",
+          bodyHead: status === 200 ? "ok" : "Service Unavailable",
         });
+      }
       default:
         return Promise.resolve(undefined);
     }
@@ -203,6 +211,7 @@ beforeEach(() => {
   reads = { "describe web": [DESCRIBED] };
   refusals = [];
   probeStatus = 200;
+  rootStatus = 200;
   useDeploy.setState({ slots: {}, open: null });
   useWorkspace.setState({ rootPath: "C:\\proj\\shop" });
   useCloud.setState({
@@ -350,14 +359,16 @@ describe("deploying", () => {
 
   it("treats a service that does not answer as a failure for the AI to fix, then proves again", async () => {
     await planned();
+    // Down everywhere, root included: that is a service that never started,
+    // and it is the AI's to fix. Both come back once the first prove is over -
+    // a prove that fails asks the path and then the root, so two calls.
     probeStatus = 503;
+    rootStatus = 503;
     replies = ["written", REVISION];
-    let probes = 0;
     const unsubscribe = useDeploy.subscribe(() => {
-      const made = calls.filter((call) => call.command === "cloud_http_probe").length;
-      if (made > probes) {
-        probes = made;
+      if (calls.filter((call) => call.command === "cloud_http_probe").length >= 2) {
         probeStatus = 200;
+        rootStatus = 200;
       }
     });
     await useDeploy.getState().confirm(SLOT);
@@ -366,7 +377,46 @@ describe("deploying", () => {
     expect(stage()).toMatchObject({ kind: "done" });
     expect(turns[3].prompt).toContain("The service answered 503, not 200.");
     expect(turns[3].prompt).toContain("Service Unavailable");
-    expect(calls.filter((call) => call.command === "cloud_http_probe")).toHaveLength(2);
+    // Three, not two: a probe that comes back wrong asks the service's root
+    // before any verdict, because a working service with a health path Cloud
+    // Run answers itself looks exactly like a service that never started
+    // (measured 2026-09-10 - `/healthz` got Google's own 404 while `/` served).
+    const probeCalls = calls.filter((call) => call.command === "cloud_http_probe");
+    expect(probeCalls).toHaveLength(3);
+    expect(probeCalls[1].args).toMatchObject({ url: "https://web-abc.a.run.app/" });
+  });
+
+  it("says the service is serving when only the health path the plan chose is wrong", async () => {
+    // Measured 2026-09-10 on a deploy that really worked: Cloud Run answered
+    // `/healthz` itself with Google's 404 page and never reached the
+    // container, while `/` served. Reported as a plain failure, that sends
+    // somebody hunting a service that is already up.
+    await planned();
+    probeStatus = 404;
+    rootStatus = 200;
+    replies = ["written", REVISION, REVISION];
+    await useDeploy.getState().confirm(SLOT);
+
+    // No fix round at all: deploying again cannot change which paths Cloud Run
+    // answers for itself, and every round is another Cloud Build on the bill.
+    expect(stage()).toMatchObject({ kind: "blocked" });
+    expect(turns).toHaveLength(3);
+    const told = log("problem").join("\n");
+    expect(told).toContain("The service answered 404, not 200.");
+    expect(told).toContain("https://web-abc.a.run.app - so it is deployed and serving");
+    expect(told).toContain("`/healthz` that is wrong");
+  });
+
+  it("does not claim a service is serving when its root is down too", async () => {
+    await planned();
+    probeStatus = 503;
+    rootStatus = 503;
+    replies = ["written", REVISION, REVISION];
+    await useDeploy.getState().confirm(SLOT);
+
+    const told = log("problem").join("\n");
+    expect(told).toContain("The service answered 503, not 200.");
+    expect(told).not.toContain("deployed and serving");
   });
 
   it("does not go ahead from the confirm page when the person says not now", async () => {

@@ -265,13 +265,15 @@ fn database_of(project: &serde_json::Value, region: &str) -> CloudResource {
     if !status.is_empty() {
         tags.insert("status".to_string(), status);
     }
+    let name = if host.is_empty() {
+        field(project, "name")
+    } else {
+        host
+    };
     CloudResource {
         id: format!("{ID_SCHEME}{reference}/database"),
-        name: if host.is_empty() {
-            field(project, "name")
-        } else {
-            host
-        },
+        cli_name: name.clone(),
+        name,
         kind: "supabase/database".to_string(),
         location: region.to_string(),
         group: reference,
@@ -296,6 +298,7 @@ fn functions_in(json: &str, project_ref: &str, region: &str) -> Vec<CloudResourc
             }
             Some(CloudResource {
                 id: format!("{ID_SCHEME}{project_ref}/functions/{slug}"),
+                cli_name: slug.clone(),
                 name: slug,
                 kind: "supabase/function".to_string(),
                 location: region.to_string(),
@@ -323,6 +326,7 @@ fn branches_in(json: &str, project_ref: &str, region: &str) -> Vec<CloudResource
             }
             Some(CloudResource {
                 id: format!("{ID_SCHEME}{project_ref}/branches/{name}"),
+                cli_name: name.clone(),
                 name,
                 kind: "supabase/branch".to_string(),
                 location: region.to_string(),

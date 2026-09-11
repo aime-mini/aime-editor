@@ -18,6 +18,7 @@
 //! exactly the guess the project's rule forbids, and an unmeasured probe that
 //! answers "not signed in" is worse than one that says nothing.
 
+mod bq;
 pub mod credentials;
 pub mod deploy;
 mod gcp;
@@ -529,6 +530,19 @@ pub struct CloudResource {
     /// full resource name (`//compute.googleapis.com/projects/…`).
     pub id: String,
     pub name: String,
+    /// The name the CLI itself takes for this resource, which is not always the
+    /// name a person reads.
+    ///
+    /// Measured 2026-09-11 over 162 real Google Cloud resources: five kinds of
+    /// the twenty answer a display label where the command line wants an id. A
+    /// service account reads `Default compute service account` and is addressed
+    /// by its email, an API key reads `Browser key 1` and is addressed by a
+    /// uuid, a project reads `My First Project` and is addressed by its id.
+    /// Filling `<name>` from the label put a string with spaces in it on 47
+    /// command lines, and every one of them failed. So the label stays for the
+    /// eye, and this is what a command gets.
+    #[serde(default)]
+    pub cli_name: String,
     /// Resource type, as that cloud spells it.
     pub kind: String,
     /// Region, when the identifier carries one.
@@ -592,6 +606,21 @@ pub async fn cloud_accounts(app: AppHandle, cloud_id: String) -> Result<Vec<Clou
         "gcp" => gcp::projects().await,
         "supabase" => supabase::projects(&supabase::cli(&app)?).await,
         other => Err(format!("No cloud called {other}")),
+    }
+}
+
+/// The billing accounts Google Cloud can see, open ones included.
+///
+/// Asked for only when a project has just been refused for having no billing
+/// account: it decides whether the panel can offer the one command that fixes
+/// that (`billing projects link`) or has to say plainly that only Google's own
+/// page can open a billing account. No other cloud has this shape, so no other
+/// cloud answers.
+#[tauri::command]
+pub async fn cloud_billing_accounts(cloud_id: String) -> Result<Vec<gcp::BillingAccount>, String> {
+    match cloud_id.as_str() {
+        "gcp" => gcp::billing_accounts().await,
+        other => Err(format!("{other} has no billing accounts of its own")),
     }
 }
 
@@ -707,6 +736,7 @@ async fn azure_resources(subscription: &str) -> Result<Vec<CloudResource>, Strin
         .iter()
         .map(|entry| CloudResource {
             id: field(entry, "id"),
+            cli_name: field(entry, "name"),
             name: field(entry, "name"),
             kind: field(entry, "type"),
             location: field(entry, "location"),
@@ -780,6 +810,7 @@ pub(crate) fn parse_arn(arn: &str) -> CloudResource {
     CloudResource {
         tags: BTreeMap::new(),
         id: arn.to_string(),
+        cli_name: name.clone(),
         name,
         kind: if kind_tail.is_empty() {
             service.to_string()
@@ -897,6 +928,25 @@ pub(crate) async fn read_cli(command: &str, args: &[&str]) -> Result<String, Str
     read_cli_checked(command, args)
         .await
         .map_err(|failure| failure.message)
+}
+
+/// Runs a CLI and hands back its stdout whatever it exits with; `Err` only when
+/// the program could not be started at all.
+///
+/// For the CLI whose help is not an error but exits like one. Measured
+/// 2026-09-11: `bq help show` describes a real command in 10,586 bytes on
+/// stdout, writes nothing whatever to stderr, and exits 1 - so
+/// `read_cli_checked` throws the answer away and reports "`bq` failed and said
+/// nothing". Only a caller that reads the output rather than the exit code may
+/// use this.
+pub(crate) async fn read_cli_output(command: &str, args: &[&str]) -> Result<String, String> {
+    let mut cmd = cli_command(command, args.iter().copied());
+    quiet(&mut cmd);
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("Could not run `{command}`: {e}"))?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 /// Keeps a spawned CLI from waiting on a person who is not there.

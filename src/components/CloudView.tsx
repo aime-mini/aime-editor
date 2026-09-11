@@ -15,6 +15,7 @@ import {
   LogIn,
   MapPin,
   Network,
+  Plus,
   Radar,
   RefreshCw,
   Rocket,
@@ -29,14 +30,25 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useT } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
 import { GROUPINGS, iconOfGrouping, shortKind, type Grouping } from "../lib/cloudIcons";
+import {
+  billingOff,
+  disabledApi,
+  enableApiCommand,
+  looksLikeSignIn,
+  type DisabledApi,
+} from "../lib/cloudErrors";
+import { BillingOffNote } from "./CloudBilling";
 import { commandLabel } from "../lib/cloudReads";
 import { DEPLOYABLE } from "../lib/deploy";
 import { CloudDetail, CopyButton, Note } from "./CloudDetail";
+import { CloudDot, cloudStateText } from "./CloudDot";
 import { CloudMap, KindChip, ServiceBadge } from "./CloudMap";
+import { CloudPicker } from "./CloudPicker";
 import { DeployPane } from "./DeployPane";
 import {
   slotOf,
   useCloud,
+  visibleClouds,
   type CloudAccount,
   type CloudResource,
   type CloudStatus,
@@ -45,6 +57,7 @@ import {
 } from "../stores/cloud";
 import { useDeploy } from "../stores/deploy";
 import { useLayout } from "../stores/layout";
+import { runInTerminal } from "../stores/terminals";
 import { useWorkspace } from "../stores/workspace";
 
 /**
@@ -55,9 +68,10 @@ import { useWorkspace } from "../stores/workspace";
  * holds down the left - measured on this machine, `az` held four subscriptions
  * across two users and `aws` held 28 profiles, so the account list is a real
  * navigation surface and not a dropdown - and the selected account filling the
- * rest. An account opens as its applications (`CloudMap`) by default, because
- * "which of these ten apps is this" is the question a list cannot answer, and
- * as a grouped list when a person is looking for one resource by name.
+ * rest. An account opens as the grouped LIST of what is in it, which is what
+ * a person comes to a console for; the applications view (`CloudMap`) is one
+ * click away, for the question a list cannot answer - which of these ten apps
+ * is this, and what is it made of.
  *
  * Reaching the network stays as rare as it was: accounts come from what the CLI
  * keeps on disk, an account's resources are fetched when it is selected and then
@@ -67,7 +81,8 @@ import { useWorkspace } from "../stores/workspace";
  * lands in front of the editor rather than behind it.
  */
 export function CloudView() {
-  const { clouds, ready, tab, refresh, openTab, watchSignIns, detail } = useCloud();
+  const { clouds, shown, picking, ready, tab, refresh, openTab, openPicker, watchSignIns, detail } =
+    useCloud();
   const closeCloud = useWorkspace((s) => s.closeCloud);
   const t = useT();
 
@@ -76,11 +91,28 @@ export function CloudView() {
     void watchSignIns();
   }, [refresh, watchSignIns]);
 
-  useEffect(() => {
-    if (ready) void openTab(tab);
-  }, [ready, tab, openTab]);
+  const visible = useMemo(() => visibleClouds(clouds, shown), [clouds, shown]);
+  const onScreen = visible.some((candidate) => candidate.id === tab);
+  const firstVisible = visible.at(0)?.id;
 
-  const cloud = clouds.find((candidate) => candidate.id === tab);
+  useEffect(() => {
+    if (ready && onScreen) void openTab(tab);
+    // Deliberately not keyed on `clouds`: openTab clears the open resource
+    // detail, and a probe that reruns behind a detail must not close it.
+  }, [ready, onScreen, tab, openTab]);
+
+  useEffect(() => {
+    // A tab that is not on the strip - a cloud closed, or an id kept by an
+    // older version of Aime - lands on the first cloud that is.
+    if (ready && !onScreen && firstVisible !== undefined) void openTab(firstVisible);
+  }, [ready, onScreen, firstVisible, openTab]);
+
+  useEffect(() => {
+    // Asked once per machine, the first time there is something to choose from.
+    if (ready && shown === null && clouds.length > 0) openPicker();
+  }, [ready, shown, clouds.length, openPicker]);
+
+  const cloud = visible.find((candidate) => candidate.id === tab);
 
   return (
     <div className="flex h-full flex-col bg-bg text-[12px]">
@@ -89,8 +121,8 @@ export function CloudView() {
           <CloudIcon size={14} className="shrink-0 text-accent" />
           {t("cloud.panelTitle")}
         </span>
-        <nav className="flex gap-1">
-          {clouds.map((candidate) => (
+        <nav aria-label={t("cloud.panelTitle")} className="flex items-stretch gap-1">
+          {visible.map((candidate) => (
             <CloudTab
               key={candidate.id}
               cloud={candidate}
@@ -98,6 +130,13 @@ export function CloudView() {
               onClick={() => void openTab(candidate.id)}
             />
           ))}
+          <button
+            onClick={openPicker}
+            title={t("cloud.pickOpen")}
+            className="my-1 rounded p-1 text-muted hover:bg-elevated hover:text-fg"
+          >
+            <Plus size={13} />
+          </button>
         </nav>
         <span className="flex-1" />
         <button
@@ -109,11 +148,24 @@ export function CloudView() {
         </button>
       </header>
 
-      {cloud === undefined ? (
-        <EmptyState icon={Loader2} spin title={t("cloud.looking")} />
-      ) : (
+      {cloud !== undefined ? (
         <CloudBody cloud={cloud} />
+      ) : /* Only once the probe has answered is an empty strip a choice rather
+             than a probe still running. */
+      ready && clouds.length > 0 ? (
+        <EmptyState icon={CloudIcon} title={t("cloud.noneChosen")}>
+          <button
+            onClick={openPicker}
+            className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-bg"
+          >
+            {t("cloud.pickOpen")}
+          </button>
+        </EmptyState>
+      ) : (
+        <EmptyState icon={Loader2} spin title={t("cloud.looking")} />
       )}
+
+      {picking && <CloudPicker clouds={clouds} shown={shown} />}
 
       {/* Over the top, not instead of: the map stays where it was, so closing
           the detail does not mean finding your place again. */}
@@ -122,40 +174,45 @@ export function CloudView() {
   );
 }
 
-/** One cloud's tab: its name and a dot for its state. */
+/**
+ * One cloud's tab: its name, a dot for its state, and its own close button.
+ *
+ * Closing hides the tab and nothing else - the sign-in and everything read
+ * from that cloud stay exactly where they were, so the plus at the end of the
+ * strip brings it back without another call into the cloud.
+ */
 function CloudTab({ cloud, active, onClick }: { cloud: CloudStatus; active: boolean; onClick: () => void }) {
   const t = useT();
   const probing = useCloud((s) => s.probing);
-  const tone =
-    cloud.signedIn === true
-      ? "bg-ok"
-      : cloud.signedIn === false
-        ? "bg-danger"
-        : cloud.installed
-          ? "bg-muted"
-          : "bg-muted opacity-40";
-  const state = !cloud.installed
-    ? t("cloud.notInstalled")
-    : cloud.signedIn === true
-      ? (cloud.account ?? "")
-      : cloud.signedIn === false
-        ? t("cloud.signInFirst")
-        : t("cloud.signedInUnknown");
+  const hideCloud = useCloud((s) => s.hideCloud);
   return (
-    <button
+    <div
       onClick={onClick}
-      title={state}
-      className={`flex items-center gap-1.5 border-b-2 px-3 py-2 ${
+      onAuxClick={(event) => {
+        // Middle-click closes, the way it does on an editor tab.
+        if (event.button === 1) {
+          event.preventDefault();
+          hideCloud(cloud.id);
+        }
+      }}
+      title={cloudStateText(cloud, t)}
+      className={`group flex cursor-pointer items-center gap-1.5 border-b-2 py-2 pr-1.5 pl-3 ${
         active ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg"
       }`}
     >
-      {probing ? (
-        <Loader2 size={10} className="animate-spin text-muted" />
-      ) : (
-        <span className={`size-1.5 rounded-full ${tone}`} />
-      )}
+      {probing ? <Loader2 size={10} className="animate-spin text-muted" /> : <CloudDot cloud={cloud} />}
       {cloud.label}
-    </button>
+      <button
+        onClick={(event) => {
+          event.stopPropagation();
+          hideCloud(cloud.id);
+        }}
+        title={t("cloud.hideTab", { cloud: cloud.label })}
+        className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-elevated hover:text-danger"
+      >
+        <X size={10} />
+      </button>
+    </div>
   );
 }
 
@@ -303,6 +360,7 @@ function AccountRow({
   const t = useT();
   const selectAccount = useCloud((s) => s.selectAccount);
   const setDefaultAccount = useCloud((s) => s.setDefaultAccount);
+  const [asking, setAsking] = useState(false);
   const state = useCloud((s) => s.resources[slotOf(cloud.id, account.id)]);
 
   return (
@@ -326,15 +384,45 @@ function AccountRow({
           <span className="truncate pl-3.5 text-[10px] text-muted">{account.detail}</span>
         )}
       </button>
-      {HAS_CLI_DEFAULT.has(cloud.id) && !account.current && (
-        <button
-          onClick={() => void setDefaultAccount(cloud.id, account)}
-          title={t("cloud.makeDefault")}
-          className="shrink-0 rounded p-1 text-muted opacity-0 group-hover:opacity-100 hover:text-fg"
-        >
-          <Star size={11} />
-        </button>
-      )}
+      {HAS_CLI_DEFAULT.has(cloud.id) &&
+        !account.current &&
+        (asking ? (
+          // Two steps on purpose: this one writes to the CLI's own config, so
+          // it changes what the user's terminal does outside Aime. It sat one
+          // pixel from the row you click to look at an account, and a stray
+          // click on it moved a real default (2026-09-09).
+          <span className="flex shrink-0 items-center gap-0.5">
+            <button
+              onClick={() => {
+                setAsking(false);
+                void setDefaultAccount(cloud.id, account);
+              }}
+              title={t("cloud.makeDefaultYes")}
+              className="rounded p-1 text-ok hover:bg-elevated"
+            >
+              <Check size={12} />
+            </button>
+            <button
+              onClick={() => {
+                setAsking(false);
+              }}
+              title={t("cloud.makeDefaultNo")}
+              className="rounded p-1 text-muted hover:bg-elevated hover:text-fg"
+            >
+              <X size={12} />
+            </button>
+          </span>
+        ) : (
+          <button
+            onClick={() => {
+              setAsking(true);
+            }}
+            title={t("cloud.makeDefault")}
+            className="shrink-0 rounded p-1 text-muted opacity-0 group-hover:opacity-100 hover:text-fg"
+          >
+            <Star size={11} />
+          </button>
+        ))}
     </div>
   );
 }
@@ -545,6 +633,8 @@ function FailedListing({
 }) {
   const t = useT();
   const reload = useCloud((s) => s.reload);
+  const offApi = useMemo(() => disabledApi(reason), [reason]);
+  const noBilling = useMemo(() => billingOff(reason), [reason]);
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6">
       <TriangleAlert size={28} className="text-danger" />
@@ -553,7 +643,18 @@ function FailedListing({
         {reason}
       </pre>
       <div className="flex flex-wrap items-center justify-center gap-2">
-        <SignInButton cloud={cloud} account={account} />
+        {/* The action that fits the refusal, not one action for every refusal.
+            Reported 2026-09-09: most Google Cloud projects failed on a disabled
+            Cloud Asset API and the only button offered was Sign in, which
+            cannot enable an API. */}
+        {noBilling !== null && <BillingOffNote off={noBilling} project={account.id} />}
+        {noBilling === null && offApi !== null && (
+          <EnableApiButton api={offApi} cloud={cloud} account={account} />
+        )}
+        {noBilling === null && offApi === null && <SignInButton cloud={cloud} account={account} />}
+        {noBilling === null && offApi === null && !looksLikeSignIn(reason) && (
+          <p className="w-full text-center text-[11px] text-muted">{t("cloud.failedNotSignIn")}</p>
+        )}
         <button
           onClick={() => void reload(cloud.id, account.id)}
           className="flex items-center gap-1.5 rounded border border-line px-3 py-1.5 hover:border-accent"
@@ -562,6 +663,62 @@ function FailedListing({
         </button>
       </div>
       <SignInProgress cloudId={cloud.id} />
+    </div>
+  );
+}
+
+/**
+ * Turns on the API the CLI asked for, in a terminal where it can be watched.
+ *
+ * Enabling an API is a WRITE to the user's own project, so it runs the way
+ * every write in this panel runs: the exact command is on the button, the
+ * click is the consent, and it happens in a terminal tab rather than silently
+ * behind the panel. The API's id and the project both come from the CLI's own
+ * message (`lib/cloudErrors.ts`) - Aime does not decide which API you need.
+ */
+function EnableApiButton({
+  api,
+  cloud,
+  account,
+}: {
+  api: DisabledApi;
+  cloud: CloudStatus;
+  account: CloudAccount;
+}) {
+  const t = useT();
+  const reload = useCloud((s) => s.reload);
+  const command = enableApiCommand(api);
+
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <p className="max-w-xl text-center text-[11.5px] text-muted">
+        {t("cloud.apiOff", { api: api.display, project: api.project })}
+      </p>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {command !== null && (
+          <button
+            onClick={() => {
+              runInTerminal(command, t("cloud.apiEnabling", { api: api.display }));
+              // The CLI takes a moment to propagate; the listing is retried
+              // when the person clicks Try again, which the terminal tells
+              // them to do - nothing here pretends to know when it is done.
+              void reload(cloud.id, account.id);
+            }}
+            title={command}
+            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 font-medium text-bg"
+          >
+            <Rocket size={12} /> {t("cloud.apiEnable", { api: api.display })}
+          </button>
+        )}
+        {api.url !== null && (
+          <button
+            onClick={() => void openUrl(api.url ?? "")}
+            className="flex items-center gap-1.5 rounded border border-line px-3 py-1.5 text-muted hover:border-accent hover:text-fg"
+          >
+            <ExternalLink size={11} /> {t("cloud.apiOpenPage")}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -771,7 +928,10 @@ function LoadedAccount({
   onFilter: (text: string) => void;
 }) {
   const t = useT();
-  const view = useCloud((s) => s.view[slot] ?? "map");
+  // Resources by default (asked for 2026-09-09): an account opens as the list
+  // of what is in it, and the applications view is a click away for the times
+  // the question is "which app is this" rather than "where is that resource".
+  const view = useCloud((s) => s.view[slot] ?? "list");
   const setView = useCloud((s) => s.setView);
   const basis = useCloud((s) => s.basis[slot]);
   const setBasis = useCloud((s) => s.setBasis);
@@ -876,6 +1036,12 @@ function LoadedAccount({
             setBasis(slot, next);
           }}
           onOpen={openDetail}
+          onKind={(kind) => {
+            // The inventory says "783 of these"; the way to reach them is the
+            // list, filtered to that type - the same thing a kind chip does.
+            onFilter(shortKind(kind));
+            setView(slot, "list");
+          }}
         />
       ) : (
         <ResourceList
@@ -956,6 +1122,7 @@ function ResourceList({
   onOpen: (resource: CloudResource) => void;
   onFilter: (text: string) => void;
 }) {
+  const warmPlan = useCloud((s) => s.warmPlan);
   const t = useT();
   const [folded, setFolded] = useState<Record<string, boolean>>({});
   // Every group takes the last collapse-all/expand-all as its default, and a
@@ -1024,6 +1191,9 @@ function ResourceList({
                   key={resource.id}
                   onClick={() => {
                     onOpen(resource);
+                  }}
+                  onPointerEnter={() => {
+                    warmPlan(resource);
                   }}
                   className="grid w-full grid-cols-[minmax(0,1fr)_10rem_10rem_7rem] items-center gap-3 border-b border-line/60 px-3 py-1 text-left hover:bg-elevated"
                 >

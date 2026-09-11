@@ -249,3 +249,45 @@ export function nodesOf(resources: CloudResource[]): KindNode[] {
       (left, right) => right.resources.length - left.resources.length || left.kind.localeCompare(right.kind),
     );
 }
+
+/** Every region a set of resources sits in, most used first. */
+export function regionsOf(resources: CloudResource[]): { name: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const resource of resources) {
+    if (resource.location === "") continue;
+    counts.set(resource.location, (counts.get(resource.location) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
+}
+
+/**
+ * One application laid out for drawing: EVERY lane, empty ones included.
+ *
+ * The empty lane is the point. Reported 2026-09-09 ("application cũng khó nhìn,
+ * nhìn vô éo hiểu gì"): an application of 31 functions and nothing else was
+ * drawn as a single box, so the picture had no shape to recognise and no arrow
+ * in it - it read as a list. With the lanes always drawn, the same application
+ * says what it is at a glance: everything in the middle, nothing taking
+ * requests, nothing holding state.
+ */
+export interface AppShape {
+  /** The request path, in order, always three lanes. */
+  path: [Tier, KindNode[]][];
+  /** What surrounds it - logs, identity, registries - or nothing. */
+  support: KindNode[];
+  regions: { name: string; count: number }[];
+}
+
+/** The lanes of the request path, in the order a request travels them. */
+const PATH_TIERS: Tier[] = ["edge", "compute", "data"];
+
+export function shapeOf(app: AppGroup): AppShape {
+  const owned = new Map<Tier, CloudResource[]>(app.tiers);
+  return {
+    path: PATH_TIERS.map((tier) => [tier, nodesOf(owned.get(tier) ?? [])]),
+    support: nodesOf(owned.get("support") ?? []),
+    regions: regionsOf(app.resources),
+  };
+}

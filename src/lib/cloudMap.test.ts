@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { basesOf, mapOf, nodesOf, UNTAGGED } from "./cloudMap";
+import { basesOf, mapOf, nodesOf, regionsOf, shapeOf, UNTAGGED } from "./cloudMap";
 import type { CloudResource } from "../stores/cloud";
 
 function resource(name: string, kind: string, tags: Record<string, string> = {}, group = ""): CloudResource {
-  return { id: `id-${name}`, name, kind, location: "eastus", group, tags };
+  return { id: `id-${name}`, name, cliName: name, kind, location: "eastus", group, tags };
 }
 
 /** `count` resources of one kind, all carrying the same tags. */
@@ -157,5 +157,57 @@ describe("grouping a cloud account into the applications it holds", () => {
     expect(map.basis).toEqual({ kind: "none" });
     expect(map.options).toEqual([]);
     expect(map.apps).toEqual([]);
+  });
+});
+
+/** One resource in a named region, for the questions that are about regions. */
+function inRegion(name: string, kind: string, location: string): CloudResource {
+  return { ...resource(name, kind), location };
+}
+
+/**
+ * The diagram's shape - three lanes always, so "nothing takes requests" is
+ * something a person can see rather than something missing from the page.
+ * Reported 2026-09-09: an application of 31 functions was drawn as one wide
+ * box, which read as the list it was meant to replace.
+ */
+describe("shapeOf", () => {
+  it("draws every lane of the request path, the empty ones included", () => {
+    const app = mapOf([resource("Import-One", "lambda/function"), resource("Import-Two", "lambda/function")])
+      .apps[0];
+    const shape = shapeOf(app);
+
+    expect(shape.path.map(([tier]) => tier)).toEqual(["edge", "compute", "data"]);
+    expect(shape.path.map(([, nodes]) => nodes.length)).toEqual([0, 1, 0]);
+    expect(shape.path[1]?.[1][0]?.resources).toHaveLength(2);
+    expect(shape.support).toEqual([]);
+  });
+
+  it("keeps what surrounds an application off the request path", () => {
+    const app = mapOf([resource("fn", "lambda/function"), resource("fn-logs", "logs/log-group")]).apps[0];
+    const shape = shapeOf(app);
+
+    expect(shape.path.map(([, nodes]) => nodes.length)).toEqual([0, 1, 0]);
+    expect(shape.support.map((node) => node.kind)).toEqual(["logs/log-group"]);
+  });
+
+  it("names the regions it sits in, busiest first, and ignores the placeless", () => {
+    const app = mapOf([
+      inRegion("a", "lambda/function", "ap-southeast-1"),
+      inRegion("b", "lambda/function", "ap-southeast-1"),
+      inRegion("c", "lambda/function", "us-east-1"),
+      inRegion("d", "iam/role", ""),
+    ]).apps[0];
+
+    expect(shapeOf(app).regions).toEqual([
+      { name: "ap-southeast-1", count: 2 },
+      { name: "us-east-1", count: 1 },
+    ]);
+  });
+});
+
+describe("regionsOf", () => {
+  it("is empty when nothing says where it is - a global account draws no chips", () => {
+    expect(regionsOf([inRegion("a", "iam/role", ""), inRegion("b", "iam/role", "")])).toEqual([]);
   });
 });

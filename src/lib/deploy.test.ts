@@ -34,6 +34,7 @@ const account: CloudAccount = {
 const service: CloudResource = {
   id: "//run.googleapis.com/projects/my-project/locations/asia-southeast1/services/web",
   name: "web",
+  cliName: "web",
   kind: "run.googleapis.com/Service",
   location: "asia-southeast1",
   group: "my-project",

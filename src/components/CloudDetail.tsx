@@ -5,11 +5,13 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  ExternalLink,
   Eye,
   EyeOff,
   Loader2,
   MapPin,
   Play,
+  Plug,
   RefreshCw,
   Sparkles,
   Tag,
@@ -17,12 +19,15 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useT } from "../i18n";
+import { CloudOps } from "./CloudOps";
 import type { TranslationKey } from "../i18n/en";
+import { disabledApi, enableApiCommand, shortCliError, type DisabledApi } from "../lib/cloudErrors";
 import { shortKind } from "../lib/cloudIcons";
 import { mapOf, UNTAGGED } from "../lib/cloudMap";
 import { connectionRows, countOf, propertiesOf, type PropertyRow } from "../lib/cloudProperties";
-import { commandOf, type PlannedRead } from "../lib/cloudReads";
+import { commandOf, factFor, type PlannedRead } from "../lib/cloudReads";
 import {
   answerKey,
   slotOf,
@@ -32,6 +37,7 @@ import {
   type PlanState,
 } from "../stores/cloud";
 import { ServiceBadge, TIER_LABELS } from "./CloudMap";
+import { runInTerminal } from "../stores/terminals";
 
 /**
  * One resource, opened: what it is, how it is configured, how to connect to it.
@@ -124,6 +130,7 @@ export function CloudDetail({ resource }: { resource: CloudResource }) {
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {pane === "overview" && <OverviewPane resource={resource} plan={plan} tags={tags} />}
           {pane === "connect" && <ConnectPane resource={resource} plan={plan} />}
+          {pane === "ops" && <CloudOps resource={resource} />}
           {pane === "related" && <RelatedPane resource={resource} />}
           {pane === "raw" && <RawPane resource={resource} plan={plan} />}
         </div>
@@ -132,11 +139,12 @@ export function CloudDetail({ resource }: { resource: CloudResource }) {
   );
 }
 
-type Pane = "overview" | "connect" | "related" | "raw";
-const PANES: Pane[] = ["overview", "connect", "related", "raw"];
+type Pane = "overview" | "connect" | "ops" | "related" | "raw";
+const PANES: Pane[] = ["overview", "connect", "ops", "related", "raw"];
 const PANE_LABELS: Record<Pane, TranslationKey> = {
   overview: "cloud.paneOverview",
   connect: "cloud.paneConnect",
+  ops: "cloud.opsTitle",
   related: "cloud.paneRelated",
   raw: "cloud.paneRaw",
 };
@@ -194,10 +202,18 @@ function OverviewPane({
  */
 function ConnectPane({ resource, plan }: { resource: CloudResource; plan: PlanState | undefined }) {
   const t = useT();
+  const cloudId = useCloud((s) => s.tab);
   const answers = useCloud((s) => s.answers);
   const reads = plan?.kind === "ready" ? plan.reads : [];
   const open = reads.filter((read) => read.purpose !== "secret");
   const secrets = reads.filter((read) => read.purpose === "secret");
+  // What a developer pastes, worked out from the resource's own identity: no
+  // call, no waiting, and for a topic or a bucket it is the whole answer. A
+  // fact this particular resource cannot fill in is left out (`factFor`).
+  const facts = (plan?.kind === "ready" ? plan.facts : []).flatMap((fact) => {
+    const value = factFor(fact, resource);
+    return value === null ? [] : [{ key: fact.label, kind: "value" as const, value }];
+  });
 
   // Whatever the loaded answers call an endpoint, pulled to the top.
   const highlights = useMemo(() => {
@@ -211,6 +227,22 @@ function ConnectPane({ resource, plan }: { resource: CloudResource; plan: PlanSt
 
   return (
     <div className="flex flex-col gap-4">
+      {/* What Aime already holds, before any read runs: reported 2026-09-09,
+          the first resource of a kind showed nothing but "asking the AI" on
+          exactly the tab a developer opens - and the identifier, the region
+          and the account are half of what gets pasted into a config. */}
+      <section>
+        <SectionLabel icon={Braces} text={t("cloud.connectIdentity")} />
+        <PropertyTable rows={identityRows(resource, cloudId, t)} />
+      </section>
+
+      {facts.length > 0 && (
+        <section>
+          <SectionLabel icon={Plug} text={t("cloud.connectFacts")} />
+          <PropertyTable rows={facts} highlight />
+        </section>
+      )}
+
       <PlanNotice plan={plan} resource={resource} expecting={reads.length === 0} />
 
       {highlights.length > 0 && (
@@ -243,6 +275,28 @@ function ConnectPane({ resource, plan }: { resource: CloudResource; plan: PlanSt
         secrets.length === 0 && <p className="text-muted">{t("cloud.connectNone")}</p>}
     </div>
   );
+}
+
+/**
+ * The rows Aime can fill in with no call at all: the identifier the cloud gave
+ * this resource, where it lives, and which account it is in. For an AWS
+ * resource the identifier IS the ARN, which is what an application config
+ * asks for - so it is here, copyable, before any read has run.
+ */
+function identityRows(
+  resource: CloudResource,
+  cloudId: string,
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+): PropertyRow[] {
+  const rows: PropertyRow[] = [{ key: t("cloud.field.id"), kind: "value", value: resource.id }];
+  if (resource.location !== "") {
+    rows.push({ key: t("cloud.field.location"), kind: "value", value: resource.location });
+  }
+  if (resource.group !== "") {
+    rows.push({ key: t("cloud.field.group"), kind: "value", value: resource.group });
+  }
+  rows.push({ key: t("cloud.field.cloud"), kind: "value", value: cloudId });
+  return rows;
 }
 
 /**
@@ -389,9 +443,7 @@ function ReadBlock({ resource, read }: { resource: CloudResource; read: PlannedR
         )}
       </header>
       {answer?.kind === "failed" && (
-        <pre className="max-h-40 overflow-auto p-2.5 text-[11px] whitespace-pre-wrap text-danger">
-          {failureText(answer.reason, t)}
-        </pre>
+        <ReadFailure reason={answer.reason} onFixed={() => void runRead(resource, read)} />
       )}
       {answer?.kind === "loaded" && !(secret && hidden) && (
         <div className="p-2">
@@ -416,12 +468,74 @@ function AnswerStatus({ answer, rows }: { answer: AnswerState | undefined; rows:
 }
 
 /**
+ * Why a read has no answer, and - when the CLI named one - the way past it.
+ *
+ * A read that fails on a project with the API switched off is the common case
+ * and the one worth acting on: measured 2026-09-11 across a real Google
+ * account, 12 of 26 log sinks answered nothing else, and the sentence that
+ * comes back names both the API and the page that enables it. Showing that as
+ * plain red text asks a developer to read a paragraph and go to the console;
+ * the button is the same command Aime would have run anyway.
+ */
+function ReadFailure({ reason, onFixed }: { reason: string; onFixed: () => void }) {
+  const t = useT();
+  const offApi = useMemo(() => disabledApi(reason), [reason]);
+  return (
+    <div className="flex flex-col gap-2 p-2.5">
+      <pre className="max-h-40 overflow-auto text-[11px] whitespace-pre-wrap text-danger">
+        {failureText(reason, t)}
+      </pre>
+      {offApi !== null && <ApiOffFix api={offApi} onEnabled={onFixed} />}
+    </div>
+  );
+}
+
+/**
+ * Turns on the API this read needs, in a terminal where it can be watched.
+ *
+ * The same rule as everywhere else in this panel: enabling an API is a write
+ * to the user's own project, so the exact command is on the button and the
+ * click is the consent.
+ */
+function ApiOffFix({ api, onEnabled }: { api: DisabledApi; onEnabled: () => void }) {
+  const t = useT();
+  const command = enableApiCommand(api);
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {command !== null && (
+        <button
+          onClick={() => {
+            runInTerminal(command, t("cloud.apiEnabling", { api: api.display }));
+            onEnabled();
+          }}
+          title={command}
+          className="flex items-center gap-1.5 rounded bg-accent px-2 py-1 text-[11px] font-medium text-bg"
+        >
+          <Play size={11} /> {t("cloud.apiEnable", { api: api.display })}
+        </button>
+      )}
+      {api.url !== null && (
+        <button
+          onClick={() => void openUrl(api.url ?? "")}
+          className="flex items-center gap-1.5 rounded border border-line px-2 py-1 text-[11px] text-muted hover:border-accent hover:text-fg"
+        >
+          <ExternalLink size={11} /> {t("cloud.apiOpenPage")}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
  * The backend's structured refusal, turned into a sentence; anything else is
- * the CLI's own words, which are the answer.
+ * the CLI's own words, cut to the ones a person reads - `gcloud` answers a
+ * wrong identifier with a whole HTML error page (`shortCliError`).
  */
 function failureText(reason: string, t: ReturnType<typeof useT>): string {
   const unsupported = /^UNSUPPORTED_READ::(.+)$/.exec(reason);
-  return unsupported === null ? reason : t("cloud.readUnsupported", { command: unsupported[1] });
+  return unsupported === null
+    ? shortCliError(reason)
+    : t("cloud.readUnsupported", { command: unsupported[1] });
 }
 
 /**
