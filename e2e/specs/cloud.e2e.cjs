@@ -4,15 +4,22 @@
  * The promise of the feature is not the panel - it is that after a discovery
  * the project's own memory file holds what is really running in that account,
  * because that file is what every AI CLI reads on the turn where someone asks
- * for a deployment. So what this drives is the whole path: the rows, the
+ * for a deployment. So what this drives is the whole path: the tabs, the
  * discovery, the parse, and the file on disk afterwards.
  *
  * Two things are deliberately real and one is deliberately fake. The probes are
- * real - Aime shells out to whichever cloud CLIs this machine has - so the rows
+ * real - Aime shells out to whichever cloud CLIs this machine has - so the tabs
  * say something true about it. The write is real, into a throwaway folder made
  * and deleted here. The AI is a script this spec writes, pointed at by a
  * `providers.json` entry, so nothing here costs a penny or touches a real
  * cloud beyond asking it who you are.
+ *
+ * Rewritten 2026-09-12. It used to drive the cloud list inside SETTINGS, which
+ * has not been where the clouds live since the panel took over, so every run
+ * failed in its `before` hook on a screen that no longer exists. Everything it
+ * asserted still holds; it is anchored to the panel now, and to the panel's own
+ * markup - `nav[aria-label]`, `data-cloud`, `data-cloud-state` - rather than to
+ * the text of the whole page, which would pass on a word appearing anywhere.
  */
 const { strict: assert } = require("node:assert");
 const fs = require("node:fs");
@@ -22,6 +29,17 @@ const path = require("node:path");
 const configDir = path.join(process.env.APPDATA ?? "", "com.iodm.aiminieditor");
 const providersFile = path.join(configDir, "providers.json");
 const PROBE_SCRIPT = path.join(os.tmpdir(), "aime-cloud-probe.cjs");
+
+const CLOUD_BUTTON = 'button[title="Clouds - accounts, applications and what is running in them"]';
+const PANEL_NAV = 'nav[aria-label="Clouds"]';
+const DIALOG = 'div[role="dialog"]';
+/** Every cloud that can have a tab, by the id the panel stamps on its pane. */
+const CLOUDS = [
+  { id: "azure", label: "Azure", command: "az" },
+  { id: "aws", label: "AWS", command: "aws" },
+  { id: "gcp", label: "Google Cloud", command: "gcloud" },
+  { id: "supabase", label: "Supabase", command: "supabase" },
+];
 
 /**
  * The fake AI.
@@ -64,40 +82,56 @@ const restore = (file, content) => {
   else fs.writeFileSync(file, content);
 };
 
-/** One cloud's row, by the label it carries - never read off the whole page. */
-async function cloudRow(label) {
-  return browser.execute((name) => {
-    const rows = [...document.querySelectorAll("div.flex.items-center")];
-    const row = rows.find((candidate) => {
-      const own = candidate.querySelector("span");
-      return own !== null && own.textContent === name;
-    });
-    return row?.textContent ?? "";
-  }, label);
+/** The labels on the tab strip, read off the strip itself. */
+async function tabLabels() {
+  return browser.execute((selector) => {
+    return [...document.querySelectorAll(`${selector} > div`)].map((tab) => (tab.textContent ?? "").trim());
+  }, PANEL_NAV);
 }
 
-/** The radar button of one row, or null when that row does not offer one. */
-async function discoverButton(label) {
-  const rows = await $$("div.flex.items-center");
-  for (const row of rows) {
-    const own = await row.$("span");
-    if (!(await own.isExisting()) || (await own.getText()) !== label) continue;
-    const buttons = await row.$$("button");
-    for (const button of buttons) {
-      if ((await button.getAttribute("title"))?.toLowerCase().includes("what is running")) return button;
+/** Opens one cloud's tab by its label, and answers whether there was one. */
+async function openTab(label) {
+  const tabs = await $$(`${PANEL_NAV} > div`);
+  for (const tab of tabs) {
+    if ((await tab.getText()).includes(label)) {
+      await tab.click();
+      return true;
     }
   }
-  return null;
+  return false;
 }
 
-/** The first row offering an install, or null when none does on this machine. */
-async function installRow() {
-  const rows = await $$("div.flex.items-center");
-  for (const row of rows) {
-    const buttons = await row.$$("button");
-    for (const button of buttons) {
-      if ((await button.getAttribute("title")) === "Install it for me") return row;
-    }
+/** What the open pane is showing, in the panel's own word for it. */
+async function paneState(id) {
+  return browser.execute((cloudId) => {
+    const pane = document.querySelector(`section[data-cloud="${cloudId}"]`);
+    return pane === null ? null : pane.getAttribute("data-cloud-state");
+  }, id);
+}
+
+/** The open pane's text - scoped to the pane, never the page. */
+async function paneText(id) {
+  return browser.execute((cloudId) => {
+    const pane = document.querySelector(`section[data-cloud="${cloudId}"]`);
+    return pane === null ? "" : (pane.textContent ?? "");
+  }, id);
+}
+
+/** Waits for a cloud's pane to settle on something other than a spinner. */
+async function settledPane(id) {
+  await browser.waitUntil(async () => (await paneState(id)) !== null && (await paneState(id)) !== "looking", {
+    timeout: 120_000,
+    timeoutMsg: `the ${id} pane never stopped looking for its CLI`,
+  });
+  return paneState(id);
+}
+
+/** The discovery button on the open account, or null when there is no account. */
+async function discoverButton() {
+  const buttons = await $$("button");
+  for (const button of buttons) {
+    const title = (await button.getAttribute("title")) ?? "";
+    if (title.toLowerCase().includes("what is running")) return button;
   }
   return null;
 }
@@ -121,6 +155,10 @@ describe("Cloud", () => {
       localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: recent, openedAt: Date.now() }]));
       localStorage.setItem("aime.provider", "cloud-probe");
       localStorage.setItem("aime.theme", "dark");
+      localStorage.setItem("aime.locale", "en");
+      // Every cloud gets a tab here: what this spec checks is that each one
+      // says something true, and a cloud without a tab says nothing at all.
+      localStorage.removeItem("aime.cloud.shown");
     }, project);
     await browser.refresh();
     await browser.waitUntil(async () => (await $("body").getText()).toLowerCase().includes("recent"), {
@@ -133,18 +171,36 @@ describe("Cloud", () => {
       timeoutMsg: "the throwaway project never opened",
     });
 
-    await browser.keys(["Control", ","]);
-    // The probes shell out to cloud CLIs, two of which ask the cloud who you
-    // are over the network, so the rows arrive late by design.
-    await browser.waitUntil(async () => (await cloudRow("Azure")) !== "", {
-      timeout: 60_000,
-      timeoutMsg: "the cloud rows never arrived",
+    await (await $(CLOUD_BUTTON)).click();
+    await browser.waitUntil(async () => (await $(PANEL_NAV)).isExisting(), {
+      timeout: 30_000,
+      timeoutMsg: "the cloud panel never opened",
+    });
+    // The probes shell out to four CLIs, two of which ask the cloud who you
+    // are over the network, so the question arrives late by design.
+    await browser.waitUntil(async () => (await $(DIALOG)).isExisting(), {
+      timeout: 120_000,
+      timeoutMsg: "the panel never asked which clouds to show",
+    });
+    for (const button of await $$(`${DIALOG} button`)) {
+      if ((await button.getText()).startsWith("Show ")) {
+        await button.click();
+        break;
+      }
+    }
+    await browser.waitUntil(async () => (await tabLabels()).length > 0, {
+      timeout: 30_000,
+      timeoutMsg: "no cloud got a tab",
     });
   });
 
-  after(() => {
+  after(async () => {
     restore(providersFile, saved.providers);
     fs.rmSync(PROBE_SCRIPT, { force: true });
+    // The choice of tabs is a preference of this machine's; leave none behind.
+    await browser.execute(() => {
+      localStorage.removeItem("aime.cloud.shown");
+    });
     try {
       if (project !== "") fs.rmSync(project, { recursive: true, force: true });
     } catch {
@@ -154,11 +210,27 @@ describe("Cloud", () => {
     }
   });
 
-  it("tells every cloud's own truth: the account, or the command that gets there", async () => {
-    for (const label of ["Azure", "AWS", "Google Cloud", "Supabase"]) {
-      const row = await cloudRow(label);
-      assert.ok(row.includes(label), `no row for ${label}`);
-      assert.ok(row.replace(label, "").trim().length > 0, `the ${label} row offers nothing: "${row}"`);
+  it("tells every cloud's own truth: the account, or the way to get to one", async () => {
+    for (const cloud of CLOUDS) {
+      assert.ok(await openTab(cloud.label), `no tab for ${cloud.label}`);
+      const state = await settledPane(cloud.id);
+      // Four states and no fifth - see `lib/cloudPane.ts`. Which one this
+      // machine is in is none of this spec's business; that it is in one of
+      // them, and says so, is the whole promise.
+      assert.ok(
+        ["cli-missing", "signed-out", "accounts"].includes(state),
+        `the ${cloud.label} pane settled on "${state}"`,
+      );
+      const text = await paneText(cloud.id);
+      assert.ok(text.trim().length > 0, `the ${cloud.label} pane is blank`);
+      if (state !== "accounts") {
+        // With no account to show, the pane owes the way in: the CLI to get,
+        // or the command that signs in. Either names the CLI itself.
+        assert.ok(
+          text.includes(cloud.command),
+          `the ${cloud.label} pane shows no way in: "${text.slice(0, 200)}"`,
+        );
+      }
     }
   });
 
@@ -166,48 +238,70 @@ describe("Cloud", () => {
     // Never clicks Install: that would put a cloud SDK on the machine running
     // the suite. What is proved here is the half that matters - the question
     // is asked, it carries the exact command, and declining changes nothing.
-    const row = await installRow();
-    if (row === null) {
-      // Every CLI is already here, or no package manager can carry the ones
-      // that are not. Then the rows must still say how to get them by hand.
-      for (const label of ["Google Cloud", "Supabase"]) {
-        const text = await cloudRow(label);
-        assert.ok(text.length > label.length, `the ${label} row says nothing about its CLI`);
+    let missing = null;
+    for (const cloud of CLOUDS) {
+      await openTab(cloud.label);
+      if ((await settledPane(cloud.id)) === "cli-missing") {
+        missing = cloud;
+        break;
+      }
+    }
+    if (missing === null) {
+      // Every CLI is already on this machine. There is no offer to check, and
+      // saying so beats a quiet pass: what has to hold instead is that no pane
+      // is sitting on the missing-CLI state with nothing to do about it.
+      for (const cloud of CLOUDS) {
+        await openTab(cloud.label);
+        assert.notEqual(await paneState(cloud.id), "cli-missing", `${cloud.label} lost its CLI mid-spec`);
       }
       return;
     }
 
-    await (await row.$("button")).click();
+    const offer = await $(`section[data-cloud="${missing.id}"] button`);
+    if (!(await offer.isExisting())) {
+      // No package manager on this platform carries it: the pane must then say
+      // how to get it by hand, which the previous test already required to
+      // name the CLI. Nothing is installed either way.
+      return;
+    }
+    await offer.click();
     await browser.waitUntil(
       async () => (await browser.execute(() => document.body.textContent ?? "")).includes("Install with:"),
       { timeout: 10_000, timeoutMsg: "the download button installed without asking" },
     );
     // Whatever the offer is on this machine - a package manager command, or a
-    // release archive Aime fetches itself - the question has to name it. Anchored
-    // to the row's own hint rather than to the word "winget", which would be an
-    // assertion about this machine rather than about the feature.
+    // release archive Aime fetches itself - the question has to name it.
     const question = await browser.execute(() => document.body.textContent ?? "");
-    assert.match(question, /Install with: \S+/, `the confirmation does not say what it would run: ${question.slice(0, 200)}`);
+    assert.match(
+      question,
+      /Install with: \S+/,
+      `the confirmation does not say what it would run: ${question.slice(0, 200)}`,
+    );
 
-    // Declining leaves the row exactly as it was, and nothing gets installed.
+    // Declining leaves the pane exactly as it was, and nothing gets installed.
     await (await $('button[title="Leave it"]')).click();
     await browser.waitUntil(
-      async () =>
-        !(await browser.execute(() => document.body.textContent ?? "")).includes("Install with:"),
+      async () => !(await browser.execute(() => document.body.textContent ?? "")).includes("Install with:"),
       { timeout: 10_000, timeoutMsg: "the question stayed on screen after declining" },
     );
+    assert.equal(await paneState(missing.id), "cli-missing", "declining changed the pane");
   });
 
   it("writes what the discovery found into the project's own memory file", async () => {
-    const button = await discoverButton("Azure");
-    if (button === null) {
+    const signedIn = [];
+    for (const cloud of CLOUDS) {
+      await openTab(cloud.label);
+      if ((await settledPane(cloud.id)) === "accounts") signedIn.push(cloud);
+    }
+    if (signedIn.length === 0) {
       // No signed-in cloud CLI on this machine. The honest behaviour then is
-      // that the row says how to get there, and that is what gets checked -
-      // never a quiet pass.
-      const row = await cloudRow("Azure");
-      assert.match(row, /az /, `with no signed-in CLI the row must show the way in: "${row}"`);
+      // that every pane says how to get there, which the first test required -
+      // never a quiet pass over a discovery that could not have run.
       return;
     }
+    await openTab(signedIn[0].label);
+    const button = await discoverButton();
+    assert.ok(button !== null, `${signedIn[0].label} has an account but offers no discovery`);
 
     await button.click();
     const memory = path.join(project, "AGENTS.md");
@@ -235,7 +329,7 @@ describe("Cloud", () => {
   });
 
   it("replaces its own section instead of stacking a second one", async () => {
-    const button = await discoverButton("Azure");
+    const button = await discoverButton();
     if (button === null) return;
 
     await button.click();

@@ -38,6 +38,7 @@ import {
   type DisabledApi,
 } from "../lib/cloudErrors";
 import { BillingOffNote } from "./CloudBilling";
+import { paneStateOf } from "../lib/cloudPane";
 import { commandLabel } from "../lib/cloudReads";
 import { DEPLOYABLE } from "../lib/deploy";
 import { CloudDetail, CopyButton, Note } from "./CloudDetail";
@@ -220,22 +221,35 @@ function CloudTab({ cloud, active, onClick }: { cloud: CloudStatus; active: bool
 function CloudBody({ cloud }: { cloud: CloudStatus }) {
   const accounts = useCloud((s) => s.accounts[cloud.id]);
   const selectedId = useCloud((s) => s.selected[cloud.id]);
+  const probing = useCloud((s) => s.probing);
   const t = useT();
 
-  if (accounts === undefined) return <EmptyState icon={Loader2} spin title={t("cloud.looking")} />;
-  if (accounts.length === 0) return <NoAccounts cloud={cloud} />;
+  const state = paneStateOf(cloud.installed, accounts, probing);
+  const account = accounts?.find((candidate) => candidate.id === selectedId);
 
-  const account = accounts.find((candidate) => candidate.id === selectedId);
-
+  // The state is named on the pane itself: see `lib/cloudPane.ts`. It is what
+  // lets "a cloud tab is never blank" be checked against this markup instead of
+  // against the words on the page.
   return (
-    <div className="flex min-h-0 flex-1">
-      <AccountRail cloud={cloud} accounts={accounts} selectedId={selectedId} />
-      {account === undefined ? (
-        <EmptyState icon={Layers} title={t("cloud.pickAccount")} />
-      ) : (
-        <AccountPane cloud={cloud} account={account} />
+    <section
+      aria-label={cloud.label}
+      data-cloud={cloud.id}
+      data-cloud-state={state}
+      className="flex min-h-0 flex-1"
+    >
+      {state === "looking" && <EmptyState icon={Loader2} spin title={t("cloud.looking")} />}
+      {(state === "cli-missing" || state === "signed-out") && <NoAccounts cloud={cloud} />}
+      {state === "accounts" && accounts !== undefined && (
+        <>
+          <AccountRail cloud={cloud} accounts={accounts} selectedId={selectedId} />
+          {account === undefined ? (
+            <EmptyState icon={Layers} title={t("cloud.pickAccount")} />
+          ) : (
+            <AccountPane cloud={cloud} account={account} />
+          )}
+        </>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -1255,18 +1269,14 @@ function groupResources(resources: CloudResource[], grouping: Grouping): [string
 /**
  * A cloud with no accounts, drawn as a state rather than left blank.
  *
- * Three different facts land here and each has its own next move: the CLI is
- * not on this machine, it is here but nobody has signed in, or Aime has no
- * measured way to ask this particular CLI for its accounts.
+ * Two facts land here and each has its own next move: the CLI is not on this
+ * machine, or it is here but nobody has signed in. A probe still running is the
+ * pane's own state and never reaches this (`lib/cloudPane.ts`).
  */
 function NoAccounts({ cloud }: { cloud: CloudStatus }) {
   const setInstallerTools = useLayout((s) => s.setInstallerTools);
   const signIn = useCloud((s) => s.signIn);
-  const probing = useCloud((s) => s.probing);
   const t = useT();
-
-  // While the CLIs are being asked again, the last answer is not the answer.
-  if (!cloud.installed && probing) return <EmptyState icon={Loader2} spin title={t("cloud.looking")} />;
 
   if (!cloud.installed) {
     return (
