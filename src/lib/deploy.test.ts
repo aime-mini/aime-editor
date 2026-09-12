@@ -71,6 +71,29 @@ describe("the survey prompt", () => {
       "the project holds no resources yet",
     );
   });
+
+  /**
+   * A step is run by `cloud/deploy.rs: cloud_deploy_step` under the cloud's own
+   * CLI and no other, so a Kubernetes plan could create a cluster - billed by
+   * the hour - and only then reach a `kubectl` step Aime will not run. The
+   * limit is the AI's to plan around, so it has to be told.
+   */
+  it("names the two programs a step may run, and nothing else, in both prompts", () => {
+    for (const prompt of [
+      surveyPrompt({ inventory: [], tooling: [] }),
+      planPrompt({ survey, answers: [], tooling: [], rejected: [] }),
+    ]) {
+      expect(prompt).toContain("A step runs as `gcloud` unless it sets `program` to `kubectl`");
+      // The ones a model reaches for when it has a shape neither can deploy.
+      for (const refused of ["helm", "terraform", "docker", "a shell"]) {
+        expect(prompt).toContain(refused);
+      }
+      expect(prompt).toContain("what you substituted");
+      // And the two things about `kubectl` that a plan gets wrong otherwise.
+      expect(prompt).toContain("get-credentials");
+      expect(prompt).toContain("gke-gcloud-auth-plugin");
+    }
+  });
 });
 
 describe("the plan prompt", () => {
@@ -105,8 +128,19 @@ describe("reading the answers", () => {
       purpose: "overview",
       label: "describe",
       args: ["run", "services", "describe", "web", "--region", "asia-southeast1"],
+      // Named by the read when it is not the cloud's own CLI; empty here.
+      program: "",
     });
     expect(parsed?.missing).toEqual(["the region"]);
+  });
+
+  it("carries the program a read names, so a cluster can be looked at", () => {
+    // Measured 2026-09-12: without this the AI's six diagnostic reads after a
+    // failed `kubectl apply` were all run as `gcloud get …` and refused.
+    const reply =
+      '{"app":{"name":"s","kind":"web","stack":"Node","port":8080,"healthPath":"/","builds":"Dockerfile"},' +
+      '"existing":[],"inspect":[{"label":"pods","program":"kubectl","args":["get","pods"]}],"missing":[]}';
+    expect(parseSurvey(reply)?.inspect[0]?.program).toBe("kubectl");
   });
 
   it("answers null for a reply that says nothing about the app", () => {
@@ -181,6 +215,56 @@ describe("paths into an answer", () => {
     expect(urlIn(JSON.stringify(document), "spec")).toBeNull();
     expect(urlIn("not json", "status.url")).toBeNull();
   });
+
+  /**
+   * Captured from `gcloud app describe` on a real App Engine deploy,
+   * 2026-09-12. The deploy had worked and the app was serving; Aime called it
+   * unproved because this field is a HOST where Cloud Run answers a whole URL.
+   */
+  const APP_ENGINE = {
+    codeBucket: "staging.my-project.appspot.com",
+    defaultHostname: "my-project.as.r.appspot.com",
+    id: "my-project",
+    locationId: "asia-southeast1",
+    name: "apps/my-project",
+    servingStatus: "SERVING",
+  };
+
+  it("reads a bare hostname as the https URL it is", () => {
+    expect(urlIn(JSON.stringify(APP_ENGINE), "defaultHostname")).toBe("https://my-project.as.r.appspot.com");
+    // A bucket is a hostname's shape and not a front end, but Aime only looks
+    // where the plan points; what must not happen is a value that is plainly
+    // not addressable being requested.
+    expect(urlIn(JSON.stringify(APP_ENGINE), "servingStatus")).toBeNull();
+    expect(urlIn(JSON.stringify(APP_ENGINE), "name")).toBeNull();
+    expect(urlIn(JSON.stringify(APP_ENGINE), "locationId")).toBeNull();
+  });
+
+  it("asks an L4 LoadBalancer address over the scheme it actually serves", () => {
+    // What a Kubernetes `type: LoadBalancer` Service answers, and all it
+    // answers: an IP with no certificate on it. Asked over https it proves
+    // nothing about a workload that is serving perfectly well.
+    const service = { status: { loadBalancer: { ingress: [{ ip: "34.124.196.7" }] } } };
+    const at = "status.loadBalancer.ingress.0.ip";
+    expect(urlIn(JSON.stringify(service), at, "http")).toBe("http://34.124.196.7");
+    // https stays the default, which is right for every managed front end.
+    expect(urlIn(JSON.stringify(service), at)).toBe("https://34.124.196.7");
+  });
+
+  it("refuses anything that is neither a URL nor a hostname", () => {
+    const odd = {
+      port: 8080,
+      sentence: "the service is up",
+      withPath: "example.com/health",
+      withPort: "example.com:8080",
+      single: "localhost",
+      leading: "-bad.example.com",
+      empty: "",
+    };
+    for (const key of Object.keys(odd)) {
+      expect(urlIn(JSON.stringify(odd), key)).toBeNull();
+    }
+  });
 });
 
 describe("the settings promised to stay", () => {
@@ -230,6 +314,28 @@ describe("the lines a person reads", () => {
     expect(
       commandLine({ label: "Deploy", args: ["run", "deploy", "web", "--source", "."], changes: "" }, account),
     ).toBe("gcloud run deploy web --source . --project my-project --account dev@example.com");
+  });
+
+  it("shows a kubectl step under its own program, with no scope flags", () => {
+    // `kubectl` is pointed at a cluster by the kubeconfig an earlier
+    // `get-credentials` step wrote; `--project` and `--account` are `gcloud`'s
+    // way of being told, and `kubectl` refuses them.
+    expect(
+      commandLine(
+        {
+          label: "Apply the manifests",
+          args: ["apply", "--filename", "k8s/"],
+          changes: "the cluster's workloads",
+          program: "kubectl",
+        },
+        account,
+      ),
+    ).toBe("kubectl apply --filename k8s/");
+    // An empty program is the cloud's own, which is how every plan written
+    // before this field existed reads.
+    expect(commandLine({ label: "d", args: ["run", "deploy"], changes: "", program: "" }, account)).toBe(
+      "gcloud run deploy --project my-project --account dev@example.com",
+    );
   });
 
   it("adds the JSON format to a read, and quotes what needs it", () => {

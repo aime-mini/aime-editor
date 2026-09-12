@@ -62,10 +62,31 @@ export interface ProveRead {
   urlPath: string;
   path: string;
   expect: number;
+  /**
+   * The scheme the endpoint answers on, when the read hands back a bare host.
+   *
+   * `https` unless the plan says otherwise, which is right for every managed
+   * front end here - Cloud Run, App Engine, a global load balancer. It is
+   * wrong for exactly the case that needs saying: a Kubernetes `type:
+   * LoadBalancer` Service is an L4 address with no certificate on it, serving
+   * plain HTTP, and asking it over https proves nothing about a deploy that
+   * worked.
+   */
+  scheme?: string;
 }
 
 /** One command Aime runs; mirrors the Rust `DeployStep`. */
 export interface DeployStep {
+  /**
+   * Which CLI runs this step; absent or empty for the cloud's own.
+   *
+   * Google Cloud is two CLIs for a deploy as it is for a read: `gcloud` makes
+   * a GKE cluster and cannot put a workload in one, so a Kubernetes step says
+   * `kubectl`. Rust is the gate (`cloud/k8s.rs`) - a name it does not allow for
+   * that cloud, or a `kubectl` command that is not a deployment, is refused
+   * there and never reaches a command line.
+   */
+  program?: string;
   label: string;
   args: string[];
   changes: string;
@@ -155,6 +176,24 @@ export const TOOLING_TO_REPORT = ["docker"];
  * the checker enforces them. They are about the CLI, not about the user's app.
  */
 const GCLOUD_RULES = [
+  // Measured 2026-09-12: given a repository that is plainly Kubernetes - a
+  // Dockerfile, a 2-replica Deployment, a LoadBalancer Service and a README
+  // saying `kubectl apply` - the AI proposed Cloud Run and said what it had
+  // substituted and why. Good judgement, but it was guessing at Aime's limits:
+  // nothing here said which programs a step may run. A step may now say
+  // `kubectl`, and the two programs are named rather than left to be inferred.
+  "- A step runs as `gcloud` unless it sets `program` to `kubectl`, and those are the only two. Never " +
+    "`helm`, `terraform`, `docker`, a shell or a script: a shape that needs one of those cannot be " +
+    "deployed from here, so choose what these two can deploy and say plainly in `architecture` what you " +
+    "substituted for what, and what is given up.",
+  "- `kubectl` is for putting a workload on a GKE cluster and watching it come up: `apply`, `create`, " +
+    "`expose`, `scale`, `set`, `rollout`, `annotate`, `label`, `patch`, `wait`, `get`. A READ may name it " +
+    "too - `get`, `describe`, `logs`, `top`, `explain`, `cluster-info`, `api-resources`, `version` - and " +
+    "that is how you look at a cluster when a step fails. It needs an earlier " +
+    "`gcloud container clusters get-credentials` step to point it at the cluster; it takes NO `--project` " +
+    "or `--account` (Aime adds those to `gcloud` only, and `kubectl` refuses them); write every flag in " +
+    "its long form as two tokens (`--filename`, `k8s/deployment.yaml`). Aime installs " +
+    "`gke-gcloud-auth-plugin` itself when it is missing, so do not plan that.",
   "- `args` are the arguments after `gcloud`, one token each, in the order the CLI takes them: command " +
     "words, then positionals, then flags. A flag and its value are two tokens (`--region`, `asia-southeast1`), " +
     "never `--region=…`.",
@@ -268,14 +307,15 @@ export function planPrompt(input: {
       "(`label`, `read` with `args`) and the dotted `path` to that setting in the read's JSON answer - the " +
       "environment variables, the scaling limits, the IAM bindings. Aime reads them before and after and " +
       "reports any that changed. Empty when nothing exists.",
-    "- `steps`: the commands, in order, each with `label`, `args`, `changes` (what it changes on the cloud). " +
-      "Enable every API the steps need as an explicit step. Make the build a step or part of one; deploying " +
-      "from source builds in the cloud and needs no docker here.",
+    "- `steps`: the commands, in order, each with `label`, `args`, `changes` (what it changes on the cloud) " +
+      "and, only when it is not `gcloud`, `program`. Enable every API the steps need as an explicit step. " +
+      "Make the build a step or part of one; deploying from source builds in the cloud and needs no docker here.",
     "- `files`: files that must exist in the repository first (a Dockerfile, a .gcloudignore), each with " +
       "`path` and `why`. Aime asks you to write them after the person confirms. Empty when none.",
     "- `prove`: the read that answers the deployed URL - `read` (`label`, `args`), `urlPath` (dotted path to " +
-      "the URL in its JSON answer), `path` (the path to request, the health path), `expect` (the HTTP status " +
-      "that means running).",
+      "the URL in its JSON answer; a bare hostname or IP is fine), `path` (the path to request, the health " +
+      "path), `expect` (the HTTP status that means running), and `scheme` - `https` unless the endpoint " +
+      "has no certificate, which a Kubernetes type:LoadBalancer address does not, so that one says `http`.",
     "",
     "RULES:",
     GCLOUD_RULES,
@@ -296,7 +336,8 @@ export function planPrompt(input: {
     '{"summary":"…","target":{"existing":false,"resourceId":null,"region":"asia-southeast1"},' +
       '"proposal":{"architecture":"…","cost":"…","performance":"…"},' +
       '"keep":[{"label":"environment variables","read":{"purpose":"overview","label":"gcloud run services describe","args":["run","services","describe","web","--region","asia-southeast1"]},"path":"spec.template.spec.containers.0.env"}],' +
-      '"steps":[{"label":"Enable the APIs","args":["services","enable","run.googleapis.com"],"changes":"the project\'s enabled APIs"}],' +
+      '"steps":[{"label":"Enable the APIs","args":["services","enable","run.googleapis.com"],"changes":"the project\'s enabled APIs"},' +
+      '{"label":"Apply the manifests","program":"kubectl","args":["apply","--filename","k8s/"],"changes":"the cluster\'s workloads"}],' +
       '"files":[{"path":"Dockerfile","why":"…"}],' +
       '"prove":{"read":{"purpose":"overview","label":"gcloud run services describe","args":["run","services","describe","web","--region","asia-southeast1"]},"urlPath":"status.url","path":"/","expect":200}}',
   );
@@ -463,7 +504,8 @@ function asStep(value: unknown): DeployStep[] {
   const raw = asRecord(value);
   const args = asArray(raw.args).map(asString).filter(Boolean);
   if (args.length === 0) return [];
-  return [{ label: asString(raw.label) || args.join(" "), args, changes: asString(raw.changes) }];
+  const program = asString(raw.program);
+  return [{ label: asString(raw.label) || args.join(" "), args, changes: asString(raw.changes), program }];
 }
 
 function asRead(value: unknown): PlannedRead[] {
@@ -471,7 +513,16 @@ function asRead(value: unknown): PlannedRead[] {
   const args = asArray(raw.args).map(asString).filter(Boolean);
   if (args.length === 0) return [];
   // The checker raises what looks sensitive; the plan's own word is the start.
-  return [{ purpose: "overview", label: asString(raw.label) || args.join(" "), args }];
+  // `program` is carried for the same reason a step carries one: a cluster is
+  // read with `kubectl`, and Rust is the gate (`cloud/k8s.rs`).
+  return [
+    {
+      purpose: "overview",
+      label: asString(raw.label) || args.join(" "),
+      args,
+      program: asString(raw.program),
+    },
+  ];
 }
 
 function asKeep(value: unknown): KeepRead[] {
@@ -495,7 +546,11 @@ function asProve(value: unknown): ProveRead | null {
   if (read === undefined || urlPath === "") return null;
   const expect = typeof raw.expect === "number" && Number.isInteger(raw.expect) ? raw.expect : 200;
   const path = asString(raw.path) || "/";
-  return { read, urlPath, path: path.startsWith("/") ? path : `/${path}`, expect };
+  // Two schemes and no others: anything else is a plan Aime would be guessing
+  // at, and https is the answer for every managed front end.
+  const said = asString(raw.scheme).toLowerCase();
+  const scheme = said === "http" || said === "https" ? said : "https";
+  return { read, urlPath, path: path.startsWith("/") ? path : `/${path}`, expect, scheme };
 }
 
 /**
@@ -519,10 +574,37 @@ export function valueAt(document: unknown, path: string): unknown {
   return current;
 }
 
-/** The URL a prove read answered, or null when the document has none there. */
-export function urlIn(json: string, urlPath: string): string | null {
+/**
+ * The URL a prove read answered, or null when the document has none there.
+ *
+ * Not every front end answers a URL. Measured 2026-09-12 on a real App Engine
+ * deploy: `gcloud app describe` answers `defaultHostname:
+ * <app>.as.r.appspot.com` - a HOST - where Cloud Run's `status.url` is a whole
+ * `https://…`. The deploy had worked and the app was serving `hello from Aime`;
+ * Aime called it unproved, asked the AI to rewrite the step, failed the same way
+ * and stopped. A bare host is read as `https://<host>`: these front ends serve
+ * on nothing else, and a host is the only other shape a describe answers.
+ */
+export function urlIn(json: string, urlPath: string, scheme = "https"): string | null {
   const value = valueAt(parseJson(json), urlPath);
-  return typeof value === "string" && /^https?:\/\//.test(value) ? value : null;
+  if (typeof value !== "string") return null;
+  const answered = value.trim();
+  if (/^https?:\/\//.test(answered)) return answered;
+  return isHostname(answered) ? `${scheme}://${answered}` : null;
+}
+
+/**
+ * Whether a value is a bare hostname - dotted labels and nothing else.
+ *
+ * Deliberately narrow: a scheme, a path, a port, a space or a single label all
+ * fail it, so a field holding a bucket name, an id or a sentence is still "no
+ * URL here" rather than something Aime would go on to request.
+ */
+function isHostname(value: string): boolean {
+  // An IPv4 address passes this too, deliberately: a Kubernetes LoadBalancer
+  // answers `status.loadBalancer.ingress[0].ip` and nothing else, and that
+  // address is the only way to prove the workload is serving.
+  return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(value);
 }
 
 /**
@@ -544,11 +626,19 @@ export function overwritten(keeps: KeepRead[], before: ReadAnswer[], after: Read
   });
 }
 
-/** A step exactly as Aime runs it, for the confirm page and the log. */
+/**
+ * A step exactly as Aime runs it, for the confirm page and the log.
+ *
+ * The program comes first because it is not always `gcloud`, and the scope
+ * flags are `gcloud`'s way of being told where to work: `kubectl` is told by
+ * the kubeconfig the cluster step wrote, and would refuse them.
+ */
 export function commandLine(step: DeployStep, account: CloudAccount): string {
+  const program = step.program !== undefined && step.program !== "" ? step.program : "gcloud";
+  if (program !== "gcloud") return [program, ...step.args].map(quoted).join(" ");
   const scoped = [...step.args, "--project", account.id];
   if (account.owner !== "") scoped.push("--account", account.owner);
-  return ["gcloud", ...scoped].map(quoted).join(" ");
+  return [program, ...scoped].map(quoted).join(" ");
 }
 
 /** A read as Aime runs it. */

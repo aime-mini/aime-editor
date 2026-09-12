@@ -22,6 +22,7 @@ mod bq;
 pub mod credentials;
 pub mod deploy;
 mod gcp;
+mod k8s;
 pub mod reads;
 pub mod sign_in;
 mod supabase;

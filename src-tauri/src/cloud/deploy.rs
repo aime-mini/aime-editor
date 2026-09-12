@@ -25,7 +25,7 @@
 //! worse than no button.
 
 use super::reads::{check_read_allowing, is_command_word, is_safe_value, PlannedRead};
-use super::{program_for, quiet, read_cli_checked, CloudAccount};
+use super::{k8s, program_for, quiet, read_cli_checked, CloudAccount};
 use crate::exec::{run_program, CommandOutcome, ExecState};
 use crate::program::Program;
 use crate::providers::cli_command;
@@ -44,6 +44,14 @@ pub struct DeployStep {
     pub args: Vec<String>,
     /// What the step changes on the cloud, so the confirm page can say it.
     pub changes: String,
+    /// Which CLI runs this step; empty for the cloud's own.
+    ///
+    /// A cloud is not always one CLI, here as in a read (`reads::PlannedRead::
+    /// program`). `gcloud` creates a GKE cluster and cannot put a workload in
+    /// one, so a Kubernetes step says `kubectl` and `k8s.rs` is the gate that
+    /// decides whether it may.
+    #[serde(default)]
+    pub program: String,
 }
 
 /// A setting the plan promises to leave as it is: a read, and where in its
@@ -69,6 +77,11 @@ pub struct ProveRead {
     pub path: String,
     /// The HTTP status that means "running".
     pub expect: u16,
+    /// The scheme the endpoint answers on when the read hands back a bare host;
+    /// `https` for every managed front end, `http` for an L4 LoadBalancer
+    /// address, which carries no certificate.
+    #[serde(default)]
+    pub scheme: String,
 }
 
 /// The plan as the AI wrote it.
@@ -225,7 +238,14 @@ pub async fn cloud_check_deploy(
     let program = program_for(&app, &cloud_id);
     let mut checked = CheckedPlan::default();
     for step in plan.steps {
-        match check_step(&program, &step, existing, removal).await {
+        // Which CLI first: a step Aime will not run under any program is
+        // refused before its command line is read, and the reason says which
+        // programs there are rather than complaining about the words.
+        let checked_step = match step_program(&cloud_id, &program, &step) {
+            Ok(runs_under) => check_step(&runs_under, &step, existing, removal).await,
+            Err(reason) => Err(reason),
+        };
+        match checked_step {
             Ok(()) => checked.steps.push(step),
             Err(reason) => checked.rejected.push(Rejected {
                 part: PlanPart::Step,
@@ -291,11 +311,27 @@ pub async fn cloud_deploy_step(
     }
     let line = StepLine::parse(&request.step.args, request.existing)?;
     line.refuse_forbidden(request.removal)?;
-    let program = program_for(&app, &request.cloud_id);
-    let args = scoped(&request.step.args, &request.account);
+    let own = program_for(&app, &request.cloud_id);
+    let program = step_program(&request.cloud_id, &own, &request.step)?;
+    let runs_kubectl = program == k8s::PROGRAM;
+    if runs_kubectl {
+        // The kubeconfig a `get-credentials` step wrote names the auth plugin
+        // as its provider, so without it every call fails on the exec step
+        // before it reaches the cluster. Aime fetches what is missing rather
+        // than stopping a deploy the person already confirmed - see `k8s`.
+        ensure_kubectl(&own).await?;
+    }
+    // `--project` and `--account` are `gcloud`'s way of being told where to
+    // work; `kubectl` is told by the kubeconfig the cluster step wrote, and
+    // would refuse the flags outright.
+    let args = if runs_kubectl {
+        request.step.args.clone()
+    } else {
+        scoped(&request.step.args, &request.account)
+    };
     let mut command = cli_command(&program, &args);
     quiet(&mut command);
-    let label = format!("gcloud {}", args.join(" "));
+    let label = format!("{program} {}", args.join(" "));
     run_program(
         &app,
         &state,
@@ -320,12 +356,25 @@ pub async fn cloud_deploy_read(
     if cloud_id != GCP {
         return Err(format!("Aime does not deploy to {cloud_id} yet"));
     }
-    let program = program_for(&app, &cloud_id);
-    let checked = check_read_allowing(&program, &cloud_id, NO_KIND, &read, &LOCATION_FLAGS).await?;
+    let own = program_for(&app, &cloud_id);
+    // A read names its program exactly as a step does. Measured 2026-09-12:
+    // without this, the AI's six diagnostic reads after a failed `kubectl
+    // apply` all ran as `gcloud get …` and were refused one after another.
+    if read.program == k8s::PROGRAM {
+        let command = read.args.first().map(String::as_str).unwrap_or_default();
+        k8s::refuse_unless_reading(&cloud_id, command)?;
+        let mut args = read.args.clone();
+        args.extend(k8s::json_flags().map(String::from));
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        return read_cli_checked(k8s::PROGRAM, &borrowed)
+            .await
+            .map_err(|failure| failure.message);
+    }
+    let checked = check_read_allowing(&own, &cloud_id, NO_KIND, &read, &LOCATION_FLAGS).await?;
     let mut args = scoped(&checked.args, &account);
     args.extend(["--format".into(), "json".into()]);
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-    read_cli_checked(&program, &borrowed)
+    read_cli_checked(&own, &borrowed)
         .await
         .map_err(|failure| failure.message)
 }
@@ -381,6 +430,93 @@ async fn check_step(program: &str, step: &DeployStep, existing: bool, removal: b
     let line = StepLine::parse(&step.args, existing)?;
     line.refuse_forbidden(removal)?;
     line.words_exist(program).await
+}
+
+/// Puts what a `kubectl` step needs on this machine, if it is not here already.
+///
+/// Aime's own doing, not the AI's: `gcloud components` is a group no planned
+/// step may touch, and rightly - but a deploy the person has already confirmed
+/// should not stop on a binary the Cloud SDK already here can fetch in one
+/// command. Each component is checked before it is fetched, so the common case
+/// (both present) costs nothing and a second step costs nothing either.
+async fn ensure_kubectl(gcloud: &str) -> Result<(), String> {
+    let mut python: Option<String> = None;
+    for component in k8s::NEEDED {
+        if Program::resolve(component).exists() {
+            continue;
+        }
+        // Windows only, and asked for once: see `k8s::BUNDLED_PYTHON` for the
+        // error this avoids. Elsewhere the Cloud SDK runs on the system's
+        // Python and updates itself without being told anything.
+        if cfg!(target_os = "windows") && python.is_none() {
+            python = Some(bundled_python(gcloud).await?);
+        }
+        install_component(gcloud, component, python.as_deref()).await?;
+    }
+    Ok(())
+}
+
+/// The Python the Cloud SDK can update itself with, off the last line of its
+/// own answer.
+async fn bundled_python(gcloud: &str) -> Result<String, String> {
+    let printed = read_cli_checked(gcloud, &k8s::BUNDLED_PYTHON)
+        .await
+        .map_err(|failure| {
+            format!(
+                "could not find a Python to update the Cloud SDK with: {}",
+                failure.message
+            )
+        })?;
+    printed
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "`gcloud components copy-bundled-python` named no Python".to_string())
+}
+
+/// One Cloud SDK component, fetched with the Python it needs when there is one.
+async fn install_component(gcloud: &str, component: &str, python: Option<&str>) -> Result<(), String> {
+    let args = k8s::install(component);
+    let mut command = cli_command(gcloud, args.iter().copied());
+    quiet(&mut command);
+    if let Some(python) = python {
+        command.env(k8s::PYTHON_ENV, python);
+    }
+    let output = command
+        .output()
+        .await
+        .map_err(|e| format!("could not run `{gcloud} {}`: {e}", args.join(" ")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "`{component}` is needed before `{}` can reach a GKE cluster, and installing it failed: {}",
+        k8s::PROGRAM,
+        head_of(&String::from_utf8_lossy(&output.stderr))
+    ))
+}
+
+/// Which CLI a step runs under, or the reason it may not run at all.
+///
+/// The cloud's own CLI when the step names none. A step that names one is held
+/// to the gate for it: `kubectl` for Google Cloud's clusters and the commands
+/// that deploy to one, nothing else anywhere. This is what keeps a model's
+/// answer from widening what Aime is willing to run.
+fn step_program(cloud_id: &str, own: &str, step: &DeployStep) -> Result<String, String> {
+    if step.program.is_empty() {
+        return Ok(own.to_string());
+    }
+    if step.program != k8s::PROGRAM {
+        return Err(format!(
+            "Aime runs a deploy step with `{own}` or `{}`, never `{}`",
+            k8s::PROGRAM,
+            step.program
+        ));
+    }
+    let command = step.args.first().map(String::as_str).unwrap_or_default();
+    k8s::refuse_unless_deploying(cloud_id, command)?;
+    Ok(k8s::PROGRAM.to_string())
 }
 
 /// A deploy command as gcloud reads it: the command words, the positionals they
@@ -551,11 +687,54 @@ mod tests {
     use super::*;
 
     fn step(args: &[&str]) -> DeployStep {
+        under("", args)
+    }
+
+    /// A step that names the CLI it runs under, the way a plan may.
+    fn under(program: &str, args: &[&str]) -> DeployStep {
         DeployStep {
             label: "step".into(),
             args: args.iter().map(|arg| (*arg).to_string()).collect(),
             changes: String::new(),
+            program: program.to_string(),
         }
+    }
+
+    #[test]
+    fn a_step_runs_under_the_clouds_own_cli_unless_it_names_another() {
+        assert_eq!(
+            step_program("gcp", "gcloud", &step(&["run", "deploy"])),
+            Ok("gcloud".into())
+        );
+        assert_eq!(
+            step_program(
+                "gcp",
+                "gcloud",
+                &under("kubectl", &["apply", "--filename", "k8s/"])
+            ),
+            Ok("kubectl".into())
+        );
+    }
+
+    #[test]
+    fn a_step_may_not_name_any_other_program_or_an_undeploying_kubectl() {
+        // A model naming a shell, a package manager or a build tool is the case
+        // this gate exists for: the refusal says what the two programs are.
+        for invented in ["sh", "bash", "helm", "terraform", "docker", "npm"] {
+            let refused = step_program("gcp", "gcloud", &under(invented, &["anything"]))
+                .expect_err("only two programs run a step");
+            assert!(refused.contains(invented), "unhelpful: {refused}");
+            assert!(
+                refused.contains("kubectl"),
+                "the refusal does not say what IS run: {refused}"
+            );
+        }
+        // `kubectl` itself is held to the commands that deploy.
+        let refused = step_program("gcp", "gcloud", &under("kubectl", &["exec", "pod"]))
+            .expect_err("a shell on a pod is not a deployment");
+        assert!(refused.contains("exec"), "unhelpful: {refused}");
+        // And it belongs to Google Cloud's clusters alone.
+        assert!(step_program("aws", "aws", &under("kubectl", &["apply"])).is_err());
     }
 
     fn shape(args: &[&str], existing: bool) -> Result<(), String> {

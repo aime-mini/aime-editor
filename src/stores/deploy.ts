@@ -416,7 +416,7 @@ async function prove(ops: Ops, plan: DeployPlan, steps: StepRun[]): Promise<Verd
     return { kind: "failed", failed: { label: "prove", command: "", output: translate("deploy.noProof") } };
   }
   const [answer] = await readAll(ops, [proveRead.read]);
-  const url = answer.ok ? urlIn(answer.json, proveRead.urlPath) : null;
+  const url = answer.ok ? urlIn(answer.json, proveRead.urlPath, proveRead.scheme) : null;
   if (url === null) {
     const output = answer.ok
       ? translate("deploy.noUrl", { label: proveRead.read.label, path: proveRead.urlPath })
