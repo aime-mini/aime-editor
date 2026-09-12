@@ -119,7 +119,14 @@ export type ResourceState =
 
 /** What the read plan for one KIND of resource is doing. */
 export type PlanState =
-  | { kind: "planning" }
+  /**
+   * `asking` is false while a plan already on disk is being tried against the
+   * resource in hand, which costs a CLI call and no AI turn at all. Said apart
+   * because the two waits are different lengths and different money, and the
+   * panel claimed the expensive one for both until this was measured
+   * (2026-09-12: a kind with a stored plan still announced "Asking the AI").
+   */
+  | { kind: "planning"; asking: boolean }
   | { kind: "ready"; reads: PlannedRead[]; facts: ConnectionFact[]; rejected: RejectedRead[] }
   | { kind: "failed"; reason: string };
 
@@ -852,9 +859,12 @@ async function ensurePlan(
   }
   const account = get().selected[cloudId];
   if (account === undefined) return null;
-  setPlan(set, key, { kind: "planning" });
+  // Announced as an AI turn until the disk says otherwise, because that is
+  // the wait worth warning about and it is the one a kind gets first.
+  setPlan(set, key, { kind: "planning", asking: true });
   try {
     const stored = await invoke<StoredPlan | null>("cloud_read_plan", { cloudId, kind: resource.kind });
+    if (stored !== null) setPlan(set, key, { kind: "planning", asking: false });
     const checked = stored === null ? await planWithAi(cloudId, resource) : { ...stored, rejected: [] };
     // A plan that has already answered on a real resource is taken as it is;
     // one off an older build, or one whose trial run hit a wall rather than an

@@ -672,6 +672,28 @@ describe("proving a read against the resource it was planned for", () => {
    * written (`reads.rs: own_overview`), which is why the panel must show the
    * plan that came BACK rather than the one it sent.
    */
+  /**
+   * The two waits are not the same wait: one is an AI turn, once per kind, and
+   * one is a stored plan being tried against this resource. Measured in the app
+   * 2026-09-12, the panel announced the expensive one for both.
+   */
+  it("says it is asking the AI only when it is", async () => {
+    const seen: boolean[] = [];
+    const watch = useCloud.subscribe((state) => {
+      const plan = state.plans["gcp/iam.googleapis.com/ServiceAccount"];
+      if (plan?.kind === "planning") seen.push(plan.asking);
+    });
+    planOnDisk = { reads: [byEmail], facts: [], proved: false };
+    proofs = [null];
+
+    useCloud.getState().openDetail(account);
+    await settle();
+    watch();
+
+    expect(asked).toBe(0);
+    expect(seen).toContain(false);
+  });
+
   it("shows the overview the stored plan gained, not the one it sent", async () => {
     const secret: PlannedRead = {
       purpose: "secret",

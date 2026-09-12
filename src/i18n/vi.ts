@@ -399,6 +399,7 @@ export const vi: Record<TranslationKey, string> = {
   "cloud.paneRelated": "Triển khai cùng",
   "cloud.paneRaw": "JSON gốc",
   "cloud.planning": "Đang hỏi AI cách đọc một {kind} - một lần cho loại này, sau đó không hỏi nữa…",
+  "cloud.proving": "Đang thử các lệnh đã lập sẵn cho {kind} trên resource này…",
   "cloud.readsNone": "Chưa có lệnh đọc cấu hình nào cho loại này.",
   "cloud.readsNoCloud": "Aime chưa đo được cách đọc resource của cloud này.",
   "cloud.rejectedReads": "{count} lệnh AI đề xuất bị từ chối - vì sao",

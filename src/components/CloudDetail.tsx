@@ -316,9 +316,12 @@ function PlanNotice({
   const t = useT();
   const kind = shortKind(resource.kind);
   if (plan === undefined || plan.kind === "planning") {
+    // Two different waits: an AI turn, once per kind, or a stored plan being
+    // tried against this resource, which is a CLI call and nothing else.
+    const asking = plan === undefined || plan.asking;
     return (
       <Note icon={Loader2} spin>
-        {t("cloud.planning", { kind })}
+        {t(asking ? "cloud.planning" : "cloud.proving", { kind })}
       </Note>
     );
   }

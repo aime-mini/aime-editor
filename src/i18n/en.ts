@@ -398,6 +398,7 @@ export const en = {
   "cloud.paneRelated": "Deployed alongside",
   "cloud.paneRaw": "Raw",
   "cloud.planning": "Asking the AI how a {kind} is read - once for this kind, then never again…",
+  "cloud.proving": "Trying the commands already planned for a {kind} on this one…",
   "cloud.readsNone": "No configuration read is planned for this kind.",
   "cloud.readsNoCloud": "Aime has no measured way to read a resource of this cloud yet.",
   "cloud.rejectedReads": "{count} proposed read(s) refused - why",
