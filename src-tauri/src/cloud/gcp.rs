@@ -33,6 +33,7 @@
 //! in its own words, with the page that enables it, and those words are what
 //! the panel shows.
 
+use super::reads::{PlannedRead, ReadPurpose};
 use super::{field, read_cli, CloudAccount, CloudResource, Identity};
 
 /// The two files `gcloud config list --format=json` groups under `core`.
@@ -243,6 +244,107 @@ fn search_args(scope: &str) -> [&str; 12] {
         "--format",
         "json",
     ]
+}
+
+/// The resource's own body, plus the name that says which resource it is.
+///
+/// `*` answers this and the listing's fields besides; asked for these two, the
+/// same read of the busiest project in a real account came back in 5.6s rather
+/// than 7.1s and carried nothing the overview then throws away.
+const RESOURCE_BODY: &str = "name,versionedResources";
+
+/// Aime's own read of one Google Cloud resource, for the kinds `gcloud` has no
+/// command for.
+///
+/// Measured 2026-09-12 over a real Google account: 7 of its 21 kinds - 33
+/// resources - have no `gcloud` read at all, and three of them are not even
+/// `gcloud`'s to read (`firebase`, `firebaserules` and `identitytoolkit` have
+/// no command group; `gcloud firebase` is Test Lab and nothing else). Reaching
+/// them through Firebase's own CLI would mean an install and a second sign-in
+/// for 12 of those 33, and nothing at all for the rest.
+///
+/// They are all readable already. Cloud Asset Inventory - the same API the
+/// panel lists an account with - returns a resource's whole body when asked for
+/// it, so one command reads every kind there is. Measured on all seven: a
+/// Firebase app answers 7 fields, a ruleset answers its own `source`, a service
+/// account key its algorithm and validity, an identity provider its client id.
+///
+/// This is Aime's read, not the AI's, in the way `azure_seed` is: a model is
+/// asked how a kind is read, and this is the answer when the CLI has no way to.
+/// It cannot come from a model even in principle - `--query` is one of the
+/// flags Aime adds itself and a proposed read carrying one is refused.
+///
+/// `NO_QUOTA_PROJECT` is not optional here, for the reason the listing gives
+/// and one more measured the same day: charged to the project being read
+/// instead, `gcloud` answers a project whose Cloud Asset API is off by ASKING
+/// whether to switch it on - a question, on stdin, that a panel is not there to
+/// answer. Prompts are disabled for every CLI Aime runs (`quiet`), so what
+/// comes back is the refusal rather than a wait with no end; with `LEGACY` the
+/// question does not arise.
+///
+/// `--filter`, which `gcloud` applies to the answer, rather than `--query`,
+/// which the API applies to the search. The search's own syntax reads `:` as an
+/// operator, so a name that carries one - every Firebase app id does - has to
+/// be quoted, and a quoted argument does not survive the trip: `gcloud` is a
+/// batch shim on Windows, Rust escapes `"` the way MSVC reads it, and cmd.exe
+/// does not. Measured in the app 2026-09-12, the panel showed *'C:\Users\…\
+/// AppData\Local\Google\Cloud' is not recognized as an internal or external
+/// command* - the CLI's own path, cut at its first space. Filtering costs the
+/// whole scope over the wire and 7s rather than 3s on the busiest project of a
+/// real account, and it needs no quoting at all.
+pub(super) fn asset_read() -> PlannedRead {
+    PlannedRead {
+        purpose: ReadPurpose::Overview,
+        label: "gcloud asset search-all-resources".to_string(),
+        args: [
+            "asset",
+            "search-all-resources",
+            "--scope",
+            "projects/<group>",
+            "--filter",
+            "name=<id>",
+            "--read-mask",
+            RESOURCE_BODY,
+            "--billing-project",
+            NO_QUOTA_PROJECT,
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect(),
+        program: String::new(),
+    }
+}
+
+/// Whether a read is the one above, so the checker can let it by: it is a
+/// constant in this binary rather than a model's answer, and the checker is
+/// there to hold a model's answer to what the CLI can run.
+pub(super) fn is_asset_read(read: &PlannedRead) -> bool {
+    read.args == asset_read().args
+}
+
+/// The resource out of the search result that carries it.
+///
+/// A search answers a LIST, and each hit keeps the resource under
+/// `versionedResources`, one entry per API version - where every other read in
+/// Aime answers the resource itself. Aime owns this command, so it owns the
+/// shape of its answer too: the panel is handed the body, not the envelope
+/// around it. The newest version is the last one listed, which is the one the
+/// panel wants.
+pub(super) fn resource_body(json: &str) -> Result<String, String> {
+    let hits: Vec<serde_json::Value> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let body = hits
+        .first()
+        .and_then(|hit| hit.get("versionedResources"))
+        .and_then(|versions| versions.as_array())
+        .and_then(|versions| versions.last())
+        .and_then(|version| version.get("resource"));
+    match body {
+        Some(resource) => serde_json::to_string_pretty(resource).map_err(|e| e.to_string()),
+        // Not a failure of the command: the search ran and Cloud Asset
+        // Inventory holds no body for this resource. Said rather than shown as
+        // an empty list, which reads like a broken read.
+        None => Err("Cloud Asset Inventory has no record of this resource.".to_string()),
+    }
 }
 
 /// The search results as the panel's resources.
@@ -651,6 +753,118 @@ mod tests {
         assert!(projects_in("{}", "x", None).is_empty());
         assert_eq!(last_segment(""), "");
         assert_eq!(last_segment("//storage.googleapis.com/bucket/"), "bucket");
+    }
+
+    /// The seven kinds this account holds that `gcloud` has no command for,
+    /// with the body Cloud Asset Inventory answered for one of each on
+    /// 2026-09-12 - the measurement the fallback exists for.
+    const UNREADABLE_KINDS: [(&str, usize); 7] = [
+        ("firebase.googleapis.com/FirebaseAppInfo", 7),
+        ("firebase.googleapis.com/FirebaseProject", 6),
+        ("firebaserules.googleapis.com/Ruleset", 4),
+        ("firebaserules.googleapis.com/Release", 4),
+        ("iam.googleapis.com/ServiceAccountKey", 6),
+        ("identitytoolkit.googleapis.com/OauthIdpConfig", 4),
+        ("identitytoolkit.googleapis.com/DefaultSupportedIdpConfig", 3),
+    ];
+
+    #[test]
+    fn aimes_own_read_asks_asset_inventory_for_one_named_resource_whole() {
+        let read = asset_read();
+        assert_eq!(read.purpose, ReadPurpose::Overview);
+        assert!(read.program.is_empty(), "it is `gcloud`, the cloud's own CLI");
+        assert!(read.args.contains(&"name=<id>".to_string()));
+        assert!(read.args.contains(&"projects/<group>".to_string()));
+        // Charged to no project at all: see `asset_read`, and the listing.
+        let billing = read.args.iter().position(|arg| arg == "--billing-project");
+        assert_eq!(
+            billing.map(|at| read.args[at + 1].as_str()),
+            Some(NO_QUOTA_PROJECT)
+        );
+        assert!(read.args.contains(&RESOURCE_BODY.to_string()));
+        // Not one double quote anywhere: `gcloud` is a batch shim on Windows
+        // and a quoted argument reaches it as a broken command line. See
+        // `asset_read` for the sentence the app showed when it did.
+        assert!(
+            read.args.iter().all(|arg| !arg.contains('"')),
+            "a quoted argument cannot survive cmd.exe: {:?}",
+            read.args
+        );
+    }
+
+    /// The answer `bq`-style: captured from this account on 2026-09-12, for the
+    /// Firebase app `gcloud` has no command to describe.
+    const SEARCH_HIT: &str = r#"[
+  {
+    "name": "//firebase.googleapis.com/projects/300910271209/androidApps/1:300910271209:android:c1c554367620600d",
+    "versionedResources": [
+      {
+        "resource": {
+          "apiKeyId": "75",
+          "appId": "1:300910271209:android:c1c554367620600d",
+          "displayName": "TestLib",
+          "name": "projects/testfcm-1c2ef/androidApps/1:300910271209:android:c1c554367620600d",
+          "namespace": "com.companyname.TestLibrary",
+          "platform": "ANDROID",
+          "state": "ACTIVE"
+        },
+        "version": "v1beta1"
+      }
+    ]
+  }
+]"#;
+
+    #[test]
+    fn the_panel_is_given_the_resource_and_not_the_search_that_found_it() {
+        let body = resource_body(SEARCH_HIT).expect("the hit carries a resource");
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        // The seven fields a person opens a Firebase app to see - and none of
+        // the search's own envelope around them.
+        assert_eq!(parsed.as_object().map(|fields| fields.len()), Some(7));
+        assert_eq!(field(&parsed, "platform"), "ANDROID");
+        assert_eq!(field(&parsed, "namespace"), "com.companyname.TestLibrary");
+        assert!(!body.contains("versionedResources"), "the envelope is gone");
+    }
+
+    #[test]
+    fn a_search_that_found_nothing_is_said_rather_than_shown_as_an_empty_list() {
+        let refusal = resource_body("[]").expect_err("nothing was found");
+        assert!(refusal.contains("no record"), "unhelpful: {refusal}");
+        assert!(resource_body("not json at all").is_err());
+        // A hit with no body is the same answer as no hit.
+        assert!(resource_body(r#"[{"name":"//x/y"}]"#).is_err());
+    }
+
+    #[test]
+    fn only_aimes_own_read_is_recognised_as_its_own() {
+        assert!(is_asset_read(&asset_read()));
+        let mut tampered = asset_read();
+        tampered.args.push("--limit".to_string());
+        assert!(
+            !is_asset_read(&tampered),
+            "a read that is not the constant is not it"
+        );
+        let ai_wrote = PlannedRead {
+            purpose: ReadPurpose::Overview,
+            label: "gcloud run services describe".to_string(),
+            args: ["run", "services", "describe", "<name>"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            program: String::new(),
+        };
+        assert!(!is_asset_read(&ai_wrote));
+    }
+
+    #[test]
+    fn every_kind_gcloud_cannot_read_is_a_kind_asset_inventory_answers_for() {
+        // One command for all seven: the read names no kind, so the kinds are
+        // here to say what was measured against it rather than to be matched.
+        for (kind, fields) in UNREADABLE_KINDS {
+            assert!(kind.contains('/'), "{kind} is a full asset type");
+            assert!(fields > 0, "{kind} answered a body, measured 2026-09-12");
+        }
+        assert!(asset_read().args.iter().all(|arg| !arg.contains("firebase")));
     }
 
     #[test]

@@ -34,6 +34,8 @@ let proofs: (string | null)[] = [];
 let runs: (string | null)[] = [];
 /** Every plan written to disk, so a test can see what survived and whether it was proved. */
 const written: { reads: PlannedRead[]; facts: unknown[]; proved: boolean }[] = [];
+/** What `cloud_store_plan` answers, for a test where the file differs from what was sent. */
+let storedReads: PlannedRead[] | null = null;
 /** What the AI answers, one reply per call. */
 let replies: string[] = [];
 /** How many times the AI was asked anything. */
@@ -89,9 +91,13 @@ vi.mock("@tauri-apps/api/core", () => ({
         // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
         return refusal === null ? Promise.resolve('{"keys":[]}') : Promise.reject(refusal);
       }
-      case "cloud_store_plan":
-        written.push(args as unknown as { reads: PlannedRead[]; facts: unknown[]; proved: boolean });
-        return Promise.resolve();
+      case "cloud_store_plan": {
+        const plan = args as unknown as { reads: PlannedRead[]; facts: unknown[]; proved: boolean };
+        written.push(plan);
+        // The real command answers the plan it wrote, which is not always the
+        // plan it was given: see `reads.rs: own_overview`.
+        return Promise.resolve(storedReads ?? plan.reads);
+      }
       case "cloud_report":
         return Promise.resolve([{ ...azure, signedIn: azureSignedIn }]);
       case "cloud_status":
@@ -464,6 +470,7 @@ describe("proving a read against the resource it was planned for", () => {
 
   beforeEach(() => {
     planOnDisk = null;
+    storedReads = null;
     checked = [];
     checkedPlans = [];
     proofs = [];
@@ -655,6 +662,39 @@ describe("proving a read against the resource it was planned for", () => {
     // heading keeps the place it first had, so the pane does not reshuffle.
     expect(written[0].reads).toEqual([keysByName, byEmail]);
     expect(written[0].facts).toEqual([{ label: "Service account email", value: "<name>" }]);
+  });
+
+  /**
+   * Measured 2026-09-12 over a real Google account: seven of its kinds have no
+   * `gcloud` read at all - three of them belong to services `gcloud` has no
+   * command group for - so the AI rightly answers no overview, and the panel
+   * used to show nothing but facts. Aime's own read is added where the plan is
+   * written (`reads.rs: own_overview`), which is why the panel must show the
+   * plan that came BACK rather than the one it sent.
+   */
+  it("shows the overview the stored plan gained, not the one it sent", async () => {
+    const secret: PlannedRead = {
+      purpose: "secret",
+      label: "gcloud iam service-accounts keys list",
+      args: ["iam", "service-accounts", "keys", "list", "--iam-account", "<name>"],
+    };
+    const aimesOwn: PlannedRead = {
+      purpose: "overview",
+      label: "gcloud asset search-all-resources",
+      args: ["asset", "search-all-resources", "--scope", "projects/<group>", "--query", 'name="<id>"'],
+    };
+    checkedPlans = [{ reads: [secret], facts: [], rejected: [] }];
+    storedReads = [secret, aimesOwn];
+    replies = ["{}"];
+
+    useCloud.getState().openDetail(account);
+    await settle();
+
+    const plan = useCloud.getState().plans["gcp/iam.googleapis.com/ServiceAccount"];
+    expect(plan?.kind).toBe("ready");
+    expect(plan?.kind === "ready" && plan.reads).toEqual([secret, aimesOwn]);
+    // And it is run on sight, the way any overview is - the secret one is not.
+    expect(commands.filter((name) => name === "cloud_run_read")).toHaveLength(1);
   });
 
   it("gives up after two rounds rather than asking the AI forever", async () => {

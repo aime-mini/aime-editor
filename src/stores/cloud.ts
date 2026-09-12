@@ -958,9 +958,18 @@ async function proveAndStore(
     facts = repaired.facts.length > 0 ? repaired.facts : facts;
     unusable = [];
   }
-  const reads = latestOfEachLabel(kept);
-  await invoke("cloud_store_plan", { cloudId, kind: resource.kind, reads, facts, proved });
-  return { reads, facts, rejected };
+  // What is stored is what comes back, not what went in: a kind left with no
+  // overview - because the CLI has no such command, or because the one the AI
+  // wrote was thrown out above - gains Aime's own there (`reads.rs:
+  // own_overview`), and the panel has to show the plan the file now holds.
+  const stored = await invoke<PlannedRead[]>("cloud_store_plan", {
+    cloudId,
+    kind: resource.kind,
+    reads: latestOfEachLabel(kept),
+    facts,
+    proved,
+  });
+  return { reads: stored, facts, rejected };
 }
 
 /**
@@ -1041,8 +1050,14 @@ async function repairAfterClick(
     const facts = repaired.facts.length > 0 ? repaired.facts : known.facts;
     // Unproved: what replaced a `secret` read cannot be proved by running it
     // either, and the run that matters is the one about to happen.
-    await invoke("cloud_store_plan", { cloudId, kind: resource.kind, reads, facts, proved: false });
-    setPlan(set, key, { kind: "ready", reads, facts, rejected });
+    const stored = await invoke<PlannedRead[]>("cloud_store_plan", {
+      cloudId,
+      kind: resource.kind,
+      reads,
+      facts,
+      proved: false,
+    });
+    setPlan(set, key, { kind: "ready", reads: stored, facts, rejected });
     for (const read of repaired.reads.filter((candidate) => candidate.purpose === failed.purpose)) {
       await get().runRead(resource, read);
     }

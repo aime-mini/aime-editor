@@ -461,7 +461,10 @@ pub async fn cloud_prove_read(
     read: PlannedRead,
 ) -> Result<Option<String>, String> {
     let program = super::program_for(&app, &cloud_id);
-    let checked = check_read(&program, &cloud_id, &resource.kind, &read).await?;
+    // `check_planned`, not `check_read`: a plan read back from disk carries
+    // Aime's own overview too, and a second trial run of it must not be refused
+    // for the `--query` no model is allowed to write.
+    let checked = check_planned(&program, &cloud_id, &resource.kind, &read).await?;
     if checked.purpose == ReadPurpose::Secret {
         return Ok(None);
     }
@@ -470,11 +473,14 @@ pub async fn cloud_prove_read(
         .map(Some)
 }
 
-/// Writes the plan the caller settled on, after proving it.
+/// Writes the plan the caller settled on, after proving it, and hands back what
+/// was written.
 ///
 /// Checked again rather than taken as given, for the reason `cloud_prove_read`
 /// gives: this is the file every later session reads, and what reaches it comes
-/// from the frontend.
+/// from the frontend. The answer is the stored plan rather than nothing,
+/// because a kind with no overview left gains Aime's own read here and the
+/// panel has to show what the file now holds.
 #[tauri::command]
 pub async fn cloud_store_plan(
     app: AppHandle,
@@ -483,16 +489,56 @@ pub async fn cloud_store_plan(
     reads: Vec<PlannedRead>,
     facts: Vec<ConnectionFact>,
     proved: bool,
-) -> Result<(), String> {
+) -> Result<Vec<PlannedRead>, String> {
     let program = super::program_for(&app, &cloud_id);
     let mut checked = Vec::with_capacity(reads.len());
     for read in reads {
-        checked.push(check_read(&program, &cloud_id, &kind, &read).await?);
+        checked.push(check_planned(&program, &cloud_id, &kind, &read).await?);
     }
+    // Aime's own read arrives here having never run, so the plan it joins is
+    // not a proved one however the caller found the rest: the next resource of
+    // this kind tries it for real, and a plan whose own read then fails is one
+    // the panel can still put right. Measured in the app 2026-09-12 - stored
+    // proved, a read broken by this machine's shell was that kind's answer for
+    // good.
+    let own = own_overview(&cloud_id, &checked);
+    let proved = proved && own.is_none();
+    checked.extend(own);
     for fact in &facts {
         check_fact(fact)?;
     }
-    store_plan(&app, &cloud_id, &kind, &checked, &facts, proved)
+    store_plan(&app, &cloud_id, &kind, &checked, &facts, proved)?;
+    Ok(checked)
+}
+
+/// Aime's own overview read for a kind the AI could not give one for, or
+/// `None` when the plan already has one or the cloud has no such read.
+///
+/// Written here, at the one place a plan is put on disk, so that it covers both
+/// ways a kind ends up without an overview: a model that answered none because
+/// the CLI genuinely has no command, and a model whose command was thrown out
+/// after failing on a real resource. `cloud_run_read` will only run a read the
+/// stored plan holds, so an overview that is not written down is not one the
+/// panel can use.
+fn own_overview(cloud_id: &str, reads: &[PlannedRead]) -> Option<PlannedRead> {
+    if cloud_id != "gcp" || reads.iter().any(|read| read.purpose == ReadPurpose::Overview) {
+        return None;
+    }
+    Some(super::gcp::asset_read())
+}
+
+/// One read held to what the CLI on this machine can run - unless it is Aime's
+/// own, which is a constant in this binary and not something a model proposed.
+async fn check_planned(
+    program: &str,
+    cloud_id: &str,
+    kind: &str,
+    read: &PlannedRead,
+) -> Result<PlannedRead, String> {
+    if super::gcp::is_asset_read(read) {
+        return Ok(read.clone());
+    }
+    check_read(program, cloud_id, kind, read).await
 }
 
 /// Whether a connection fact is one Aime will show.
@@ -612,6 +658,10 @@ async fn run_read(
     };
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
     match read_cli_checked(&program, &borrowed).await {
+        // Aime's own read searches, so it answers a list with the resource
+        // inside it; every other read here answers the resource. The panel is
+        // given the same thing either way.
+        Ok(text) if super::gcp::is_asset_read(read) => super::gcp::resource_body(&text),
         Ok(text) => Ok(text),
         // 252 is the AWS CLI saying the command line itself is wrong - a read
         // the model accepted but the CLI spells differently. Named as Aime's
@@ -2058,6 +2108,64 @@ mod tests {
     /// `bq` is one command word and then its arguments, and its flags carry
     /// underscores - which no `gcloud`, `az` or `aws` flag does, and which the
     /// parser refused as "not a flag" until it was measured.
+    #[test]
+    fn a_kind_left_without_an_overview_gains_aimes_own_and_one_that_has_it_does_not() {
+        let overview = PlannedRead {
+            purpose: ReadPurpose::Overview,
+            label: "gcloud run services describe".to_string(),
+            args: args("run services describe <name>"),
+            program: String::new(),
+        };
+        let secret = PlannedRead {
+            purpose: ReadPurpose::Secret,
+            label: "gcloud iam service-accounts keys list".to_string(),
+            args: args("iam service-accounts keys list --iam-account <name>"),
+            program: String::new(),
+        };
+        assert_eq!(own_overview("gcp", &[overview]), None, "it already reads");
+        assert_eq!(
+            own_overview("gcp", &[secret]),
+            Some(super::super::gcp::asset_read()),
+            "a plan of secrets alone still owes an overview"
+        );
+        assert_eq!(own_overview("gcp", &[]), Some(super::super::gcp::asset_read()));
+        // And what it adds is not an overview twice over: asked again about the
+        // plan it joined, it adds nothing, which is what lets a plan settle.
+        let own = super::super::gcp::asset_read();
+        assert_eq!(own_overview("gcp", &[own]), None);
+        // Cloud Asset Inventory is Google Cloud's; the other three clouds say
+        // so themselves when they have no read.
+        for elsewhere in ["aws", "azure", "supabase"] {
+            assert_eq!(own_overview(elsewhere, &[]), None, "{elsewhere} has no such API");
+        }
+    }
+
+    #[test]
+    fn aimes_own_read_names_the_resource_the_search_syntax_wants() {
+        let ruleset = CloudResource {
+            name: "5a083fea-74e8-4d9f-98b8-3d6e994fe606".to_string(),
+            cli_name: "5a083fea-74e8-4d9f-98b8-3d6e994fe606".to_string(),
+            kind: "firebaserules.googleapis.com/Ruleset".to_string(),
+            location: String::new(),
+            group: "intense-hour-239401".to_string(),
+            tags: Default::default(),
+            id: "//firebaserules.googleapis.com/projects/intense-hour-239401/rulesets/                 5a083fea-74e8-4d9f-98b8-3d6e994fe606"
+                .replace(' ', ""),
+        };
+        let filled: Vec<String> = super::super::gcp::asset_read()
+            .args
+            .iter()
+            .map(|arg| fill(arg, &ruleset))
+            .collect();
+        assert!(filled.contains(&"projects/intense-hour-239401".to_string()));
+        // `<id>` and not `<path>`: the search matches the whole resource name,
+        // `//service/…` and all, which is the one form `<path>` strips.
+        assert!(
+            filled.contains(&format!("name={}", ruleset.id)),
+            "filled as {filled:?}"
+        );
+    }
+
     #[test]
     fn a_bigquery_command_line_is_one_word_and_may_carry_underscored_flags() {
         let tokens = args("show <name>");
