@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Loader2, Play, RefreshCw, Square, TriangleAlert, Wrench } from "lucide-react";
 import { useT } from "../i18n";
 import { destroys, fillable, fillOp, opCommand, type ProposedOp } from "../lib/cloudOps";
+import { dialectOf } from "../lib/deployDialect";
 import { slotOf, useCloud, type CloudResource } from "../stores/cloud";
-import { CopyButton, Note } from "./CloudDetail";
+import { CopyButton, Note, Rejected } from "./CloudDetail";
 
 /**
  * The work a developer can do to one resource, from inside Aime.
@@ -39,6 +40,12 @@ export function CloudOps({ resource }: { resource: CloudResource }) {
     );
   }
 
+  // Nothing to retry: Aime has not measured this cloud's command line, so
+  // asking the AI again would produce the same answer and the same refusal.
+  if (state.kind === "unmeasured") {
+    return <Note icon={TriangleAlert}>{t("cloud.opsNoCloud")}</Note>;
+  }
+
   if (state.kind === "failed") {
     return (
       <div className="flex flex-col gap-2">
@@ -59,10 +66,14 @@ export function CloudOps({ resource }: { resource: CloudResource }) {
       </div>
       <div className="flex items-center gap-3 text-[11px] text-muted">
         <AskAgain resource={resource} />
+        {/* Folded open rather than hidden in a tooltip: when every proposal
+            was refused this list is the whole answer, and a `title` is
+            invisible to a screenshot, a keyboard and a touch screen. */}
         {state.rejected.length > 0 && (
-          <span title={state.rejected.map((entry) => `${entry.label}: ${entry.reason}`).join("\n")}>
-            {t("cloud.opsRefused", { count: state.rejected.length })}
-          </span>
+          <Rejected
+            rejected={state.rejected}
+            summary={t("cloud.opsRefused", { count: state.rejected.length })}
+          />
         )}
       </div>
     </div>
@@ -95,6 +106,7 @@ function AskAgain({ resource }: { resource: CloudResource }) {
  */
 function OpRow({ resource, op }: { resource: CloudResource; op: ProposedOp }) {
   const t = useT();
+  const cloudId = useCloud((s) => s.tab);
   const account = useCloud((s) => s.accounts[s.tab]?.find((entry) => entry.id === s.selected[s.tab]));
   const runOp = useCloud((s) => s.runOp);
   const running = useCloud((s) => s.running);
@@ -102,6 +114,7 @@ function OpRow({ resource, op }: { resource: CloudResource; op: ProposedOp }) {
   const filled = useMemo(() => fillOp(op, resource), [op, resource]);
   const [args, setArgs] = useState<string[]>(filled);
   const [typedName, setTypedName] = useState("");
+  const { alsoAdds } = dialectOf(cloudId);
   // Aime's own reading of the command, not the AI's word for it: an operation
   // is destructive because of what it says.
   const removes = destroys(op.args);
@@ -147,10 +160,16 @@ function OpRow({ resource, op }: { resource: CloudResource; op: ProposedOp }) {
           <p className="text-[11px] text-muted">{t("cloud.opsConfirm")}</p>
           <div className="flex items-start gap-2 rounded-md border border-line bg-panel px-2 py-1.5">
             <code className="min-w-0 flex-1 break-all font-mono text-[11px]">
-              {opCommand(args, account.id, account.owner)}
+              {opCommand(cloudId, args, account.id, account.owner)}
             </code>
-            <CopyButton text={opCommand(args, account.id, account.owner)} label={t("cloud.copy")} />
+            <CopyButton text={opCommand(cloudId, args, account.id, account.owner)} label={t("cloud.copy")} />
           </div>
+          {/* "Aime will run exactly this" has to stay true. One CLI needs
+              flags whose values only this installation knows, so the page says
+              what they are rather than quietly adding them. */}
+          {alsoAdds !== undefined && (
+            <p className="text-[11px] text-muted">{t("cloud.opsAlsoAdds", { flags: alsoAdds })}</p>
+          )}
           <ValueFields args={args} onArgs={setArgs} />
           {removes && (
             <label className="flex flex-col gap-1 rounded-md border border-danger/50 bg-danger/10 px-2 py-1.5">
@@ -266,7 +285,10 @@ function OpOutput() {
       </div>
       <code className="block break-all font-mono text-[10.5px] text-muted">{running.command}</code>
       <pre className="max-h-56 overflow-auto rounded bg-bg p-2 font-mono text-[11px] whitespace-pre-wrap">
-        {running.lines.join("\n") || t("cloud.opsRunning")}
+        {/* A command that ended without printing anything used to keep saying
+            "Running…" - measured 2026-09-18 on `aws logs tail`, which prints
+            nothing until a log line arrives and was stopped before one did. */}
+        {running.lines.join("\n") || t(running.code === null ? "cloud.opsRunning" : "cloud.opsNoOutput")}
       </pre>
       {running.code !== null && (
         <p className={`text-[11px] ${running.code === 0 ? "text-ok" : "text-danger"}`}>

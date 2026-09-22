@@ -6,7 +6,7 @@
 //! command through its Bash tool. Plan mode forbids edits, not commands, and a
 //! command can be `gcloud run services delete`. So a deploy is the reads of
 //! `reads.rs` one layer up: the AI writes argument lists, this module proves
-//! each one against the CLI's own `--help` and against rules of its own, the
+//! each one against the CLI's own help and against rules of its own, the
 //! person sees every line exactly as it will run, and Aime spawns them itself
 //! with the scope pinned (`--project`, `--account`) and no shell in between.
 //!
@@ -20,10 +20,22 @@
 //! compares them with what it read before (`lib/deploy.ts` does the comparing;
 //! this module runs the reads).
 //!
-//! Only Google Cloud has an arm. The others would need their own grammar and
-//! their own measurement, and a button offering a command Aime cannot check is
+//! One arm per CLI that has been measured. What differs between them - the
+//! scope flags, the groups a deployment may not enter, the flag family that
+//! overwrites a running service, the grant that is fenced rather than refused,
+//! and even the token that asks the CLI whether it knows a command - is a table
+//! in `dialect.rs`, and this module reads the table. A cloud with no table gets
+//! no button anywhere, because a button offering a command Aime cannot check is
 //! worse than no button.
+//!
+//! Having a table is not the same as having a Deploy button. This checker is
+//! also what stands behind the operations on one resource
+//! (`components/CloudOps.tsx`), and proving a single command is a far smaller
+//! claim than planning a whole deployment: the second needs a cloud's own idea
+//! of a plan in the prompt and a deployment that has actually run. AWS is the
+//! first without the second (`lib/deployDialect.ts` holds that split).
 
+use super::dialect::{Dialect, Grant, Proof};
 use super::reads::{check_read_allowing, is_command_word, is_safe_value, PlannedRead};
 use super::{k8s, program_for, quiet, read_cli_checked, CloudAccount};
 use crate::exec::{run_program, CommandOutcome, ExecState};
@@ -131,12 +143,6 @@ pub struct Probe {
     pub body_head: String,
 }
 
-/// The one cloud this module can deploy to.
-const GCP: &str = "gcp";
-
-/// Flags Aime appends itself; a plan that carries one is refused, as a read is.
-const OWN_FLAGS: [&str; 4] = ["--project", "--account", "--format", "--quiet"];
-
 /// The location flags a deploy's reads name themselves. A resource read gets
 /// its `<region>` filled from the resource; here there is no resource, and
 /// `gcloud run services describe` without a region asks a question nobody is
@@ -160,56 +166,6 @@ const NO_KIND: &str = "";
 const REFUSED_WORDS: [&str; 5] = ["delete", "destroy", "undelete", "purge", "abandon"];
 const REFUSED_WORD_PREFIX: &str = "remove-";
 
-/// Command groups a deployment has no business in: the account, the money, the
-/// sign-in and the CLI itself.
-const REFUSED_GROUPS: [&str; 6] = [
-    "projects",
-    "billing",
-    "organizations",
-    "auth",
-    "config",
-    "components",
-];
-
-/// The one command under `projects` a deployment legitimately needs.
-///
-/// Measured 2026-09-10 on the first deploy that got past billing: `gcloud run
-/// deploy --source` failed with *Build failed because the default service
-/// account is missing required IAM permissions* - the change Google made to
-/// new projects, which every source deploy now meets. The AI diagnosed it
-/// exactly and then said it was not allowed to fix it, because the fix is a
-/// project-level grant. Refusing that sends the person to the web console for
-/// the commonest failure there is, which is the opposite of the point.
-///
-/// So it is allowed, and fenced by `refuse_unsafe_grant`: only ADDING a
-/// binding, only to a service account, and never a role that hands out the
-/// right to hand out rights. The person still sees the whole command on the
-/// confirm page before anything runs.
-const PROJECT_IAM_GRANT: &str = "add-iam-policy-binding";
-
-/// Roles a plan may not grant, because each is a way to take everything else.
-///
-/// `editor` and `owner` are the blanket grants; the other four are the
-/// escalation paths - the right to change IAM, to mint service-account keys,
-/// or to become another account.
-const REFUSED_ROLES: [&str; 6] = [
-    "roles/owner",
-    "roles/editor",
-    "roles/iam.securityAdmin",
-    "roles/iam.serviceAccountKeyAdmin",
-    "roles/iam.serviceAccountTokenCreator",
-    "roles/resourcemanager.projectIamAdmin",
-];
-
-/// What a binding must name as its member: an identity that belongs to a
-/// machine, never a person, a group, a domain or `allUsers`.
-const SERVICE_ACCOUNT_MEMBER: &str = "serviceAccount:";
-
-/// Flag families that replace or wipe what a service already has (gcloud's
-/// own convention: `--set-*` replaces, `--update-*` merges, `--clear-*` wipes,
-/// `--remove-*` deletes). Refused when the target exists.
-const OVERRIDING_PREFIXES: [&str; 3] = ["--set-", "--clear-", "--remove-"];
-
 /// How long one step may run. A source deploy builds in Cloud Build; twenty
 /// minutes is generous for it and still ends a hang unattended.
 const STEP_TIMEOUT_MS: u64 = 20 * 60 * 1000;
@@ -230,19 +186,20 @@ pub async fn cloud_check_deploy(
     existing: bool,
     plan: DeployPlan,
     removal: Option<bool>,
+    deploying: Option<bool>,
 ) -> Result<CheckedPlan, String> {
-    if cloud_id != GCP {
-        return Err(format!("Aime does not deploy to {cloud_id} yet"));
-    }
+    let dialect = Dialect::of(&cloud_id).ok_or_else(|| format!("Aime does not deploy to {cloud_id} yet"))?;
     let removal = removal.unwrap_or(false);
+    // Absent means work on a resource, which is the stricter reading.
+    let deploying = deploying.unwrap_or(false);
     let program = program_for(&app, &cloud_id);
     let mut checked = CheckedPlan::default();
     for step in plan.steps {
         // Which CLI first: a step Aime will not run under any program is
         // refused before its command line is read, and the reason says which
         // programs there are rather than complaining about the words.
-        let checked_step = match step_program(&cloud_id, &program, &step) {
-            Ok(runs_under) => check_step(&runs_under, &step, existing, removal).await,
+        let checked_step = match step_program(&cloud_id, &program, dialect, &step) {
+            Ok(runs_under) => check_step(&runs_under, dialect, &step, existing, removal, deploying).await,
             Err(reason) => Err(reason),
         };
         match checked_step {
@@ -292,6 +249,15 @@ pub struct StepRequest {
     /// panel's operations are, a deployment is not. Absent means not.
     #[serde(default)]
     pub removal: bool,
+    /// Whether this step is part of deploying the open repository.
+    ///
+    /// Two things follow from it and nothing else does: the commands a deploy
+    /// needs and the panel may not run (`Dialect::deploy_opens`), and the
+    /// folder a CLI may keep a project in - the repository here, Aime's own
+    /// work folder for everything else. Absent means an operation on a
+    /// resource, which is the stricter of the two.
+    #[serde(default)]
+    pub deploying: bool,
 }
 
 /// Runs one confirmed step, streaming its output as `exec:output` under `id`.
@@ -306,13 +272,12 @@ pub async fn cloud_deploy_step(
     id: String,
     request: StepRequest,
 ) -> Result<CommandOutcome, String> {
-    if request.cloud_id != GCP {
-        return Err(format!("Aime does not deploy to {} yet", request.cloud_id));
-    }
-    let line = StepLine::parse(&request.step.args, request.existing)?;
-    line.refuse_forbidden(request.removal)?;
+    let dialect = Dialect::of(&request.cloud_id)
+        .ok_or_else(|| format!("Aime does not deploy to {} yet", request.cloud_id))?;
+    let line = StepLine::parse(&request.step.args, request.existing, dialect)?;
+    line.refuse_forbidden(request.removal, request.deploying, dialect)?;
     let own = program_for(&app, &request.cloud_id);
-    let program = step_program(&request.cloud_id, &own, &request.step)?;
+    let program = step_program(&request.cloud_id, &own, dialect, &request.step)?;
     let runs_kubectl = program == k8s::PROGRAM;
     if runs_kubectl {
         // The kubeconfig a `get-credentials` step wrote names the auth plugin
@@ -321,13 +286,19 @@ pub async fn cloud_deploy_step(
         // than stopping a deploy the person already confirmed - see `k8s`.
         ensure_kubectl(&own).await?;
     }
-    // `--project` and `--account` are `gcloud`'s way of being told where to
-    // work; `kubectl` is told by the kubeconfig the cluster step wrote, and
-    // would refuse the flags outright.
+    // Each CLI is told where to work in its own words (`dialect::Scope`);
+    // `kubectl` is told by the kubeconfig the cluster step wrote, and would
+    // refuse those flags outright.
     let args = if runs_kubectl {
         request.step.args.clone()
     } else {
-        scoped(&request.step.args, &request.account)
+        scoped_for_run(
+            &app,
+            &request.step.args,
+            &request.account,
+            dialect,
+            request.deploying.then_some(request.cwd.as_str()),
+        )?
     };
     let mut command = cli_command(&program, &args);
     quiet(&mut command);
@@ -353,9 +324,7 @@ pub async fn cloud_deploy_read(
     account: CloudAccount,
     read: PlannedRead,
 ) -> Result<String, String> {
-    if cloud_id != GCP {
-        return Err(format!("Aime does not deploy to {cloud_id} yet"));
-    }
+    let dialect = Dialect::of(&cloud_id).ok_or_else(|| format!("Aime does not deploy to {cloud_id} yet"))?;
     let own = program_for(&app, &cloud_id);
     // A read names its program exactly as a step does. Measured 2026-09-12:
     // without this, the AI's six diagnostic reads after a failed `kubectl
@@ -371,8 +340,8 @@ pub async fn cloud_deploy_read(
             .map_err(|failure| failure.message);
     }
     let checked = check_read_allowing(&own, &cloud_id, NO_KIND, &read, &LOCATION_FLAGS).await?;
-    let mut args = scoped(&checked.args, &account);
-    args.extend(["--format".into(), "json".into()]);
+    let mut args = scoped_for_run(&app, &checked.args, &account, dialect, None)?;
+    args.extend(dialect.json.map(String::from));
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
     read_cli_checked(&own, &borrowed)
         .await
@@ -413,23 +382,60 @@ pub fn programs_present(names: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// A step's arguments with the scope Aime pins: the project, and the account
-/// that can see it. `--account` is left out when the cloud has no such level,
-/// and never for gcloud in practice, where every project has an owner.
-fn scoped(args: &[String], account: &CloudAccount) -> Vec<String> {
+/// A step's arguments with the scope Aime pins, in the CLI's own words: the
+/// project or subscription, and the owner for a CLI that takes one.
+///
+/// The owner flag is left out when the dialect has none - `az` carries the
+/// signed-in user in the token behind the subscription - and when the account
+/// row does not know it.
+fn scoped(args: &[String], account: &CloudAccount, dialect: &Dialect) -> Vec<String> {
     let mut scoped = args.to_vec();
-    scoped.extend(["--project".into(), account.id.clone()]);
-    if !account.owner.is_empty() {
-        scoped.extend(["--account".into(), account.owner.clone()]);
+    scoped.extend([dialect.scope.unit.to_string(), account.id.clone()]);
+    if let Some(owner) = dialect.scope.owner {
+        if !account.owner.is_empty() {
+            scoped.extend([owner.to_string(), account.owner.clone()]);
+        }
     }
     scoped
 }
 
+/// The scope, plus the flags only this installation can fill in.
+///
+/// Kept apart from `scoped` because these need the running app: the Supabase
+/// CLI has to be told a work folder it may write into, or it drops a project
+/// folder into whatever directory the command ran in - which is the person's
+/// repository (`dialect::Dialect::runtime_flags`).
+///
+/// `working_in` is that folder, and it is the repository exactly when the step
+/// belongs to a deploy. Work on a resource keeps the CLI out of the repository;
+/// a deploy is the repository going to the cloud, so keeping it out there made
+/// the whole cloud undeployable.
+fn scoped_for_run(
+    app: &AppHandle,
+    args: &[String],
+    account: &CloudAccount,
+    dialect: &Dialect,
+    working_in: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let mut full = scoped(args, account, dialect);
+    if let Some(flags) = dialect.runtime_flags {
+        full.extend(flags(app, working_in)?);
+    }
+    Ok(full)
+}
+
 /// Every check a step has to pass: the shape rules, then the CLI's own `--help`.
-async fn check_step(program: &str, step: &DeployStep, existing: bool, removal: bool) -> Result<(), String> {
-    let line = StepLine::parse(&step.args, existing)?;
-    line.refuse_forbidden(removal)?;
-    line.words_exist(program).await
+async fn check_step(
+    program: &str,
+    dialect: &Dialect,
+    step: &DeployStep,
+    existing: bool,
+    removal: bool,
+    deploying: bool,
+) -> Result<(), String> {
+    let line = StepLine::parse(&step.args, existing, dialect)?;
+    line.refuse_forbidden(removal, deploying, dialect)?;
+    line.words_exist(program, dialect).await
 }
 
 /// Puts what a `kubectl` step needs on this machine, if it is not here already.
@@ -503,16 +509,21 @@ async fn install_component(gcloud: &str, component: &str, python: Option<&str>) 
 /// to the gate for it: `kubectl` for Google Cloud's clusters and the commands
 /// that deploy to one, nothing else anywhere. This is what keeps a model's
 /// answer from widening what Aime is willing to run.
-fn step_program(cloud_id: &str, own: &str, step: &DeployStep) -> Result<String, String> {
+fn step_program(cloud_id: &str, own: &str, dialect: &Dialect, step: &DeployStep) -> Result<String, String> {
     if step.program.is_empty() {
         return Ok(own.to_string());
     }
-    if step.program != k8s::PROGRAM {
-        return Err(format!(
-            "Aime runs a deploy step with `{own}` or `{}`, never `{}`",
-            k8s::PROGRAM,
-            step.program
-        ));
+    if Some(step.program.as_str()) != dialect.second_program {
+        return Err(match dialect.second_program {
+            Some(second) => format!(
+                "Aime runs a deploy step with `{own}` or `{second}`, never `{}`",
+                step.program
+            ),
+            None => format!(
+                "Aime runs a deploy step with `{own}` and nothing else, never `{}`",
+                step.program
+            ),
+        });
     }
     let command = step.args.first().map(String::as_str).unwrap_or_default();
     k8s::refuse_unless_deploying(cloud_id, command)?;
@@ -534,7 +545,7 @@ struct StepLine<'a> {
 }
 
 impl<'a> StepLine<'a> {
-    fn parse(args: &'a [String], existing: bool) -> Result<Self, String> {
+    fn parse(args: &'a [String], existing: bool, dialect: &Dialect) -> Result<Self, String> {
         if args.is_empty() {
             return Err("an empty command".into());
         }
@@ -548,15 +559,22 @@ impl<'a> StepLine<'a> {
                 if !is_command_word(name) {
                     return Err(format!("`{token}` is not a flag"));
                 }
-                if OWN_FLAGS.contains(&token.as_str()) {
+                if dialect.own_flags.contains(&token.as_str()) {
                     return Err(format!("`{token}` is Aime's to add"));
                 }
+                if dialect.refused_flags.contains(&token.as_str()) {
+                    return Err(format!(
+                        "`{token}` changes what the CLI does with the command line rather than \
+                         what it asks the cloud"
+                    ));
+                }
                 if existing {
-                    if let Some(prefix) = OVERRIDING_PREFIXES.iter().find(|p| token.starts_with(*p)) {
+                    if let Some(prefix) = dialect.overriding.iter().find(|p| token.starts_with(*p)) {
                         let family = &token[prefix.len()..];
                         return Err(format!(
                             "`{token}` replaces what the running service already has; \
-                             use `--update-{family}` so its settings are kept"
+                             use `{}{family}` so its settings are kept",
+                            dialect.merging
                         ));
                     }
                 }
@@ -582,13 +600,32 @@ impl<'a> StepLine<'a> {
     }
 
     /// The words a deployment must never say, wherever they stand.
-    fn refuse_forbidden(&self, removal: bool) -> Result<(), String> {
+    fn refuse_forbidden(&self, removal: bool, deploying: bool, dialect: &Dialect) -> Result<(), String> {
         let first = self.heads[0];
-        if REFUSED_GROUPS.contains(&first) {
-            if first == "projects" && self.heads.get(1) == Some(&PROJECT_IAM_GRANT) {
-                return self.refuse_unsafe_grant();
+        // What a deploy opens is checked before anything refuses it, because
+        // these words ARE the deploy on some clouds: `supabase functions
+        // deploy` sits inside a group the panel may not touch.
+        if deploying
+            && dialect.deploy_opens.iter().any(|(group, command)| {
+                *group == first && (command.is_empty() || self.heads.get(1) == Some(command))
+            })
+        {
+            return Ok(());
+        }
+        if dialect.refused_groups.contains(&first) {
+            if let Some(grant) = dialect.grant.as_ref() {
+                if first == grant.group && self.heads.get(1) == Some(&grant.command) {
+                    return self.refuse_unsafe_grant(grant);
+                }
             }
-            return Err(format!("`{first}` manages the account, not a deployment"));
+            return Err(format!("`{first}` {}", dialect.groups_are));
+        }
+        if let Some(refused) = dialect
+            .refused_commands
+            .iter()
+            .find(|one| one.group == first && self.heads.get(1) == Some(&one.command))
+        {
+            return Err(format!("`{} {}` {}", refused.group, refused.command, refused.why));
         }
         if let Some(word) = self
             .heads
@@ -611,26 +648,27 @@ impl<'a> StepLine<'a> {
     /// act on. Nothing here decides WHICH role a build needs - that is the
     /// AI's to know and the CLI's to accept; Aime only says which grants a
     /// deployment may never make.
-    fn refuse_unsafe_grant(&self) -> Result<(), String> {
+    fn refuse_unsafe_grant(&self, grant: &Grant) -> Result<(), String> {
         let value_of = |name: &str| {
             self.flags
                 .iter()
                 .find(|(flag, _)| *flag == name)
                 .and_then(|(_, value)| *value)
         };
-        let Some(member) = value_of("--member") else {
-            return Err("a binding needs `--member`".into());
+        let Some(member) = value_of(grant.member) else {
+            return Err(format!("a binding needs `{}`", grant.member));
         };
-        if !member.starts_with(SERVICE_ACCOUNT_MEMBER) {
+        if !member.starts_with(grant.member_prefix) {
             return Err(format!(
-                "`{member}` is not a service account; a deployment may grant a project role \
-                 only to a `serviceAccount:` - a person or `allUsers` is somebody's own decision"
+                "`{member}` is not a service account; a deployment may grant an account-level \
+                 role only to a `{}` - a person or `allUsers` is somebody's own decision",
+                grant.member_prefix
             ));
         }
-        let Some(role) = value_of("--role") else {
-            return Err("a binding needs `--role`".into());
+        let Some(role) = value_of(grant.role) else {
+            return Err(format!("a binding needs `{}`", grant.role));
         };
-        if REFUSED_ROLES.contains(&role) {
+        if grant.refused_roles.contains(&role) {
             return Err(format!(
                 "`{role}` can grant every other role; name the narrow role this actually needs"
             ));
@@ -646,29 +684,134 @@ impl<'a> StepLine<'a> {
     /// is then the first positional - so `run deploy web` needs two calls and
     /// `services enable run.googleapis.com` one, since a dotted token is never
     /// tried as a word.
-    async fn words_exist(&self, program: &str) -> Result<(), String> {
+    ///
+    /// The probe token comes from the dialect because it is not the same on
+    /// every CLI: `aws` has no `--help` flag and answers a positional `help`
+    /// instead (`dialect::Dialect::help`).
+    async fn words_exist(&self, program: &str, dialect: &Dialect) -> Result<(), String> {
+        if dialect.proof == Proof::Listed {
+            return self.words_listed(program, dialect).await;
+        }
         let mut words: Vec<&str> = Vec::new();
+        // The help of the last command that existed, which is the one the
+        // flags belong to - already paid for by the walk, so reading it costs
+        // nothing more.
+        let mut help = String::new();
         for head in &self.heads {
             if !is_command_word(head) {
                 break;
             }
             let mut probe = words.clone();
             probe.push(head);
-            probe.push("--help");
-            if read_cli_checked(program, &probe).await.is_err() {
+            probe.push(dialect.help);
+            let Ok(text) = read_cli_checked(program, &probe).await else {
                 break;
-            }
+            };
+            help = text;
             words.push(head);
         }
         if words.is_empty() {
             return Err(format!(
-                "`gcloud {}` is not a command the Google Cloud CLI here knows",
-                self.heads[0]
+                "`{} {}` is not a command the {} CLI here knows",
+                dialect.program, self.heads[0], dialect.name
             ));
         }
-        // A flag the command does not take would fail at run time with the
-        // CLI's own words; the words themselves are what has to exist here.
-        let _ = &self.flags;
+        if dialect.proof == Proof::WordsAndFlags {
+            return self.flags_fit(&words, &help);
+        }
+        Ok(())
+    }
+
+    /// The same question for a CLI whose exit code does not answer it.
+    ///
+    /// The Supabase CLI prints its command tree and `reads.rs` walks it; the
+    /// difference here is that a step is not a read, so it may end in
+    /// arguments (`functions delete my-fn`) where a read may not. What it may
+    /// NOT do is misspell a subcommand, and the walk tells the two apart by
+    /// whether the level above lists any subcommands at all - measured in the
+    /// app 2026-09-18, when the AI answered `supabase db upgrade`, a command
+    /// that does not exist, and the CLI printed the help of `db` and exited 0.
+    async fn words_listed(&self, program: &str, dialect: &Dialect) -> Result<(), String> {
+        let words: Vec<&str> = self
+            .heads
+            .iter()
+            .copied()
+            .take_while(|head| is_command_word(head))
+            .collect();
+        // How many leading tokens are the command, and the command's own help -
+        // which is what says whether it takes an argument at all.
+        let (command, help) = match super::reads::supabase_walk(program, &words).await? {
+            super::reads::SupabaseWalk::All => {
+                let mut probe = words.clone();
+                probe.push(dialect.help);
+                let help = read_cli_checked(program, &probe)
+                    .await
+                    .map_err(|failure| failure.message)?;
+                (words.len(), help)
+            }
+            super::reads::SupabaseWalk::Arguments { at: 0, .. } => {
+                return Err(format!(
+                    "`{} {}` is not a command the {} CLI here knows",
+                    dialect.program, self.heads[0], dialect.name
+                ))
+            }
+            super::reads::SupabaseWalk::Arguments { at, help } => (at, help),
+            super::reads::SupabaseWalk::Unknown(at) => {
+                return Err(format!(
+                    "`{} {}` is not a command the {} CLI here knows",
+                    dialect.program,
+                    words[..=at].join(" "),
+                    dialect.name
+                ))
+            }
+        };
+        // Everything after the command is an argument, whether or not it looks
+        // like a command word - `max_connections` does not, and it was still
+        // the token that broke. Measured in the app 2026-09-18: `postgres-config
+        // get max_connections` ran, and the CLI answered with its usage block
+        // instead of the configuration, because that command takes none.
+        let Some(extra) = self.heads.get(command) else {
+            return Ok(());
+        };
+        if super::reads::supabase_takes_a_positional(&help) {
+            return Ok(());
+        }
+        Err(format!(
+            "`{} {}` takes no argument, so `{extra}` is not one it can use",
+            dialect.program,
+            self.heads[..command].join(" ")
+        ))
+    }
+
+    /// Whether the flags belong to the command, for a CLI that says so.
+    ///
+    /// Two sources, because one CLI describes itself two ways. Its models
+    /// carry every API operation and name the flags it has and the ones it
+    /// requires; the commands the CLI adds itself are in no model, and those
+    /// declare themselves in the synopsis of their own help - which the walk
+    /// has just fetched.
+    fn flags_fit(&self, words: &[&str], help: &str) -> Result<(), String> {
+        if let [service, command] = words[..] {
+            if let Some(verdict) = super::reads::aws_operation_flags(service, command, &self.flags) {
+                return verdict;
+            }
+        }
+        let Some(accepted) = super::reads::flags_in_synopsis(help) else {
+            return Ok(());
+        };
+        let command = words.join(" ");
+        for (flag, _) in &self.flags {
+            if !accepted.iter().any(|known| known == flag) {
+                return Err(format!(
+                    "`{command}` has no `{flag}`; its own help lists {}",
+                    if accepted.is_empty() {
+                        "no flags at all".to_string()
+                    } else {
+                        accepted.join(", ")
+                    }
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -690,6 +833,65 @@ mod tests {
         under("", args)
     }
 
+    /// The dialect a test means when it does not say: the one every rule here
+    /// was written against.
+    fn gcloud() -> &'static Dialect {
+        Dialect::of("gcp").expect("Google Cloud has a dialect")
+    }
+
+    fn az() -> &'static Dialect {
+        Dialect::of("azure").expect("Azure has a dialect")
+    }
+
+    fn aws() -> &'static Dialect {
+        Dialect::of("aws").expect("AWS has a dialect")
+    }
+
+    fn supabase() -> &'static Dialect {
+        Dialect::of("supabase").expect("Supabase has a dialect")
+    }
+
+    /// The split that gave Supabase a Deploy button at last.
+    ///
+    /// For three sessions Aime said this cloud could not be deployed to,
+    /// because the commands that deploy it - `link`, `functions deploy`, `db
+    /// push`, `config push` - read a `supabase/` directory, and the panel runs
+    /// this CLI from a work folder that has none. A deploy does not: it runs
+    /// inside the repository, where those files are. So the same words are
+    /// refused for work on a resource and allowed for a deploy, and nothing
+    /// else moves with them.
+    #[test]
+    fn what_deploys_a_supabase_project_is_open_to_a_deploy_and_shut_to_the_panel() {
+        for words in [
+            // No `--project-ref` on it: Aime pins that itself, and a plan
+            // that writes one of Aime's own flags is refused before this.
+            ["link"].as_slice(),
+            ["functions", "deploy", "hello"].as_slice(),
+            ["db", "push"].as_slice(),
+            ["config", "push"].as_slice(),
+        ] {
+            assert!(
+                shape_for(supabase(), words, false).is_ok(),
+                "a deploy needs {words:?}"
+            );
+            assert!(
+                op_shape_for(supabase(), words).is_err(),
+                "the panel has no project to run {words:?} against"
+            );
+        }
+        // What a deploy opens is exactly that list: the rest of the refused
+        // groups stays refused on both paths.
+        for words in [
+            ["db", "reset"].as_slice(),
+            ["db", "query", "select 1"].as_slice(),
+            ["start"].as_slice(),
+            ["login"].as_slice(),
+        ] {
+            assert!(shape_for(supabase(), words, false).is_err(), "{words:?}");
+            assert!(op_shape_for(supabase(), words).is_err(), "{words:?}");
+        }
+    }
+
     /// A step that names the CLI it runs under, the way a plan may.
     fn under(program: &str, args: &[&str]) -> DeployStep {
         DeployStep {
@@ -703,13 +905,14 @@ mod tests {
     #[test]
     fn a_step_runs_under_the_clouds_own_cli_unless_it_names_another() {
         assert_eq!(
-            step_program("gcp", "gcloud", &step(&["run", "deploy"])),
+            step_program("gcp", "gcloud", gcloud(), &step(&["run", "deploy"])),
             Ok("gcloud".into())
         );
         assert_eq!(
             step_program(
                 "gcp",
                 "gcloud",
+                gcloud(),
                 &under("kubectl", &["apply", "--filename", "k8s/"])
             ),
             Ok("kubectl".into())
@@ -721,7 +924,7 @@ mod tests {
         // A model naming a shell, a package manager or a build tool is the case
         // this gate exists for: the refusal says what the two programs are.
         for invented in ["sh", "bash", "helm", "terraform", "docker", "npm"] {
-            let refused = step_program("gcp", "gcloud", &under(invented, &["anything"]))
+            let refused = step_program("gcp", "gcloud", gcloud(), &under(invented, &["anything"]))
                 .expect_err("only two programs run a step");
             assert!(refused.contains(invented), "unhelpful: {refused}");
             assert!(
@@ -730,22 +933,37 @@ mod tests {
             );
         }
         // `kubectl` itself is held to the commands that deploy.
-        let refused = step_program("gcp", "gcloud", &under("kubectl", &["exec", "pod"]))
+        let refused = step_program("gcp", "gcloud", gcloud(), &under("kubectl", &["exec", "pod"]))
             .expect_err("a shell on a pod is not a deployment");
         assert!(refused.contains("exec"), "unhelpful: {refused}");
-        // And it belongs to Google Cloud's clusters alone.
-        assert!(step_program("aws", "aws", &under("kubectl", &["apply"])).is_err());
+        // And it belongs to Google Cloud's clusters alone: a cloud whose
+        // dialect names no second program says so in the refusal itself.
+        let refused = step_program("azure", "az", az(), &under("kubectl", &["apply"]))
+            .expect_err("Azure runs `az` and nothing else");
+        assert!(
+            refused.contains("`az`") && refused.contains("kubectl"),
+            "unhelpful: {refused}"
+        );
     }
 
     fn shape(args: &[&str], existing: bool) -> Result<(), String> {
-        let owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
-        StepLine::parse(&owned, existing)?.refuse_forbidden(false)
+        shape_for(gcloud(), args, existing)
     }
 
-    /// The same line as the resource panel checks it: removal allowed.
-    fn op_shape(args: &[&str]) -> Result<(), String> {
+    fn shape_for(dialect: &Dialect, args: &[&str], existing: bool) -> Result<(), String> {
         let owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
-        StepLine::parse(&owned, true)?.refuse_forbidden(true)
+        StepLine::parse(&owned, existing, dialect)?.refuse_forbidden(false, true, dialect)
+    }
+
+    /// The same line as the resource panel checks it: removal allowed, and
+    /// none of what a deploy opens.
+    fn op_shape(args: &[&str]) -> Result<(), String> {
+        op_shape_for(gcloud(), args)
+    }
+
+    fn op_shape_for(dialect: &Dialect, args: &[&str]) -> Result<(), String> {
+        let owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        StepLine::parse(&owned, true, dialect)?.refuse_forbidden(true, false, dialect)
     }
 
     #[test]
@@ -917,18 +1135,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_scope_is_aimes_and_follows_the_plan_s_arguments() {
-        let account = CloudAccount {
-            id: "my-project".into(),
+    fn account(id: &str, owner: &str) -> CloudAccount {
+        CloudAccount {
+            id: id.into(),
             label: String::new(),
             detail: String::new(),
             current: false,
-            owner: "dev@example.com".into(),
+            owner: owner.into(),
             tenant: String::new(),
             sign_in: String::new(),
-        };
-        let args = scoped(&step(&["run", "deploy", "web"]).args, &account);
+        }
+    }
+
+    #[test]
+    fn the_scope_is_aimes_and_follows_the_plan_s_arguments() {
+        let args = scoped(
+            &step(&["run", "deploy", "web"]).args,
+            &account("my-project", "dev@example.com"),
+            gcloud(),
+        );
         assert_eq!(
             args,
             [
@@ -940,6 +1165,189 @@ mod tests {
                 "--account",
                 "dev@example.com"
             ]
+        );
+    }
+
+    /// Azure is scoped by subscription, and by nothing else: `az` has no
+    /// account flag, so passing the signed-in user would fail the command.
+    #[test]
+    fn an_azure_step_is_pinned_to_the_subscription_alone() {
+        let args = scoped(
+            &step(&["webapp", "up", "--name", "web"]).args,
+            &account("1b3e09f3-1a77-441b-aeca-3488d1efac95", "someone@example.com"),
+            az(),
+        );
+        assert_eq!(
+            args,
+            [
+                "webapp",
+                "up",
+                "--name",
+                "web",
+                "--subscription",
+                "1b3e09f3-1a77-441b-aeca-3488d1efac95"
+            ]
+        );
+    }
+
+    /// The Azure rules, each one against the group it is about.
+    #[test]
+    fn an_azure_deployment_stays_out_of_the_account_the_money_and_the_cli() {
+        shape_for(
+            az(),
+            &[
+                "group",
+                "create",
+                "--name",
+                "rg-aime",
+                "--location",
+                "southeastasia",
+            ],
+            false,
+        )
+        .expect("a resource group is where an Azure deployment starts");
+        shape_for(az(), &["webapp", "up", "--name", "web", "--sku", "F1"], false).expect("the deploy itself");
+
+        for refused in [
+            vec!["account", "set", "--name", "other"],
+            vec!["login"],
+            vec!["config", "set", "core.output=none"],
+            vec!["extension", "add", "--name", "containerapp"],
+            vec!["role", "assignment", "create", "--role", "Owner"],
+            vec!["billing", "account", "list"],
+        ] {
+            let reason = shape_for(az(), &refused, false)
+                .expect_err(&format!("`az {}` is not a deployment", refused.join(" ")));
+            assert!(
+                reason.contains(refused[0]),
+                "the refusal does not name the group: {reason}"
+            );
+        }
+    }
+
+    /// AWS is scoped by profile, and by nothing else: the credentials are the
+    /// account, and the region belongs to the resource rather than the scope.
+    #[test]
+    fn an_aws_operation_is_pinned_to_the_profile_alone() {
+        let args = scoped(
+            &step(&[
+                "ecs",
+                "update-service",
+                "--service",
+                "web",
+                "--region",
+                "ap-southeast-2",
+            ])
+            .args,
+            &account("default", ""),
+            aws(),
+        );
+        assert_eq!(
+            args,
+            [
+                "ecs",
+                "update-service",
+                "--service",
+                "web",
+                "--region",
+                "ap-southeast-2",
+                "--profile",
+                "default"
+            ]
+        );
+    }
+
+    /// The AWS rules, each against the thing it is about.
+    #[test]
+    fn an_aws_operation_stays_out_of_the_identity_the_money_and_the_shell() {
+        shape_for(
+            aws(),
+            &[
+                "ecs",
+                "update-service",
+                "--service",
+                "web",
+                "--force-new-deployment",
+            ],
+            true,
+        )
+        .expect("redeploying a service is the day-to-day work this is for");
+        shape_for(aws(), &["logs", "tail", "/aws/lambda/web"], false).expect("tailing logs changes nothing");
+
+        for refused in [
+            vec!["configure", "set", "region", "us-east-1"],
+            vec!["iam", "attach-role-policy", "--role-name", "web"],
+            vec!["sts", "assume-role", "--role-arn", "arn"],
+            vec!["organizations", "list-accounts"],
+            vec!["ce", "get-cost-and-usage"],
+            vec!["ec2-instance-connect", "send-ssh-public-key"],
+        ] {
+            let reason = shape_for(aws(), &refused, false)
+                .expect_err(&format!("`aws {}` is not an operation", refused.join(" ")));
+            assert!(
+                reason.contains(refused[0]),
+                "the refusal does not name the group: {reason}"
+            );
+        }
+    }
+
+    /// A shell is refused inside a group the panel otherwise needs.
+    #[test]
+    fn an_aws_operation_may_not_open_a_session_on_a_machine() {
+        for refused in [
+            vec!["ssm", "start-session", "--target", "i-0abc"],
+            vec!["ssm", "send-command", "--document-name", "AWS-RunShellScript"],
+            vec!["ecs", "execute-command", "--command", "sh"],
+        ] {
+            let reason = shape_for(aws(), &refused, false)
+                .expect_err(&format!("`aws {}` runs code", refused.join(" ")));
+            assert!(reason.contains(refused[1]), "{reason}");
+        }
+        // The groups themselves stay open, or the panel could not redeploy an
+        // ECS service or read a parameter.
+        shape_for(aws(), &["ssm", "get-parameter", "--name", "/web/db"], false).expect("a parameter read");
+    }
+
+    /// The flags that would carry an AWS command line out of Aime's sight.
+    #[test]
+    fn an_aws_operation_may_not_redirect_itself_or_smuggle_its_parameters() {
+        for flag in [
+            "--endpoint-url",
+            "--cli-input-json",
+            "--generate-cli-skeleton",
+            "--no-verify-ssl",
+            "--query",
+        ] {
+            let reason = shape_for(aws(), &["ecs", "describe-services", flag, "x"], false)
+                .expect_err(&format!("`{flag}` is not part of an operation"));
+            assert!(reason.contains(flag), "{reason}");
+        }
+    }
+
+    /// `az rest` is a raw ARM request: it would carry a DELETE straight past
+    /// every rule in this module, so it is refused by name.
+    #[test]
+    fn a_raw_api_call_is_not_a_step() {
+        assert!(shape_for(az(), &["rest", "--method", "delete", "--url", "https://x"], false).is_err());
+    }
+
+    /// Azure has no `--set-*` family, so an existing target refuses nothing by
+    /// shape - and the flag Aime adds itself is refused on both clouds.
+    #[test]
+    fn each_cloud_refuses_the_flags_its_own_cli_is_given_by_aime() {
+        shape_for(
+            az(),
+            &["webapp", "config", "appsettings", "set", "--settings", "A=1"],
+            true,
+        )
+        .expect("Azure spells a change as a verb, and there is nothing to refuse by shape");
+        assert!(
+            shape_for(az(), &["webapp", "up", "--subscription", "other"], false).is_err(),
+            "the subscription is Aime's to pin"
+        );
+        assert!(
+            shape_for(az(), &["webapp", "up", "--output", "table"], false).is_err(),
+            "the answer's shape is Aime's to ask for"
         );
     }
 
@@ -971,9 +1379,9 @@ mod tests {
             .iter()
             .map(|arg| (*arg).to_string())
             .collect();
-        StepLine::parse(&owned, false)
+        StepLine::parse(&owned, false, gcloud())
             .expect("shape")
-            .words_exist("gcloud")
+            .words_exist("gcloud", gcloud())
             .await
             .expect("`gcloud run deploy` exists and `web` is its positional");
 
@@ -982,12 +1390,92 @@ mod tests {
             .map(|arg| (*arg).to_string())
             .collect();
         assert!(
-            StepLine::parse(&wrong, false)
+            StepLine::parse(&wrong, false, gcloud())
                 .expect("shape")
-                .words_exist("gcloud")
+                .words_exist("gcloud", gcloud())
                 .await
                 .is_err(),
             "a misspelled group is not a command"
         );
+    }
+
+    /// The same walk against `az`, whose `--help` answers the same way:
+    /// measured 2026-09-17 on 2.90.0, exit 0 with the help on stdout for a
+    /// real command and exit 2 with nothing on stdout for a misspelled one.
+    #[tokio::test]
+    async fn the_word_walk_uses_the_installed_az_when_there_is_one() {
+        if !Program::resolve("az").exists() {
+            eprintln!("az is not installed here; the word walk was not exercised");
+            return;
+        }
+        let owned: Vec<String> = ["webapp", "up", "--name", "web"]
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect();
+        StepLine::parse(&owned, false, az())
+            .expect("shape")
+            .words_exist("az", az())
+            .await
+            .expect("`az webapp up` exists");
+
+        let wrong: Vec<String> = ["webap", "up"].iter().map(|arg| (*arg).to_string()).collect();
+        let refused = StepLine::parse(&wrong, false, az())
+            .expect("shape")
+            .words_exist("az", az())
+            .await
+            .expect_err("a misspelled group is not a command");
+        assert!(
+            refused.contains("Azure"),
+            "the refusal names the cloud: {refused}"
+        );
+    }
+
+    /// The same walk against `aws`, which answers a different token.
+    ///
+    /// This is the test that would have caught the whole AWS arm being
+    /// impossible: measured 2026-09-18 on aws-cli 2.17.31, `aws ec2
+    /// describe-instances --help` exits **252** - so a walk that sent the flag
+    /// would refuse every command AWS has, and the tab would never offer one.
+    #[tokio::test]
+    async fn the_word_walk_uses_the_installed_aws_when_there_is_one() {
+        if !Program::resolve("aws").exists() {
+            eprintln!("aws is not installed here; the word walk was not exercised");
+            return;
+        }
+        let owned: Vec<String> = ["ecs", "update-service", "--service", "web"]
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect();
+        StepLine::parse(&owned, false, aws())
+            .expect("shape")
+            .words_exist("aws", aws())
+            .await
+            .expect("`aws ecs update-service` exists");
+
+        // What the walk does NOT prove, here as on the other two CLIs: a
+        // misspelled operation under a real service passes, because `aws ecs`
+        // is itself a command and the walk stops at the first word the CLI
+        // rejects. That command fails at run time in the CLI's own words,
+        // which is where the person sees it.
+        let wrong: Vec<String> = ["ecs", "update-servce"]
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect();
+        StepLine::parse(&wrong, false, aws())
+            .expect("shape")
+            .words_exist("aws", aws())
+            .await
+            .expect("the walk keeps the one word it proved");
+
+        let nonsense: Vec<String> = ["ec3", "update-service"]
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect();
+        let refused = StepLine::parse(&nonsense, false, aws())
+            .expect("shape")
+            .words_exist("aws", aws())
+            .await
+            .expect_err("a service the CLI does not have is not a command");
+        assert!(refused.contains("AWS"), "the refusal names the cloud: {refused}");
     }
 }

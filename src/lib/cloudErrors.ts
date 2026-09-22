@@ -139,6 +139,14 @@ const AUTH_WORDS = [
   /access token not provided/i,
   /unauthorized/i,
   /please run.*login/i,
+  // Every `AADSTS…` is Entra ID refusing the token itself, and the answer to
+  // all of them is the sign-in this account row already names. Measured
+  // 2026-09-17 on a real machine: two of four subscriptions - the ones in a
+  // second tenant - answered `az resource list` with *AADSTS9002313: Invalid
+  // request. Request is malformed or invalid.*, which reads like a bug in the
+  // command and is a stale refresh token for that tenant. Without this the
+  // panel shows the trace id and no way forward.
+  /aadsts\d+/i,
 ];
 
 export function looksLikeSignIn(reason: string): boolean {

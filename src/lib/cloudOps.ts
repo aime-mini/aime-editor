@@ -20,6 +20,8 @@
  */
 
 /** One operation the AI proposes for a kind of resource. */
+import { dialectOf } from "./deployDialect";
+
 export interface ProposedOp {
   /** What it does, in a developer's words - the button's label. */
   label: string;
@@ -27,7 +29,7 @@ export interface ProposedOp {
   changes: string;
   /** Whether it writes: a read is run on click, a write waits for a confirm. */
   writes: boolean;
-  /** The `gcloud` tokens after the program name, placeholders included. */
+  /** The tokens after the program name, placeholders included. */
   args: string[];
 }
 
@@ -40,6 +42,18 @@ export interface CheckedOps {
 /** The placeholders Aime fills in, the same set the read plans use. */
 const NAME = "<name>";
 const REGION = "<region>";
+/**
+ * The group a resource lives in - a resource group on Azure, the project on
+ * Google Cloud.
+ *
+ * Measured in the app 2026-09-17, and it cost every operation on Azure: asked
+ * for operations on a `Microsoft.Web/sites` with only `<name>` and `<region>`
+ * to write against, the AI invented `<resource-group>` - because on Azure
+ * almost nothing can be addressed without one - and Aime refused all six with
+ * *holds something a shell could misread*. The read plans have had `<group>`
+ * since session 28; the operations were simply missing it.
+ */
+const GROUP = "<group>";
 
 /**
  * What the AI is asked for one kind of resource.
@@ -51,26 +65,51 @@ const REGION = "<region>";
  * those are Aime's own: what it will refuse, what it adds itself, and the
  * placeholders it fills.
  */
-export function opsPrompt(kind: string): string {
+export function opsPrompt(cloudId: string, kind: string, groups: string[] | null = null): string {
+  const dialect = dialectOf(cloudId);
   return [
-    `A developer is looking at one Google Cloud resource of type \`${kind}\` in an editor,`,
+    `A developer is looking at one ${dialect.cloud} resource of type \`${kind}\` in an editor,`,
     "and wants to do the day-to-day work on it without opening the cloud console.",
     "",
     "Answer with the operations that are actually useful for THIS type - the ones a developer",
     "runs while building and running a service: read its recent logs, restart or redeploy it,",
     "change an environment variable, move traffic between revisions, scale it, and so on.",
-    "Skip anything that is not offered by `gcloud` for this type. Never invent a command.",
+    `Skip anything that is not offered by \`${dialect.program}\` for this type. Never invent a command.`,
+    // Measured in the app 2026-09-21 on a Supabase database: the AI answered
+    // `postgres logs`, `postgres restart` and `postgres connection-string`,
+    // all three refused, the pane left empty - and there is no `postgres`
+    // group in that CLI at all. Where the CLI publishes its own tree, the
+    // question carries it, the same way an AWS read carries the service's
+    // catalogue; Aime still says nothing about which command to pick.
+    ...(groups === null
+      ? []
+      : [
+          "",
+          `Every command of this CLI begins with one of the words it lists about itself: ${groups
+            .map((group) => `\`${group}\``)
+            .join(", ")}. A first word outside that list does not exist and is thrown away.`,
+        ]),
     "",
     "Rules Aime enforces, so a command that breaks one is thrown away:",
-    `- Write the arguments after \`gcloud\`, one token per array entry ("--flag" and its value are`,
-    "  two entries). Use the placeholders " +
-      `\`${NAME}\` (this resource's name) and \`${REGION}\` (its region) - never a real name.`,
-    "- Aime adds `--project` and `--account` itself; do not include them, or `--format`.",
+    `- Write the arguments after \`${dialect.program}\`, one token per array entry ("--flag" and its`,
+    "  value are two entries). Use the placeholders " +
+      `\`${NAME}\` (this resource's name), \`${REGION}\` (its region) and \`${GROUP}\` ` +
+      `(${dialect.groupWord}) - never a real name, and never a placeholder of your own.`,
+    // Measured in the app 2026-09-18 on an AWS log group: four of six
+    // operations were lost to `<start>`, `<days>` and `<filter-name>`. The
+    // prompt said not to invent a placeholder but never said what to write
+    // instead, and those values are exactly the ones the person came to type -
+    // so they belong in the editable fields the confirm page already shows.
+    "- Those three are the ONLY placeholders there are. A value Aime cannot fill in - a retention in " +
+      "days, a filter name, a time range - is written as a REAL, sensible default the person edits in " +
+      "place before running it (`--retention-in-days`, `30`). A placeholder of your own is refused and " +
+      "the whole operation is thrown away.",
+    `- Aime adds ${dialect.ownFlags} itself; do not include any of them.`,
     "- Deleting IS allowed here and belongs in the list when the kind has it - it is day-to-day work,",
     "  and Aime makes the person type the resource's own name before it runs. Mark it `writes: true`.",
-    "- Nothing under `projects`, `billing`, `organizations`, `auth`, `config` or `components`.",
-    "- To change a setting of something already running, use an `--update-*` flag; a `--set-*`,",
-    "  `--clear-*` or `--remove-*` flag replaces or wipes what is there and will be refused.",
+    `- Nothing under ${dialect.refusedGroups}.`,
+    ...dialect.opsNotes,
+    dialect.opsKeepRule,
     "",
     'Answer with JSON only: {"ops":[{"label":"…","changes":"…","writes":true,"args":["…"]}]}',
     "- `label`: what it does, four words at most, in a developer's words.",
@@ -138,14 +177,33 @@ export function sawEmptyList(reply: string): boolean {
   }
 }
 
-/** The operation as it will run on THIS resource, placeholders filled in. */
-export function fillOp(op: ProposedOp, resource: { name: string; location: string }): string[] {
-  return op.args.map((token) => token.replaceAll(NAME, resource.name).replaceAll(REGION, resource.location));
+/**
+ * The operation as it will run on THIS resource, placeholders filled in.
+ *
+ * `cliName` rather than `name`, for the reason the read plans use it: five
+ * kinds in twenty answer a display label where the command line wants an
+ * identifier. It falls back to the shown name for a resource listed before
+ * Aime told the two apart.
+ */
+export function fillOp(
+  op: ProposedOp,
+  resource: { name: string; cliName?: string; location: string; group?: string },
+): string[] {
+  const name = resource.cliName !== undefined && resource.cliName !== "" ? resource.cliName : resource.name;
+  return op.args.map((token) =>
+    token
+      .replaceAll(NAME, name)
+      .replaceAll(REGION, resource.location)
+      .replaceAll(GROUP, resource.group ?? ""),
+  );
 }
 
 /** The command line Aime will run, exactly as the confirm has to show it. */
-export function opCommand(args: string[], project: string, account: string): string {
-  return ["gcloud", ...args, "--project", project, "--account", account].join(" ");
+export function opCommand(cloudId: string, args: string[], project: string, account: string): string {
+  const dialect = dialectOf(cloudId);
+  const scoped = [dialect.program, ...args, dialect.scopeUnit, project];
+  if (dialect.scopeOwner !== undefined && account !== "") scoped.push(dialect.scopeOwner, account);
+  return scoped.join(" ");
 }
 
 /**
@@ -165,7 +223,11 @@ export function destroys(args: string[]): boolean {
 }
 
 /** Whether every placeholder in an operation can be filled for this resource. */
-export function fillable(op: ProposedOp, resource: { name: string; location: string }): boolean {
-  const needsRegion = op.args.some((token) => token.includes(REGION));
-  return !needsRegion || resource.location !== "";
+export function fillable(
+  op: ProposedOp,
+  resource: { name: string; location: string; group?: string },
+): boolean {
+  const needs = (placeholder: string) => op.args.some((token) => token.includes(placeholder));
+  if (needs(REGION) && resource.location === "") return false;
+  return !needs(GROUP) || (resource.group ?? "") !== "";
 }

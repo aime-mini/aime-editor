@@ -336,7 +336,12 @@ function PlanNotice({
     <>
       {expecting && <Note icon={Braces}>{t("cloud.readsNone")}</Note>}
       <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted">
-        {plan.rejected.length > 0 && <Rejected rejected={plan.rejected} />}
+        {plan.rejected.length > 0 && (
+          <Rejected
+            rejected={plan.rejected}
+            summary={t("cloud.rejectedReads", { count: plan.rejected.length })}
+          />
+        )}
         <Replan resource={resource} kind={kind} />
       </div>
     </>
@@ -365,9 +370,21 @@ function Replan({ resource, kind }: { resource: CloudResource; kind: string }) {
   );
 }
 
-/** The reads Aime refused, folded: useful when the plan looks thin, noise otherwise. */
-function Rejected({ rejected }: { rejected: { label: string; reason: string }[] }) {
-  const t = useT();
+/**
+ * What Aime refused, folded: useful when what was kept looks thin, noise
+ * otherwise.
+ *
+ * Shared with the operations pane, where the reasons used to live in a
+ * `title` tooltip - invisible to a screenshot, a keyboard and a touch screen,
+ * and the whole answer when every operation was refused.
+ */
+export function Rejected({
+  rejected,
+  summary,
+}: {
+  rejected: { label: string; reason: string }[];
+  summary: string;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <div className="text-[11px] text-muted">
@@ -378,7 +395,7 @@ function Rejected({ rejected }: { rejected: { label: string; reason: string }[] 
         className="flex items-center gap-1 hover:text-fg"
       >
         {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-        {t("cloud.rejectedReads", { count: rejected.length })}
+        {summary}
       </button>
       {open && (
         <ul className="mt-1 flex flex-col gap-0.5 pl-4">
@@ -450,7 +467,15 @@ function ReadBlock({ resource, read }: { resource: CloudResource; read: PlannedR
       )}
       {answer?.kind === "loaded" && !(secret && hidden) && (
         <div className="p-2">
-          <PropertyTable rows={rows} />
+          {/* An empty answer is an answer: measured on a real Supabase
+              project, `postgres-config get` returns `{}` for every project
+              nobody has tuned. Drawn as a table it is an empty box that reads
+              like a failure, so it is said in words instead. */}
+          {rows.length === 0 ? (
+            <p className="px-0.5 text-[11px] text-muted">{t("cloud.readEmpty")}</p>
+          ) : (
+            <PropertyTable rows={rows} />
+          )}
         </div>
       )}
     </section>

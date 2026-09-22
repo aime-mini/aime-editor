@@ -1,6 +1,9 @@
 import type { CloudAccount, CloudResource } from "../stores/cloud";
 import { shortKind } from "./cloudIcons";
 import type { PlannedRead } from "./cloudReads";
+import { dialectOf, recipeOf } from "./deployDialect";
+
+export { DEPLOYABLE } from "./deployDialect";
 
 /**
  * Deploying the open project to a cloud: what Aime asks the AI, how the answers
@@ -13,9 +16,6 @@ import type { PlannedRead } from "./cloudReads";
  * (`cloud/deploy.rs`) proves against the CLI's own `--help` and its own rules
  * before a person sees them, and runs itself after the person has agreed.
  */
-
-/** The clouds Aime can deploy to; only these show the button. */
-export const DEPLOYABLE: ReadonlySet<string> = new Set(["gcp"]);
 
 /** What the repository turned out to be, in the AI's reading of it. */
 export interface AppProfile {
@@ -105,9 +105,26 @@ export interface Proposal {
   performance: string;
 }
 
+/** One exchange at the confirm page: what the person asked, what Aime answered. */
+export interface DeployNote {
+  asked: string;
+  /** The AI's reply, empty only while the next plan is still being written. */
+  answered: string;
+}
+
 /** Step two's answer, the plan a person confirms. */
 export interface DeployPlan {
   summary: string;
+  /**
+   * The answer to the person's last note, in their terms rather than the
+   * plan's.
+   *
+   * A revision used to come back as a new plan and nothing else: the person
+   * said "cheaper tier", the page redrew, and whether that had been heard,
+   * refused or quietly ignored had to be inferred by diffing two plans. The
+   * plan now says it. Empty on the first plan, when nothing has been asked.
+   */
+  reply: string;
   target: {
     /** True when a service for this app already runs - the keep rule then applies. */
     existing: boolean;
@@ -172,62 +189,25 @@ const OUTPUT_LIMIT = 6_000;
 export const TOOLING_TO_REPORT = ["docker"];
 
 /**
- * The rules of the `gcloud` command line that decide whether a step runs, as
- * the checker enforces them. They are about the CLI, not about the user's app.
- */
-const GCLOUD_RULES = [
-  // Measured 2026-09-12: given a repository that is plainly Kubernetes - a
-  // Dockerfile, a 2-replica Deployment, a LoadBalancer Service and a README
-  // saying `kubectl apply` - the AI proposed Cloud Run and said what it had
-  // substituted and why. Good judgement, but it was guessing at Aime's limits:
-  // nothing here said which programs a step may run. A step may now say
-  // `kubectl`, and the two programs are named rather than left to be inferred.
-  "- A step runs as `gcloud` unless it sets `program` to `kubectl`, and those are the only two. Never " +
-    "`helm`, `terraform`, `docker`, a shell or a script: a shape that needs one of those cannot be " +
-    "deployed from here, so choose what these two can deploy and say plainly in `architecture` what you " +
-    "substituted for what, and what is given up.",
-  "- `kubectl` is for putting a workload on a GKE cluster and watching it come up: `apply`, `create`, " +
-    "`expose`, `scale`, `set`, `rollout`, `annotate`, `label`, `patch`, `wait`, `get`. A READ may name it " +
-    "too - `get`, `describe`, `logs`, `top`, `explain`, `cluster-info`, `api-resources`, `version` - and " +
-    "that is how you look at a cluster when a step fails. It needs an earlier " +
-    "`gcloud container clusters get-credentials` step to point it at the cluster; it takes NO `--project` " +
-    "or `--account` (Aime adds those to `gcloud` only, and `kubectl` refuses them); write every flag in " +
-    "its long form as two tokens (`--filename`, `k8s/deployment.yaml`). Aime installs " +
-    "`gke-gcloud-auth-plugin` itself when it is missing, so do not plan that.",
-  "- `args` are the arguments after `gcloud`, one token each, in the order the CLI takes them: command " +
-    "words, then positionals, then flags. A flag and its value are two tokens (`--region`, `asia-southeast1`), " +
-    "never `--region=…`.",
-  "- Aime itself adds `--project` and `--account` to every command and `--format json` to every read - " +
-    "never include them, and never `--quiet`: prompts are already disabled, so anything the CLI would have " +
-    "asked (enable an API, allow unauthenticated access) must be an explicit step or flag. A command or read " +
-    "that needs a location names it itself (`--region`, `asia-southeast1`).",
-  "- A deployment adds and updates. Never `delete`, `destroy`, `purge`, `undelete` or a `remove-*` command; " +
-    "never the `projects`, `billing`, `organizations`, `auth`, `config` or `components` groups - with one " +
-    "exception: `projects add-iam-policy-binding` IS allowed, because a source build needs its service " +
-    "account to have the roles for it. Its `--member` must be a `serviceAccount:` (never a person, a group " +
-    "or `allUsers`) and its `--role` must be the narrow role that job needs - `roles/owner`, `roles/editor` " +
-    "and the IAM-admin roles are refused.",
-  "- Values hold letters, digits and `_.:/=,*@+-` only - no spaces, no quotes, nothing a shell could misread.",
-].join("\n");
-
-const KEEP_RULE =
-  "- When a service for this app ALREADY EXISTS, its settings are kept: use `--update-env-vars`, " +
-  "`--update-labels`, `--update-secrets` and the other `--update-*` flags, which merge. `--set-*`, `--clear-*` " +
-  "and `--remove-*` replace or wipe what is there and Aime refuses them for an existing service.";
-
-/**
  * Step one: read the repository, recognise what of it already runs, ask for the
  * reads a person would make before deploying by hand.
  */
-export function surveyPrompt(input: { inventory: CloudResource[]; tooling: string[] }): string {
+export function surveyPrompt(input: {
+  cloudId: string;
+  inventory: CloudResource[];
+  tooling: string[];
+}): string {
+  const dialect = dialectOf(input.cloudId);
+  const recipe = recipeOf(input.cloudId);
   const rows = input.inventory.slice(0, INVENTORY_LIMIT).map(inventoryLine);
   return [
-    "You are preparing to deploy THIS repository to Google Cloud, to the project Aime targets. You can read " +
-      "the repository (files only - you have no shell and no cloud CLI; Aime runs every command). Answer " +
-      "the questions below from what the code, its Dockerfile, CI, deploy scripts and infrastructure files say.",
+    `You are preparing to deploy THIS repository to ${dialect.cloud}, to the ${recipe.target} Aime ` +
+      "targets. You can read the repository (files only - you have no shell and no cloud CLI; Aime runs " +
+      "every command). Answer the questions below from what the code, its Dockerfile, CI, deploy scripts " +
+      "and infrastructure files say.",
     "",
-    "What already runs in the target project (kind, name, region, labels), as its inventory lists it:",
-    rows.length === 0 ? "(nothing - the project holds no resources yet)" : rows.join("\n"),
+    `What already runs in the target ${recipe.target} (kind, name, region, labels), as its inventory lists it:`,
+    rows.length === 0 ? `(nothing - the ${recipe.target} holds no resources yet)` : rows.join("\n"),
     input.inventory.length > INVENTORY_LIMIT
       ? `(+${String(input.inventory.length - INVENTORY_LIMIT)} more not shown)`
       : "",
@@ -248,12 +228,12 @@ export function surveyPrompt(input: { inventory: CloudResource[]; tooling: strin
     "4. `missing`: what you could not determine and will have to assume.",
     "",
     "RULES:",
-    GCLOUD_RULES,
+    recipe.rules,
     "",
     "Answer with ONLY this JSON, no prose and no code fence:",
     '{"app":{"name":"…","kind":"web","stack":"…","port":8080,"healthPath":"/","builds":"…"},' +
-      '"existing":[{"resourceId":"//run.googleapis.com/projects/p/locations/r/services/s","role":"the service","evidence":"…"}],' +
-      '"inspect":[{"purpose":"overview","label":"gcloud run services describe","args":["run","services","describe","s","--region","r"]}],' +
+      `"existing":[{"resourceId":"${recipe.resourceId}","role":"the service","evidence":"…"}],` +
+      `"inspect":[${recipe.inspect}],` +
       '"missing":["…"]}',
   ]
     .filter((line) => line !== "")
@@ -266,24 +246,52 @@ export function surveyPrompt(input: { inventory: CloudResource[]; tooling: strin
  * second answer can be different for a reason.
  */
 export function planPrompt(input: {
+  cloudId: string;
   survey: Survey;
   answers: ReadAnswer[];
   tooling: string[];
   rejected: Rejected[];
+  /**
+   * What the person asked for after reading a plan, in their own words.
+   *
+   * The confirm page is where someone first sees what would actually run, and
+   * it is the natural place to say "use the cheaper tier" or "put it in this
+   * region". Each note is carried into every later plan, so the third revision
+   * still honours the first request. A note is a REQUEST and not a permission:
+   * it cannot widen what the checker will run, which the rules below say
+   * plainly, because a model told to "just delete the old one" would otherwise
+   * spend a turn writing a command that is refused.
+   */
+  notes: DeployNote[];
 }): string {
   const { survey } = input;
+  const dialect = dialectOf(input.cloudId);
+  const recipe = recipeOf(input.cloudId);
   const lines = [
-    "Write the plan to deploy THIS repository to Google Cloud, to the project Aime targets. Aime will show " +
-      "the plan to the person, run each step itself after they confirm, and prove the result by asking the " +
-      "deployed service over HTTP. You have no shell and no cloud CLI: every command is a `gcloud` argument list.",
+    `Write the plan to deploy THIS repository to ${dialect.cloud}, to the ${recipe.target} Aime targets. ` +
+      "Aime will show the plan to the person, run each step itself after they confirm, and prove the " +
+      "result by asking the deployed service over HTTP. You have no shell and no cloud CLI: every command " +
+      `is an \`${dialect.program}\` argument list.`,
     "",
     "The application, as you read it:",
     JSON.stringify(survey.app),
     "",
     survey.existing.length === 0
-      ? "Nothing of this application exists in the project yet."
-      : `Already in the project:\n${survey.existing.map((one) => `- ${one.role}: ${one.resourceId} (${one.evidence})`).join("\n")}`,
+      ? `Nothing of this application exists in the ${recipe.target} yet.`
+      : `Already in the ${recipe.target}:\n${survey.existing.map((one) => `- ${one.role}: ${one.resourceId} (${one.evidence})`).join("\n")}`,
     "",
+    ...(input.notes.length === 0
+      ? []
+      : [
+          "What the person asked for after reading your last plan, in their own words, and what you " +
+            "answered. Every request still applies to the plan you are about to write:",
+          ...input.notes.flatMap((note) =>
+            note.answered === ""
+              ? [`- they asked: ${note.asked}`]
+              : [`- they asked: ${note.asked}`, `  you answered: ${note.answered}`],
+          ),
+          "",
+        ]),
     ...(input.answers.length === 0
       ? []
       : [
@@ -298,6 +306,9 @@ export function planPrompt(input: {
     "",
     "Answer:",
     "- `summary`: one sentence - what is deployed, where, how.",
+    "- `reply`: what you say back to the person about their LAST request, in one or two sentences and in " +
+      "their own terms - what you changed, or why you could not and what you did instead. Not a summary " +
+      "of the plan; an answer to them. Empty string when they have asked for nothing yet.",
     "- `target`: `existing` (true when a service for this app already runs), `resourceId` (that service's " +
       "inventory id, or null), `region`.",
     "- `proposal`: ONLY when nothing exists yet - the architecture you propose for this app, `cost` (what it " +
@@ -308,19 +319,36 @@ export function planPrompt(input: {
       "environment variables, the scaling limits, the IAM bindings. Aime reads them before and after and " +
       "reports any that changed. Empty when nothing exists.",
     "- `steps`: the commands, in order, each with `label`, `args`, `changes` (what it changes on the cloud) " +
-      "and, only when it is not `gcloud`, `program`. Enable every API the steps need as an explicit step. " +
-      "Make the build a step or part of one; deploying from source builds in the cloud and needs no docker here.",
-    "- `files`: files that must exist in the repository first (a Dockerfile, a .gcloudignore), each with " +
+      `and, only when it is not \`${dialect.program}\`, \`program\`. Whatever the cloud must have switched ` +
+      "on before a step can work - an API, a resource provider - is an explicit step of its own. Make the " +
+      "build a step or part of one; deploying from source builds in the cloud and needs no docker here.",
+    "- `files`: files that must exist in the repository first (a Dockerfile, an ignore file), each with " +
       "`path` and `why`. Aime asks you to write them after the person confirms. Empty when none.",
-    "- `prove`: the read that answers the deployed URL - `read` (`label`, `args`), `urlPath` (dotted path to " +
-      "the URL in its JSON answer; a bare hostname or IP is fine), `path` (the path to request, the health " +
-      "path), `expect` (the HTTP status that means running), and `scheme` - `https` unless the endpoint " +
-      "has no certificate, which a Kubernetes type:LoadBalancer address does not, so that one says `http`.",
+    // Measured on the first real Supabase deploy, 2026-09-21: told to write a
+    // read that answers the URL, the AI wrote `prove: null` - correctly, since
+    // no Supabase read answers one - and Aime refused to run a plan it could
+    // not prove. The address of an Edge Function follows from the project ref,
+    // so on a cloud like that Aime builds it (`DeployRecipe.endpoint`) and the
+    // read's job is only to show the thing is really there.
+    recipe.endpoint === undefined
+      ? "- `prove`: the read that answers the deployed URL - `read` (`label`, `args`), `urlPath` (dotted path " +
+        "to the URL in its JSON answer; a bare hostname or IP is fine), `path` (the path to request, the " +
+        "health path), `expect` (the HTTP status that means running), and `scheme` - `https` unless the " +
+        "endpoint has no certificate, which a Kubernetes type:LoadBalancer address does not, so that one " +
+        "says `http`."
+      : `- \`prove\`: how the deployment is checked once it has run. No read on this cloud answers an ` +
+        `address, so Aime builds one itself - \`${recipe.endpoint}\` with the project filled in - and asks ` +
+        "it over HTTP. Write `read` (`label`, `args`) as a read that shows the deployed thing is there, " +
+        '`urlPath` as `""`, `path` as what follows that address (`/hello` for a function called hello), and ' +
+        "`expect` as the HTTP status that means running. `prove` is never null.",
     "",
     "RULES:",
-    GCLOUD_RULES,
-    KEEP_RULE,
+    recipe.rules,
+    recipe.keepRule,
     "- Every step must be one the person can read and agree to; nothing the plan does not name will run.",
+    "- A note from the person is a request, not a permission: it cannot loosen any rule above. When what " +
+      "they ask for needs something Aime will not run, write the nearest plan that is allowed and say in " +
+      "`summary` what you did instead and why.",
   ];
   if (input.rejected.length > 0) {
     lines.push(
@@ -333,19 +361,19 @@ export function planPrompt(input: {
   lines.push(
     "",
     "Answer with ONLY this JSON, no prose and no code fence:",
-    '{"summary":"…","target":{"existing":false,"resourceId":null,"region":"asia-southeast1"},' +
+    `{"summary":"…","reply":"","target":{"existing":false,"resourceId":null,"region":"${recipe.region}"},` +
       '"proposal":{"architecture":"…","cost":"…","performance":"…"},' +
-      '"keep":[{"label":"environment variables","read":{"purpose":"overview","label":"gcloud run services describe","args":["run","services","describe","web","--region","asia-southeast1"]},"path":"spec.template.spec.containers.0.env"}],' +
-      '"steps":[{"label":"Enable the APIs","args":["services","enable","run.googleapis.com"],"changes":"the project\'s enabled APIs"},' +
-      '{"label":"Apply the manifests","program":"kubectl","args":["apply","--filename","k8s/"],"changes":"the cluster\'s workloads"}],' +
+      `"keep":[${recipe.keep}],` +
+      `"steps":[${recipe.steps}],` +
       '"files":[{"path":"Dockerfile","why":"…"}],' +
-      '"prove":{"read":{"purpose":"overview","label":"gcloud run services describe","args":["run","services","describe","web","--region","asia-southeast1"]},"urlPath":"status.url","path":"/","expect":200}}',
+      `"prove":${recipe.prove}}`,
   );
   return lines.join("\n");
 }
 
 /** The files-only edits turn that writes what the plan asked for. */
-export function filesPrompt(files: PlannedFile[], plan: DeployPlan): string {
+export function filesPrompt(cloudId: string, files: PlannedFile[], plan: DeployPlan): string {
+  const { program } = dialectOf(cloudId);
   return [
     "Write these files into this repository, exactly as the deployment plan below needs them. Write the " +
       "files and nothing else: do not run anything, do not change other files, do not commit.",
@@ -354,7 +382,7 @@ export function filesPrompt(files: PlannedFile[], plan: DeployPlan): string {
     "",
     "The plan:",
     plan.summary,
-    ...plan.steps.map((step) => `- ${step.label}: gcloud ${step.args.join(" ")}`),
+    ...plan.steps.map((step) => `- ${step.label}: ${program} ${step.args.join(" ")}`),
   ].join("\n");
 }
 
@@ -363,12 +391,15 @@ export function filesPrompt(files: PlannedFile[], plan: DeployPlan): string {
  * is what it said, here is what was still to run - rewrite the remainder.
  */
 export function fixPrompt(input: {
+  cloudId: string;
   plan: DeployPlan;
   failed: { label: string; command: string; output: string };
   remaining: DeployStep[];
   answers: ReadAnswer[];
   rejected: Rejected[];
 }): string {
+  const dialect = dialectOf(input.cloudId);
+  const recipe = recipeOf(input.cloudId);
   const lines = [
     "A step of the deployment failed. Read what the CLI said, and rewrite the steps still to run so the " +
       "deployment completes. You may edit files in the repository (files only - no shell, no cloud CLI); " +
@@ -383,7 +414,7 @@ export function fixPrompt(input: {
     "",
     input.remaining.length === 0
       ? "Every step had run; the failure is what happened after them."
-      : `Still to run:\n${input.remaining.map((step) => `- ${step.label}: gcloud ${step.args.join(" ")}`).join("\n")}`,
+      : `Still to run:\n${input.remaining.map((step) => `- ${step.label}: ${dialect.program} ${step.args.join(" ")}`).join("\n")}`,
     ...(input.answers.length === 0
       ? []
       : [
@@ -405,8 +436,8 @@ export function fixPrompt(input: {
       "permission). Otherwise null.",
     "",
     "RULES:",
-    GCLOUD_RULES,
-    KEEP_RULE,
+    recipe.rules,
+    recipe.keepRule,
   ];
   if (input.rejected.length > 0) {
     lines.push(
@@ -460,7 +491,7 @@ export function parseSurvey(reply: string): Survey | null {
   };
 }
 
-export function parsePlan(reply: string): DeployPlan | null {
+export function parsePlan(reply: string, urlFromRead = true): DeployPlan | null {
   const raw = asRecord(extractObject(reply));
   const steps = asArray(raw.steps).flatMap(asStep);
   if (steps.length === 0) return null;
@@ -468,6 +499,7 @@ export function parsePlan(reply: string): DeployPlan | null {
   const proposal = raw.proposal === null || raw.proposal === undefined ? null : asRecord(raw.proposal);
   return {
     summary: asString(raw.summary),
+    reply: asString(raw.reply),
     target: {
       existing: target.existing === true,
       resourceId: asString(target.resourceId) || null,
@@ -484,7 +516,7 @@ export function parsePlan(reply: string): DeployPlan | null {
     keep: asArray(raw.keep).flatMap(asKeep),
     steps,
     files: asArray(raw.files).flatMap(asFile),
-    prove: asProve(raw.prove),
+    prove: asProve(raw.prove, urlFromRead),
   };
 }
 
@@ -539,11 +571,17 @@ function asFile(value: unknown): PlannedFile[] {
   return path === "" ? [] : [{ path, why: asString(raw.why) }];
 }
 
-function asProve(value: unknown): ProveRead | null {
+function asProve(value: unknown, urlFromRead: boolean): ProveRead | null {
   const raw = asRecord(value);
   const read = asRead(raw.read).at(0);
   const urlPath = asString(raw.urlPath);
-  if (read === undefined || urlPath === "") return null;
+  // A path into the answer is required exactly where the answer is where the
+  // address comes from. On a cloud whose recipe carries an `endpoint` it is
+  // not: Aime builds the address from the account, and the read only shows
+  // the deployed thing is there. Measured on the first real Supabase deploy,
+  // 2026-09-21 - the plan was good, the empty `urlPath` dropped it here, and
+  // the run stopped saying nothing could prove the deployment.
+  if (read === undefined || (urlFromRead && urlPath === "")) return null;
   const expect = typeof raw.expect === "number" && Number.isInteger(raw.expect) ? raw.expect : 200;
   const path = asString(raw.path) || "/";
   // Two schemes and no others: anything else is a plan Aime would be guessing
@@ -629,21 +667,28 @@ export function overwritten(keeps: KeepRead[], before: ReadAnswer[], after: Read
 /**
  * A step exactly as Aime runs it, for the confirm page and the log.
  *
- * The program comes first because it is not always `gcloud`, and the scope
- * flags are `gcloud`'s way of being told where to work: `kubectl` is told by
- * the kubeconfig the cluster step wrote, and would refuse them.
+ * The program comes first because it is not always the cloud's own CLI, and
+ * the scope flags are how that CLI is told where to work - `--project` and
+ * `--account` for `gcloud`, `--subscription` for `az`. A step that names its
+ * own program is scoped by neither: `kubectl` is told by the kubeconfig the
+ * cluster step wrote, and would refuse the flags outright.
  */
-export function commandLine(step: DeployStep, account: CloudAccount): string {
-  const program = step.program !== undefined && step.program !== "" ? step.program : "gcloud";
-  if (program !== "gcloud") return [program, ...step.args].map(quoted).join(" ");
-  const scoped = [...step.args, "--project", account.id];
-  if (account.owner !== "") scoped.push("--account", account.owner);
-  return [program, ...scoped].map(quoted).join(" ");
+export function commandLine(cloudId: string, step: DeployStep, account: CloudAccount): string {
+  const dialect = dialectOf(cloudId);
+  const named = step.program !== undefined && step.program !== "" ? step.program : dialect.program;
+  if (named !== dialect.program) return [named, ...step.args].map(quoted).join(" ");
+  const scoped = [...step.args, dialect.scopeUnit, account.id];
+  if (dialect.scopeOwner !== undefined && account.owner !== "") {
+    scoped.push(dialect.scopeOwner, account.owner);
+  }
+  return [named, ...scoped].map(quoted).join(" ");
 }
 
 /** A read as Aime runs it. */
-export function readLine(read: PlannedRead, account: CloudAccount): string {
-  return commandLine({ label: read.label, args: read.args, changes: "" }, account) + " --format json";
+export function readLine(cloudId: string, read: PlannedRead, account: CloudAccount): string {
+  const dialect = dialectOf(cloudId);
+  const line = commandLine(cloudId, { label: read.label, args: read.args, changes: "" }, account);
+  return `${line} ${dialect.jsonFlags.join(" ")}`;
 }
 
 function quoted(token: string): string {

@@ -126,7 +126,23 @@ function WelcomeScreen() {
     // long environment report pushes the logo off the top of the window.
     <div className="relative h-full overflow-y-auto">
       {/*
-       * Three columns: Aime, the welcome screen, the news.
+       * Aime in the bottom-left corner, out of the layout entirely.
+       *
+       * She had a column of her own and filled it - 78% of the window's height
+       * beside the buttons - and that made the welcome screen about her.
+       * Reported 2026-09-21, the same day as the splash: smaller, in the
+       * corner. Pinned to the scrolling area with a ceiling in pixels, so a
+       * tall window does not grow her, and behind the content so she can never
+       * crowd it however narrow the window gets.
+       */}
+      <img
+        src="/splash/aime.webp"
+        alt=""
+        aria-hidden
+        className="pointer-events-none absolute bottom-0 left-0 z-0 h-[26%] max-h-40 w-auto object-contain object-bottom opacity-90 select-none"
+      />
+      {/*
+       * Three columns: a margin, the welcome screen, the news.
        *
        * They were absolutely positioned into the margins at first, which meant
        * every window size had to be argued about separately - and the panel that
@@ -136,20 +152,11 @@ function WelcomeScreen() {
        * go under, and the leftover space is split between them. Nothing moves at
        * any width; it only gets narrower.
        */}
-      <div className="grid min-h-full grid-cols-[minmax(6rem,1fr)_minmax(0,42rem)_minmax(12rem,1fr)]">
-        {/*
-         * Her own column, and she is absolute inside it so the column's width is
-         * the only thing that decides her size - no arithmetic against the
-         * middle's width, and nothing to keep in step when that changes.
-         */}
-        <div className="relative">
-          <img
-            src="/splash/aime.webp"
-            alt=""
-            aria-hidden
-            className="pointer-events-none absolute bottom-0 left-0 h-[78%] w-full object-contain object-bottom opacity-90 select-none"
-          />
-        </div>
+      <div className="relative z-10 grid min-h-full grid-cols-[minmax(6rem,1fr)_minmax(0,42rem)_minmax(12rem,1fr)]">
+        {/* The left margin. It held the character until she moved to the
+            corner; what it does now - keep the middle in the middle - is what
+            it always did. */}
+        <div />
         <div className="flex items-center px-8 py-10">
           <div className="w-full">
             <div className="flex flex-col items-center gap-3">

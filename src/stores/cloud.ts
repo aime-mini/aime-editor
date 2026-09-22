@@ -4,11 +4,20 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { create } from "zustand";
 import { translate } from "../i18n";
 import { aiOneshot } from "../lib/aiOneshot";
-import { DISCOVER_PROMPT, parseArchitecture } from "../lib/cloudDiscovery";
+import { discoverPrompt, parseArchitecture } from "../lib/cloudDiscovery";
+import { agentTurn } from "../lib/agentTurn";
 import type { Basis } from "../lib/cloudMap";
 import { renderCloudNote, spliceCloudNote, type CloudNote } from "../lib/cloudMemory";
 import { cliRefusal, shortCliError } from "../lib/cloudErrors";
-import { opsPrompt, parseOps, sawEmptyList, type CheckedOps, type ProposedOp } from "../lib/cloudOps";
+import {
+  opCommand,
+  opsPrompt,
+  parseOps,
+  sawEmptyList,
+  type CheckedOps,
+  type ProposedOp,
+} from "../lib/cloudOps";
+import { dialectOf, OPERABLE } from "../lib/deployDialect";
 import {
   buildReadPlanPrompt,
   buildReadRepairPrompt,
@@ -134,7 +143,17 @@ export type PlanState =
 export type OpsState =
   | { kind: "planning" }
   | { kind: "ready"; ops: ProposedOp[]; rejected: { label: string; reason: string }[] }
-  | { kind: "failed"; reason: string };
+  | { kind: "failed"; reason: string }
+  /**
+   * This cloud's command line has not been measured, so there is nothing to
+   * offer and nothing asking again could change.
+   *
+   * Its own state rather than a `failed` carrying a sentence, because the two
+   * call for opposite things on screen: a failure is worth retrying and this
+   * is not. Reported 2026-09-18 on the AWS tab, where the retry button sat
+   * under a permanent message and did nothing at all when clicked.
+   */
+  | { kind: "unmeasured" };
 
 /** One operation as it runs: the command, its output so far, how it ended. */
 export interface RunningOp {
@@ -509,16 +528,20 @@ export const useCloud = create<CloudState>((set, get) => ({
     const key = slotOf(cloudId, resource.kind);
     const known = get().ops[key];
     if (known !== undefined && known.kind !== "failed") return;
-    // Only Google Cloud has a checker for whole commands so far (`deploy.rs`),
-    // and offering a button Aime cannot prove is worse than offering none.
-    if (cloudId !== OPERABLE) {
-      setOps(set, key, { kind: "failed", reason: translate("cloud.opsNoCloud") });
+    // An operation goes through the same checker a deployment does, so it can
+    // only be offered for a cloud whose command line that checker knows:
+    // offering a button Aime cannot prove is worse than offering none.
+    if (!OPERABLE.has(cloudId)) {
+      setOps(set, key, { kind: "unmeasured" });
       return;
     }
     setOps(set, key, { kind: "planning" });
     try {
       const cwd = useWorkspace.getState().rootPath ?? ".";
-      const reply = await aiOneshot(opsPrompt(resource.kind), cwd, true);
+      // The CLI's own list of command groups, for the CLI that publishes one;
+      // `null` everywhere else, and the prompt then says nothing about it.
+      const groups = await invoke<string[] | null>("cloud_cli_commands", { cloudId });
+      const reply = await aiOneshot(opsPrompt(cloudId, resource.kind, groups), cwd, true);
       const proposed = parseOps(reply);
       if (proposed.length === 0) {
         // Two very different things used to read the same on screen: a kind
@@ -529,7 +552,9 @@ export const useCloud = create<CloudState>((set, get) => ({
         const unreadable = [translate("cloud.opsNoAnswer"), reply.trim().slice(0, REPLY_SHOWN)];
         setOps(set, key, {
           kind: "failed",
-          reason: sawEmptyList(reply) ? translate("cloud.opsNothingHere") : unreadable.join("\n\n"),
+          reason: sawEmptyList(reply)
+            ? translate("cloud.opsNothingHere", { program: dialectOf(cloudId).program })
+            : unreadable.join("\n\n"),
         });
         return;
       }
@@ -567,7 +592,7 @@ export const useCloud = create<CloudState>((set, get) => ({
         id,
         resourceId: resource.id,
         label: op.label,
-        command: opCommandOf(args, account),
+        command: opCommandOf(cloudId, args, account),
         lines: [],
         code: null,
       },
@@ -783,13 +808,35 @@ export const useCloud = create<CloudState>((set, get) => ({
     set({ discovering: id, result: null });
     try {
       const account = cloud.account ?? cloud.label;
-      const asking = [
-        DISCOVER_PROMPT,
-        "",
-        `The cloud: ${cloud.label}, through its own CLI (\`${cloud.command}\`) on this machine.`,
-        `Signed in as: ${account}`,
-      ].join("\n");
-      const architecture = parseArchitecture(await aiOneshot(asking, rootPath));
+      // The inventory is Aime's to fetch - it is the cloud's own answer, and the
+      // turn below has no way to reach a cloud CLI.
+      const accountId = get().selected[id];
+      const loaded = accountId === undefined ? undefined : get().resources[slotOf(id, accountId)];
+      const resources = loaded?.kind === "loaded" ? loaded.resources : [];
+      const ask = (canReadRepo: boolean) =>
+        discoverPrompt({ cloud: cloud.label, cli: cloud.command, account, resources, canReadRepo });
+      // Files only, and never `edits`: a discovery reads the repository to say
+      // how it reaches this account, and writes nothing. The memory file is
+      // Aime's to write, after the answer has parsed.
+      //
+      // A CLI Aime cannot hold to files only refuses that turn by name
+      // (`TOOLS_UNRESTRICTED`), and running it with every tool it has - a shell
+      // included, on somebody's cloud account - is not the alternative. It
+      // falls back to a turn with NO tools, asking only about the inventory
+      // Aime already read, and the brief says so rather than letting the answer
+      // sound like it read the repository.
+      const said = await agentTurn({
+        prompt: ask(true),
+        cwd: rootPath,
+        permission: "readOnly",
+        tools: "filesOnly",
+      })
+        .then((outcome) => outcome.text)
+        .catch(async (error: unknown) => {
+          if (!String(error).startsWith("TOOLS_UNRESTRICTED::")) throw error;
+          return aiOneshot(ask(false), rootPath);
+        });
+      const architecture = parseArchitecture(said);
       if (architecture === null) {
         set({ result: { cloud: cloud.label, wrote: false, detail: translate("cloud.noAnswer") } });
         return;
@@ -1112,9 +1159,6 @@ async function repairWithAi(
 /** How much of an unreadable answer is shown, so the panel says something useful. */
 const REPLY_SHOWN = 400;
 
-/** The one cloud whose whole commands Aime can prove today (`cloud/deploy.rs`). */
-const OPERABLE = "gcp";
-
 /** An operation in the shape the deploy checker reads. */
 function asStep(op: ProposedOp): { label: string; args: string[]; changes: string } {
   return { label: op.label, args: op.args, changes: op.changes };
@@ -1134,8 +1178,8 @@ function rejectedOps(checked: unknown): { label: string; reason: string }[] {
 }
 
 /** The command line as Aime will run it, for the confirm and for the log. */
-function opCommandOf(args: string[], account: CloudAccount): string {
-  return ["gcloud", ...args, "--project", account.id, "--account", account.owner].join(" ");
+function opCommandOf(cloudId: string, args: string[], account: CloudAccount): string {
+  return opCommand(cloudId, args, account.id, account.owner);
 }
 
 function setOps(set: Set, key: string, state: OpsState): void {

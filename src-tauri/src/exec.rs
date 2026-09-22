@@ -357,10 +357,75 @@ where
         };
         let mut lines = BufReader::new(stream).lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            let line = plain_text(&line);
             capture.push(&line);
             let _ = lines_tx.send((name, line));
         }
     })
+}
+
+/// One line of a child's output as a reader should see it.
+///
+/// A CLI that believes a terminal is listening writes more than text: colour,
+/// a hidden cursor, and a spinner it redraws over itself. Measured 2026-09-21,
+/// `supabase secrets list` on a pipe answers with the cursor hidden, the word
+/// *Fetching secrets* drawn six times, each one rubbed out by `ESC[1G ESC[J`,
+/// and the cursor shown again - and the cloud panel, which is a `<pre>` and not
+/// a terminal, printed every byte of that. Nothing downstream of here is a
+/// terminal (the terminal pane has a stream of its own), so the sequences come
+/// off at the one place every line is read.
+///
+/// The two that mean *go back to the start of this line* - a carriage return
+/// and `ESC[G` at column one - are obeyed rather than dropped: what came before
+/// them was rubbed out on the writer's screen too, so a spinner arrives as its
+/// last frame instead of as six of them in a row.
+fn plain_text(line: &str) -> String {
+    if !line.contains(['\u{1b}', '\r']) {
+        return line.to_string();
+    }
+    let mut text = String::with_capacity(line.len());
+    let mut rest = line.chars().peekable();
+    while let Some(character) = rest.next() {
+        match character {
+            '\r' => text.clear(),
+            '\u{1b}' => match rest.next() {
+                // A control sequence: digits and separators, then one final
+                // byte that says what it was.
+                Some('[') => {
+                    let mut parameters = String::new();
+                    for next in rest.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&next) {
+                            // `ESC[G` and `ESC[1G` both put the cursor back at
+                            // the first column; `ESC[5G` does not, and is left
+                            // alone rather than guessed at.
+                            if next == 'G' && (parameters.is_empty() || parameters == "1") {
+                                text.clear();
+                            }
+                            break;
+                        }
+                        parameters.push(next);
+                    }
+                }
+                // An operating-system command - a window title, a hyperlink -
+                // runs until a bell or a string terminator.
+                Some(']') => {
+                    while let Some(next) = rest.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' {
+                            rest.next();
+                            break;
+                        }
+                    }
+                }
+                // A two-character escape: the escape goes, the letter with it.
+                _ => {}
+            },
+            _ => text.push(character),
+        }
+    }
+    text
 }
 
 /// Where to cut the front of a capture: at `wanted` bytes, or the next
@@ -553,6 +618,43 @@ mod tests {
         let at = drop_point(text, 3);
         assert_eq!(at, 4, "the cut moved forward to a boundary");
         assert_eq!(&text[at..], "ăă");
+    }
+
+    /// The bytes `supabase secrets list` really wrote on a pipe, captured
+    /// 2026-09-21 through `cat -v` and written here as escapes - a literal
+    /// escape character in a source file is invisible to the next reader.
+    #[test]
+    fn a_spinner_drawn_for_a_terminal_arrives_as_the_words_it_ended_on() {
+        let spinner = "\u{1b}[?25l\u{1b}[?25h";
+        assert_eq!(plain_text(spinner), "");
+        let redrawn = "\u{25d2}  Fetching secrets\u{1b}[1G\u{1b}[J\u{25d0}  Fetching secrets\u{1b}[1G\u{1b}[J\u{1b}[?25h";
+        assert_eq!(plain_text(redrawn), "");
+        assert_eq!(
+            plain_text("\u{25d2}  Fetching secrets\u{1b}[1G\u{1b}[Jdone"),
+            "done",
+            "what is written after the line was wiped is all that was left on screen"
+        );
+    }
+
+    #[test]
+    fn colour_comes_off_and_ordinary_text_is_untouched() {
+        assert_eq!(plain_text("\u{1b}[31mdenied\u{1b}[0m"), "denied");
+        assert_eq!(plain_text("progress\rdone"), "done");
+        assert_eq!(
+            plain_text("\u{1b}]0;a window title\u{7}listening on 8080"),
+            "listening on 8080"
+        );
+        let plain = "  NAME | DIGEST";
+        assert_eq!(
+            plain_text(plain),
+            plain,
+            "a line with no escapes is handed on as it is"
+        );
+        assert_eq!(
+            plain_text("\u{1b}[5Gindented"),
+            "indented",
+            "a move to a column that is not the first is not a wipe"
+        );
     }
 
     /// Sleeping is spelled differently on each shell.

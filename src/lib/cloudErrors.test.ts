@@ -11,6 +11,13 @@ const ASSET_API_OFF = `ERROR: (gcloud.asset.search-all-resources) [duylinh191@gm
 /** Azure's answer when a cached account's token has gone stale. */
 const AZURE_EXPIRED = `Interactive authentication is needed. Please run:\naz login --tenant "tenant-1"\nStatus_InteractionRequired`;
 
+/**
+ * Captured 2026-09-17 from `az resource list --subscription <one in a second
+ * tenant>` on a real machine. It reads like a malformed command and is a stale
+ * refresh token; the ids are the CLI's own.
+ */
+const AZURE_STALE_TENANT = `ERROR: AADSTS9002313: Invalid request. Request is malformed or invalid. Trace ID: 41eb9c2a-f448-46b2-b60e-de57d3e41700 Correlation ID: 4ef48035-0ac7-4468-99dc-e4896d6e036a Timestamp: 2026-09-17 04:37:11Z`;
+
 describe("disabledApi", () => {
   it("names the API, the project it is charged to, and the page that enables it", () => {
     expect(disabledApi(ASSET_API_OFF)).toEqual({
@@ -93,6 +100,7 @@ describe("billingOff", () => {
 describe("looksLikeSignIn", () => {
   it("is true for the words the CLIs use when the sign-in is the problem", () => {
     expect(looksLikeSignIn(AZURE_EXPIRED)).toBe(true);
+    expect(looksLikeSignIn(AZURE_STALE_TENANT)).toBe(true);
     expect(looksLikeSignIn("You do not currently have an active account selected")).toBe(true);
     expect(looksLikeSignIn("Access token not provided. Supply an access token")).toBe(true);
   });

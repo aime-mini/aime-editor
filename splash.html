@@ -15,14 +15,14 @@
       is the whole visible shape.
     -->
     <!--
-      Both greetings, fetched while this page parses.
-      Which one plays is a script decision - it depends on the saved language -
-      and waiting for the script to run before the fetch even starts is most of
-      what made the voice come in late. They are local files of ~180 KB, so
-      fetching the one that will not be used costs nothing worth counting.
+      The greetings are NOT preloaded any more.
+
+      They used to be, because the voice played on every launch and starting the
+      fetch before the script ran was most of what made it come in on time. The
+      voice is off unless somebody turns it on (Settings → Appearance), so two
+      180 KB files on every launch would be for a thing that mostly never
+      happens. The script fetches the one it needs, when it needs it.
     -->
-    <link rel="preload" as="audio" href="/splash/greeting-en.wav" />
-    <link rel="preload" as="audio" href="/splash/greeting-vi.wav" />
     <style>
       :root {
         --bg: rgba(22, 24, 29, 0.94);
@@ -56,11 +56,18 @@
         box-sizing: border-box;
       }
 
+      /*
+       * One centred column, and she is not part of it.
+       *
+       * She used to be a flex child taking 54% of the card at full height,
+       * which made the card about her; reported 2026-09-21 as too big and too
+       * sentimental. The card is about what this program is - so the words own
+       * the middle at every size, and she stands in the corner behind them.
+       */
       #card {
         position: relative;
-        display: flex;
-        align-items: center;
-        gap: 28px;
+        display: grid;
+        place-items: center;
         width: 100%;
         height: 100%;
         padding: 0 40px;
@@ -123,20 +130,35 @@
       #words {
         position: relative;
         z-index: 1;
-        flex: 1 1 auto;
-        min-width: 0;
+        max-width: 460px;
+        text-align: center;
       }
 
-      /* Each letter arrives on its own, left to right: the name being written. */
+      /*
+       * Each letter arrives on its own, and then a light runs across the name.
+       *
+       * The sweep is the part that has to be SEEN: a splash is on screen for
+       * about four seconds and an effect too polite to notice is an effect
+       * nobody was shown. The gradient is clipped to the glyphs, so it reads as
+       * light moving over the word rather than as a box behind it.
+       */
       #wordmark {
         margin: 0;
-        font-size: 54px;
+        font-size: 46px;
         font-weight: 600;
         letter-spacing: -0.02em;
         line-height: 1;
         display: flex;
+        justify-content: center;
+        background: linear-gradient(100deg, var(--text) 32%, #ffffff 44%, var(--accent) 52%, var(--text) 64%);
+        background-size: 280% 100%;
+        background-position: 100% 0;
+        -webkit-background-clip: text;
+        background-clip: text;
+        animation: sheen 3.2s 0.9s ease-in-out infinite;
       }
       #wordmark span {
+        color: transparent;
         opacity: 0;
         transform: translateY(14px);
         animation: rise 0.62s cubic-bezier(0.22, 1, 0.36, 1) forwards;
@@ -147,15 +169,56 @@
           transform: translateY(0);
         }
       }
+      @keyframes sheen {
+        0% {
+          background-position: 100% 0;
+        }
+        55%,
+        100% {
+          background-position: 0 0;
+        }
+      }
 
       #tagline {
-        margin: 10px 0 0;
-        font-size: 13px;
-        letter-spacing: 0.14em;
+        margin: 12px 0 0;
+        font-size: 12px;
+        letter-spacing: 0.22em;
         text-transform: uppercase;
         color: var(--muted);
         opacity: 0;
         animation: rise 0.7s 0.42s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      }
+
+      /*
+       * What this program is, in one sentence, word by word.
+       *
+       * The words are separate elements so they can arrive in order: the line
+       * assembling itself is the effect, and it is over before the card is.
+       */
+      #intro {
+        margin: 16px auto 0;
+        max-width: 420px;
+        font-size: 14px;
+        line-height: 1.55;
+        color: var(--text);
+      }
+      #intro span {
+        display: inline-block;
+        opacity: 0;
+        filter: blur(6px);
+        transform: translateY(8px);
+        animation: settle 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      }
+      #intro .accent {
+        color: var(--accent);
+        font-weight: 600;
+      }
+      @keyframes settle {
+        to {
+          opacity: 1;
+          filter: blur(0);
+          transform: translateY(0);
+        }
       }
 
       /*
@@ -165,7 +228,7 @@
        */
       #bar {
         position: relative;
-        margin-top: 26px;
+        margin: 26px auto 0;
         height: 2px;
         width: 190px;
         border-radius: 2px;
@@ -193,61 +256,53 @@
       }
 
       /*
-       * Where the Aime character goes.
+       * Where the Aime character goes: the bottom-right corner, small.
        *
-       * The card is laid out to look finished with or without her: the portrait
-       * is hidden until its file actually decodes, and `#card.has-portrait` is
-       * what moves the words off centre to make room. Drop the artwork at
-       * `public/splash/aime.webp` - an animated WebP with an alpha channel plays
-       * here on its own, which is how the character breathes without shipping a
-       * runtime to animate her.
+       * She was half the card at full height, beside the words. Reported
+       * 2026-09-21 - too big, too sentimental - and the fix is not a smaller
+       * number on the same layout: she is out of the flow entirely now, parked
+       * in the corner of the card behind the text, at a height the card sets
+       * and a hard ceiling in pixels so she cannot grow with the window. The
+       * words are centred whether she loads or not, so a missing file changes
+       * nothing about the composition.
+       *
+       * Drop the artwork at `public/splash/aime.webp` - an animated WebP with
+       * an alpha channel plays here on its own, which is how the character
+       * breathes without shipping a runtime to animate her.
        */
       #portrait {
-        position: relative;
-        z-index: 1;
+        position: absolute;
+        /* Behind the words rather than beside them, so the middle stays the
+           middle however narrow the window gets. */
+        z-index: 0;
+        /* Against the card's own edge, not in a margin of her own: asked for
+           2026-09-21, she reads as standing in the corner rather than placed
+           near it. */
+        right: 0;
+        bottom: 0;
         display: none;
-        height: 100%;
-        max-width: 54%;
+        height: 44%;
+        max-height: 156px;
+        width: auto;
         object-fit: contain;
         object-position: bottom right;
-        margin-bottom: -1px;
         opacity: 0;
-        animation: fade-in 0.9s 0.2s ease forwards;
+        transform: translateY(12px);
+        animation: arrive 0.9s 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards;
       }
       #card.has-portrait #portrait {
         display: block;
       }
-      #card.has-portrait #words {
-        flex: 0 1 auto;
-      }
-      /* She stands against the card's own right edge, not in a margin of her
-         own - and the padding that would hold her off it goes away with her. */
-      #card.has-portrait {
-        padding-right: 0;
-      }
-      #card.has-portrait #portrait {
-        margin-right: -10px;
-      }
       /* The hint moves out from under her. */
       #card.has-portrait #hint {
         right: auto;
-        left: 40px;
+        left: 18px;
       }
-      /*
-       * Until she is there, the card is one column and the words own the middle.
-       * Left-aligned against an empty right half looked like a portrait that had
-       * failed to load - which, measured on screen, is exactly what it was.
-       */
-      #card:not(.has-portrait) {
-        justify-content: center;
-        text-align: center;
-      }
-      #card:not(.has-portrait) #wordmark {
-        justify-content: center;
-      }
-      #card:not(.has-portrait) #bar {
-        margin-left: auto;
-        margin-right: auto;
+      @keyframes arrive {
+        to {
+          opacity: 0.92;
+          transform: none;
+        }
       }
       @keyframes fade-in {
         to {
@@ -269,15 +324,26 @@
       /* Asked for less motion: the card still arrives, it just stops moving. */
       @media (prefers-reduced-motion: reduce) {
         .glow,
+        #wordmark,
         #wordmark span,
         #tagline,
+        #intro span,
         #bar,
         #bar::after,
         #portrait,
         #hint {
           animation: none;
           opacity: 1;
+          filter: none;
           transform: none;
+        }
+        /* Without the sweep there is no gradient to read the letters out of. */
+        #wordmark {
+          background: none;
+          -webkit-text-fill-color: var(--text);
+        }
+        #wordmark span {
+          color: var(--text);
         }
       }
     </style>
@@ -290,6 +356,7 @@
         <div id="words">
           <h1 id="wordmark" aria-label="Aime"></h1>
           <p id="tagline">AI Mini Editor</p>
+          <p id="intro"></p>
           <div id="bar"></div>
         </div>
         <img id="portrait" alt="" />
@@ -309,12 +376,71 @@
        */
       const PORTRAIT = "/splash/aime.webp";
 
+      /** Where the app stores the chosen language - keep in step with src/i18n. */
+      const LOCALE_KEY = "aime.locale";
+      /** And its other preferences - keep in step with src/stores/settings.ts. */
+      const SETTINGS_KEY = "aime.settings";
+
+      /** The language the user chose, or English - the app's own default. */
+      function chosenLocale() {
+        try {
+          return localStorage.getItem(LOCALE_KEY) === "vi" ? "vi" : "en";
+        } catch {
+          // A locked-down profile can refuse storage; English is the default anyway.
+          return "en";
+        }
+      }
+
+      /** One stored preference, without a store to read it from. */
+      function setting(name) {
+        try {
+          return JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}")[name];
+        } catch {
+          return undefined;
+        }
+      }
+
+      const locale = chosenLocale();
+
       const wordmark = document.getElementById("wordmark");
       for (const [index, letter] of [..."Aime"].entries()) {
         const span = document.createElement("span");
         span.textContent = letter;
         span.style.animationDelay = `${index * LETTER_STAGGER_MS}ms`;
         wordmark.append(span);
+      }
+
+      /**
+       * What this program is, said in one sentence while it starts.
+       *
+       * Two languages and no i18n bundle - this window has none, and the whole
+       * point of it is to be on glass before a bundle could load. `*` marks the
+       * words the sentence turns on, which are drawn in the accent colour.
+       */
+      const INTRO = {
+        // What Aime actually is, in the project's own words (README, CLAUDE.md):
+        // a light editor layer over the AI CLIs a developer already has, rather
+        // than an agent of its own. A splash that oversells is a splash that
+        // gets read twice and believed once.
+        en: "A light desktop editor built on the *AI CLIs* you already have - they do the work, Aime gives them an editor.",
+        vi: "Editor desktop gọn nhẹ dựng trên chính *AI CLI* bạn đang dùng - chúng làm việc, Aime cho chúng một editor.",
+      };
+      /** Between one word of the sentence and the next. */
+      const WORD_STAGGER_MS = 46;
+      /** After the name and the tagline have had their moment. */
+      const INTRO_DELAY_MS = 620;
+
+      const intro = document.getElementById("intro");
+      for (const [index, word] of INTRO[locale].split(" ").entries()) {
+        const accented = word.includes("*");
+        const span = document.createElement("span");
+        span.textContent = word.replaceAll("*", "");
+        if (accented) span.className = "accent";
+        span.style.animationDelay = `${INTRO_DELAY_MS + index * WORD_STAGGER_MS}ms`;
+        intro.append(span);
+        // A space between the words, and it is a text node so a line can break
+        // there: the words themselves are inline-blocks and would not.
+        intro.append(document.createTextNode(" "));
       }
 
       // The portrait is optional, and a missing file must not leave a broken
@@ -325,7 +451,6 @@
       });
       portrait.addEventListener("error", () => {
         portrait.remove();
-        document.getElementById("hint").style.right = "18px";
       });
       portrait.src = PORTRAIT;
 
@@ -415,8 +540,6 @@
       /** A little above the voice's own pitch: friendlier, and still her. */
       const PITCH = 1.25;
       const RATE = 1.02;
-      /** Where the app stores the chosen language - keep in step with src/i18n. */
-      const LOCALE_KEY = "aime.locale";
       /**
        * How long to wait for the voice list, which arrives asynchronously.
        *
@@ -443,21 +566,9 @@
         return speaks[0] ?? null;
       }
 
-      /** The language the user chose, or English - the app's own default. */
-      function chosenLocale() {
-        try {
-          return localStorage.getItem(LOCALE_KEY) === "vi" ? "vi" : "en";
-        } catch {
-          // A locked-down profile can refuse storage; English is the default anyway.
-          return "en";
-        }
-      }
-
       const greeting = document.getElementById("greeting");
 
       async function greet() {
-        const locale = chosenLocale();
-
         try {
           /*
            * Hold the card for as long as there is sentence left, and keep saying
@@ -516,7 +627,20 @@
         speech.speak(utterance);
       }
 
-      void greet();
+      /**
+       * The voice is off unless it was asked for.
+       *
+       * Asked for 2026-09-21, and it is the right default for a thing that
+       * speaks: an editor that opens next to a colleague, in a meeting, or at
+       * night should be quiet by default and loud by choice. The choice lives
+       * in Settings → Appearance (`splashVoice`), and this window reads it out
+       * of storage because it has no bundle to read a store from.
+       *
+       * Nothing else about the card depends on it: with the voice off the
+       * splash simply keeps its own minimum time on screen instead of being
+       * held open for a sentence.
+       */
+      if (setting("splashVoice") === true) void greet();
 
       const skip = () => {
         // Whoever skips the greeting is skipping all of it, including the voice.

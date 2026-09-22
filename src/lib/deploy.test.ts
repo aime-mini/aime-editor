@@ -57,7 +57,7 @@ const survey: Survey = {
 
 describe("the survey prompt", () => {
   it("carries the inventory as the panel shows it, the tooling, and the CLI's grammar", () => {
-    const prompt = surveyPrompt({ inventory: [service], tooling: [] });
+    const prompt = surveyPrompt({ cloudId: "gcp", inventory: [service], tooling: [] });
     expect(prompt).toContain("run/Service  web  asia-southeast1  app=shop");
     expect(prompt).toContain(service.id);
     expect(prompt).toContain("docker is NOT installed");
@@ -67,7 +67,7 @@ describe("the survey prompt", () => {
   });
 
   it("says so when the project holds nothing", () => {
-    expect(surveyPrompt({ inventory: [], tooling: ["docker"] })).toContain(
+    expect(surveyPrompt({ cloudId: "gcp", inventory: [], tooling: ["docker"] })).toContain(
       "the project holds no resources yet",
     );
   });
@@ -80,8 +80,8 @@ describe("the survey prompt", () => {
    */
   it("names the two programs a step may run, and nothing else, in both prompts", () => {
     for (const prompt of [
-      surveyPrompt({ inventory: [], tooling: [] }),
-      planPrompt({ survey, answers: [], tooling: [], rejected: [] }),
+      surveyPrompt({ cloudId: "gcp", inventory: [], tooling: [] }),
+      planPrompt({ cloudId: "gcp", survey, answers: [], tooling: [], rejected: [], notes: [] }),
     ]) {
       expect(prompt).toContain("A step runs as `gcloud` unless it sets `program` to `kubectl`");
       // The ones a model reaches for when it has a shape neither can deploy.
@@ -96,9 +96,47 @@ describe("the survey prompt", () => {
   });
 });
 
+describe("the Azure prompts", () => {
+  it("speak `az`, and name the walls a subscription has that a project does not", () => {
+    const prompt = planPrompt({
+      cloudId: "azure",
+      survey,
+      answers: [],
+      tooling: [],
+      rejected: [],
+      notes: [],
+    });
+    expect(prompt).toContain("to Azure, to the subscription Aime targets");
+    expect(prompt).toContain("A step runs as `az` and nothing else");
+    // The two things that stop an Azure deploy before it starts.
+    expect(prompt).toContain("RESOURCE GROUP");
+    expect(prompt).toContain("provider register");
+    // And the flags Aime adds itself, which the checker refuses in a plan.
+    expect(prompt).toContain("`--subscription`");
+    expect(prompt).toContain("`--output json`");
+    // The example answer has to be in this cloud's own commands, or the model
+    // copies Google Cloud's.
+    expect(prompt).toContain('"args":["group","create"');
+    expect(prompt).toContain("defaultHostName");
+    expect(prompt).not.toContain("gcloud");
+  });
+
+  it("does not offer kubectl, which Aime will not run for this cloud", () => {
+    const prompt = surveyPrompt({ cloudId: "azure", inventory: [], tooling: [] });
+    expect(prompt).toContain("Never `kubectl`");
+    expect(prompt).toContain("the subscription holds no resources yet");
+  });
+
+  it("is refused for a cloud with no measured dialect", () => {
+    expect(() => surveyPrompt({ cloudId: "aws", inventory: [], tooling: [] })).toThrow("aws");
+  });
+});
+
 describe("the plan prompt", () => {
   it("names the keep rule, the read answers and what was refused last time", () => {
     const prompt = planPrompt({
+      cloudId: "gcp",
+      notes: [],
       survey,
       answers: [{ label: "gcloud run services describe", json: '{"spec":{}}', ok: true }],
       tooling: [],
@@ -309,10 +347,66 @@ describe("the settings promised to stay", () => {
   });
 });
 
+/**
+ * The confirm page is where someone first sees what would actually run, so it
+ * is where "not like that" belongs. The words go into the next plan; they
+ * never go onto a command line, and they never widen what Aime will run.
+ */
+describe("what the person asked for", () => {
+  it("carries every note into the plan, oldest first", () => {
+    const prompt = planPrompt({
+      cloudId: "azure",
+      survey,
+      answers: [],
+      tooling: [],
+      rejected: [],
+      notes: [
+        { asked: "use B1 instead of F1", answered: "Moved the plan to B1; it is about 13 USD a month." },
+        { asked: "put it in eastasia", answered: "" },
+      ],
+    });
+    expect(prompt).toContain("What the person asked for after reading your last plan");
+    expect(prompt.indexOf("use B1 instead of F1")).toBeLessThan(prompt.indexOf("put it in eastasia"));
+    // Its own last answer goes back with the question, or the second revision
+    // argues with itself about what it already agreed to.
+    expect(prompt).toContain("you answered: Moved the plan to B1");
+    expect(prompt).toContain("`reply`");
+  });
+
+  it("says a note cannot loosen a rule, so a refused command is not the answer to one", () => {
+    const prompt = planPrompt({
+      cloudId: "gcp",
+      survey,
+      answers: [],
+      tooling: [],
+      rejected: [],
+      notes: [{ asked: "just delete the old service first", answered: "" }],
+    });
+    expect(prompt).toContain("a request, not a permission");
+    expect(prompt).toContain("the nearest plan that is allowed");
+  });
+
+  it("says nothing about notes when there are none", () => {
+    const prompt = planPrompt({
+      cloudId: "gcp",
+      survey,
+      answers: [],
+      tooling: [],
+      rejected: [],
+      notes: [],
+    });
+    expect(prompt).not.toContain("What the person asked for");
+  });
+});
+
 describe("the lines a person reads", () => {
   it("pins the project and the account after the plan's own arguments", () => {
     expect(
-      commandLine({ label: "Deploy", args: ["run", "deploy", "web", "--source", "."], changes: "" }, account),
+      commandLine(
+        "gcp",
+        { label: "Deploy", args: ["run", "deploy", "web", "--source", "."], changes: "" },
+        account,
+      ),
     ).toBe("gcloud run deploy web --source . --project my-project --account dev@example.com");
   });
 
@@ -322,6 +416,7 @@ describe("the lines a person reads", () => {
     // way of being told, and `kubectl` refuses them.
     expect(
       commandLine(
+        "gcp",
         {
           label: "Apply the manifests",
           args: ["apply", "--filename", "k8s/"],
@@ -333,16 +428,104 @@ describe("the lines a person reads", () => {
     ).toBe("kubectl apply --filename k8s/");
     // An empty program is the cloud's own, which is how every plan written
     // before this field existed reads.
-    expect(commandLine({ label: "d", args: ["run", "deploy"], changes: "", program: "" }, account)).toBe(
-      "gcloud run deploy --project my-project --account dev@example.com",
-    );
+    expect(
+      commandLine("gcp", { label: "d", args: ["run", "deploy"], changes: "", program: "" }, account),
+    ).toBe("gcloud run deploy --project my-project --account dev@example.com");
+  });
+
+  /**
+   * Azure's own scope and JSON flags: `az` takes `--subscription` and has no
+   * account flag at all, and asks for JSON with `--output`. Getting this wrong
+   * is not a cosmetic slip - the line here is the line Aime runs.
+   */
+  it("pins an Azure step to the subscription, and to nothing else", () => {
+    const azureAccount = { ...account, id: "1b3e09f3-1a77-441b-aeca-3488d1efac95" };
+    expect(
+      commandLine(
+        "azure",
+        { label: "Deploy", args: ["webapp", "up", "--name", "web", "--sku", "F1"], changes: "" },
+        azureAccount,
+      ),
+    ).toBe("az webapp up --name web --sku F1 --subscription 1b3e09f3-1a77-441b-aeca-3488d1efac95");
+    expect(
+      readLine(
+        "azure",
+        { purpose: "overview", label: "show", args: ["webapp", "show", "--name", "web"] },
+        azureAccount,
+      ),
+    ).toBe("az webapp show --name web --subscription 1b3e09f3-1a77-441b-aeca-3488d1efac95 --output json");
   });
 
   it("adds the JSON format to a read, and quotes what needs it", () => {
     expect(
-      readLine({ purpose: "overview", label: "d", args: ["run", "services", "describe", "my web"] }, account),
+      readLine(
+        "gcp",
+        { purpose: "overview", label: "d", args: ["run", "services", "describe", "my web"] },
+        account,
+      ),
     ).toBe(
       'gcloud run services describe "my web" --project my-project --account dev@example.com --format json',
     );
+  });
+});
+
+describe("a plan for a cloud whose reads answer no address", () => {
+  /**
+   * The bug this catches cost a whole deploy run: the plan was good, its
+   * `urlPath` was empty because Aime builds the address on that cloud, and the
+   * parser threw the plan away - so the page said nothing could prove the
+   * deployment and refused to run it.
+   */
+  it("keeps a prove with no path into the answer, where Aime builds the address", () => {
+    const answered = JSON.stringify({
+      summary: "deploy the function",
+      steps: [{ label: "deploy", args: ["functions", "deploy", "hello"], changes: "the function" }],
+      keep: [],
+      files: [],
+      prove: {
+        read: { purpose: "overview", label: "supabase functions list", args: ["functions", "list"] },
+        urlPath: "",
+        path: "/hello",
+        expect: 200,
+      },
+    });
+    expect(parsePlan(answered, false)?.prove?.path).toBe("/hello");
+    // And on a cloud whose read DOES answer the address, an empty path into
+    // that answer is still a plan Aime cannot prove.
+    expect(parsePlan(answered)?.prove).toBeNull();
+  });
+
+  /**
+   * The first real Supabase deploy stopped here, 2026-09-21: asked for a read
+   * that answers the URL, the AI wrote `prove: null` - which was the honest
+   * answer, since no Supabase read answers one - and Aime refuses to run what
+   * it cannot prove. The address of an Edge Function follows from the project
+   * ref, so the prompt now asks for the part the AI knows and says Aime builds
+   * the rest.
+   */
+  it("asks for a proof it can actually write", () => {
+    const supabase = planPrompt({
+      cloudId: "supabase",
+      survey,
+      answers: [],
+      tooling: [],
+      rejected: [],
+      notes: [],
+    });
+    expect(supabase).toContain("No read on this cloud answers an address");
+    expect(supabase).toContain("https://<account>.supabase.co/functions/v1");
+    expect(supabase).toContain("`prove` is never null");
+
+    // The clouds whose reads DO answer one keep the instruction they had.
+    const gcp = planPrompt({
+      cloudId: "gcp",
+      survey,
+      answers: [],
+      tooling: [],
+      rejected: [],
+      notes: [],
+    });
+    expect(gcp).toContain("the read that answers the deployed URL");
+    expect(gcp).not.toContain("Aime builds one itself");
   });
 });

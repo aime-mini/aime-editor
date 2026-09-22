@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   Check,
@@ -6,14 +6,17 @@ import {
   ExternalLink,
   FileText,
   Loader2,
+  MessageSquare,
   Rocket,
   ShieldCheck,
+  Sparkles,
   TriangleAlert,
   X,
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useT } from "../i18n";
-import { commandLine, readLine, type DeployPlan, type Survey } from "../lib/deploy";
+import { commandLine, readLine, type DeployNote, type DeployPlan, type Survey } from "../lib/deploy";
+import { recipeOf } from "../lib/deployDialect";
 import { shortKind } from "../lib/cloudIcons";
 import { billingOff } from "../lib/cloudErrors";
 import { BillingOffNote } from "./CloudBilling";
@@ -33,9 +36,9 @@ import { CopyButton, Note } from "./CloudDetail";
 export function DeployPane({ slot }: { slot: string }) {
   const t = useT();
   const deploy = useDeploy((s) => s.slots[slot]);
-  const { close, cancel, confirm, dismiss, start } = useDeploy();
+  const { close, cancel, confirm, dismiss, start, revise } = useDeploy();
   if (deploy === undefined) return null;
-  const { stage, account, cloudId, log } = deploy;
+  const { stage, account, cloudId, log, notes } = deploy;
   const live = stage.kind !== "confirm" && stage.kind !== "done" && stage.kind !== "blocked";
   // A deploy stopped for want of a billing account is not a failed deploy: it
   // is a wall with one command on the other side (`lib/cloudErrors.ts`).
@@ -50,7 +53,7 @@ export function DeployPane({ slot }: { slot: string }) {
             {t("deploy.title", { account: account.label })}
           </h2>
           <p className="truncate text-[11px] text-muted">
-            {t("deploy.project")} <span className="font-mono">{account.id}</span>
+            {t(recipeOf(cloudId).scopeLabel)} <span className="font-mono">{account.id}</span>
             {account.owner !== "" && (
               <>
                 {" "}
@@ -89,8 +92,10 @@ export function DeployPane({ slot }: { slot: string }) {
             account={account}
             survey={stage.survey}
             plan={stage.plan}
+            notes={notes}
             onGo={() => void confirm(slot)}
             onCancel={() => void cancel(slot)}
+            onRevise={(note) => void revise(slot, note)}
           />
         )}
 
@@ -166,15 +171,19 @@ function Confirm({
   account,
   survey,
   plan,
+  notes,
   onGo,
   onCancel,
+  onRevise,
 }: {
   cloudId: string;
   account: CloudAccount;
   survey: Survey;
   plan: DeployPlan;
+  notes: DeployNote[];
   onGo: () => void;
   onCancel: () => void;
+  onRevise: (note: string) => void;
 }) {
   const t = useT();
   const resources = useCloud((s) => s.resources[slotOf(cloudId, account.id)]);
@@ -199,7 +208,7 @@ function Confirm({
           {t("deploy.app", { name: survey.app.name, kind: survey.app.kind, stack: survey.app.stack })}
         </p>
         <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-[12px]">
-          <dt className="text-muted">{t("deploy.project")}</dt>
+          <dt className="text-muted">{t(recipeOf(cloudId).scopeLabel)}</dt>
           <dd className="font-mono">
             {account.id}
             {account.owner !== "" && <span className="text-muted"> · {account.owner}</span>}
@@ -264,7 +273,7 @@ function Confirm({
                 <span className="text-muted">{index + 1}.</span> {step.label}
                 {step.changes !== "" && <span className="text-muted"> - {step.changes}</span>}
               </p>
-              <Command text={commandLine(step, account)} />
+              <Command text={commandLine(cloudId, step, account)} />
             </li>
           ))}
         </ol>
@@ -279,7 +288,7 @@ function Confirm({
               expect: plan.prove.expect,
             })}
           </p>
-          <Command text={readLine(plan.prove.read, account)} />
+          <Command text={readLine(cloudId, plan.prove.read, account)} />
         </Section>
       )}
 
@@ -292,6 +301,8 @@ function Confirm({
           </ul>
         </Section>
       )}
+
+      <Revise notes={notes} onRevise={onRevise} />
 
       <div className="flex items-center gap-2 border-t border-line pt-4">
         <button
@@ -308,6 +319,78 @@ function Confirm({
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * Where a person answers the plan, and is answered back.
+ *
+ * The confirm page is the first place anyone sees what would actually run, so
+ * it is where "not like that" belongs. A note does not run anything: it goes
+ * into the next plan, the AI's reply to it lands underneath it, and that plan
+ * waits at this same page until the person is satisfied. The whole exchange
+ * stays on screen, because the third plan still honours the first request and
+ * a person should be able to read why.
+ */
+function Revise({ notes, onRevise }: { notes: DeployNote[]; onRevise: (note: string) => void }) {
+  const t = useT();
+  const [note, setNote] = useState("");
+  const send = () => {
+    const asked = note.trim();
+    if (asked === "") return;
+    setNote("");
+    onRevise(asked);
+  };
+
+  return (
+    <Section title={t("deploy.reviseTitle")} hint={t("deploy.reviseHint")}>
+      {notes.length > 0 && (
+        <ul className="mb-2 space-y-2 text-[12px]">
+          {notes.map((exchange, index) => (
+            <li key={`${String(index)}-${exchange.asked}`} className="space-y-1">
+              <p className="flex items-baseline gap-2 text-muted">
+                <MessageSquare size={12} className="mt-0.5 shrink-0" />
+                <span>{exchange.asked}</span>
+              </p>
+              {/* The answer under the question that earned it. A request that
+                  came back as a silently different plan was the complaint:
+                  whether it had been heard, refused or worked around had to be
+                  found by comparing two plans. */}
+              {exchange.answered !== "" && (
+                <p className="flex items-baseline gap-2 pl-5 text-fg">
+                  <Sparkles size={12} className="mt-0.5 shrink-0 text-accent" />
+                  <span>{exchange.answered}</span>
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex items-start gap-2">
+        <textarea
+          value={note}
+          onChange={(event) => {
+            setNote(event.target.value);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              send();
+            }
+          }}
+          rows={2}
+          placeholder={t("deploy.revisePlaceholder")}
+          className="min-w-0 flex-1 resize-y rounded border border-line bg-bg px-2 py-1.5 text-[12px] outline-none focus:border-accent"
+        />
+        <button
+          onClick={send}
+          disabled={note.trim() === ""}
+          className="shrink-0 rounded border border-accent px-2.5 py-1.5 text-[12px] text-accent hover:bg-accent-soft disabled:opacity-40"
+        >
+          {t("deploy.reviseSend")}
+        </button>
+      </div>
+    </Section>
   );
 }
 

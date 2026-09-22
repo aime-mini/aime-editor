@@ -18,6 +18,7 @@ import {
   urlIn,
   TOOLING_TO_REPORT,
   type CheckedPlan,
+  type DeployNote,
   type DeployPlan,
   type DeployStep,
   type Probe,
@@ -25,6 +26,7 @@ import {
   type Rejected,
   type Survey,
 } from "../lib/deploy";
+import { recipeOf } from "../lib/deployDialect";
 import type { PlannedRead } from "../lib/cloudReads";
 import { allOutput, execCancel, type CommandOutcome } from "../lib/exec";
 import { formatProviderError } from "../lib/providerErrors";
@@ -55,7 +57,14 @@ export interface StepRun {
 export type DeployStage =
   | { kind: "surveying" }
   | { kind: "planning" }
-  | { kind: "confirm"; survey: Survey; plan: DeployPlan }
+  /**
+   * Waiting for the person - and holding what a revision needs.
+   *
+   * `answers` and `tooling` were read before the plan was written, and asking
+   * for them again would cost the same CLI calls to learn the same thing. A
+   * revision re-runs the PLAN step only.
+   */
+  | { kind: "confirm"; survey: Survey; plan: DeployPlan; answers: ReadAnswer[]; tooling: string[] }
   | { kind: "deploying"; plan: DeployPlan; steps: StepRun[] }
   | { kind: "proving"; plan: DeployPlan; steps: StepRun[]; url: string }
   | { kind: "done"; plan: DeployPlan; steps: StepRun[]; url: string; probe: Probe; kept: number }
@@ -66,6 +75,11 @@ export interface DeploySlot {
   account: CloudAccount;
   stage: DeployStage;
   log: DeployLogLine[];
+  /**
+   * The exchange at the confirm page, oldest first: what the person asked and
+   * what Aime answered. Every plan since carries all of it.
+   */
+  notes: DeployNote[];
 }
 
 interface DeployState {
@@ -77,6 +91,12 @@ interface DeployState {
   start: (cloudId: string, account: CloudAccount) => Promise<void>;
   /** The person agreed to the plan: write the files, run the steps, prove it. */
   confirm: (slot: string) => Promise<void>;
+  /**
+   * The person wants the plan changed: the note joins the others and the AI
+   * writes the plan again from the same survey. Nothing has run at this point
+   * and nothing runs now - the new plan waits at the same page.
+   */
+  revise: (slot: string, note: string) => Promise<void>;
   /** Stops whatever the slot has in flight. */
   cancel: (slot: string) => Promise<void>;
   /** Puts the account's resources back in front; a running deploy carries on. */
@@ -121,7 +141,10 @@ export const useDeploy = create<DeployState>((set, get) => ({
     engines.set(slot, { inFlight: null, cancelled: false });
     set((state) => ({
       open: slot,
-      slots: { ...state.slots, [slot]: { cloudId, account, stage: { kind: "surveying" }, log: [] } },
+      slots: {
+        ...state.slots,
+        [slot]: { cloudId, account, stage: { kind: "surveying" }, log: [], notes: [] },
+      },
     }));
     const ops = opsFor(slot, set, get);
     try {
@@ -146,6 +169,38 @@ export const useDeploy = create<DeployState>((set, get) => ({
         steps: [],
         reason: formatProviderError(error),
       });
+    }
+  },
+
+  revise: async (slot, note) => {
+    const current = get().slots[slot];
+    const asked = note.trim();
+    if (current?.stage.kind !== "confirm" || asked === "") return;
+    const { survey, answers, tooling } = current.stage;
+    engines.set(slot, { inFlight: null, cancelled: false });
+    set((state) => {
+      const slots = state.slots[slot];
+      return slots === undefined
+        ? {}
+        : {
+            slots: {
+              ...state.slots,
+              // Asked now, answered when the next plan comes back: the page
+              // shows the question the moment it is sent, so nobody wonders
+              // whether it went anywhere.
+              [slot]: { ...slots, notes: [...slots.notes, { asked, answered: "" }] },
+            },
+          };
+    });
+    const ops = opsFor(slot, set, get);
+    // In the log as the person's own line, because the plan that comes back is
+    // only readable next to what was asked for.
+    ops.note(translate("deploy.asked", { note: asked }));
+    try {
+      await writePlan(ops, { survey, answers, tooling });
+    } catch (error: unknown) {
+      ops.problem(formatProviderError(error));
+      ops.stage({ kind: "blocked", plan: null, steps: [], reason: formatProviderError(error) });
     }
   },
 
@@ -194,6 +249,8 @@ interface Ops {
   note: (text: string) => void;
   output: (text: string) => void;
   problem: (text: string) => void;
+  /** The AI's answer to the last thing the person asked, against that question. */
+  answer: (text: string) => void;
   engine: Engine;
   /** Read through a call, because Stop flips it between two awaits and a narrowed field would not see that. */
   cancelled: () => boolean;
@@ -222,6 +279,15 @@ function opsFor(slot: string, set: Set, get: Get): Ops {
     note: line("note"),
     output: line("output"),
     problem: line("problem"),
+    answer: (text) => {
+      const said = text.trim();
+      if (said === "") return;
+      patch((current) => {
+        const last = current.notes.at(-1);
+        if (last === undefined) return {};
+        return { notes: [...current.notes.slice(0, -1), { ...last, answered: said }] };
+      });
+    },
     engine: engineFor(slot),
     cancelled: () => engineFor(slot).cancelled,
   };
@@ -239,7 +305,12 @@ async function survey(ops: Ops): Promise<void> {
   const tooling = await invoke<string[]>("programs_present", { names: TOOLING_TO_REPORT });
 
   ops.note(translate("deploy.readingRepo"));
-  const survey = await askUntilReadable(ops, root, surveyPrompt({ inventory, tooling }), parseSurvey);
+  const survey = await askUntilReadable(
+    ops,
+    root,
+    surveyPrompt({ cloudId, inventory, tooling }),
+    parseSurvey,
+  );
   if (survey === null) return;
   ops.note(
     translate("deploy.surveyed", {
@@ -249,15 +320,36 @@ async function survey(ops: Ops): Promise<void> {
   );
 
   const answers = await readAll(ops, survey.inspect);
+  await writePlan(ops, { survey, answers, tooling });
+}
+
+/**
+ * Step two on its own: the AI writes the plan, Aime checks it, the pane waits.
+ *
+ * Separate from the survey because it runs twice: once after the repository is
+ * read, and again each time the person asks for something different. The
+ * survey and the reads are not asked for a second time - they would answer the
+ * same thing at the same cost.
+ */
+async function writePlan(
+  ops: Ops,
+  input: { survey: Survey; answers: ReadAnswer[]; tooling: string[] },
+): Promise<void> {
+  const { survey, answers, tooling } = input;
+  const { cloudId } = ops.slot();
+  const root = projectRoot();
 
   ops.stage({ kind: "planning" });
   let rejected: Rejected[] = [];
   for (let attempt = 1; attempt <= MAX_REJECTIONS; attempt += 1) {
+    const notes = ops.slot().notes;
     const plan = await askUntilReadable(
       ops,
       root,
-      planPrompt({ survey, answers, tooling, rejected }),
-      parsePlan,
+      planPrompt({ cloudId, survey, answers, tooling, rejected, notes }),
+      // Where Aime builds the address itself, a plan needs no path into a
+      // read's answer - see `asProve`.
+      (reply) => parsePlan(reply, recipeOf(cloudId).endpoint === undefined),
     );
     if (plan === null) return;
     const checked = await check(ops, plan, plan.steps, plan.keep, plan.prove);
@@ -267,7 +359,10 @@ async function survey(ops: Ops): Promise<void> {
         blocked(ops, usable, [], translate("deploy.noProof"));
         return;
       }
-      ops.stage({ kind: "confirm", survey, plan: usable });
+      // The answer lands against the question that prompted it, so the page
+      // reads as an exchange rather than as a plan that silently changed.
+      ops.answer(usable.reply);
+      ops.stage({ kind: "confirm", survey, plan: usable, answers, tooling });
       return;
     }
     rejected = checked.rejected;
@@ -301,7 +396,7 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
 
   if (plan.files.length > 0) {
     ops.note(translate("deploy.writingFiles", { count: plan.files.length }));
-    const written = await turn(ops, root, filesPrompt(plan.files, plan), "edits");
+    const written = await turn(ops, root, filesPrompt(cloudId, plan.files, plan), "edits");
     if (written === null) return;
   }
 
@@ -328,7 +423,11 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
       }
       ran.push({ step, state: "failed" });
       ops.problem(translate("deploy.stepFailed", { label: step.label, code: String(outcome.code ?? "-") }));
-      failed = { label: step.label, command: commandLine(step, account), output: allOutput(outcome) };
+      failed = {
+        label: step.label,
+        command: commandLine(cloudId, step, account),
+        output: allOutput(outcome),
+      };
       break;
     }
 
@@ -410,13 +509,23 @@ type Verdict =
 
 /** Asks the deployed service, the way the plan said to. */
 async function prove(ops: Ops, plan: DeployPlan, steps: StepRun[]): Promise<Verdict> {
-  const { account } = ops.slot();
+  const { cloudId, account } = ops.slot();
   const proveRead = plan.prove;
   if (proveRead === null) {
     return { kind: "failed", failed: { label: "prove", command: "", output: translate("deploy.noProof") } };
   }
   const [answer] = await readAll(ops, [proveRead.read]);
-  const url = answer.ok ? urlIn(answer.json, proveRead.urlPath, proveRead.scheme) : null;
+  // Most clouds answer their own address, and the read is where it comes from.
+  // Supabase does not: an Edge Function's URL follows from the project ref and
+  // is in no listing, so the recipe carries the shape and Aime fills in the
+  // account - never the plan, which could then point a request anywhere. The
+  // read still has to succeed: it is what says the thing is really there.
+  const endpoint = recipeOf(cloudId).endpoint;
+  const url = !answer.ok
+    ? null
+    : endpoint !== undefined
+      ? endpoint.replace("<account>", account.id)
+      : urlIn(answer.json, proveRead.urlPath, proveRead.scheme);
   if (url === null) {
     const output = answer.ok
       ? translate("deploy.noUrl", { label: proveRead.read.label, path: proveRead.urlPath })
@@ -424,10 +533,15 @@ async function prove(ops: Ops, plan: DeployPlan, steps: StepRun[]): Promise<Verd
     ops.problem(output);
     return {
       kind: "failed",
-      failed: { label: proveRead.read.label, command: readLine(proveRead.read, account), output },
+      failed: { label: proveRead.read.label, command: readLine(cloudId, proveRead.read, account), output },
     };
   }
-  const target = new URL(proveRead.path, url).toString();
+  // An address a read answered is a service's root, so the path REPLACES
+  // whatever path it came with. An address Aime built is a prefix and the path
+  // goes after it: measured 2026-09-21, `new URL("/aime/healthz",
+  // "https://…supabase.co/functions/v1")` is `https://…supabase.co/aime/healthz`,
+  // which answered 401 while the function itself answered 200.
+  const target = endpoint === undefined ? new URL(proveRead.path, url).toString() : `${url}${proveRead.path}`;
   ops.stage({ kind: "proving", plan, steps, url: target });
   ops.note(translate("deploy.proving", { url: target }));
   let probe: Probe;
@@ -448,7 +562,10 @@ async function prove(ops: Ops, plan: DeployPlan, steps: StepRun[]): Promise<Verd
   // other path answer 200. Reporting that as a failed deploy would have sent
   // somebody hunting a service that was already serving, so the root is asked
   // before any verdict is given.
-  const root = await answersAtRoot(url);
+  // Only where the address IS the service's root: `https://<ref>.supabase.co/`
+  // is the project's gateway, not the function that was just deployed, and
+  // what it answers says nothing about whether the deploy worked.
+  const root = endpoint === undefined ? await answersAtRoot(url) : null;
   const serving = root !== null && root >= 200 && root < 400;
   const output = [
     translate("deploy.probeWrong", { status: probe.status, expect: proveRead.expect }),
@@ -491,10 +608,16 @@ async function askFix(
   failed: { label: string; command: string; output: string },
   remaining: DeployStep[],
 ): Promise<DeployStep[] | null> {
+  const { cloudId } = ops.slot();
   let answers: ReadAnswer[] = [];
   let rejected: Rejected[] = [];
   for (let round = 1; round <= MAX_REJECTIONS + 1; round += 1) {
-    const reply = await turn(ops, root, fixPrompt({ plan, failed, remaining, answers, rejected }), "edits");
+    const reply = await turn(
+      ops,
+      root,
+      fixPrompt({ cloudId, plan, failed, remaining, answers, rejected }),
+      "edits",
+    );
     if (reply === null) return null;
     const revision = parseRevision(reply);
     if (revision === null) {
@@ -532,6 +655,10 @@ function check(
     cloudId: ops.slot().cloudId,
     existing: plan.target.existing,
     plan: { steps, keep, prove },
+    // This is a deployment, not work on a resource: it may run the commands
+    // that put a repository into the cloud, and the CLI may keep a project in
+    // that repository (`cloud/dialect.rs`, `deployOpens`).
+    deploying: true,
   });
 }
 
@@ -545,7 +672,7 @@ async function runStep(
   cwd: string,
 ): Promise<CommandOutcome | null> {
   const id = `deploy-${slotOf(cloudId, account.id)}-${String(Date.now())}`;
-  ops.note(translate("deploy.running", { command: commandLine(step, account) }));
+  ops.note(translate("deploy.running", { command: commandLine(cloudId, step, account) }));
   // Listen before the command starts: its first line can arrive before the
   // invoke promise settles, and a listener registered afterwards missed it.
   const off = await listen<{ id: string; line: string }>("exec:output", ({ payload }) => {
@@ -555,7 +682,7 @@ async function runStep(
   try {
     const outcome = await invoke<CommandOutcome>("cloud_deploy_step", {
       id,
-      request: { cloudId, account, existing, step, cwd },
+      request: { cloudId, account, existing, step, cwd, deploying: true },
     });
     if (outcome.cancelled || ops.cancelled()) {
       blocked(ops, null, [], translate("deploy.cancelled"));
@@ -573,7 +700,7 @@ async function readAll(ops: Ops, reads: PlannedRead[]): Promise<ReadAnswer[]> {
   const { cloudId, account } = ops.slot();
   const answers: ReadAnswer[] = [];
   for (const read of reads) {
-    ops.note(translate("deploy.runningRead", { command: readLine(read, account) }));
+    ops.note(translate("deploy.runningRead", { command: readLine(cloudId, read, account) }));
     try {
       const json = await invoke<string>("cloud_deploy_read", { cloudId, account, read });
       answers.push({ label: read.label, json, ok: true });

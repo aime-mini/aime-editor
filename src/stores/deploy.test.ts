@@ -66,6 +66,7 @@ const SURVEY = JSON.stringify({
 
 const PLAN = JSON.stringify({
   summary: "Deploy shop to the existing Cloud Run service web",
+  reply: "Moved it to the cheaper tier; the service keeps every setting it has.",
   target: { existing: true, resourceId: service.id, region: "asia-southeast1" },
   proposal: null,
   keep: [
@@ -241,6 +242,63 @@ describe("planning", () => {
     expect(useDeploy.getState().open).toBe(SLOT);
     // Nothing ran: no step, no file, no probe.
     expect(commands).not.toContain("cloud_deploy_step");
+  });
+
+  /**
+   * The confirm page is where a person first sees what would run, so it is
+   * where they get to say "not like that". A revision is the PLAN step again
+   * and nothing else: surveying the repository and re-reading the resources
+   * would cost the same calls to learn the same things.
+   */
+  it("plans again from the person's own words, without surveying twice", async () => {
+    replies = [SURVEY, PLAN, PLAN];
+    await planned();
+    const before = calls.length;
+
+    await useDeploy.getState().revise(SLOT, "  use the cheaper tier  ");
+
+    expect(stage().kind).toBe("confirm");
+    // One more turn - the plan - and not a second survey or another read.
+    expect(turns).toHaveLength(3);
+    expect(turns[2].prompt).toContain("use the cheaper tier");
+    expect(turns[2].prompt).toContain("What the person asked for");
+    expect(calls.slice(before).map((call) => call.command)).toEqual(["cloud_check_deploy"]);
+    // The note is kept, trimmed, shown in the log in the person's words - and
+    // the plan's answer is filed against it, so the page is an exchange and
+    // not a plan that quietly changed.
+    expect(useDeploy.getState().slots[SLOT]?.notes).toEqual([
+      {
+        asked: "use the cheaper tier",
+        answered: "Moved it to the cheaper tier; the service keeps every setting it has.",
+      },
+    ]);
+    expect(log("note")).toContain("You asked: use the cheaper tier");
+  });
+
+  it("carries every earlier note into the next plan", async () => {
+    replies = [SURVEY, PLAN, PLAN, PLAN];
+    await planned();
+    await useDeploy.getState().revise(SLOT, "use the cheaper tier");
+    await useDeploy.getState().revise(SLOT, "and put it in eastasia");
+
+    expect(useDeploy.getState().slots[SLOT]?.notes.map((note) => note.asked)).toEqual([
+      "use the cheaper tier",
+      "and put it in eastasia",
+    ]);
+    // Every one of them answered, oldest first.
+    expect(useDeploy.getState().slots[SLOT]?.notes.every((note) => note.answered !== "")).toBe(true);
+    expect(turns[3].prompt).toContain("use the cheaper tier");
+    expect(turns[3].prompt).toContain("and put it in eastasia");
+  });
+
+  it("ignores an empty note, and one sent when there is no plan to change", async () => {
+    replies = [SURVEY, PLAN];
+    await planned();
+    await useDeploy.getState().revise(SLOT, "   ");
+    expect(turns).toHaveLength(2);
+
+    await useDeploy.getState().revise("no-such-slot", "change it");
+    expect(turns).toHaveLength(2);
   });
 
   it("asks once more with the refusal when the check refuses a step", async () => {

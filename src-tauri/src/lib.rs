@@ -84,6 +84,7 @@ pub fn run() {
             cloud::reads::cloud_store_plan,
             cloud::reads::cloud_run_read,
             cloud::reads::cloud_read_catalog,
+            cloud::reads::cloud_cli_commands,
             cloud::sign_in::cloud_sign_in,
             cloud::sign_in::cloud_sign_in_code,
             cloud::sign_in::cloud_sign_in_cancel,

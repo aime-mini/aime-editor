@@ -354,6 +354,14 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               onChange={setLocale}
             />
           </Row>
+          <Row label={t("settings.splashVoice")} hint={t("settings.splashVoiceHint")}>
+            <Toggle
+              on={settings.splashVoice}
+              onChange={(splashVoice) => {
+                settings.update({ splashVoice });
+              }}
+            />
+          </Row>
 
           <p className={section}>
             <Eye size={12} /> {t("settings.editor")}

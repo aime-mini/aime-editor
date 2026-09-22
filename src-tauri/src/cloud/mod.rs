@@ -19,8 +19,10 @@
 //! answers "not signed in" is worse than one that says nothing.
 
 mod bq;
+mod completions;
 pub mod credentials;
 pub mod deploy;
+mod dialect;
 mod gcp;
 mod k8s;
 pub mod reads;
@@ -87,7 +89,20 @@ struct Cloud {
 /// version bump should be a commit somebody reviewed. Measured 2026-09-02
 /// against the real release: all six platform archives exist under stable,
 /// unversioned names, and the Windows one holds `supabase.exe` at its root.
-const SUPABASE_VERSION: &str = "v2.116.0";
+///
+/// Moved from 2.116.0 to 2.117.0 on 2026-09-21, and reviewed the way a pin
+/// should be: both binaries were run side by side against the same account,
+/// and every surface this backend reads is byte-identical - the top-level and
+/// per-group help, the `USAGE` lines, the exit code of a misspelt subcommand,
+/// and the JSON of `orgs list` and `projects list`. The single difference is
+/// that 2.117.0 restored the space between a long subcommand name and its
+/// description in `SUBCOMMANDS`, which `reads.rs` parses either way and has a
+/// captured fixture for in both spellings.
+///
+/// A copy already on disk is left alone: nothing in Aime re-fetches a pinned
+/// tool when its pin moves - not a language server, not a debug adapter, not
+/// this - so a bump reaches the next install and not the last one.
+const SUPABASE_VERSION: &str = "v2.117.0";
 
 /// The release Aime fetches for one cloud, when it fetches one at all.
 ///
@@ -955,9 +970,32 @@ pub(crate) async fn read_cli_output(command: &str, args: &[&str]) -> Result<Stri
 /// `AWS_PAGER` is emptied for the reason `probe` gives; `gcloud` asks questions
 /// at its prompt - enable this API?, take this survey? - and with prompts
 /// disabled it takes the default and says what it did on stderr instead.
+///
+/// `az` asks one of its own, and it is the worst shape there is: a command
+/// belonging to an extension that is not installed prints *The command
+/// requires the extension X. Do you want to install it now? (Y/n)* and waits.
+/// Measured 2026-09-17 on az 2.90.0 with `az datafactory list`: with stdin at
+/// EOF it does not fall back to a default but dies with a traceback, and on a
+/// pipe that stays open - which is what Aime gives a child - it would simply
+/// wait for ever. Set to `no`, the same command is refused in the CLI's own
+/// words, which a plan can be rewritten against. Installing an extension is a
+/// change to the person's CLI, so it stays their decision rather than a side
+/// effect of a deploy.
+///
+/// The Supabase CLI says nothing at a prompt but talks over its own answers:
+/// measured 2026-09-21 on 2.116.0, it writes *A new version of Supabase CLI is
+/// available: v2.117.0* and a second line of advice to **stderr** - the stream
+/// an operation streams to the panel, and the one `read_cli_checked` hands back
+/// as the failure message. So an error a person read would have carried an
+/// upgrade notice glued under it. Aime pins the release it measured
+/// (`SUPABASE_VERSION`), which makes the notice both noise and permanent; the
+/// CLI's own name for turning it off is in its binary, and it works
+/// (`SUPABASE_NO_UPDATE_NOTIFIER=1` → stderr empty, stdout unchanged).
 pub(super) fn quiet(cmd: &mut tokio::process::Command) {
     cmd.env("AWS_PAGER", "");
     cmd.env("CLOUDSDK_CORE_DISABLE_PROMPTS", "1");
+    cmd.env("AZURE_EXTENSION_USE_DYNAMIC_INSTALL", "no");
+    cmd.env("SUPABASE_NO_UPDATE_NOTIFIER", "1");
 }
 
 pub(crate) async fn read_cli_checked(command: &str, args: &[&str]) -> Result<String, CliFailure> {
@@ -1227,5 +1265,35 @@ mod tests {
     fn every_cloud_the_user_asked_for_has_a_row() {
         let ids: Vec<&str> = CLOUDS.iter().map(|cloud| cloud.id).collect();
         assert_eq!(ids, vec!["azure", "aws", "gcp", "supabase"]);
+    }
+
+    /// Every CLI Aime spawns is spawned through `quiet`, so what it silences is
+    /// silenced everywhere - a read, a step, a probe - rather than at the one
+    /// call site somebody remembered.
+    #[test]
+    fn a_spawned_cli_is_told_not_to_prompt_and_not_to_chat() {
+        let mut command = cli_command("supabase", ["orgs", "list"]);
+        quiet(&mut command);
+        let environment: Vec<(String, String)> = command
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| {
+                Some((
+                    key.to_string_lossy().to_string(),
+                    value?.to_string_lossy().to_string(),
+                ))
+            })
+            .collect();
+        for expected in [
+            ("AWS_PAGER", ""),
+            ("CLOUDSDK_CORE_DISABLE_PROMPTS", "1"),
+            ("AZURE_EXTENSION_USE_DYNAMIC_INSTALL", "no"),
+            ("SUPABASE_NO_UPDATE_NOTIFIER", "1"),
+        ] {
+            assert!(
+                environment.contains(&(expected.0.to_string(), expected.1.to_string())),
+                "{expected:?} is not among {environment:?}"
+            );
+        }
     }
 }

@@ -232,6 +232,20 @@ const AWS_READ_VERBS: [&str; 3] = ["describe", "get", "list"];
 /// one was measured.
 const AWS_COMMAND_ALIASES: [(&str, &str); 1] = [("s3api", "s3")];
 
+/// Options the AWS CLI adds to every command, which no service model lists.
+///
+/// Measured 2026-09-18 from `aws <command> help` on this machine: `--region`
+/// is on every command, and the three pagination options are on every
+/// paginated one. The rest of the CLI's global options are either Aime's own
+/// or refused outright (`dialect::Dialect::AWS`), so they are not here.
+const AWS_ADDED_FLAGS: [&str; 5] = [
+    "--region",
+    "--no-paginate",
+    "--max-items",
+    "--page-size",
+    "--starting-token",
+];
+
 /// The longest value a plan may carry, placeholders expanded later.
 const VALUE_LIMIT: usize = 200;
 
@@ -1030,7 +1044,86 @@ fn check_aws(line: &CommandLine<'_>) -> Result<(), String> {
         .ok_or_else(|| format!("the AWS CLI on this machine has no service called `{service}`"))?;
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let model: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    check_aws_against(&model, command, &line.flags)
+    check_aws_against(&model, command, &line.flags, AnyOperation::No)
+}
+
+/// The flags a command's own help says it takes, for the commands no service
+/// model carries.
+///
+/// `None` when the help has no synopsis to read, which is the only honest
+/// answer for a format this does not recognise: refusing every flag because a
+/// parser found nothing would be worse than running the command.
+///
+/// Measured 2026-09-18 from `aws logs tail help` and `aws s3 cp help`: the
+/// synopsis is the block under the `Synopsis` heading and above `Options`, one
+/// argument per line, flags written `[--since <value>]` when optional and bare
+/// when required. Both are captured verbatim in the tests, because a fixture
+/// written from memory of a help format is a parser that passes commands the
+/// CLI will refuse.
+pub(super) fn flags_in_synopsis(help: &str) -> Option<Vec<String>> {
+    const HEADING: &str = "\nSynopsis\n";
+    const NEXT: &str = "\nOptions\n";
+    let text = help.replace('\r', "");
+    let start = text.find(HEADING)? + HEADING.len();
+    let rest = &text[start..];
+    let block = rest.find(NEXT).map_or(rest, |end| &rest[..end]);
+    let chars: Vec<char> = block.chars().collect();
+    let mut flags = Vec::new();
+    let mut at = 0;
+    while at + 2 < chars.len() {
+        if chars[at] == '-' && chars[at + 1] == '-' && chars[at + 2].is_ascii_alphanumeric() {
+            let mut end = at + 2;
+            while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '-') {
+                end += 1;
+            }
+            let flag: String = chars[at..end].iter().collect();
+            if !flags.contains(&flag) {
+                flags.push(flag);
+            }
+            at = end;
+        } else {
+            at += 1;
+        }
+    }
+    Some(flags)
+}
+
+/// Whether the AWS CLI's own service models know this command, and if they do,
+/// whether these flags belong to it.
+///
+/// `None` when the models have nothing to say: the service is not one they
+/// carry, or the command is one the CLI adds itself rather than an API
+/// operation. Measured 2026-09-18, those are not rare and they are exactly the
+/// ones day-to-day work reaches for - `logs tail`, `s3 cp` and
+/// `cloudformation deploy` are all CLI-only, and the `logs` model has no
+/// `Tail` operation at all. For those the help walk is the whole proof; for
+/// every real API operation this says more than a walk can, because a model
+/// names each flag (measured the hard way: `aws logs tail --log-group-name x`
+/// passed the walk and died on the CLI with *Unknown options*).
+pub(super) fn aws_operation_flags(
+    service: &str,
+    command: &str,
+    flags: &[(&str, Option<&str>)],
+) -> Option<Result<(), String>> {
+    let model_name = AWS_COMMAND_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == service)
+        .map_or(service, |(_, api)| *api);
+    let models = aws_models_dir()?;
+    let path = newest_model(&models.join(model_name))?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    let model: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let operations = model.get("operations")?.as_object()?;
+    operations.keys().find(|name| kebab(name) == command)?;
+    Some(check_aws_against(&model, command, flags, AnyOperation::Yes))
+}
+
+/// Whether a command has to be one of the read operations.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AnyOperation {
+    Yes,
+    /// Only `Describe*`, `Get*` and `List*` - what a READ may be.
+    No,
 }
 
 /// The model check itself, apart from where the model came from.
@@ -1038,6 +1131,7 @@ fn check_aws_against(
     model: &serde_json::Value,
     command: &str,
     flags: &[(&str, Option<&str>)],
+    any: AnyOperation,
 ) -> Result<(), String> {
     let operations = model
         .get("operations")
@@ -1047,7 +1141,7 @@ fn check_aws_against(
         .iter()
         .find(|(name, _)| kebab(name) == command)
         .ok_or_else(|| format!("`{command}` is not an operation of this service"))?;
-    if !AWS_READ_PREFIXES.iter().any(|prefix| name.starts_with(prefix)) {
+    if any == AnyOperation::No && !AWS_READ_PREFIXES.iter().any(|prefix| name.starts_with(prefix)) {
         return Err(format!("`{command}` is not a read"));
     }
     let Some(shape_name) = operation
@@ -1074,6 +1168,9 @@ fn check_aws_against(
         })
         .unwrap_or_default();
     for (flag, _) in flags {
+        if AWS_ADDED_FLAGS.contains(flag) {
+            continue;
+        }
         if !members.iter().any(|member| member == flag) {
             return Err(format!("`{command}` has no `{flag}`"));
         }
@@ -1284,21 +1381,75 @@ fn check_gcloud_shape(words: &[&str]) -> Result<(), String> {
 /// functions --help` must list `list`.
 async fn check_supabase(program: &str, line: &CommandLine<'_>) -> Result<(), String> {
     check_supabase_shape(&line.words)?;
-    for depth in 0..line.words.len() {
-        let mut args: Vec<&str> = line.words[..depth].to_vec();
+    match supabase_walk(program, &line.words).await? {
+        SupabaseWalk::All => Ok(()),
+        // A read is all command words, so anything short of the whole line is
+        // a misspelling however the walk stopped.
+        SupabaseWalk::Unknown(at) | SupabaseWalk::Arguments { at, .. } => Err(format!(
+            "`supabase {}` is not a command the Supabase CLI here knows",
+            line.words[..=at].join(" ")
+        )),
+    }
+}
+
+/// Where a walk down the Supabase command tree stopped, and why.
+pub(super) enum SupabaseWalk {
+    /// Every word given is a command the CLI has.
+    All,
+    /// The word at this index is not one the level above lists, and that level
+    /// DOES list subcommands - so it is a misspelling, not an argument.
+    Unknown(usize),
+    /// The level above lists no subcommands at all, so this word and whatever
+    /// follows it are the command's own arguments - with that level's help,
+    /// which is where its USAGE line says whether it takes any.
+    Arguments { at: usize, help: String },
+}
+
+/// Whether a Supabase command takes a positional argument at all.
+///
+/// Its USAGE line is one line and always the same shape, measured 2026-09-18
+/// across five commands: `supabase <words> [flags]`, and then the positionals
+/// if there are any - `[flags] <Function name>` for a required one,
+/// `[flags] [<name>]` for an optional one, nothing at all for a command that
+/// takes none. `postgres-config get` is the last kind, and an operation that
+/// gave it one got the CLI's usage block back instead of the configuration.
+pub(super) fn supabase_takes_a_positional(help: &str) -> bool {
+    help.replace('\r', "")
+        .lines()
+        .skip_while(|line| line.trim() != "USAGE")
+        .skip(1)
+        .find(|line| line.starts_with("  "))
+        .and_then(|line| line.split_once("[flags]"))
+        .is_some_and(|(_, tail)| !tail.trim().is_empty())
+}
+
+/// Walks these words down the Supabase CLI's own command tree.
+///
+/// Telling a misspelling apart from an argument is the whole point, and the
+/// CLI will not do it: measured 2026-09-18, `supabase db upgrade --help` exits
+/// **0** and prints the help of `db`, exactly as a real command would - and
+/// `db upgrade` does not exist. What does distinguish them is whether the level
+/// above has a `SUBCOMMANDS` section at all: `supabase db --help` has one, so
+/// anything not in it is a typo, while `supabase functions delete --help` has
+/// none, so what follows is the function's name.
+pub(super) async fn supabase_walk(program: &str, words: &[&str]) -> Result<SupabaseWalk, String> {
+    for depth in 0..words.len() {
+        let mut args: Vec<&str> = words[..depth].to_vec();
         args.push("--help");
         let help = read_cli_checked(program, &args)
             .await
             .map_err(|failure| failure.message)?;
-        let word = line.words[depth];
-        if !subcommands_in(&help).iter().any(|known| known == word) {
-            return Err(format!(
-                "`supabase {}` is not a command the Supabase CLI here knows",
-                line.words[..=depth].join(" ")
-            ));
+        let listed = subcommands_in(&help);
+        if listed.iter().any(|known| known == words[depth]) {
+            continue;
         }
+        return Ok(if listed.is_empty() {
+            SupabaseWalk::Arguments { at: depth, help }
+        } else {
+            SupabaseWalk::Unknown(depth)
+        });
     }
-    Ok(())
+    Ok(SupabaseWalk::All)
 }
 
 /// The part of the Supabase check that needs no CLI: is this even a read.
@@ -1311,11 +1462,13 @@ fn check_supabase_shape(words: &[&str]) -> Result<(), String> {
 
 /// The subcommands one level of `supabase … --help` lists.
 ///
-/// The section is `SUBCOMMANDS`, one per line, name then description. The CLI
-/// pads names to a column and lets a long one run into its description
-/// (`network-restrictionsManage network restrictions`, measured), and an alias
-/// shares the line (`migration, migrationsManage …`) - so a name is what comes
-/// before the first capital letter, split on the comma.
+/// The section is `SUBCOMMANDS`, one per line, name then description. Up to
+/// 2.116.0 the CLI padded names to a column and let a long one run into its
+/// description (`network-restrictionsManage network restrictions`, measured),
+/// and an alias shared the line (`migration, migrationsManage …`); 2.117.0 put
+/// the space back. A name is therefore what comes before the first capital
+/// letter, split on the comma - which reads both spellings and needs no
+/// version check.
 fn subcommands_in(help: &str) -> Vec<String> {
     help.lines()
         .skip_while(|line| line.trim() != "SUBCOMMANDS")
@@ -1368,6 +1521,73 @@ pub struct AwsOperation {
 /// memory: the operation names and flags come out of the CLI's own model, which
 /// ships beside its binary. `None` for a service the CLI does not know, or on a
 /// machine where the models are not where the AWS CLI installs them.
+/// The commands a CLI publishes about itself, for the AI to choose from.
+///
+/// The counterpart of `cloud_read_catalog`: AWS ships a model of every
+/// operation beside its binary, and a model asked with neither writes down
+/// what it remembers. Measured in the app 2026-09-21, asked what can be done
+/// to a Supabase database: `supabase postgres logs`, `postgres restart` and
+/// `postgres connection-string` - three operations, three refusals, a pane
+/// with nothing on it, and no `postgres` group in that CLI at all. Told the
+/// 34 top-level groups, the next answer moved one level down and guessed
+/// there instead: `backups create` and `postgres-config set`, neither of
+/// which exists. So the whole tree goes, which the CLI writes in one answer
+/// for a shell to complete against (`completions.rs`).
+///
+/// What Aime already refuses is left out rather than offered and then thrown
+/// away - the same rules the prompt states in words, applied to the list it
+/// hands over.
+///
+/// Only for a CLI proven by its own listing (`Proof::Listed`). `gcloud`, `az`
+/// and `aws` answer `--help` per command and need no vocabulary in front of
+/// the question; their trees also run to thousands of commands.
+#[tauri::command]
+pub async fn cloud_cli_commands(app: AppHandle, cloud_id: String) -> Option<Vec<String>> {
+    let dialect = super::dialect::Dialect::of(&cloud_id).filter(|_| publishes_its_tree(&cloud_id))?;
+    let program = super::program_for(&app, &cloud_id);
+    let root = format!("_{}", dialect.program);
+    let commands = match read_cli_checked(&program, &["--completions", "bash"]).await {
+        Ok(script) => super::completions::commands_in(&script, &root),
+        Err(_) => Vec::new(),
+    };
+    // A CLI that stops offering completions still has its top level, which is
+    // what this answered before the tree did.
+    let commands = if commands.is_empty() {
+        subcommands_in(&read_cli_checked(&program, &["--help"]).await.ok()?)
+    } else {
+        commands
+    };
+    let offered: Vec<String> = commands
+        .into_iter()
+        .filter(|command| !refused_by(dialect, command))
+        .collect();
+    (!offered.is_empty()).then_some(offered)
+}
+
+/// Whether Aime's own rules would throw this command away on sight.
+fn refused_by(dialect: &super::dialect::Dialect, command: &str) -> bool {
+    let mut words = command.split(' ');
+    let Some(group) = words.next() else {
+        return true;
+    };
+    if dialect.refused_groups.contains(&group) {
+        return true;
+    }
+    let rest = words.next().unwrap_or_default();
+    dialect
+        .refused_commands
+        .iter()
+        .any(|refused| refused.group == group && refused.command == rest)
+}
+
+/// Whether a cloud's CLI describes its own command tree well enough to hand
+/// that tree to the AI - which is the same property that lets Aime prove a
+/// command by walking it (`Proof::Listed`).
+fn publishes_its_tree(cloud_id: &str) -> bool {
+    super::dialect::Dialect::of(cloud_id)
+        .is_some_and(|dialect| matches!(dialect.proof, super::dialect::Proof::Listed))
+}
+
 #[tauri::command]
 pub fn cloud_read_catalog(resource_id: String) -> Option<AwsCatalog> {
     let service = resource_id.split(':').nth(2).filter(|part| !part.is_empty())?;
@@ -1702,23 +1922,108 @@ mod tests {
     /// survive: a long name glued to its description, and an alias pair.
     const SUPABASE_HELP: &str = "GLOBAL FLAGS\n  --help, -h    Show help information\n\nSUBCOMMANDS\n  functions           Manage Supabase Edge functions\n  migration, migrationsManage database migration scripts\n  network-restrictionsManage network restrictions\n  projects            Manage projects\n";
 
+    /// The same four lines from 2.117.0, captured 2026-09-21 - the release that
+    /// put the missing space back. Aime's pin moved to it, a person's own CLI
+    /// may be either, and a tree read one version too late would refuse every
+    /// `network-restrictions` command as a typo.
+    const SUPABASE_HELP_SPACED: &str = "GLOBAL FLAGS\n  --help, -h    Show help information\n\nSUBCOMMANDS\n  functions           Manage Supabase Edge functions\n  migration, migrations Manage database migration scripts\n  network-restrictions Manage network restrictions\n  projects            Manage projects\n";
+
     #[test]
     fn the_supabase_command_tree_is_read_off_its_own_help() {
-        assert_eq!(
-            subcommands_in(SUPABASE_HELP),
-            [
-                "functions",
-                "migration",
-                "migrations",
-                "network-restrictions",
-                "projects"
-            ]
-        );
+        for help in [SUPABASE_HELP, SUPABASE_HELP_SPACED] {
+            assert_eq!(
+                subcommands_in(help),
+                [
+                    "functions",
+                    "migration",
+                    "migrations",
+                    "network-restrictions",
+                    "projects"
+                ]
+            );
+        }
         // A leaf's help has no SUBCOMMANDS section, so it lists nothing.
         assert!(
             subcommands_in("DESCRIPTION\n  List all Functions\n\nUSAGE\n  supabase functions list\n")
                 .is_empty()
         );
+    }
+
+    /// Only the CLI that prints its own tree is asked for one: the other three
+    /// answer `--help` per command, and their top-level help is hundreds of
+    /// lines of prose that would crowd out the question.
+    #[test]
+    fn the_command_tree_is_offered_to_the_ai_for_the_cli_that_publishes_one() {
+        assert!(publishes_its_tree("supabase"));
+        for cloud in ["aws", "azure", "gcp", "nothing-of-the-sort"] {
+            assert!(!publishes_its_tree(cloud), "{cloud}");
+        }
+    }
+
+    /// Against the installed Supabase CLI, when this machine has one.
+    ///
+    /// The distinction this test exists for was measured in the app
+    /// 2026-09-18: asked what can be done to a database, the AI answered
+    /// `supabase db upgrade`, which does not exist - and `supabase db upgrade
+    /// --help` exits **0** and prints the help of `db`, exactly as a real
+    /// command would. What tells the two apart is that `db` lists subcommands
+    /// and `functions delete` does not.
+    #[tokio::test]
+    async fn a_misspelled_supabase_subcommand_is_told_apart_from_an_argument() {
+        let program = crate::program::Program::resolve("supabase");
+        if !program.exists() {
+            eprintln!("the Supabase CLI is not on PATH here; the walk was not exercised");
+            return;
+        }
+        let program = program.path().to_string_lossy().to_string();
+        assert!(matches!(
+            supabase_walk(&program, &["functions", "list"])
+                .await
+                .expect("walked"),
+            SupabaseWalk::All
+        ));
+        assert!(
+            matches!(
+                supabase_walk(&program, &["db", "upgrade"]).await.expect("walked"),
+                SupabaseWalk::Unknown(1)
+            ),
+            "`db` lists its subcommands and `upgrade` is not one"
+        );
+        assert!(
+            matches!(
+                supabase_walk(&program, &["functions", "delete", "my-fn"])
+                    .await
+                    .expect("walked"),
+                SupabaseWalk::Arguments { at: 2, .. }
+            ),
+            "`functions delete` lists nothing, so `my-fn` is its argument"
+        );
+    }
+
+    /// Captured 2026-09-18 from this machine's Supabase CLI, verbatim.
+    ///
+    /// Three shapes and all three matter: a command that takes nothing, one
+    /// that requires an argument, and one where it is optional.
+    #[test]
+    fn a_supabase_command_says_in_its_usage_whether_it_takes_an_argument() {
+        let usage = |line: &str| format!("DESCRIPTION\n  x\n\nUSAGE\n  {line}\n\nFLAGS\n  --help\n");
+        // `postgres-config get max_connections` ran and answered with this
+        // usage block instead of the configuration, which is what this catches.
+        assert!(!supabase_takes_a_positional(&usage(
+            "supabase postgres-config get [flags]"
+        )));
+        assert!(!supabase_takes_a_positional(&usage(
+            "supabase backups list [flags]"
+        )));
+        assert!(supabase_takes_a_positional(&usage(
+            "supabase functions delete [flags] <Function name>"
+        )));
+        assert!(supabase_takes_a_positional(&usage(
+            "supabase branches get [flags] [<name>]"
+        )));
+        // Help with no usage line at all claims nothing either way, and the
+        // caller treats that as "no argument" rather than inventing one.
+        assert!(!supabase_takes_a_positional("nothing like a help page"));
     }
 
     /// `inspect db table-stats` ends in a noun and is a read; `functions deploy`
@@ -1879,7 +2184,7 @@ mod tests {
         let ok = |line: &str| {
             let tokens = args(line);
             let parsed = CommandLine::parse_allowing(&tokens, &AWS_READ_VERBS, &[]).expect("parsed");
-            check_aws_against(&model, parsed.words[1], &parsed.flags)
+            check_aws_against(&model, parsed.words[1], &parsed.flags, AnyOperation::No)
         };
         assert!(ok("secretsmanager describe-secret --secret-id <id>").is_ok());
         assert!(ok("secretsmanager get-secret-value --secret-id <id> --version-stage AWSCURRENT").is_ok());
@@ -1903,6 +2208,119 @@ mod tests {
         );
         // An operation the service does not have at all.
         assert!(ok("secretsmanager describe-secrets --secret-id <id>").is_err());
+    }
+
+    /// Captured verbatim 2026-09-18 from `aws logs tail help` on this
+    /// machine, header and all. `logs tail` is the command that made this
+    /// parser necessary: it is in no service model, and it takes the log
+    /// group as a POSITIONAL, so an AI that reached for `--log-group-name`
+    /// wrote a command the walk accepted and the CLI refused.
+    const LOGS_TAIL_HELP: &str = r#"
+Synopsis
+********
+
+     tail
+   group_name <value>
+   [--since <value>]
+   [--follow]
+   [--format <value>]
+   [--filter-pattern <value>]
+   [--log-stream-names <value> [<value>...]]
+   [--log-stream-name-prefix <value>]
+   [--debug]
+   [--endpoint-url <value>]
+   [--no-verify-ssl]
+   [--no-paginate]
+   [--output <value>]
+   [--query <value>]
+   [--profile <value>]
+   [--region <value>]
+   [--version <value>]
+   [--color <value>]
+   [--no-sign-request]
+   [--ca-bundle <value>]
+   [--cli-read-timeout <value>]
+   [--cli-connect-timeout <value>]
+   [--cli-binary-format <value>]
+   [--no-cli-pager]
+   [--cli-auto-prompt]
+   [--no-cli-auto-prompt]
+
+
+Options
+"#;
+
+    #[test]
+    fn the_flags_a_cli_only_command_takes_are_read_from_its_own_synopsis() {
+        let flags = flags_in_synopsis(LOGS_TAIL_HELP).expect("a synopsis");
+        assert!(flags.contains(&"--since".to_string()));
+        assert!(flags.contains(&"--follow".to_string()));
+        assert!(flags.contains(&"--filter-pattern".to_string()));
+        // The one the AI wrote, which this command does not have.
+        assert!(!flags.contains(&"--log-group-name".to_string()));
+        // Help with no synopsis at all is not an empty synopsis: refusing
+        // every flag because a format was not recognised would be worse
+        // than running the command.
+        assert_eq!(flags_in_synopsis("nothing like a help page"), None);
+    }
+
+    /// The same model, asked the question an OPERATION asks: not "is this a
+    /// read" but "does this command have these flags".
+    ///
+    /// Measured in the app 2026-09-18: `aws logs tail --log-group-name <name>`
+    /// passed the word walk and died on the CLI with *Unknown options*, so the
+    /// walk alone is not enough where the CLI describes itself properly.
+    #[test]
+    fn an_aws_operation_is_proven_against_the_service_model_too() {
+        let model = secretsmanager_model();
+        let check = |line: &str| {
+            let tokens = args(line);
+            let parsed =
+                CommandLine::parse_allowing(&tokens, &AWS_READ_VERBS, &["--region"]).expect("parsed");
+            check_aws_against(&model, parsed.words[1], &parsed.flags, AnyOperation::Yes)
+        };
+        // A write is fine here, where a read would have been refused for it.
+        assert!(check("secretsmanager delete-secret --secret-id <id>").is_ok());
+        // The flags are still the operation's own.
+        assert_eq!(
+            check("secretsmanager delete-secret --secret-name <id>").expect_err("refused"),
+            "`delete-secret` has no `--secret-name`"
+        );
+        // `--region` belongs to the CLI, not to any operation, and every
+        // regional AWS command a plan writes carries one.
+        assert!(check("secretsmanager describe-secret --secret-id <id> --region ap-southeast-2").is_ok());
+    }
+
+    /// Against the real models beside the CLI, when this machine has them.
+    #[test]
+    fn the_models_beside_the_installed_cli_answer_for_a_real_operation() {
+        if aws_models_dir().is_none() {
+            eprintln!("the AWS CLI is not installed here; the models were not exercised");
+            return;
+        }
+        // The operation the app produced, with the flags it produced.
+        let ok = aws_operation_flags(
+            "logs",
+            "put-retention-policy",
+            &[
+                ("--log-group-name", Some("/ecs/x")),
+                ("--retention-in-days", Some("30")),
+                ("--region", Some("ap-southeast-2")),
+            ],
+        );
+        assert_eq!(ok, Some(Ok(())), "a real operation with its own flags");
+
+        // The one that got through the walk and failed on the CLI.
+        let wrong = aws_operation_flags("logs", "describe-log-groups", &[("--log-group-name", None)]);
+        assert!(
+            matches!(wrong, Some(Err(_))),
+            "a flag the operation does not have: {wrong:?}"
+        );
+
+        // `logs tail` is the CLI's own command, in no model at all - the walk
+        // is the whole proof for it, so this must not pretend to judge it.
+        assert_eq!(aws_operation_flags("logs", "tail", &[]), None);
+        assert_eq!(aws_operation_flags("no-such-service", "tail", &[]), None);
     }
 
     #[test]

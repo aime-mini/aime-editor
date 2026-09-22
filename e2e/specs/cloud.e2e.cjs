@@ -41,17 +41,24 @@ const CLOUDS = [
   { id: "supabase", label: "Supabase", command: "supabase" },
 ];
 
+/** Where the fake AI keeps the last prompt it was given. */
+const PROMPT_SEEN = path.join(os.tmpdir(), "aime-e2e-discovery-prompt.txt");
+
 /**
  * The fake AI.
  *
  * It answers the discovery prompt with the JSON a real one would, and anything
  * else with a shrug - which is also what proves the store writes nothing when
- * the answer is not readable.
+ * the answer is not readable. It also keeps the prompt it was handed, because
+ * what that prompt contains is the other half of the discovery's contract: the
+ * inventory Aime read from the cloud, and the statement that this turn has no
+ * CLI to run.
  */
 const PROBE_SOURCE = `
 const fs = require("node:fs");
 const prompt = fs.readFileSync(0, "utf8");
-if (prompt.includes("Find out what already exists in this cloud account")) {
+fs.writeFileSync(${JSON.stringify(PROMPT_SEEN)}, prompt);
+if (prompt.includes("already exists in this cloud account")) {
   process.stdout.write(JSON.stringify({
     deploys: ["GitHub Actions pushes the container on merge to main"],
     services: [
@@ -309,6 +316,19 @@ describe("Cloud", () => {
       timeout: 120_000,
       timeoutMsg: "the discovery never reached the project's memory file",
     });
+
+    // What Aime handed the AI is half the contract: the inventory it read from
+    // the cloud itself, and the plain statement that this turn cannot run a
+    // command. Measured 2026-09-17: asked to run the commands itself in a turn
+    // that has no tools, the model invented a transcript and nothing parsed.
+    const asked = fs.readFileSync(PROMPT_SEEN, "utf8");
+    assert.match(asked, /NO shell and NO cloud CLI/, "the discovery still asks the AI to run commands");
+    assert.match(asked, /this IS the inventory/, "the inventory Aime read was not handed over");
+    assert.match(
+      asked,
+      /Every service must be one of the inventory rows above/,
+      "nothing holds the answer to what Aime actually saw",
+    );
 
     const written = fs.readFileSync(memory, "utf8");
     // Exact names, because a later command has to be able to use them.

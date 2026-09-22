@@ -17,11 +17,18 @@
 //! is checked by walking the CLI's own SUBCOMMANDS tree instead (`reads.rs`).
 //!
 //! The JSON shapes are the Management API's, which the CLI prints verbatim with
-//! `-o json`: read from the API's own OpenAPI document (`api.supabase.com/api/
-//! v1-json`, schemas `V1ProjectWithDatabaseResponse_Output`,
-//! `OrganizationResponseV1_Output`, `FunctionResponse_Output`,
-//! `BranchResponse_Output`) because no Supabase account was available here to
-//! capture a live answer from. That gap is named in the tests.
+//! `-o json`. They were first read from the API's own OpenAPI document
+//! (`api.supabase.com/api/v1-json`, schemas
+//! `V1ProjectWithDatabaseResponse_Output`, `OrganizationResponseV1_Output`,
+//! `FunctionResponse_Output`, `BranchResponse_Output`) because no Supabase
+//! account was signed in here. One is now, and the fixtures below are captured
+//! answers with the identifiers masked (2026-09-21, CLI 2.116.0). Capturing
+//! them corrected a guess the document had allowed: `organization_slug` is not
+//! a readable slug but a second copy of `organization_id`, so the fallback for
+//! an organization the token cannot name shows an id and not a name. The one
+//! project this account has holds no Edge Function and no preview branch -
+//! `functions list` and `branches list` both answered `[]`, which is captured
+//! too; only the non-empty shape of those two is still the document's.
 //!
 //! What an "account" is here: a PROJECT, under the organization that owns it -
 //! the same two levels as Azure's user → subscription and Google's account →
@@ -110,6 +117,36 @@ impl Cli {
         full.extend(flags.iter().map(String::as_str));
         read_cli(&self.program, &full).await
     }
+}
+
+/// The flags every OPERATION or deploy step carries, for `cloud/dialect.rs`.
+///
+/// The read flags plus `--yes`. Read from this CLI's own `--help` on this
+/// machine: *answer yes to all prompts*. Aime adds it because by the time a
+/// command gets here the person has already read it in full and, for anything
+/// that removes something, typed the resource's own name - while a CLI that
+/// stops to ask on a pipe does not stop, it hangs, which this project has paid
+/// for three times now (the `gcloud` billing prompt of session 33, the `az`
+/// extension prompt of session 37). A plan may not write it: it is Aime's to
+/// decide, not the AI's.
+///
+/// `working_in` is where the CLI may keep a project, and it decides what this
+/// CLI can do at all. Nothing - an operation on a resource - keeps it in
+/// Aime's own folder, which is what stops a panel from dropping `supabase/`
+/// into somebody's repository (session 33). A DEPLOYMENT passes the repository
+/// itself, because that is where a Supabase project lives: `supabase/config.
+/// toml`, `supabase/functions/<slug>/index.ts` and the migrations are files in
+/// it, and `link`, `functions deploy` and `db push` are only meaningful there.
+/// Carrying the operations' answer into a deploy was what made Aime say for
+/// three sessions that this cloud could not be deployed to - a restriction of
+/// its own, read back as the CLI's.
+pub(super) fn step_flags(app: &AppHandle, working_in: Option<&str>) -> Result<Vec<String>, String> {
+    let mut flags = match working_in {
+        Some(project) => flags_for(Path::new(project)),
+        None => cli(app)?.flags(),
+    };
+    flags.push("--yes".to_string());
+    Ok(flags)
 }
 
 /// Agent guess off, experimental reads on, project folder in Aime's own place.
@@ -349,44 +386,69 @@ fn scalar(value: &serde_json::Value) -> String {
 mod tests {
     use super::*;
 
-    /// `orgs list -o json` and `projects list -o json`, fields as the
-    /// Management API's own OpenAPI document names them (2026-09-05). Not a
-    /// captured answer: no Supabase account was signed in on this machine.
-    const ORGS: &str = r#"[{"id":"org_1","slug":"acme","name":"Acme Inc"}]"#;
-    const PROJECTS: &str = r#"[
+    /// `orgs list -o json`, captured 2026-09-21 with the id and the name
+    /// masked. The one thing worth reading twice is that `slug` repeats `id`:
+    /// an organization has no second, friendlier name to fall back to.
+    const ORGS: &str = r#"[
   {
-    "id": "12345",
-    "ref": "abcdefghijklmnopqrst",
-    "organization_id": "org_1",
-    "organization_slug": "acme",
-    "name": "shop",
-    "region": "ap-southeast-1",
-    "created_at": "2025-01-10T03:14:15Z",
-    "status": "ACTIVE_HEALTHY",
-    "database": {
-      "host": "db.abcdefghijklmnopqrst.supabase.co",
-      "version": "17.4.1.043",
-      "postgres_engine": "17",
-      "release_channel": "ga"
-    }
-  },
-  {
-    "id": "12346",
-    "ref": "tsrqponmlkjihgfedcba",
-    "organization_id": "org_unknown",
-    "organization_slug": "other-org",
-    "name": "sandbox",
-    "region": "us-east-1",
-    "created_at": "2025-03-03T00:00:00Z",
-    "status": "INACTIVE",
-    "database": {
-      "host": "db.tsrqponmlkjihgfedcba.supabase.co",
-      "version": "15.8.1.085",
-      "postgres_engine": "15",
-      "release_channel": "ga"
-    }
+    "id": "zyxwvutsrqponmlkjihg",
+    "name": "Acme Inc",
+    "slug": "zyxwvutsrqponmlkjihg"
   }
 ]"#;
+
+    /// `projects list -o json`. The first project is captured the same day -
+    /// key order, indentation, `linked`, the `id` that simply repeats `ref`,
+    /// and a paused project's `INACTIVE` are all as the CLI printed them, with
+    /// the refs and the name masked. The second is that answer's shape with an
+    /// organization the `orgs list` above does not carry, which is the only way
+    /// to exercise the fallback; no account here owns two organizations.
+    const PROJECTS: &str = r#"[
+  {
+    "created_at": "2026-08-08T06:01:03.056763Z",
+    "database": {
+      "host": "db.abcdefghijklmnopqrst.supabase.co",
+      "postgres_engine": "17",
+      "release_channel": "ga",
+      "version": "17.6.1.155"
+    },
+    "id": "abcdefghijklmnopqrst",
+    "linked": false,
+    "name": "shop",
+    "organization_id": "zyxwvutsrqponmlkjihg",
+    "organization_slug": "zyxwvutsrqponmlkjihg",
+    "ref": "abcdefghijklmnopqrst",
+    "region": "ap-southeast-2",
+    "status": "INACTIVE"
+  },
+  {
+    "created_at": "2026-08-09T01:02:03.000000Z",
+    "database": {
+      "host": "db.tsrqponmlkjihgfedcba.supabase.co",
+      "postgres_engine": "15",
+      "release_channel": "ga",
+      "version": "15.8.1.085"
+    },
+    "id": "tsrqponmlkjihgfedcba",
+    "linked": false,
+    "name": "sandbox",
+    "organization_id": "ghijklmnopqrstuvwxyz",
+    "organization_slug": "ghijklmnopqrstuvwxyz",
+    "ref": "tsrqponmlkjihgfedcba",
+    "region": "us-east-1",
+    "status": "ACTIVE_HEALTHY"
+  }
+]"#;
+
+    /// What both listings really answer for this account, captured 2026-09-21:
+    /// a project may hold neither, and the panel must still show its database.
+    const NOTHING_LISTED: &str = "[]\n";
+
+    /// Edge Functions and preview branches with something in them. Still the
+    /// OpenAPI document's shape (`FunctionResponse_Output`,
+    /// `BranchResponse_Output`): the project reachable from this machine has
+    /// none, and deploying one to somebody's real project to photograph the
+    /// answer is not a test's business.
     const FUNCTIONS: &str = r#"[
   {"id":"f1","slug":"resize","name":"resize","status":"ACTIVE","version":7,"created_at":1735689600000,"updated_at":1735689600000,"verify_jwt":true}
 ]"#;
@@ -408,24 +470,28 @@ mod tests {
             "the ref is what every command takes"
         );
         assert_eq!(shop.label, "shop");
-        assert_eq!(shop.detail, "ap-southeast-1");
+        assert_eq!(
+            shop.detail, "ap-southeast-2 · INACTIVE",
+            "a paused project says so where a person will see it before opening it"
+        );
         assert_eq!(shop.owner, "Acme Inc");
         assert_eq!(shop.sign_in, "supabase login --agent no");
         assert!(
             !shop.current,
             "the CLI links a project to a folder, not to the machine"
         );
-        // An organization the token cannot list is named by its slug, and a
-        // project that is not healthy says so on its second line.
-        assert_eq!(projects[1].owner, "other-org");
-        assert_eq!(projects[1].detail, "us-east-1 · INACTIVE");
+        // A healthy project's second line is just its region, and an
+        // organization the token cannot name falls back to `organization_slug`
+        // - which the captured answer shows is the id over again.
+        assert_eq!(projects[1].detail, "us-east-1");
+        assert_eq!(projects[1].owner, "ghijklmnopqrstuvwxyz");
     }
 
     #[test]
     fn the_identity_is_the_first_organization_and_signed_out_is_a_refusal() {
         assert_eq!(
             organizations(),
-            BTreeMap::from([("org_1".to_string(), "Acme Inc".to_string())])
+            BTreeMap::from([("zyxwvutsrqponmlkjihg".to_string(), "Acme Inc".to_string())])
         );
         assert!(organizations_in("not json").is_empty());
     }
@@ -433,16 +499,17 @@ mod tests {
     #[test]
     fn a_project_is_its_database_its_functions_and_its_branches() {
         let project = project_in(PROJECTS, "abcdefghijklmnopqrst").expect("the project");
-        let database = database_of(&project, "ap-southeast-1");
+        let database = database_of(&project, "ap-southeast-2");
         assert_eq!(database.id, "supabase://abcdefghijklmnopqrst/database");
         assert_eq!(database.name, "db.abcdefghijklmnopqrst.supabase.co");
         assert_eq!(database.kind, "supabase/database");
         assert_eq!(database.group, "abcdefghijklmnopqrst");
         assert_eq!(database.tags.get("engine").map(String::as_str), Some("17"));
         assert_eq!(
-            database.tags.get("status").map(String::as_str),
-            Some("ACTIVE_HEALTHY")
+            database.tags.get("version").map(String::as_str),
+            Some("17.6.1.155")
         );
+        assert_eq!(database.tags.get("status").map(String::as_str), Some("INACTIVE"));
 
         let functions = functions_in(FUNCTIONS, "abcdefghijklmnopqrst", "ap-southeast-1");
         assert_eq!(functions.len(), 1);
@@ -467,6 +534,20 @@ mod tests {
         );
 
         assert!(project_in(PROJECTS, "nope").is_none());
+    }
+
+    /// The answer a fresh project really gives, and the one the panel has to
+    /// survive: a database and nothing else. An empty listing is not a failure
+    /// to report, it is the project saying it has none.
+    #[test]
+    fn a_project_with_no_function_and_no_branch_is_still_its_database() {
+        assert!(functions_in(NOTHING_LISTED, "abcdefghijklmnopqrst", "ap-southeast-2").is_empty());
+        assert!(branches_in(NOTHING_LISTED, "abcdefghijklmnopqrst", "ap-southeast-2").is_empty());
+        let project = project_in(PROJECTS, "abcdefghijklmnopqrst").expect("the project");
+        assert_eq!(
+            database_of(&project, "ap-southeast-2").name,
+            "db.abcdefghijklmnopqrst.supabase.co"
+        );
     }
 
     /// The CLI's project folder goes where Aime says, or it goes into the
