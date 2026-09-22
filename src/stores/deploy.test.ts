@@ -31,6 +31,10 @@ let exits: Record<string, number[] | undefined> = {};
 let reads: Record<string, string[]> = {};
 /** What each successive Rust check refuses; a check past the end of the queue passes everything. */
 let refusals: { part: "step"; label: string; reason: string }[][] = [];
+/** What the person types while a step runs, keyed by the step they type it during. */
+let saysDuringStep: { at: string; say: string }[] = [];
+/** What they type while the deployed service is being asked, when they do. */
+let saysDuringProbe: string | null = null;
 let probeStatus = 200;
 /** What the service's own root answers, which the prove step asks separately. */
 let rootStatus = 200;
@@ -106,6 +110,18 @@ const REVISION = JSON.stringify({
   giveUp: null,
 });
 
+/** What the AI answers to something said between two steps: words, and the remainder rewritten. */
+const STEER = JSON.stringify({
+  reply: "Moved what is left to eastasia; the step that has already run stays where it ran.",
+  steps: [
+    {
+      label: "Deploy to eastasia",
+      args: ["run", "deploy", "web", "--source", ".", "--region", "eastasia"],
+      changes: "a new revision",
+    },
+  ],
+});
+
 const DESCRIBED = JSON.stringify({
   status: { url: "https://web-abc.a.run.app" },
   spec: { template: { spec: { containers: [{ env: [{ name: "A", value: "1" }] }] } } },
@@ -136,6 +152,11 @@ vi.mock("@tauri-apps/api/core", () => ({
       }
       case "cloud_deploy_step": {
         const { step } = args.request as StepRequest;
+        // The person is at the keyboard while this command runs, and may say
+        // more than one thing before it ends.
+        const saying = saysDuringStep.filter((one) => one.at === step.label);
+        saysDuringStep = saysDuringStep.filter((one) => one.at !== step.label);
+        for (const one of saying) useDeploy.getState().steer(SLOT, one.say);
         const code = (exits[step.label] ?? []).shift() ?? 0;
         return Promise.resolve({
           code,
@@ -148,6 +169,11 @@ vi.mock("@tauri-apps/api/core", () => ({
         });
       }
       case "cloud_http_probe": {
+        if (saysDuringProbe !== null) {
+          const said = saysDuringProbe;
+          saysDuringProbe = null;
+          useDeploy.getState().steer(SLOT, said);
+        }
         // Answered per URL: a service can serve `/` and still refuse the
         // health path the plan chose.
         const asked = (args as { url?: string }).url ?? "";
@@ -211,6 +237,8 @@ beforeEach(() => {
   exits = {};
   reads = { "describe web": [DESCRIBED] };
   refusals = [];
+  saysDuringStep = [];
+  saysDuringProbe = null;
   probeStatus = 200;
   rootStatus = 200;
   useDeploy.setState({ slots: {}, open: null });
@@ -482,5 +510,167 @@ describe("deploying", () => {
     await useDeploy.getState().cancel(SLOT);
     expect(stage()).toMatchObject({ kind: "blocked", reason: "Stopped." });
     expect(calls.filter((call) => call.command === "cloud_deploy_step")).toHaveLength(0);
+  });
+});
+
+/**
+ * A deploy that goes wrong used to leave one button, Stop. The box is open
+ * while the commands run now, and these pin the promise made with it: what is
+ * typed never touches the command in flight, it reaches the AI at the first
+ * moment nothing is running, and nothing it writes runs unchecked.
+ */
+describe("speaking while it runs", () => {
+  it("takes the words at the end of the step in flight and runs the remainder it rewrote", async () => {
+    await planned();
+    replies = ["written", STEER];
+    saysDuringStep = [{ at: "Enable APIs", say: "  put it in eastasia  " }];
+    await useDeploy.getState().confirm(SLOT);
+
+    expect(stage()).toMatchObject({ kind: "done" });
+    const steerTurn = turns[3];
+    expect(steerTurn.permission).toBe("edits");
+    expect(steerTurn.tools).toBe("filesOnly");
+    expect(steerTurn.prompt).toContain("> put it in eastasia");
+    expect(steerTurn.prompt).toContain("Already run");
+    expect(steerTurn.prompt).toContain("- Enable APIs");
+
+    // The step being run when they typed finished; the one that had not
+    // started was replaced by what came back - after it was checked.
+    const steps = calls
+      .filter((call) => call.command === "cloud_deploy_step")
+      .map((call) => (call.args.request as StepRequest).step.label);
+    expect(steps).toEqual(["Enable APIs", "Deploy to eastasia"]);
+    expect(calls.filter((call) => call.command === "cloud_check_deploy")).toHaveLength(2);
+    expect(useDeploy.getState().slots[SLOT]?.notes).toEqual([
+      {
+        asked: "put it in eastasia",
+        answered: "Moved what is left to eastasia; the step that has already run stays where it ran.",
+      },
+    ]);
+    expect(log("note")).toContain("You asked: put it in eastasia");
+  });
+
+  it("hands what was said in with the failure rather than spending a turn of its own", async () => {
+    await planned();
+    exits = { "Deploy from source": [1] };
+    const answered = JSON.stringify({
+      ...(JSON.parse(REVISION) as object),
+      reply: "The quota is on the other project, so the deploy goes there.",
+    });
+    replies = ["written", answered];
+    saysDuringStep = [{ at: "Deploy from source", say: "the quota is on another project" }];
+    await useDeploy.getState().confirm(SLOT);
+
+    expect(stage()).toMatchObject({ kind: "done" });
+    const fixTurn = turns[3];
+    expect(fixTurn.prompt).toContain("Failed: Deploy from source");
+    expect(fixTurn.prompt).toContain("> the quota is on another project");
+    // One turn, not two: the failure and the person's words are one question.
+    expect(turns).toHaveLength(4);
+    expect(useDeploy.getState().slots[SLOT]?.notes.at(-1)?.answered).toBe(
+      "The quota is on the other project, so the deploy goes there.",
+    );
+  });
+
+  it("goes on with the plan that was confirmed when Aime refuses what came back", async () => {
+    await planned();
+    replies = ["written", STEER];
+    saysDuringStep = [{ at: "Enable APIs", say: "put it in eastasia" }];
+    refusals = [[{ part: "step", label: "Deploy to eastasia", reason: "the target may not move" }]];
+    await useDeploy.getState().confirm(SLOT);
+
+    expect(stage()).toMatchObject({ kind: "done" });
+    const steps = calls
+      .filter((call) => call.command === "cloud_deploy_step")
+      .map((call) => (call.args.request as StepRequest).step.label);
+    expect(steps).toEqual(["Enable APIs", "Deploy from source"]);
+    expect(log("problem")).toContain("Refused step `Deploy to eastasia`: the target may not move");
+    // Answered with both halves: what the AI said, and what Aime did about it.
+    const answered = useDeploy.getState().slots[SLOT]?.notes.at(-1)?.answered ?? "";
+    expect(answered).toContain("Moved what is left to eastasia");
+    expect(answered).toContain("goes on exactly as you confirmed it");
+  });
+
+  it("says so when the words arrive with nothing left to steer", async () => {
+    await planned();
+    replies = ["written"];
+    saysDuringProbe = "make it cheaper";
+    await useDeploy.getState().confirm(SLOT);
+
+    expect(stage()).toMatchObject({ kind: "done" });
+    // No turn was spent on a deployment that had already finished.
+    expect(turns).toHaveLength(3);
+    expect(useDeploy.getState().slots[SLOT]?.notes).toEqual([
+      {
+        asked: "make it cheaper",
+        answered: "This arrived after the deployment had finished; nothing was changed.",
+      },
+    ]);
+  });
+
+  it("answers in the AI's own words when it gives up on what was asked", async () => {
+    await planned();
+    saysDuringProbe = "use the other region";
+    // The service never answers, so the AI is asked how to go on - with the
+    // words the person typed while it was being asked - and it gives up.
+    probeStatus = 503;
+    rootStatus = 503;
+    replies = [
+      "written",
+      JSON.stringify({ steps: [], files: [], inspect: [], giveUp: "the quota needs a person" }),
+    ];
+    await useDeploy.getState().confirm(SLOT);
+
+    expect(stage()).toMatchObject({ kind: "blocked" });
+    expect(turns[3].prompt).toContain("> use the other region");
+    expect(useDeploy.getState().slots[SLOT]?.notes.at(-1)?.answered).toBe("the quota needs a person");
+  });
+
+  it("answers what never reached the AI at all when the deployment stops", async () => {
+    await planned();
+    replies = ["written"];
+    saysDuringProbe = "use the other region";
+    // Serving on its root but not on the path the plan chose: Aime stops
+    // without asking the AI anything, so the question needs an answer of its own.
+    probeStatus = 404;
+    rootStatus = 200;
+    await useDeploy.getState().confirm(SLOT);
+
+    expect(stage()).toMatchObject({ kind: "blocked" });
+    expect(turns).toHaveLength(3);
+    expect(useDeploy.getState().slots[SLOT]?.notes.at(-1)?.answered).toBe(
+      "The deployment stopped before anything could be done about this.",
+    );
+  });
+
+  it("keeps two things said during one step as one question with one answer", async () => {
+    await planned();
+    replies = ["written", STEER];
+    saysDuringStep = [
+      { at: "Enable APIs", say: "that region is wrong" },
+      { at: "Enable APIs", say: "use eastasia" },
+    ];
+    await useDeploy.getState().confirm(SLOT);
+
+    // Both reach the AI, in the order they were typed...
+    expect(turns[3].prompt).toContain(["> that region is wrong", "use eastasia"].join("\n"));
+    // ...as one question, so neither is left waiting for an answer of its own.
+    expect(useDeploy.getState().slots[SLOT]?.notes).toEqual([
+      {
+        asked: ["that region is wrong", "use eastasia"].join("\n"),
+        answered: "Moved what is left to eastasia; the step that has already run stays where it ran.",
+      },
+    ]);
+  });
+
+  it("ignores an empty note, and one sent when no step is running", async () => {
+    await planned();
+    useDeploy.getState().steer(SLOT, "   ");
+    // At the confirm page the plan box takes it, and replans; this one does not.
+    useDeploy.getState().steer(SLOT, "another region");
+    useDeploy.getState().steer("no-such-slot", "another region");
+
+    expect(useDeploy.getState().slots[SLOT]?.notes).toEqual([]);
+    expect(turns).toHaveLength(2);
   });
 });

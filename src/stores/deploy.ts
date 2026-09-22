@@ -11,9 +11,11 @@ import {
   overwritten,
   parsePlan,
   parseRevision,
+  parseSteer,
   parseSurvey,
   planPrompt,
   readLine,
+  steerPrompt,
   surveyPrompt,
   urlIn,
   TOOLING_TO_REPORT,
@@ -97,6 +99,15 @@ interface DeployState {
    * and nothing runs now - the new plan waits at the same page.
    */
   revise: (slot: string, note: string) => Promise<void>;
+  /**
+   * The person says something while the steps are running.
+   *
+   * It does not touch the command in flight - that is what Stop is for. The
+   * words wait for the step to end and are then put to the AI, either with the
+   * failure that stopped the run or on their own, and its answer lands against
+   * the question. Nothing to await here: the run picks this up itself.
+   */
+  steer: (slot: string, note: string) => void;
   /** Stops whatever the slot has in flight. */
   cancel: (slot: string) => Promise<void>;
   /** Puts the account's resources back in front; a running deploy carries on. */
@@ -120,14 +131,20 @@ const LOG_LIMIT = 500;
 interface Engine {
   inFlight: { kind: "command" | "agent"; id: string } | null;
   cancelled: boolean;
+  /** What the person said while a step was running, until the run takes it. */
+  steer: string | null;
 }
 
 const engines = new Map<string, Engine>();
 
+function newEngine(): Engine {
+  return { inFlight: null, cancelled: false, steer: null };
+}
+
 function engineFor(slot: string): Engine {
   const found = engines.get(slot);
   if (found !== undefined) return found;
-  const fresh: Engine = { inFlight: null, cancelled: false };
+  const fresh = newEngine();
   engines.set(slot, fresh);
   return fresh;
 }
@@ -138,7 +155,7 @@ export const useDeploy = create<DeployState>((set, get) => ({
 
   start: async (cloudId, account) => {
     const slot = slotOf(cloudId, account.id);
-    engines.set(slot, { inFlight: null, cancelled: false });
+    engines.set(slot, newEngine());
     set((state) => ({
       open: slot,
       slots: {
@@ -177,22 +194,12 @@ export const useDeploy = create<DeployState>((set, get) => ({
     const asked = note.trim();
     if (current?.stage.kind !== "confirm" || asked === "") return;
     const { survey, answers, tooling } = current.stage;
-    engines.set(slot, { inFlight: null, cancelled: false });
-    set((state) => {
-      const slots = state.slots[slot];
-      return slots === undefined
-        ? {}
-        : {
-            slots: {
-              ...state.slots,
-              // Asked now, answered when the next plan comes back: the page
-              // shows the question the moment it is sent, so nobody wonders
-              // whether it went anywhere.
-              [slot]: { ...slots, notes: [...slots.notes, { asked, answered: "" }] },
-            },
-          };
-    });
+    engines.set(slot, newEngine());
     const ops = opsFor(slot, set, get);
+    // Asked now, answered when the next plan comes back: the page shows the
+    // question the moment it is sent, so nobody wonders whether it went
+    // anywhere.
+    ops.ask(asked);
     // In the log as the person's own line, because the plan that comes back is
     // only readable next to what was asked for.
     ops.note(translate("deploy.asked", { note: asked }));
@@ -202,6 +209,25 @@ export const useDeploy = create<DeployState>((set, get) => ({
       ops.problem(formatProviderError(error));
       ops.stage({ kind: "blocked", plan: null, steps: [], reason: formatProviderError(error) });
     }
+  },
+
+  steer: (slot, note) => {
+    const current = get().slots[slot];
+    const asked = note.trim();
+    if (current === undefined || asked === "") return;
+    // Only while the steps are running: before them the confirm page takes
+    // notes and replans, after them there is nothing left to steer.
+    if (current.stage.kind !== "deploying" && current.stage.kind !== "proving") return;
+    const engine = engineFor(slot);
+    const waiting = engine.steer;
+    // A second thought before the first has been taken is part of the same
+    // message: one question on the page, one answer under it - rather than an
+    // older line left hanging because only the last one was ever taken.
+    engine.steer = waiting === null ? asked : `${waiting}\n${asked}`;
+    const ops = opsFor(slot, set, get);
+    if (waiting === null) ops.ask(asked);
+    else ops.addToAsk(asked);
+    ops.note(translate("deploy.asked", { note: asked }));
   },
 
   cancel: async (slot) => {
@@ -249,8 +275,14 @@ interface Ops {
   note: (text: string) => void;
   output: (text: string) => void;
   problem: (text: string) => void;
+  /** A question from the person, filed the moment it is sent and answered later. */
+  ask: (text: string) => void;
+  /** Another line for the question that has not been taken yet. */
+  addToAsk: (text: string) => void;
   /** The AI's answer to the last thing the person asked, against that question. */
   answer: (text: string) => void;
+  /** What the person said while a step was running - taken once, then gone. */
+  takeSteer: () => string | null;
   engine: Engine;
   /** Read through a call, because Stop flips it between two awaits and a narrowed field would not see that. */
   cancelled: () => boolean;
@@ -279,6 +311,16 @@ function opsFor(slot: string, set: Set, get: Get): Ops {
     note: line("note"),
     output: line("output"),
     problem: line("problem"),
+    ask: (text) => {
+      patch((current) => ({ notes: [...current.notes, { asked: text, answered: "" }] }));
+    },
+    addToAsk: (text) => {
+      patch((current) => {
+        const last = current.notes.at(-1);
+        if (last === undefined) return {};
+        return { notes: [...current.notes.slice(0, -1), { ...last, asked: `${last.asked}\n${text}` }] };
+      });
+    },
     answer: (text) => {
       const said = text.trim();
       if (said === "") return;
@@ -287,6 +329,12 @@ function opsFor(slot: string, set: Set, get: Get): Ops {
         if (last === undefined) return {};
         return { notes: [...current.notes.slice(0, -1), { ...last, answered: said }] };
       });
+    },
+    takeSteer: () => {
+      const engine = engineFor(slot);
+      const { steer } = engine;
+      engine.steer = null;
+      return steer;
     },
     engine: engineFor(slot),
     cancelled: () => engineFor(slot).cancelled,
@@ -419,6 +467,16 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
       queue = rest;
       if (outcome.code === 0) {
         ran.push({ step, state: "passed" });
+        // The gap between two steps is the only safe place to listen: a
+        // command that is halfway through putting a repository into a cloud
+        // gets to finish, and Stop - not a sentence - is what ends one.
+        const asked = ops.takeSteer();
+        if (asked !== null) {
+          const steered = await askSteer(ops, root, plan, asked, ran, queue);
+          if (steered === null) return;
+          queue = steered;
+          show(null);
+        }
         continue;
       }
       ran.push({ step, state: "failed" });
@@ -448,6 +506,9 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
           return;
         }
         if (plan.keep.length > 0) ops.note(translate("deploy.kept", { count: plan.keep.length }));
+        // Said while the service was being asked: there is no step left to
+        // steer, and saying so beats leaving the question without an answer.
+        if (ops.takeSteer() !== null) ops.answer(translate("deploy.steerTooLate"));
         ops.stage({
           kind: "done",
           plan,
@@ -490,7 +551,10 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
     }
     failures.push(signature);
     ops.note(translate("deploy.fixing", { round: rounds, max: MAX_ROUNDS }));
-    const revised = await askFix(ops, root, plan, failed, queue);
+    // The thing the person was trying to say when it broke goes in with the
+    // failure: they can see the same output the AI does, and often know the
+    // one thing it cannot read out of it.
+    const revised = await askFix(ops, root, plan, failed, queue, ops.takeSteer() ?? "");
     if (revised === null) {
       if (!ops.cancelled()) blocked(ops, plan, show(null), translate("deploy.noWayOn"));
       return;
@@ -607,25 +671,33 @@ async function askFix(
   plan: DeployPlan,
   failed: { label: string; command: string; output: string },
   remaining: DeployStep[],
+  asked: string,
 ): Promise<DeployStep[] | null> {
   const { cloudId } = ops.slot();
+  // Only when there is a question: a fix round nobody prompted must not file
+  // its words against something the person asked pages ago.
+  const answerThem = (said: string) => {
+    if (asked !== "") ops.answer(said);
+  };
   let answers: ReadAnswer[] = [];
   let rejected: Rejected[] = [];
   for (let round = 1; round <= MAX_REJECTIONS + 1; round += 1) {
     const reply = await turn(
       ops,
       root,
-      fixPrompt({ cloudId, plan, failed, remaining, answers, rejected }),
+      fixPrompt({ cloudId, plan, failed, remaining, answers, rejected, asked }),
       "edits",
     );
     if (reply === null) return null;
     const revision = parseRevision(reply);
     if (revision === null) {
       ops.problem(translate("deploy.unreadable"));
+      answerThem(translate("deploy.steerUnreadable"));
       return null;
     }
     if (revision.giveUp !== null) {
       ops.problem(translate("deploy.gaveUp", { reason: revision.giveUp }));
+      answerThem(revision.giveUp);
       return null;
     }
     if (revision.steps.length === 0) {
@@ -633,14 +705,70 @@ async function askFix(
       continue;
     }
     const checked = await check(ops, plan, revision.steps, [], null);
-    if (checked.rejected.length === 0) return checked.steps;
+    if (checked.rejected.length === 0) {
+      answerThem(revision.reply || translate("deploy.steerNoWords"));
+      return checked.steps;
+    }
     rejected = checked.rejected;
     for (const one of rejected) {
       ops.problem(translate("deploy.rejected", { part: one.part, label: one.label, reason: one.reason }));
     }
   }
   ops.problem(translate("deploy.stillRejected"));
+  answerThem(translate("deploy.steerStopped"));
   return null;
+}
+
+/**
+ * What the person said between two steps, put to the AI - and what comes back.
+ *
+ * Nothing has failed here: the run is going as confirmed and the person wants
+ * something else, so the AI's own words are the point and a rewritten
+ * remainder is optional. What it does write goes through the same Rust check a
+ * plan does, all of it or none of it: half a rewritten remainder is a
+ * deployment nobody agreed to. Returns the steps to run now - the ones handed
+ * in, when there is nothing to change or nothing Aime will run - and null only
+ * when the run was stopped.
+ */
+async function askSteer(
+  ops: Ops,
+  root: string,
+  plan: DeployPlan,
+  asked: string,
+  ran: StepRun[],
+  remaining: DeployStep[],
+): Promise<DeployStep[] | null> {
+  const { cloudId } = ops.slot();
+  ops.note(translate("deploy.steering"));
+  const reply = await turn(
+    ops,
+    root,
+    steerPrompt({ cloudId, plan, asked, ran: ran.map((one) => one.step.label), remaining }),
+    "edits",
+  );
+  if (reply === null) return null;
+  const steer = parseSteer(reply);
+  if (steer === null) {
+    ops.problem(translate("deploy.unreadable"));
+    ops.answer(translate("deploy.steerUnreadable"));
+    return remaining;
+  }
+  const said = steer.reply || translate("deploy.steerNoWords");
+  if (steer.steps.length === 0) {
+    ops.answer(said);
+    return remaining;
+  }
+  const checked = await check(ops, plan, steer.steps, [], null);
+  if (checked.rejected.length > 0) {
+    for (const one of checked.rejected) {
+      ops.problem(translate("deploy.rejected", { part: one.part, label: one.label, reason: one.reason }));
+    }
+    ops.answer(`${said}\n${translate("deploy.steerRefused")}`);
+    return remaining;
+  }
+  ops.answer(said);
+  ops.note(translate("deploy.revised", { count: checked.steps.length }));
+  return checked.steps;
 }
 
 /** Runs the Rust check for a set of steps and reads, against the plan's target. */
@@ -782,6 +910,9 @@ async function turn(
 }
 
 function blocked(ops: Ops, plan: DeployPlan | null, steps: StepRun[], reason: string): void {
+  // Whatever the person said that never reached the AI is answered here, not
+  // left hanging under their own question.
+  if (ops.takeSteer() !== null) ops.answer(translate("deploy.steerStopped"));
   const current = ops.slot();
   const keptPlan = plan ?? planOf(current.stage);
   ops.stage({ kind: "blocked", plan: keptPlan, steps, reason });

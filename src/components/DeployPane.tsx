@@ -36,7 +36,7 @@ import { CopyButton, Note } from "./CloudDetail";
 export function DeployPane({ slot }: { slot: string }) {
   const t = useT();
   const deploy = useDeploy((s) => s.slots[slot]);
-  const { close, cancel, confirm, dismiss, start, revise } = useDeploy();
+  const { close, cancel, confirm, dismiss, start, revise, steer } = useDeploy();
   if (deploy === undefined) return null;
   const { stage, account, cloudId, log, notes } = deploy;
   const live = stage.kind !== "confirm" && stage.kind !== "done" && stage.kind !== "blocked";
@@ -99,7 +99,19 @@ export function DeployPane({ slot }: { slot: string }) {
           />
         )}
 
-        {(stage.kind === "deploying" || stage.kind === "proving") && <Steps steps={stage.steps} />}
+        {(stage.kind === "deploying" || stage.kind === "proving") && (
+          <>
+            <Steps steps={stage.steps} />
+            <div className="mt-5">
+              <Steer
+                notes={notes}
+                onSteer={(note) => {
+                  steer(slot, note);
+                }}
+              />
+            </div>
+          </>
+        )}
 
         {stage.kind === "done" && (
           <>
@@ -122,6 +134,7 @@ export function DeployPane({ slot }: { slot: string }) {
               </p>
             </div>
             <Steps steps={stage.steps} />
+            <Exchange notes={notes} />
             <AgainOrClose
               onAgain={() => void start(cloudId, account)}
               onClose={() => {
@@ -156,6 +169,7 @@ export function DeployPane({ slot }: { slot: string }) {
                 <Steps steps={stage.steps} />
               </div>
             )}
+            <Exchange notes={notes} />
           </>
         )}
 
@@ -334,63 +348,134 @@ function Confirm({
  */
 function Revise({ notes, onRevise }: { notes: DeployNote[]; onRevise: (note: string) => void }) {
   const t = useT();
+  return (
+    <Section title={t("deploy.reviseTitle")} hint={t("deploy.reviseHint")}>
+      <Notes notes={notes} />
+      <Composer
+        placeholder={t("deploy.revisePlaceholder")}
+        sendLabel={t("deploy.reviseSend")}
+        onSend={onRevise}
+      />
+    </Section>
+  );
+}
+
+/**
+ * The same conversation, while the commands are running.
+ *
+ * A deploy that goes wrong halfway used to leave one button, Stop - and a
+ * person who could see the mistake had no way to say it. They can now, and it
+ * still holds the rule the confirm page holds: what they type runs nothing.
+ * It waits for the command in flight to end (a half-finished deploy is not a
+ * thing to interrupt on a sentence), then goes to the AI - with the failure,
+ * if it failed - and whatever the AI writes is checked before it runs.
+ */
+function Steer({ notes, onSteer }: { notes: DeployNote[]; onSteer: (note: string) => void }) {
+  const t = useT();
+  const waiting = notes.at(-1)?.answered === "";
+  return (
+    <Section title={t("deploy.steerTitle")} hint={t("deploy.steerHint")}>
+      <Notes notes={notes} />
+      {waiting && (
+        <p className="mb-2 flex items-baseline gap-2 pl-5 text-[11.5px] text-muted">
+          <Loader2 size={12} className="mt-0.5 shrink-0 animate-spin" />
+          {t("deploy.steerPending")}
+        </p>
+      )}
+      <Composer
+        placeholder={t("deploy.steerPlaceholder")}
+        sendLabel={t("deploy.steerSend")}
+        onSend={onSteer}
+      />
+    </Section>
+  );
+}
+
+/** The exchange after the deploy has come to rest: nothing left to ask, all of it worth reading. */
+function Exchange({ notes }: { notes: DeployNote[] }) {
+  const t = useT();
+  if (notes.length === 0) return null;
+  return (
+    <div className="mt-4">
+      <Section title={t("deploy.saidTitle")}>
+        <Notes notes={notes} />
+      </Section>
+    </div>
+  );
+}
+
+/** What was asked and what came back, oldest first. */
+function Notes({ notes }: { notes: DeployNote[] }) {
+  if (notes.length === 0) return null;
+  return (
+    <ul className="mb-2 space-y-2 text-[12px]">
+      {notes.map((exchange, index) => (
+        <li key={`${String(index)}-${exchange.asked}`} className="space-y-1">
+          <p className="flex items-baseline gap-2 text-muted">
+            <MessageSquare size={12} className="mt-0.5 shrink-0" />
+            {/* Two things said before either was taken are one question on
+                two lines, so the line break has to survive. */}
+            <span className="whitespace-pre-wrap">{exchange.asked}</span>
+          </p>
+          {/* The answer under the question that earned it. A request that came
+              back as a silently different plan was the complaint: whether it
+              had been heard, refused or worked around had to be found by
+              comparing two plans. */}
+          {exchange.answered !== "" && (
+            <p className="flex items-baseline gap-2 pl-5 text-fg">
+              <Sparkles size={12} className="mt-0.5 shrink-0 text-accent" />
+              <span className="whitespace-pre-wrap">{exchange.answered}</span>
+            </p>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The box a person types into, sent with Enter or the button. */
+function Composer({
+  placeholder,
+  sendLabel,
+  onSend,
+}: {
+  placeholder: string;
+  sendLabel: string;
+  onSend: (note: string) => void;
+}) {
   const [note, setNote] = useState("");
   const send = () => {
     const asked = note.trim();
     if (asked === "") return;
     setNote("");
-    onRevise(asked);
+    onSend(asked);
   };
 
   return (
-    <Section title={t("deploy.reviseTitle")} hint={t("deploy.reviseHint")}>
-      {notes.length > 0 && (
-        <ul className="mb-2 space-y-2 text-[12px]">
-          {notes.map((exchange, index) => (
-            <li key={`${String(index)}-${exchange.asked}`} className="space-y-1">
-              <p className="flex items-baseline gap-2 text-muted">
-                <MessageSquare size={12} className="mt-0.5 shrink-0" />
-                <span>{exchange.asked}</span>
-              </p>
-              {/* The answer under the question that earned it. A request that
-                  came back as a silently different plan was the complaint:
-                  whether it had been heard, refused or worked around had to be
-                  found by comparing two plans. */}
-              {exchange.answered !== "" && (
-                <p className="flex items-baseline gap-2 pl-5 text-fg">
-                  <Sparkles size={12} className="mt-0.5 shrink-0 text-accent" />
-                  <span>{exchange.answered}</span>
-                </p>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="flex items-start gap-2">
-        <textarea
-          value={note}
-          onChange={(event) => {
-            setNote(event.target.value);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              send();
-            }
-          }}
-          rows={2}
-          placeholder={t("deploy.revisePlaceholder")}
-          className="min-w-0 flex-1 resize-y rounded border border-line bg-bg px-2 py-1.5 text-[12px] outline-none focus:border-accent"
-        />
-        <button
-          onClick={send}
-          disabled={note.trim() === ""}
-          className="shrink-0 rounded border border-accent px-2.5 py-1.5 text-[12px] text-accent hover:bg-accent-soft disabled:opacity-40"
-        >
-          {t("deploy.reviseSend")}
-        </button>
-      </div>
-    </Section>
+    <div className="flex items-start gap-2">
+      <textarea
+        value={note}
+        onChange={(event) => {
+          setNote(event.target.value);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            send();
+          }
+        }}
+        rows={2}
+        placeholder={placeholder}
+        className="min-w-0 flex-1 resize-y rounded border border-line bg-bg px-2 py-1.5 text-[12px] outline-none focus:border-accent"
+      />
+      <button
+        onClick={send}
+        disabled={note.trim() === ""}
+        className="shrink-0 rounded border border-accent px-2.5 py-1.5 text-[12px] text-accent hover:bg-accent-soft disabled:opacity-40"
+      >
+        {sendLabel}
+      </button>
+    </div>
   );
 }
 

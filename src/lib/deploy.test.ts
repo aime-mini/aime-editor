@@ -2,15 +2,20 @@ import { describe, expect, it } from "vitest";
 import type { CloudAccount, CloudResource } from "../stores/cloud";
 import {
   commandLine,
+  fixPrompt,
   overwritten,
   parsePlan,
   parseRevision,
+  parseSteer,
   parseSurvey,
   planPrompt,
   readLine,
+  steerPrompt,
   surveyPrompt,
   urlIn,
   valueAt,
+  type DeployPlan,
+  type DeployStep,
   type KeepRead,
   type Survey,
 } from "./deploy";
@@ -527,5 +532,115 @@ describe("a plan for a cloud whose reads answer no address", () => {
     });
     expect(gcp).toContain("the read that answers the deployed URL");
     expect(gcp).not.toContain("Aime builds one itself");
+  });
+});
+
+/**
+ * A person watching a deploy can see things the CLI's output cannot say. What
+ * they type is put to the AI at the first moment nothing is in flight - with
+ * the failure when it failed - and these pin what the AI is told and what Aime
+ * accepts back.
+ */
+describe("speaking while it runs", () => {
+  const plan: DeployPlan = {
+    summary: "Deploy shop to the existing Cloud Run service web",
+    reply: "",
+    target: { existing: true, resourceId: service.id, region: "asia-southeast1" },
+    proposal: null,
+    keep: [],
+    steps: [],
+    files: [],
+    prove: null,
+  };
+  const remaining: DeployStep[] = [
+    {
+      label: "Deploy from source",
+      args: ["run", "deploy", "web", "--source", "."],
+      changes: "a new revision",
+    },
+    {
+      label: "Roll the workload",
+      args: ["rollout", "restart", "deployment/web"],
+      changes: "restarted pods",
+      program: "kubectl",
+    },
+  ];
+  const failed = {
+    label: "Deploy from source",
+    command: "gcloud run deploy web --source .",
+    output: "ERROR: Quota exceeded",
+  };
+
+  it("tells the AI what was said, what cannot be undone, and what is still to run", () => {
+    const prompt = steerPrompt({
+      cloudId: "gcp",
+      plan,
+      asked: "that is the wrong region",
+      ran: ["Enable APIs"],
+      remaining,
+    });
+
+    expect(prompt).toContain("> that is the wrong region");
+    expect(prompt).toContain("Already run - this cannot be undone");
+    expect(prompt).toContain("- Enable APIs");
+    expect(prompt).toContain("- Deploy from source: gcloud run deploy web --source .");
+    // A step that names its own CLI is shown under that one, not the cloud's.
+    expect(prompt).toContain("- Roll the workload: kubectl rollout restart deployment/web");
+    // Nothing has failed, so leaving the plan alone has to be sayable.
+    expect(prompt).toContain("An empty list means the deployment goes on exactly as confirmed");
+    expect(prompt).toContain("a request, not a permission");
+  });
+
+  it("reads an answer that is words alone, and refuses one that is neither", () => {
+    expect(parseSteer('{"reply":"It is already in that region.","steps":[]}')).toEqual({
+      reply: "It is already in that region.",
+      steps: [],
+    });
+    expect(
+      parseSteer('{"reply":"","steps":[{"label":"Redeploy","args":["run","deploy"],"changes":"x"}]}'),
+    ).toMatchObject({ steps: [{ label: "Redeploy" }] });
+    expect(parseSteer('{"reply":"","steps":[]}')).toBeNull();
+    expect(parseSteer("I could not do that")).toBeNull();
+  });
+
+  it("puts what was said in with the failure, and asks the AI to answer the person too", () => {
+    const prompt = fixPrompt({
+      cloudId: "gcp",
+      plan,
+      failed,
+      remaining: [],
+      answers: [],
+      rejected: [],
+      asked: "the quota is on another project",
+    });
+
+    expect(prompt).toContain("> the quota is on another project");
+    expect(prompt).toContain("`reply`: your answer to what the person just said");
+    expect(prompt).toContain("a request, not a permission");
+  });
+
+  it("asks for no reply when nobody said anything", () => {
+    const prompt = fixPrompt({
+      cloudId: "gcp",
+      plan,
+      failed,
+      remaining: [],
+      answers: [],
+      rejected: [],
+      asked: "",
+    });
+
+    expect(prompt).not.toContain("The person watching this run said");
+    expect(prompt).toContain("`reply`: empty string - nobody asked you anything.");
+  });
+
+  it("reads the reply out of a revision, and still calls words alone no fix", () => {
+    const revision = parseRevision(
+      '{"steps":[{"label":"Deploy to the other project","args":["run","deploy","web"],"changes":"a revision"}],' +
+        '"files":[],"inspect":[],"giveUp":null,"reply":"Moved it to the project that has the quota."}',
+    );
+    expect(revision?.reply).toBe("Moved it to the project that has the quota.");
+    // A failed step is not restarted by words: an answer with nothing to run is no answer.
+    expect(parseRevision('{"steps":[],"files":[],"inspect":[],"giveUp":null,"reply":"I see."}')).toBeNull();
   });
 });
