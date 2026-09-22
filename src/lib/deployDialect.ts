@@ -11,9 +11,9 @@
  * single command and offer the operations on a resource. A cloud that also has
  * a `DeployRecipe` is one Aime can plan a whole deployment for, which is a
  * much larger claim - it needs the prompt to carry that cloud's own idea of a
- * plan, and it is only made once a real deployment has run end to end. AWS has
- * the first and not the second (2026-09-18): the panel works on what is
- * already there, and shows no Deploy button.
+ * plan, and it is only made once a real deployment has run end to end. All
+ * four have both since 2026-09-22; a fifth cloud would start at the first tier
+ * and stay there until a deployment of its own has really run.
  */
 
 /** One cloud's command line, as a prompt has to describe it. */
@@ -59,7 +59,7 @@ export interface DeployRecipe {
   /** What that CLI calls the thing a deployment happens inside. */
   target: string;
   /** The label for that thing on the confirm page, as a translation key. */
-  scopeLabel: "deploy.project" | "deploy.subscription";
+  scopeLabel: "deploy.project" | "deploy.subscription" | "deploy.profile";
   /** The rules of the command line, as the Rust checker enforces them. */
   rules: string;
   /** What keeps a running service's settings, in this CLI's own terms. */
@@ -68,9 +68,17 @@ export interface DeployRecipe {
   resourceId: string;
   /** A read of an existing service, for the survey's example. */
   inspect: string;
-  /** The `keep`, `steps` and `prove` of a plan, in this cloud's own commands. */
+  /** The `keep`, `steps`, `files` and `prove` of a plan, in this cloud's own terms. */
   keep: string;
   steps: string;
+  /**
+   * The file a plan writes first, as this cloud's own kind of artifact.
+   *
+   * A Dockerfile is the right hint where a source build follows and the wrong
+   * one on AWS, which builds nothing here and deploys a template instead - and
+   * an example is the strongest instruction in a prompt.
+   */
+  files: string;
   prove: string;
   /** The region a plan's example names, which is the one both clouds serve here. */
   region: string;
@@ -189,6 +197,69 @@ const SUPABASE_RULES = [
   "- Values hold letters, digits and `_.:/=,*@+-` only - no spaces, no quotes, nothing a shell could misread.",
 ].join("\n");
 
+/**
+ * AWS, where a deployment is a CloudFormation STACK.
+ *
+ * The other three clouds each have one command that takes a repository and
+ * gives back a running service - `gcloud run deploy --source`, `az webapp up`,
+ * `supabase functions deploy`. Measured 2026-09-22 against aws-cli 2.17.31,
+ * AWS has none: every path wants an artifact built first (a zip, an image) or
+ * a template, and building one needs a shell Aime will not give the AI. A
+ * template is a FILE in the repository, which is exactly what the plan's
+ * `files` step already writes - so the stack is the unit, and the stack's own
+ * Output is the address Aime proves. It also answers the safety question
+ * cleanly: a stack owns what it created and nothing else.
+ */
+const AWS_RULES = [
+  "- A step runs as `aws` and nothing else. Never `sam`, `cdk`, `copilot`, `eb`, `terraform`, `docker`, " +
+    "a shell or a script: a shape that needs one of those cannot be deployed from here, so choose what " +
+    "`aws` alone can deploy and say plainly in `architecture` what you substituted for what, and what is " +
+    "given up.",
+  // The one rule that shapes every AWS plan, said before the grammar.
+  "- A DEPLOYMENT HERE IS A CLOUDFORMATION STACK. There is no `aws` command that takes this repository " +
+    "and returns a running service, so: write the template into the repository as a `files` entry, and " +
+    "make `cloudformation deploy --template-file <path> --stack-name <name>` a step. Anything the stack " +
+    "cannot carry - the built files of a site - goes up afterwards with `s3 sync <dir> s3://<bucket>`.",
+  // Measured 2026-09-22 on a real stack: `describe-stacks` returns Outputs
+  // in ALPHABETICAL order of their key, not the order the template writes
+  // them - a template whose first output was `SiteUrl` came back
+  // `BucketName`, `DistributionId`, `SiteUrl`. So the plan names the
+  // output it wants instead of counting.
+  "- The stack MUST declare an output named exactly `SiteUrl` whose value is the URL of what was " +
+    "deployed, and `prove.urlPath` must be `Stacks.0.Outputs.OutputKey=SiteUrl.OutputValue` - which " +
+    "picks that output BY NAME, because `describe-stacks` returns outputs in alphabetical order of " +
+    "their key rather than the order the template declares them. Keep whatever other outputs are " +
+    "useful; their order does not matter. A plan whose stack outputs no URL cannot be proved and " +
+    "will not run.",
+  // Nothing is built on this machine, so the artifact has to be a file.
+  "- Nothing is built here: there is no `docker build` and no way to make a zip. So deploy the shapes " +
+    "whose artifact IS a file in the repository - a static site in an S3 bucket (with CloudFront in " +
+    "front of it when it needs HTTPS), or a Lambda whose handler the template carries inline " +
+    "(`Code: ZipFile:`) behind a Function URL. A container image or a packaged zip is out of reach; say " +
+    "so rather than planning one.",
+  "- An `aws` command line is always `<service> <operation>`, both words and in that order " +
+    "(`cloudformation deploy`, `s3api create-bucket`, `s3 sync`). `args` are the arguments after `aws`, " +
+    "one token each: the two words, then positionals, then flags. A flag and its value are two tokens " +
+    "(`--stack-name`, `web`), never `--stack-name=…`.",
+  "- Aime adds `--profile` to every command and `--output json` to every read - never include them. The " +
+    "region is NOT scope here: every step and every read names `--region` itself, with the region " +
+    "written out.",
+  // The user's rule, and the CLI's own spelling of it.
+  "- ONLY MAKE NEW THINGS. The stack name must be one that is not in the account yet, and the resources " +
+    "in it must be new: never take over a bucket, a table, a role or a service that is already there. " +
+    "Never `delete-*`, `terminate-*`, `s3 rm` or `s3 rb`; a deployment adds and updates, and what it did " +
+    "not make is not its to touch.",
+  "- `--capabilities CAPABILITY_IAM` is allowed, and is how a stack that runs code gets a role of its " +
+    "own - CloudFormation names that role after the stack. `CAPABILITY_NAMED_IAM` and " +
+    "`CAPABILITY_AUTO_EXPAND` are refused: the first can name an identity something else already owns, " +
+    "the second rewrites the template after the person has read it.",
+  "- Never the `iam`, `sts`, `organizations`, `account`, `sso`, `configure`, `budgets`, `ce` or " +
+    "`ec2-instance-connect` groups, and never `ssm start-session`, `ssm send-command`, " +
+    "`ssm start-automation-execution` or `ecs execute-command`, which run code on a machine. Never " +
+    "`--cli-input-json`, `--cli-input-yaml`, `--endpoint-url`, `--query` or `--generate-cli-skeleton`.",
+  "- Values hold letters, digits and `_.:/=,*@+-` only - no spaces, no quotes, nothing a shell could misread.",
+].join("\n");
+
 const DIALECTS = {
   gcp: {
     cloud: "Google Cloud",
@@ -221,6 +292,7 @@ const DIALECTS = {
       steps:
         '{"label":"Enable the APIs","args":["services","enable","run.googleapis.com"],"changes":"the project\'s enabled APIs"},' +
         '{"label":"Apply the manifests","program":"kubectl","args":["apply","--filename","k8s/"],"changes":"the cluster\'s workloads"}',
+      files: '{"path":"Dockerfile","why":"the repository has none and a source build needs one"}',
       prove:
         '{"read":{"purpose":"overview","label":"gcloud run services describe","args":["run","services","describe","web",' +
         '"--region","asia-southeast1"]},"urlPath":"status.url","path":"/","expect":200}',
@@ -270,18 +342,20 @@ const DIALECTS = {
         '"southeastasia","--sku","F1","--runtime","NODE:22-lts"],"changes":"the web app, its plan and its code"}',
       // `az webapp show` answers a bare host in `defaultHostName`, which the
       // prove step reads as `https://<host>` - the same shape App Engine has.
+      files: '{"path":"Dockerfile","why":"the repository has none and the build needs one"}',
       prove:
         '{"read":{"purpose":"overview","label":"az webapp show","args":["webapp","show","--name","web",' +
         '"--resource-group","rg-web"]},"urlPath":"defaultHostName","path":"/","expect":200}',
     },
   },
   /**
-   * AWS, measured 2026-09-18 against aws-cli 2.17.31 - the command line only.
+   * AWS, measured 2026-09-18 against aws-cli 2.17.31, and deployable since
+   * 2026-09-22.
    *
-   * There is no `deploy` here on purpose. Aime can prove a single `aws`
-   * command, so the panel offers the day-to-day work on a resource that
-   * already exists; it has never planned and run a whole deployment on AWS, so
-   * it does not offer to.
+   * What kept a `deploy` out of here was never the checker - it was that no
+   * `aws` command turns a repository into a running service the way
+   * `gcloud run deploy --source` does. `AWS_RULES` is where that is answered:
+   * the unit of a deployment here is a CloudFormation stack.
    */
   aws: {
     cloud: "AWS",
@@ -320,15 +394,47 @@ const DIALECTS = {
     // group, and almost no command takes it - said plainly so the AI does not
     // reach for a resource group that AWS does not have.
     groupWord: "the AWS account number it belongs to, which few commands take",
+    deploy: {
+      // A profile IS the account, so the thing a deployment happens inside is
+      // the account those credentials reach.
+      target: "account",
+      scopeLabel: "deploy.profile",
+      rules: AWS_RULES,
+      keepRule:
+        "- When something for this app ALREADY EXISTS, it belongs to a stack: deploy THAT stack again " +
+        "by its own name, with the whole template, and CloudFormation keeps what has not changed. Never " +
+        "create a second resource beside the first, and never adopt a resource that no stack owns - " +
+        "name it in `keep` and leave it where it is.",
+      region: "ap-southeast-2",
+      resourceId: "arn:aws:cloudformation:ap-southeast-2:123456789012:stack/web/0a1b2c3d",
+      inspect:
+        '{"purpose":"overview","label":"aws cloudformation describe-stacks","args":["cloudformation",' +
+        '"describe-stacks","--stack-name","web","--region","ap-southeast-2"]}',
+      keep:
+        '{"label":"the stack\'s parameters","read":{"purpose":"overview","label":"aws cloudformation describe-stacks",' +
+        '"args":["cloudformation","describe-stacks","--stack-name","web","--region","ap-southeast-2"]},' +
+        '"path":"Stacks.0.Parameters"}',
+      steps:
+        '{"label":"Deploy the stack","args":["cloudformation","deploy","--template-file","infra/site.yaml",' +
+        '"--stack-name","web","--region","ap-southeast-2"],"changes":"the stack and every resource in it"},' +
+        '{"label":"Upload the built site","args":["s3","sync","dist","s3://web-site-bucket","--region",' +
+        '"ap-southeast-2"],"changes":"the files in the bucket"}',
+      // The stack's own first output, which the template is told to make the URL.
+      files: '{"path":"infra/site.yaml","why":"the CloudFormation template this stack is deployed from"}',
+      prove:
+        '{"read":{"purpose":"overview","label":"aws cloudformation describe-stacks","args":["cloudformation",' +
+        '"describe-stacks","--stack-name","web","--region","ap-southeast-2"]},' +
+        '"urlPath":"Stacks.0.Outputs.OutputKey=SiteUrl.OutputValue","path":"/","expect":200}',
+    },
   },
   /**
    * Supabase, measured 2026-09-18 on the CLI 2.116.0 - the command line only.
    *
-   * No `deploy` here either, and for a reason worth stating: Aime runs this
-   * CLI from a work folder of its own that holds no project, so the commands
-   * that deploy anything (`db push`, `functions deploy`, `config push`) would
-   * push emptiness. What works is everything that acts on the REMOTE project
-   * through `--project-ref`, which is what the panel is for.
+   * The panel and the deploy are two different folders here, which is the
+   * whole reason this CLI took so long to deploy from: Aime runs it for the
+   * panel from a work folder of its own that holds no project, so `db push`,
+   * `functions deploy` and `config push` would push emptiness and are refused
+   * there. A deploy runs in the repository, where they are the point.
    */
   supabase: {
     cloud: "Supabase",
@@ -401,6 +507,7 @@ const DIALECTS = {
         '{"label":"Deploy the Edge Function","args":["functions","deploy","hello","--use-api","--no-verify-jwt"],' +
         '"changes":"the hello Edge Function on this project"},' +
         '{"label":"Apply the migrations","args":["db","push"],"changes":"the database schema of this project"}',
+      files: '{"path":"supabase/functions/hello/index.ts","why":"the function this deploy pushes"}',
       prove:
         '{"read":{"purpose":"overview","label":"supabase functions list","args":["functions","list"]},' +
         '"urlPath":"","path":"/hello","expect":200}',

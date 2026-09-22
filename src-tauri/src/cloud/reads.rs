@@ -1060,13 +1060,26 @@ fn check_aws(line: &CommandLine<'_>) -> Result<(), String> {
 /// when required. Both are captured verbatim in the tests, because a fixture
 /// written from memory of a help format is a parser that passes commands the
 /// CLI will refuse.
+/// The flags that same synopsis writes WITHOUT brackets, which is how the CLI
+/// marks the ones a command cannot run without.
+///
+/// Empty for a help with no synopsis: the caller then has nothing to require,
+/// which is the same answer as a command that requires nothing.
+pub(super) fn required_flags_in_synopsis(help: &str) -> Vec<String> {
+    let Some(block) = aws_synopsis_block(help) else {
+        return Vec::new();
+    };
+    block
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("--"))
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_string)
+        .collect()
+}
+
 pub(super) fn flags_in_synopsis(help: &str) -> Option<Vec<String>> {
-    const HEADING: &str = "\nSynopsis\n";
-    const NEXT: &str = "\nOptions\n";
-    let text = help.replace('\r', "");
-    let start = text.find(HEADING)? + HEADING.len();
-    let rest = &text[start..];
-    let block = rest.find(NEXT).map_or(rest, |end| &rest[..end]);
+    let block = aws_synopsis_block(help)?;
     let chars: Vec<char> = block.chars().collect();
     let mut flags = Vec::new();
     let mut at = 0;
@@ -1086,6 +1099,20 @@ pub(super) fn flags_in_synopsis(help: &str) -> Option<Vec<String>> {
         }
     }
     Some(flags)
+}
+
+/// The block under the `Synopsis` heading and above `Options`, or nothing.
+///
+/// Named for the CLI it reads: `aws` heads this block `Synopsis` and writes one
+/// argument per line, where the other CLIs write `SYNOPSIS` and a paragraph
+/// (`synopsis_block`).
+fn aws_synopsis_block(help: &str) -> Option<String> {
+    const HEADING: &str = "\nSynopsis\n";
+    const NEXT: &str = "\nOptions\n";
+    let text = help.replace('\r', "");
+    let start = text.find(HEADING)? + HEADING.len();
+    let rest = &text[start..];
+    Some(rest.find(NEXT).map_or(rest, |end| &rest[..end]).to_string())
 }
 
 /// Whether the AWS CLI's own service models know this command, and if they do,
@@ -2249,6 +2276,58 @@ Synopsis
 
 Options
 "#;
+
+    /// `aws cloudfront create-invalidation help`, captured verbatim
+    /// 2026-09-22 - the command whose own help has a flag its service model
+    /// does not (`--paths`, which the CLI adds on top of the API's
+    /// `--invalidation-batch`), and which marks exactly one flag required.
+    const CREATE_INVALIDATION_HELP: &str = r#"
+Synopsis
+********
+
+     create-invalidation
+   --distribution-id <value>
+   [--invalidation-batch <value>]
+   [--paths <value>]
+   [--cli-input-json | --cli-input-yaml]
+   [--generate-cli-skeleton <value>]
+   [--debug]
+   [--endpoint-url <value>]
+   [--no-verify-ssl]
+   [--no-paginate]
+   [--output <value>]
+   [--query <value>]
+   [--profile <value>]
+   [--region <value>]
+   [--version <value>]
+   [--color <value>]
+   [--no-sign-request]
+   [--ca-bundle <value>]
+   [--cli-read-timeout <value>]
+   [--cli-connect-timeout <value>]
+   [--cli-binary-format <value>]
+   [--no-cli-pager]
+   [--cli-auto-prompt]
+   [--no-cli-auto-prompt]
+
+
+Options
+"#;
+
+    #[test]
+    fn a_synopsis_says_which_flags_a_command_cannot_run_without() {
+        let flags = flags_in_synopsis(CREATE_INVALIDATION_HELP).expect("a synopsis");
+        assert!(flags.contains(&"--paths".to_string()), "the CLI's own flag");
+        assert!(flags.contains(&"--invalidation-batch".to_string()));
+        // Bare in the synopsis means required; everything else is bracketed.
+        assert_eq!(
+            required_flags_in_synopsis(CREATE_INVALIDATION_HELP),
+            vec!["--distribution-id".to_string()]
+        );
+        // A help with no synopsis requires nothing, which is not the same as
+        // requiring everything.
+        assert!(required_flags_in_synopsis("nothing like a help page").is_empty());
+    }
 
     #[test]
     fn the_flags_a_cli_only_command_takes_are_read_from_its_own_synopsis() {

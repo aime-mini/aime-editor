@@ -475,6 +475,7 @@ export const en = {
   "deploy.app": "{name} - {kind}, {stack}",
   "deploy.target": "Target",
   "deploy.project": "Project",
+  "deploy.profile": "Profile",
   "deploy.subscription": "Subscription",
   "deploy.signedInAs": "as",
   "deploy.region": "Region",

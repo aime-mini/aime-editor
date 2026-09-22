@@ -476,6 +476,7 @@ export const vi: Record<TranslationKey, string> = {
   "deploy.app": "{name} - {kind}, {stack}",
   "deploy.target": "Đích",
   "deploy.project": "Project",
+  "deploy.profile": "Profile",
   "deploy.subscription": "Subscription",
   "deploy.signedInAs": "bằng",
   "deploy.region": "Region",

@@ -383,7 +383,7 @@ export function planPrompt(input: {
       '"proposal":{"architecture":"…","cost":"…","performance":"…"},' +
       `"keep":[${recipe.keep}],` +
       `"steps":[${recipe.steps}],` +
-      '"files":[{"path":"Dockerfile","why":"…"}],' +
+      `"files":[${recipe.files}],` +
       `"prove":${recipe.prove}}`,
   );
   return lines.join("\n");
@@ -712,9 +712,7 @@ export function valueAt(document: unknown, path: string): unknown {
   let current: unknown = document;
   for (const segment of path.split(".").filter(Boolean)) {
     if (Array.isArray(current)) {
-      const index = Number(segment);
-      if (!Number.isInteger(index)) return undefined;
-      current = current[index];
+      current = segment.includes("=") ? elementWhere(current, segment) : current[indexIn(segment)];
     } else if (current !== null && typeof current === "object") {
       current = (current as Record<string, unknown>)[segment];
     } else {
@@ -722,6 +720,34 @@ export function valueAt(document: unknown, path: string): unknown {
     }
   }
   return current;
+}
+
+/** An array segment that is not a `field=value` selector must be an index. */
+function indexIn(segment: string): number {
+  const index = Number(segment);
+  return Number.isInteger(index) ? index : -1;
+}
+
+/**
+ * The element of a list whose `field` is `value`, for a `field=value` segment.
+ *
+ * AWS answers in key-and-value lists - `Outputs`, `Parameters`, `Tags` - and
+ * measured 2026-09-22 on a real stack, `describe-stacks` returns Outputs in
+ * ALPHABETICAL order of their key, not in the order the template declares
+ * them: a template whose first output was `SiteUrl` came back
+ * `BucketName`, `DistributionId`, `SiteUrl`. So a position is not a way to
+ * name one of them, and `Stacks.0.Outputs.OutputKey=SiteUrl.OutputValue` is.
+ */
+function elementWhere(list: unknown[], selector: string): unknown {
+  const cut = selector.indexOf("=");
+  const field = selector.slice(0, cut);
+  const wanted = selector.slice(cut + 1);
+  return list.find(
+    (element) =>
+      element !== null &&
+      typeof element === "object" &&
+      (element as Record<string, unknown>)[field] === wanted,
+  );
 }
 
 /**

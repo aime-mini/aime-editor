@@ -32,8 +32,8 @@
 //! also what stands behind the operations on one resource
 //! (`components/CloudOps.tsx`), and proving a single command is a far smaller
 //! claim than planning a whole deployment: the second needs a cloud's own idea
-//! of a plan in the prompt and a deployment that has actually run. AWS is the
-//! first without the second (`lib/deployDialect.ts` holds that split).
+//! of a plan in the prompt and a deployment that has actually run. All four
+//! clouds have both since 2026-09-22 (`lib/deployDialect.ts` holds that split).
 
 use super::dialect::{Dialect, Grant, Proof};
 use super::reads::{check_read_allowing, is_command_word, is_safe_value, PlannedRead};
@@ -163,8 +163,19 @@ const NO_KIND: &str = "";
 /// ceremony than Aime can offer: there the command is shown in full first, and
 /// the person has to type the resource's own name before the button works
 /// (`components/CloudOps.tsx`).
-const REFUSED_WORDS: [&str; 5] = ["delete", "destroy", "undelete", "purge", "abandon"];
-const REFUSED_WORD_PREFIX: &str = "remove-";
+///
+/// `rm` and `rb` are here because AWS spells removal as its own commands:
+/// `aws s3 rm s3://bucket/key` and `aws s3 rb s3://bucket` say nothing that
+/// matches the words above, and both take something away.
+const REFUSED_WORDS: [&str; 7] = ["delete", "destroy", "undelete", "purge", "abandon", "rm", "rb"];
+
+/// The same words where a CLI writes them as one hyphenated operation.
+///
+/// `gcloud` and `az` put the verb last (`az group delete`), which the whole
+/// word above catches. Every AWS API operation is one word - `delete-bucket`,
+/// `delete-stack`, `terminate-instances` - so without these a deployment could
+/// take away what it never made.
+const REFUSED_WORD_PREFIXES: [&str; 5] = ["remove-", "delete-", "destroy-", "terminate-", "purge-"];
 
 /// How long one step may run. A source deploy builds in Cloud Build; twenty
 /// minutes is generous for it and still ends a hang unattended.
@@ -627,16 +638,24 @@ impl<'a> StepLine<'a> {
         {
             return Err(format!("`{} {}` {}", refused.group, refused.command, refused.why));
         }
-        if let Some(word) = self
-            .heads
-            .iter()
-            .find(|word| REFUSED_WORDS.contains(word) || word.starts_with(REFUSED_WORD_PREFIX))
-        {
+        if let Some(word) = self.heads.iter().find(|word| {
+            REFUSED_WORDS.contains(word)
+                || REFUSED_WORD_PREFIXES
+                    .iter()
+                    .any(|prefix| word.starts_with(prefix))
+        }) {
             if !removal {
                 return Err(format!(
                     "`{word}` removes something; a deployment only adds and updates"
                 ));
             }
+        }
+        if let Some(refused) = dialect.refused_values.iter().find(|one| {
+            self.flags
+                .iter()
+                .any(|(flag, value)| *flag == one.flag && *value == Some(one.value))
+        }) {
+            return Err(format!("`{} {}` {}", refused.flag, refused.value, refused.why));
         }
         Ok(())
     }
@@ -793,9 +812,37 @@ impl<'a> StepLine<'a> {
     fn flags_fit(&self, words: &[&str], help: &str) -> Result<(), String> {
         if let [service, command] = words[..] {
             if let Some(verdict) = super::reads::aws_operation_flags(service, command, &self.flags) {
-                return verdict;
+                // The model describes the API; the CLI adds flags of its own on
+                // top of a real operation, and then the model is not the whole
+                // truth. Measured 2026-09-22: `cloudfront create-invalidation
+                // --paths` is in that command's own help and in no model, which
+                // has `--invalidation-batch` and calls it required - so a plan
+                // that used the CLI's own flag was refused for using it.
+                return verdict.or_else(|refusal| self.help_allows(help).ok_or(refusal));
             }
         }
+        self.synopsis_fits(words, help)
+    }
+
+    /// The command's own help as a second opinion: `Some(())` when it lists
+    /// every flag this step carries AND every flag it marks required is there.
+    ///
+    /// Only used to overturn a refusal from the model, never to make one: a
+    /// help Aime cannot parse says nothing, and nothing is not an accusation.
+    fn help_allows(&self, help: &str) -> Option<()> {
+        let accepted = super::reads::flags_in_synopsis(help)?;
+        let carried = |flag: &String| self.flags.iter().any(|(had, _)| had == flag);
+        let known = self
+            .flags
+            .iter()
+            .all(|(flag, _)| accepted.iter().any(|known| known == flag));
+        let complete = super::reads::required_flags_in_synopsis(help).iter().all(carried);
+        (known && complete).then_some(())
+    }
+
+    /// Whether the command's own help accepts every flag, for the commands the
+    /// CLI adds itself and no model carries.
+    fn synopsis_fits(&self, words: &[&str], help: &str) -> Result<(), String> {
         let Some(accepted) = super::reads::flags_in_synopsis(help) else {
             return Ok(());
         };
@@ -1289,6 +1336,141 @@ mod tests {
                 "the refusal does not name the group: {reason}"
             );
         }
+    }
+
+    /// Every AWS operation is one hyphenated word, so "delete" as a whole word
+    /// catches none of them - and a deployment that can take something away is
+    /// a deployment that can take away what it never made.
+    #[test]
+    fn an_aws_deployment_never_takes_anything_away() {
+        for refused in [
+            vec!["s3api", "delete-bucket", "--bucket", "b"],
+            vec!["cloudformation", "delete-stack", "--stack-name", "s"],
+            vec!["ec2", "terminate-instances", "--instance-ids", "i-0abc"],
+            // `s3` spells its own two, and neither looks like the words above.
+            vec!["s3", "rm", "s3://b/key"],
+            vec!["s3", "rb", "s3://b"],
+        ] {
+            let reason = shape_for(aws(), &refused, false)
+                .expect_err(&format!("`aws {}` removes something", refused.join(" ")));
+            assert!(reason.contains("removes something"), "{reason}");
+        }
+        // The panel may still remove: there the person types the resource's own
+        // name first, which is the ceremony a deployment has no place for.
+        op_shape_for(aws(), &["s3api", "delete-bucket", "--bucket", "b"])
+            .expect("removing a resource is day-to-day work on the panel");
+    }
+
+    /// The one thing `cloudformation deploy` can ask for that reaches outside
+    /// the stack: the right to make identities, and how they are named.
+    #[test]
+    fn a_stack_may_make_roles_it_owns_and_not_ones_somebody_else_named() {
+        let line = |capability: &'static str| {
+            vec![
+                "cloudformation",
+                "deploy",
+                "--template-file",
+                "infra/site.yaml",
+                "--stack-name",
+                "aime-site",
+                "--capabilities",
+                capability,
+            ]
+        };
+        shape_for(aws(), &line("CAPABILITY_IAM"), false)
+            .expect("a stack whose roles CloudFormation names belongs to that stack");
+
+        let named = shape_for(aws(), &line("CAPABILITY_NAMED_IAM"), false).expect_err("named IAM");
+        assert!(named.contains("name of its own choosing"), "{named}");
+        let expand = shape_for(aws(), &line("CAPABILITY_AUTO_EXPAND"), false).expect_err("auto expand");
+        assert!(expand.contains("after the person has read it"), "{expand}");
+    }
+
+    /// `aws cloudfront create-invalidation help`, captured verbatim 2026-09-22.
+    const CREATE_INVALIDATION_HELP: &str = r#"
+Synopsis
+********
+
+     create-invalidation
+   --distribution-id <value>
+   [--invalidation-batch <value>]
+   [--paths <value>]
+   [--cli-input-json | --cli-input-yaml]
+   [--generate-cli-skeleton <value>]
+   [--debug]
+   [--endpoint-url <value>]
+   [--no-verify-ssl]
+   [--no-paginate]
+   [--output <value>]
+   [--query <value>]
+   [--profile <value>]
+   [--region <value>]
+   [--version <value>]
+   [--color <value>]
+   [--no-sign-request]
+   [--ca-bundle <value>]
+   [--cli-read-timeout <value>]
+   [--cli-connect-timeout <value>]
+   [--cli-binary-format <value>]
+   [--no-cli-pager]
+   [--cli-auto-prompt]
+   [--no-cli-auto-prompt]
+
+
+Options
+"#;
+
+    /// The CLI adds flags on top of a real API operation, and then the service
+    /// model is not the whole truth about that command.
+    ///
+    /// Measured on a real plan: `create-invalidation --paths` was refused
+    /// because the model has only `--invalidation-batch` - and calls it
+    /// required - while the command's own help lists `--paths` and marks
+    /// nothing but `--distribution-id` required.
+    #[test]
+    fn a_flag_the_cli_adds_is_a_flag_the_command_has() {
+        let args: Vec<String> = [
+            "cloudfront",
+            "create-invalidation",
+            "--distribution-id",
+            "E123",
+            "--paths",
+            "/*",
+        ]
+        .iter()
+        .map(|word| (*word).to_string())
+        .collect();
+        let line = StepLine::parse(&args, false, aws()).expect("a well-formed line");
+        line.flags_fit(&["cloudfront", "create-invalidation"], CREATE_INVALIDATION_HELP)
+            .expect("the command's own help lists `--paths`");
+
+        // A flag NEITHER source knows is still refused, and the refusal says
+        // what the command does have.
+        let made_up: Vec<String> = [
+            "cloudfront",
+            "create-invalidation",
+            "--distribution-id",
+            "E123",
+            "--everything",
+        ]
+        .iter()
+        .map(|word| (*word).to_string())
+        .collect();
+        let refusal = StepLine::parse(&made_up, false, aws())
+            .expect("a well-formed line")
+            .flags_fit(&["cloudfront", "create-invalidation"], CREATE_INVALIDATION_HELP)
+            .expect_err("`--everything` is in no model and in no help");
+        assert!(refusal.contains("--everything"), "{refusal}");
+
+        // And a flag the help marks REQUIRED cannot be left out.
+        let missing: Vec<String> = ["cloudfront", "create-invalidation", "--paths", "/*"]
+            .iter()
+            .map(|word| (*word).to_string())
+            .collect();
+        StepLine::parse(&missing, false, aws())
+            .expect("a well-formed line")
+            .flags_fit(&["cloudfront", "create-invalidation"], CREATE_INVALIDATION_HELP)
+            .expect_err("`--distribution-id` is bare in the synopsis, so it is required");
     }
 
     /// A shell is refused inside a group the panel otherwise needs.

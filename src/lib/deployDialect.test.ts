@@ -23,9 +23,11 @@ describe("what a cloud is offered", () => {
   it("offers a deployment only where one has actually been run", () => {
     expect(DEPLOYABLE.has("gcp")).toBe(true);
     expect(DEPLOYABLE.has("azure")).toBe(true);
-    // AWS stays out on purpose: proving one command is not planning a
-    // deployment, and no AWS deployment has run end to end.
-    expect(DEPLOYABLE.has("aws")).toBe(false);
+    // AWS came in on 2026-09-22, and what it needed was not a row but a SHAPE:
+    // no `aws` command turns a repository into a running service, so the unit
+    // of a deployment here is a CloudFormation stack and the address Aime
+    // proves is the stack's own first output.
+    expect(DEPLOYABLE.has("aws")).toBe(true);
     // Supabase came in on 2026-09-21. What kept it out was a restriction of
     // Aime's own - the CLI was always run from a work folder with no project,
     // including during a deploy, which is the one time it belongs in the
@@ -34,10 +36,35 @@ describe("what a cloud is offered", () => {
   });
 
   it("refuses to hand out a recipe it does not have", () => {
-    expect(() => recipeOf("aws")).toThrow(/does not deploy to aws/);
+    expect(() => recipeOf("fly")).toThrow(/does not deploy to fly/);
     expect(() => dialectOf("fly")).toThrow(/has not measured/);
     expect(recipeOf("azure").target).toBe("subscription");
     expect(recipeOf("supabase").target).toBe("project");
+    // A profile IS the account on AWS, so that is what the confirm page names.
+    expect(recipeOf("aws").target).toBe("account");
+    expect(recipeOf("aws").scopeLabel).toBe("deploy.profile");
+  });
+
+  /**
+   * The AWS shape, pinned where it is decided: the stack is the unit, and the
+   * proof comes out of the stack's own outputs rather than from an address
+   * Aime builds or an answer the plan chose.
+   */
+  it("proves an AWS deployment by the stack's own first output", () => {
+    const aws = recipeOf("aws");
+    expect(aws.endpoint).toBeUndefined();
+    expect(aws.prove).toContain("cloudformation");
+    // By NAME, not by position: measured on a real stack, `describe-stacks`
+    // answers the outputs in alphabetical order of their key rather than the
+    // order the template declares them.
+    expect(aws.prove).toContain('"urlPath":"Stacks.0.Outputs.OutputKey=SiteUrl.OutputValue"');
+    expect(aws.rules).toContain("A DEPLOYMENT HERE IS A CLOUDFORMATION STACK");
+    // The two fences that make a stack safe to run unattended on somebody's
+    // own account: only new things, and roles the stack itself owns.
+    expect(aws.rules).toContain("ONLY MAKE NEW THINGS");
+    expect(aws.rules).toContain("CAPABILITY_NAMED_IAM` and `CAPABILITY_AUTO_EXPAND` are refused");
+    // Nothing is built on this machine, so the artifact has to be a file.
+    expect(aws.rules).toContain("no `docker build`");
   });
 
   /**

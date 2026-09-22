@@ -17,8 +17,9 @@
 //! A cloud with no table here can be neither deployed to nor operated on.
 //! Having a table is not the same as having a Deploy button: this checker also
 //! stands behind the operations on a single resource, and proving one command
-//! is a far smaller claim than planning a whole deployment. AWS and Supabase
-//! have the first and not the second (`lib/deployDialect.ts` holds that split).
+//! is a far smaller claim than planning a whole deployment. All four clouds
+//! have both since 2026-09-22; `lib/deployDialect.ts` holds that split, and a
+//! fifth cloud would arrive on the near side of it.
 
 /// How a CLI is told which account, project or subscription to work in.
 ///
@@ -111,6 +112,8 @@ pub(super) struct Dialect {
     /// open a shell on somebody's machine, which is the thing this whole
     /// module exists to keep out of an AI's reach.
     pub(super) refused_commands: &'static [RefusedCommand],
+    /// Values refused wherever their flag appears - see `RefusedValue`.
+    pub(super) refused_values: &'static [RefusedValue],
     /// Flag prefixes that replace or wipe what a running service already has,
     /// and the prefix to use instead.
     pub(super) overriding: &'static [&'static str],
@@ -163,6 +166,19 @@ pub(super) struct RefusedCommand {
     pub(super) group: &'static str,
     pub(super) command: &'static str,
     /// Finishes the sentence "`<group> <command>` …".
+    pub(super) why: &'static str,
+}
+
+/// One value a flag may not carry, wherever that flag appears.
+///
+/// A flag is not always the whole decision: `aws cloudformation deploy` is a
+/// command a deployment is for, and `--capabilities` is how the same command
+/// asks for the right to make identities. What it may ask for is a question
+/// about the value, not about the flag or the command.
+pub(super) struct RefusedValue {
+    pub(super) flag: &'static str,
+    pub(super) value: &'static str,
+    /// Finishes the sentence "`<flag> <value>` …".
     pub(super) why: &'static str,
 }
 
@@ -239,6 +255,7 @@ impl Dialect {
         ],
         deploy_opens: &[],
         refused_commands: &[],
+        refused_values: &[],
         // gcloud's own convention: `--set-*` replaces, `--update-*` merges,
         // `--clear-*` wipes, `--remove-*` deletes.
         overriding: &["--set-", "--clear-", "--remove-"],
@@ -321,6 +338,7 @@ impl Dialect {
         ],
         deploy_opens: &[],
         refused_commands: &[],
+        refused_values: &[],
         // Azure has no flag family that means "replace what is there": a
         // change is a verb (`az webapp config appsettings set`), not a prefix,
         // so there is nothing to refuse by shape. What protects a running
@@ -417,6 +435,26 @@ impl Dialect {
                 group: "ecs",
                 command: "execute-command",
                 why: SHELL,
+            },
+        ],
+        // A deployment here IS a CloudFormation stack, and `--capabilities` is
+        // that same command asking for the right to make identities. The plain
+        // one is left open because a stack that runs code needs a role of its
+        // own and CloudFormation names that role after the stack; the other two
+        // reach outside what the stack owns.
+        refused_values: &[
+            RefusedValue {
+                flag: "--capabilities",
+                value: "CAPABILITY_NAMED_IAM",
+                why: "lets the template make an identity with a name of its own choosing, which \
+                      may be one something else already owns; `CAPABILITY_IAM` leaves the naming \
+                      to CloudFormation, and those roles belong to this stack alone",
+            },
+            RefusedValue {
+                flag: "--capabilities",
+                value: "CAPABILITY_AUTO_EXPAND",
+                why: "runs a macro that rewrites the template after the person has read it, so \
+                      what would run is not what was confirmed",
             },
         ],
         // Like Azure and unlike Google Cloud, AWS has no flag family meaning
@@ -572,6 +610,7 @@ impl Dialect {
                 why: WHOLE_PROJECT,
             },
         ],
+        refused_values: &[],
         overriding: &[],
         merging: "",
         grant: None,

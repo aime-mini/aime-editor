@@ -133,7 +133,47 @@ describe("the Azure prompts", () => {
   });
 
   it("is refused for a cloud with no measured dialect", () => {
-    expect(() => surveyPrompt({ cloudId: "aws", inventory: [], tooling: [] })).toThrow("aws");
+    expect(() => surveyPrompt({ cloudId: "fly", inventory: [], tooling: [] })).toThrow("fly");
+  });
+});
+
+/**
+ * AWS is the one cloud with no command that deploys a repository, so its
+ * prompt carries a shape rather than a command: the unit is a CloudFormation
+ * stack, and the address Aime proves is that stack's own output.
+ */
+describe("the AWS prompts", () => {
+  const aws = () => planPrompt({ cloudId: "aws", survey, answers: [], tooling: [], rejected: [], notes: [] });
+
+  it("names the stack as the unit and the stack's output as the proof", () => {
+    const prompt = aws();
+    expect(prompt).toContain("A DEPLOYMENT HERE IS A CLOUDFORMATION STACK");
+    expect(prompt).toContain("Stacks.0.Outputs.OutputKey=SiteUrl.OutputValue");
+    expect(prompt).toContain("alphabetical order");
+    // Nothing is built on this machine, so the artifact has to be a file the
+    // template carries or the repository already holds.
+    expect(prompt).toContain("no `docker build`");
+    expect(prompt).toContain("Code: ZipFile:");
+    // The file a plan writes first is this cloud's own artifact, not another
+    // cloud's: an example is the strongest instruction in a prompt.
+    expect(prompt).toContain('"files":[{"path":"infra/site.yaml"');
+    expect(prompt).not.toContain('"files":[{"path":"Dockerfile"');
+  });
+
+  it("carries the two fences that let it run on somebody's own account", () => {
+    const prompt = aws();
+    expect(prompt).toContain("ONLY MAKE NEW THINGS");
+    expect(prompt).toContain("Never `delete-*`, `terminate-*`, `s3 rm` or `s3 rb`");
+    expect(prompt).toContain("`--capabilities CAPABILITY_IAM` is allowed");
+  });
+
+  it("speaks `aws`: two words, the profile added, the region written out", () => {
+    const prompt = aws();
+    expect(prompt).toContain("`<service> <operation>`");
+    expect(prompt).toContain("Aime adds `--profile`");
+    expect(prompt).toContain("ap-southeast-2");
+    expect(prompt).not.toContain("--subscription");
+    expect(prompt).not.toContain("gcloud");
   });
 });
 
@@ -238,6 +278,46 @@ describe("reading the answers", () => {
       "billing is not enabled",
     );
     expect(parseRevision('{"steps":[],"files":[],"inspect":[],"giveUp":null}')).toBeNull();
+  });
+});
+
+/**
+ * A list whose order is the cloud's to choose, not the plan's.
+ *
+ * Measured 2026-09-22 against a real CloudFormation stack: the template
+ * declared `SiteUrl` first and `describe-stacks` answered `BucketName`,
+ * `DistributionId`, `SiteUrl` - alphabetically. An address taken by POSITION
+ * was the bucket's name, and the deploy could not be proved although it had
+ * worked. A selector names the element instead.
+ */
+describe("picking one of a list by name", () => {
+  const answered = {
+    Stacks: [
+      {
+        StackName: "aime-aws-proof-site",
+        Outputs: [
+          { OutputKey: "BucketName", OutputValue: "aime-aws-proof-site-20260922" },
+          { OutputKey: "DistributionId", OutputValue: "EPVHG04NYLPUC" },
+          { OutputKey: "SiteUrl", OutputValue: "https://d2bjlavrqeef56.cloudfront.net" },
+        ],
+      },
+    ],
+  };
+
+  it("takes the element whose field matches, wherever the cloud put it", () => {
+    expect(valueAt(answered, "Stacks.0.Outputs.OutputKey=SiteUrl.OutputValue")).toBe(
+      "https://d2bjlavrqeef56.cloudfront.net",
+    );
+    expect(urlIn(JSON.stringify(answered), "Stacks.0.Outputs.OutputKey=SiteUrl.OutputValue")).toBe(
+      "https://d2bjlavrqeef56.cloudfront.net",
+    );
+    // What position gives instead, which is the defect this replaced.
+    expect(valueAt(answered, "Stacks.0.Outputs.0.OutputValue")).toBe("aime-aws-proof-site-20260922");
+  });
+
+  it("answers nothing for a name no element carries, and for a field none has", () => {
+    expect(valueAt(answered, "Stacks.0.Outputs.OutputKey=Missing.OutputValue")).toBeUndefined();
+    expect(valueAt(answered, "Stacks.0.Outputs.Nope=SiteUrl.OutputValue")).toBeUndefined();
   });
 });
 
