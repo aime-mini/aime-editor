@@ -927,6 +927,20 @@ export const en = {
   "debug.argsTitle": "Running {target}",
   "debug.argsLabel": "Arguments",
   "debug.argsHint": "Split like a command line - quotes keep words together.",
+  "debug.buildLabel": "Build command",
+  "debug.buildReading": "Reading the project to find out how it builds…",
+  "debug.buildDefaultFits": "The usual build for this language fits this project.",
+  "debug.serverOpened": "Opened {address} in the browser.",
+  "debug.serverOpenFailed": "Could not open {address} in the browser: {reason}",
+  "debug.buildLearned":
+    "This project builds with: {command} (read from {source}). Change it under Arguments.",
+  "debug.buildRejected": "Ignored `{command}`: {program} is not installed on this machine.",
+  "debug.buildCannotRead":
+    "The selected AI CLI cannot be held to reading files, so it was not asked how this project builds; building the usual way.",
+  "debug.buildAskFailed": "Could not read how this project builds ({reason}); building the usual way.",
+  "debug.buildHint":
+    "Runs before the program starts, at the repository root. Leave it empty to let Aime build the way the language usually does - fill it in when this repository builds differently, such as a solution rather than one project.",
+  "debug.buildSet": "Builds with: {command}",
   "debug.envLabel": "Environment",
   "debug.envHint": "One KEY=VALUE per line, added to the environment Aime runs with.",
   "debug.targetAssumed":

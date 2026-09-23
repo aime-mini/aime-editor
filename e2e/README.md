@@ -20,7 +20,13 @@ curl -L -o edgedriver.zip https://msedgedriver.microsoft.com/<version>/edgedrive
 unzip edgedriver.zip -d ~/.aime-e2e
 ```
 
-Point `AIME_EDGE_DRIVER` at it if you keep it elsewhere.
+Keep each one under a name of its own - `msedgedriver-edge153.exe` - and leave the
+older ones there. The runner asks every `msedgedriver*.exe` in that folder for its
+version and takes the one whose major matches the runtime, so a WebView2 that
+updated itself overnight costs one download rather than a suite that fails with
+"This version of Microsoft Edge WebDriver only supports Microsoft Edge version N".
+
+Point `AIME_EDGE_DRIVER` at a driver kept somewhere else; it still wins.
 
 ## Running
 

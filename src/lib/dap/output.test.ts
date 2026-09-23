@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendOutput, type OutputSegment } from "./output";
+import { appendOutput, appendOutputs, type OutputSegment } from "./output";
 
 /** The console renders segments as text; this is what the user would read. */
 function rendered(segments: OutputSegment[]): string {
@@ -61,5 +61,26 @@ describe("appendOutput", () => {
     expect(segments).toHaveLength(1);
     expect(segments[0]?.text.length).toBe(200_000);
     expect(segments[0]?.text.endsWith("abc")).toBe(true);
+  });
+});
+
+describe("appendOutputs", () => {
+  it("is what appending the same events one by one would have been", () => {
+    const bodies = [
+      { category: "stdout", output: "total" },
+      { category: "stdout", output: " 6\n" },
+      { category: "telemetry", output: "{}" },
+      { category: "stderr", output: "warn\n" },
+      { category: "stdout", output: "done\n" },
+    ];
+    const start: OutputSegment[] = [{ category: "stdout", text: "before " }];
+    const oneByOne = bodies.reduce(appendOutput, start);
+
+    expect(appendOutputs(start, bodies)).toEqual(oneByOne);
+  });
+
+  it("returns the same array for a batch with nothing to show", () => {
+    const start: OutputSegment[] = [{ category: "stdout", text: "x" }];
+    expect(appendOutputs(start, [{ category: "telemetry", output: "{}" }, { output: "" }])).toBe(start);
   });
 });

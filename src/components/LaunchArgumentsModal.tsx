@@ -3,12 +3,15 @@ import { useT } from "../i18n";
 import { useDebug } from "../stores/debug";
 
 /**
- * What to pass the program: its arguments, and extra environment.
+ * How this program is built and what it is given: a build command, its
+ * arguments, and extra environment.
  *
- * Two text areas rather than a table, because that is how people already hold
- * both in their heads — a command line and a list of `KEY=VALUE` — and it is
- * exactly what `.aime/launch.json` stores. Arguments are split on whitespace
- * with quotes honoured, so `--name "two words"` arrives as one argument.
+ * Plain text fields rather than a table, because that is how people already
+ * hold all three in their heads - a command line, another command line and a
+ * list of `KEY=VALUE` - and it is exactly what `.aime/launch.json` stores.
+ * Arguments are split on whitespace with quotes honoured, so `--name "two
+ * words"` arrives as one argument; the build command is not split at all,
+ * because it is handed to a shell.
  */
 export function LaunchArgumentsModal() {
   const targetId = useDebug((s) => s.argumentsEditor);
@@ -53,9 +56,10 @@ function ArgumentsForm({
   initial,
 }: {
   targetId: string;
-  initial: { args?: string[]; env?: Record<string, string> } | undefined;
+  initial: { args?: string[]; env?: Record<string, string>; build?: string } | undefined;
 }) {
   const { setLaunchOptions, openArgumentsEditor } = useDebug();
+  const [build, setBuild] = useState(() => initial?.build ?? "");
   const [args, setArgs] = useState(() => (initial?.args ?? []).join(" "));
   const [env, setEnv] = useState(() =>
     Object.entries(initial?.env ?? {})
@@ -79,7 +83,11 @@ function ArgumentsForm({
   }, []);
 
   const save = () => {
-    void setLaunchOptions(targetId, { args: splitArguments(args), env: parseEnvironment(env) });
+    void setLaunchOptions(targetId, {
+      args: splitArguments(args),
+      env: parseEnvironment(env),
+      build: build.trim(),
+    });
     close();
   };
 
@@ -94,10 +102,26 @@ function ArgumentsForm({
         <p className="text-xs font-semibold">{t("debug.argsTitle", { target: targetId })}</p>
 
         <label className="block space-y-1">
+          <span className="text-[11.5px] font-medium">{t("debug.buildLabel")}</span>
+          <input
+            value={build}
+            autoFocus
+            onChange={(e) => {
+              setBuild(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") save();
+            }}
+            placeholder="dotnet build src/NopCommerce.sln"
+            className="w-full rounded-md border border-line bg-bg px-2 py-1 font-mono text-[11.5px] outline-none focus:border-accent"
+          />
+          <span className="block text-[10.5px] text-muted">{t("debug.buildHint")}</span>
+        </label>
+
+        <label className="block space-y-1">
           <span className="text-[11.5px] font-medium">{t("debug.argsLabel")}</span>
           <input
             value={args}
-            autoFocus
             onChange={(e) => {
               setArgs(e.target.value);
             }}

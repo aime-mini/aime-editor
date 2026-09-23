@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { translate } from "../i18n";
 import { languageOf } from "../lib/languages";
 import { usable, type AdapterAvailability, type Device } from "../lib/dap/availability";
 import {
@@ -20,9 +22,16 @@ import {
   type BreakpointRule,
   type EditorBreakpoint,
 } from "../lib/dap/launch";
-import { appendOutput, type OutputSegment } from "../lib/dap/output";
+import { appendOutputs, type OutputSegment } from "../lib/dap/output";
+import { watchForServer } from "../lib/dap/serverReady";
 import { normalizePath, samePath } from "../lib/dap/paths";
-import type { ExceptionBreakpointFilter, Scope, StackFrame, Variable } from "../lib/dap/protocol";
+import type {
+  ExceptionBreakpointFilter,
+  OutputEventBody,
+  Scope,
+  StackFrame,
+  Variable,
+} from "../lib/dap/protocol";
 import type { DebugSession } from "../lib/dap/session";
 import { useLayout } from "./layout";
 import { useWorkspace } from "./workspace";
@@ -261,6 +270,144 @@ interface DebugState {
  */
 const BUILDING = "Building…\n";
 
+/** How the store is written from outside its own actions. */
+type SetDebug = (updater: (state: DebugState) => Partial<DebugState>) => void;
+
+/** How long console output may wait before it reaches the store. */
+const OUTPUT_FLUSH_MS = 50;
+
+/** Console output on its way to the store, and the timer that will deliver it. */
+let queuedOutput: OutputEventBody[] = [];
+let outputFlush: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Writes to the debug console.
+ *
+ * Batched, because a program can print thousands of lines a second and each
+ * one arrives as its own event: one store update per event re-rendered the
+ * whole console per line, and 20,000 lines froze the window so hard that
+ * WebDriver's own script calls timed out (measured). Everything written to the
+ * console comes through here, Aime's own lines included, so nothing it says
+ * can overtake program output that is still waiting.
+ */
+function writeConsole(set: SetDebug, body: OutputEventBody): void {
+  queuedOutput.push(body);
+  outputFlush ??= setTimeout(() => {
+    outputFlush = null;
+    const bodies = queuedOutput;
+    queuedOutput = [];
+    set((s) => ({ output: appendOutputs(s.output, bodies) }));
+  }, OUTPUT_FLUSH_MS);
+}
+
+/** Output still waiting belongs to the console being cleared, not to the next one. */
+function discardQueuedOutput(): void {
+  queuedOutput = [];
+  if (outputFlush !== null) clearTimeout(outputFlush);
+  outputFlush = null;
+}
+
+/** One line of Aime's own in the debug console, next to the program's output. */
+function sayInConsole(set: SetDebug, line: string): void {
+  writeConsole(set, { category: "console", output: line });
+}
+
+/** Programs whose build has already been read out of this project. */
+function buildAskedKey(root: string, targetId: string): string {
+  return `aime.debugBuildAsked.${normalizePath(root)}.${targetId}`;
+}
+
+/**
+ * Works out how this project builds the program about to run, once per program.
+ *
+ * Only for programs that are built at all, and only the first time: reading a
+ * repository costs an AI turn, and the answer is a property of the project
+ * rather than of the run. It lands in `.aime/launch.json`, where the Arguments
+ * dialog shows it and a person can change it - so this is a starting point the
+ * user owns, not a decision taken behind their back.
+ *
+ * Everything is reported in the console, because a run that silently builds
+ * something other than what the language usually builds would be worse than one
+ * that guessed wrong out loud.
+ */
+async function learnHowThisProjectBuilds(
+  set: (updater: (state: DebugState) => Partial<DebugState>) => void,
+  get: () => DebugState,
+  target: DebugTarget,
+  root: string,
+): Promise<void> {
+  const asked = buildAskedKey(root, target.id);
+  if (get().launchOptions[target.id]?.build !== undefined || localStorage.getItem(asked) !== null) return;
+
+  const say = (line: string) => {
+    sayInConsole(set, line);
+  };
+  say(`${translate("debug.buildReading")}\n`);
+  const { agentTurn } = await import("../lib/agentTurn");
+  const { buildDiscoverBuildPrompt, parseDiscoveredBuild } = await import("../lib/dap/aiBuild");
+  // Forward slashes whatever the platform: the answer names files in the
+  // repository, and that is how a repository writes its own paths.
+  const relative = (absolute: string) =>
+    absolute.slice(root.length).replaceAll("\\", "/").replace(/^\//, "") || ".";
+
+  let reply: string;
+  try {
+    // An agent turn held to reading files: the question is about the
+    // repository, and a one-shot has no tools to open a single file in it -
+    // measured, it answered "the usual build fits" for a solution it never saw.
+    // Files only, so reading how a project builds cannot run that build.
+    const outcome = await agentTurn({
+      prompt: buildDiscoverBuildPrompt({ target: relative(target.program), dir: relative(target.cwd) }),
+      cwd: root,
+      permission: "readOnly",
+      tools: "filesOnly",
+    });
+    if (outcome.code !== 0) throw new Error(`the AI CLI exited with ${String(outcome.code)}`);
+    reply = outcome.text;
+  } catch (err: unknown) {
+    // The run is not the place to fail over this: Aime's own build still works,
+    // and the project can be told how it builds by hand. Not marked as asked,
+    // so the next run tries again. A CLI that cannot be held to files is not
+    // asked with every tool it has instead, and not asked blind either - a
+    // guess is exactly what this question exists to replace.
+    const cannotRead = String(err).startsWith("TOOLS_UNRESTRICTED::");
+    say(
+      `${cannotRead ? translate("debug.buildCannotRead") : translate("debug.buildAskFailed", { reason: String(err) })}\n`,
+    );
+    return;
+  }
+  // Asked once whatever the answer is: a project that came back "the usual
+  // build is right" must not pay for that reading again on every run.
+  localStorage.setItem(asked, new Date().toISOString());
+  const found = parseDiscoveredBuild(reply);
+  if (found === null) {
+    say(`${translate("debug.buildDefaultFits")}\n`);
+    return;
+  }
+
+  // Not taken on trust: a command whose tool is not on this machine would fail
+  // with a message about neither the project nor the debugger.
+  interface CommandCheck {
+    program: string;
+    programFound: boolean;
+  }
+  const checks = await invoke<CommandCheck[]>("check_task_commands", {
+    rootPath: root,
+    commands: [found.command],
+    folders: ["."],
+  });
+  const check: CommandCheck | undefined = checks.at(0);
+  if (check === undefined || !check.programFound) {
+    say(`${translate("debug.buildRejected", { command: found.command, program: check?.program ?? "" })}\n`);
+    return;
+  }
+  await get().setLaunchOptions(target.id, {
+    ...get().launchOptions[target.id],
+    build: found.command,
+  });
+  say(`${translate("debug.buildLearned", { command: found.command, source: found.source })}\n`);
+}
+
 /** Nothing to show while the program is on the move. */
 const CLEARED_STACK = {
   frames: [] as StackFrame[],
@@ -294,6 +441,21 @@ async function runSession(
   spec: SessionRequest,
 ): Promise<void> {
   const languageId = spec.languageId;
+  const say = (line: string) => {
+    sayInConsole(set, line);
+  };
+  // A web program is only half-run until its page is open: the first address
+  // it announces goes to the browser, once per session (`serverReady.ts`).
+  const hearServer = watchForServer((address) => {
+    openUrl(address).then(
+      () => {
+        say(`${translate("debug.serverOpened", { address })}\n`);
+      },
+      (err: unknown) => {
+        say(`${translate("debug.serverOpenFailed", { address, reason: String(err) })}\n`);
+      },
+    );
+  });
   try {
     const { DebugSession } = await import("../lib/dap/session");
     session = await DebugSession.launch({
@@ -306,7 +468,8 @@ async function runSession(
       exceptionFilters: get().enabledExceptionFilters[languageId] ?? [],
       callbacks: {
         onOutput: (body) => {
-          set((s) => ({ output: appendOutput(s.output, body) }));
+          writeConsole(set, body);
+          hearServer(body.output ?? "");
         },
         onStopped: (context) => {
           const top = context.frames[0] as StackFrame | undefined;
@@ -626,13 +789,7 @@ export const useDebug = create<DebugState>((set, get) => ({
     } catch (err: unknown) {
       // The query is the agent's command; when it fails the reason belongs in
       // the console rather than in a silence.
-      set((s) => ({
-        output: appendOutput(s.output, {
-          category: "stderr",
-          output: `${String(err)}
-`,
-        }),
-      }));
+      writeConsole(set, { category: "stderr", output: `${String(err)}\n` });
     }
   },
 
@@ -715,6 +872,7 @@ export const useDebug = create<DebugState>((set, get) => ({
     }
 
     useLayout.getState().showDebugConsole();
+    discardQueuedOutput();
     set({ status: { kind: "starting" }, output: [], exitCode: null, ...CLEARED_STACK });
     await runSession(set, get, {
       languageId: resolved.target.languageId,
@@ -750,13 +908,18 @@ export const useDebug = create<DebugState>((set, get) => ({
     // Whatever started the run - button, F5, palette - the console is where it
     // reports itself, so it comes forward once, here.
     useLayout.getState().showDebugConsole();
+    discardQueuedOutput();
     set({ status: { kind: "starting" }, output: [], exitCode: null, ...CLEARED_STACK });
     try {
       // A CLR debugger attaches to an assembly, not to a source file, so what
       // gets launched is whatever the backend says to launch - for C# that
       // means building first, which takes long enough to be worth announcing.
       if (adapter.buildsFirst) {
-        set((s) => ({ output: appendOutput(s.output, { category: "console", output: BUILDING }) }));
+        // What "build" means here is the project's business before it is the
+        // language's: a repository whose build unit is not this target gets to
+        // say so, and the first run of each program is when it is asked.
+        await learnHowThisProjectBuilds(set, get, resolved.target, rootPath);
+        writeConsole(set, { category: "console", output: BUILDING });
       }
       const program = await invoke<string>("dap_program", {
         target: resolved.target,
@@ -857,7 +1020,7 @@ export const useDebug = create<DebugState>((set, get) => ({
     const trimmed = expression.trim();
     if (trimmed === "" || !session) return;
     const echo = (category: "console" | "stdout" | "stderr", text: string) => {
-      set((s) => ({ output: appendOutput(s.output, { category, output: text }) }));
+      writeConsole(set, { category, output: text });
     };
     // The expression is echoed first: without it the answers in the console
     // have nothing to belong to once a few have scrolled past.
@@ -872,6 +1035,7 @@ export const useDebug = create<DebugState>((set, get) => ({
   },
 
   clearConsole: () => {
+    discardQueuedOutput();
     set({ output: [], exitCode: null });
   },
 }));
@@ -883,6 +1047,7 @@ export const useDebug = create<DebugState>((set, get) => ({
 useWorkspace.subscribe((state, previous) => {
   if (state.rootPath === previous.rootPath) return;
   void useDebug.getState().stop();
+  discardQueuedOutput();
   useDebug.setState({
     adapters: {},
     targets: [],

@@ -566,33 +566,76 @@ fn is_dotnet_project(path: &str) -> bool {
 ///
 /// Most adapters take the target as it stands. netcoredbg attaches to an
 /// assembly, so a .NET target is built first and the artifact is what gets
-/// debugged — one call both builds and prints the exact path, which beats
-/// guessing at `bin/Debug/<framework>/`.
+/// debugged — one call both builds and prints the exact path (`build_args`),
+/// which beats guessing at `bin/Debug/<framework>/`.
 ///
-/// `dotnet build`, not `dotnet msbuild -t:Build`: measured, both print the same
-/// `TargetPath`, but msbuild does not restore, so a freshly cloned project fails
-/// with NETSDK1004 ("Assets file … not found. Run a NuGet package restore")
-/// before it ever reaches the debugger. The exit code still has to be checked —
-/// the path is printed even when the build failed.
+/// The exit code still has to be checked: the path is printed even when the
+/// build failed, and it names a file that may not exist.
+///
+/// Whatever the language, the project's own build command (`.aime/launch.json`)
+/// comes first and replaces the built-in step. Aime's per-language rule fits the
+/// ordinary shape of a project; the repositories it does not fit are not rare
+/// enough to be somebody else's problem, and a repository knows how it builds.
 #[tauri::command]
 pub async fn dap_program(
     app: AppHandle,
     target: DebugTarget,
     root: Option<String>,
 ) -> Result<String, String> {
-    let spec = resolve_spec(&app, root.as_ref().map(Path::new), &target.language_id)
+    let root = root.as_ref().map(Path::new);
+    let spec = resolve_spec(&app, root, &target.language_id)
         .ok_or_else(|| format!("No debug adapter for {}", target.language_id))?;
+    let options = root.map(|root| super::options::options_for(root, &target.id));
+    let project_build = options
+        .as_ref()
+        .and_then(super::options::LaunchOptions::build_command)
+        .map(|command| ProjectBuild {
+            command,
+            // The repository root, not the target's folder: `dotnet build
+            // src/App.sln` is a statement about the repository, and the same
+            // choice VS Code makes for a preLaunchTask (`${workspaceFolder}`).
+            // Without a root there is nowhere else to stand but the target.
+            dir: root.unwrap_or_else(|| Path::new(target.cwd.as_str())),
+        });
+
     match spec {
         Spec::Builtin(builtin) => match builtin.prepare {
-            Prepare::Nothing => Ok(target.program),
-            Prepare::DotnetBuild => dotnet_assembly(&target).await,
+            Prepare::Nothing => {
+                // A language whose program needs no build of its own can still
+                // sit in a project that does: a TypeScript entry point is the
+                // plain case, and `tsc` is not something Aime gets to guess.
+                if let Some(build) = project_build {
+                    build.run().await?;
+                }
+                Ok(target.program)
+            }
+            Prepare::DotnetBuild => dotnet_assembly(&target, project_build).await,
         },
         Spec::Learned(adapter) => {
-            if let Some(prepare) = &adapter.prepare {
-                run_prepare(&prepare.command, &target.cwd).await?;
+            match project_build {
+                // The project's command outranks the one the adapter was taught:
+                // the adapter knows the language, the repository knows itself.
+                Some(build) => build.run().await?,
+                None => {
+                    if let Some(prepare) = &adapter.prepare {
+                        run_prepare(&prepare.command, &target.cwd).await?;
+                    }
+                }
             }
             Ok(target.program)
         }
+    }
+}
+
+/// The repository's own build command, and where it is typed.
+struct ProjectBuild<'a> {
+    command: &'a str,
+    dir: &'a Path,
+}
+
+impl ProjectBuild<'_> {
+    async fn run(&self) -> Result<(), String> {
+        run_prepare(self.command, &self.dir.to_string_lossy()).await
     }
 }
 
@@ -614,22 +657,57 @@ async fn run_prepare(command: &str, cwd: &str) -> Result<(), String> {
     Err(format!("`{command}` failed.\n{}", pick_message(&stdout, &stderr)))
 }
 
-/// Builds a .NET target and answers with the assembly to attach to.
-async fn dotnet_assembly(target: &DebugTarget) -> Result<String, String> {
+/// The one command that builds a .NET target and prints the assembly to attach to.
+///
+/// `-t:Build` is not redundant beside `dotnet build`. Measured on SDK 9.0.102 and
+/// 10.0.300: `-getProperty` on its own turns the call into an *evaluation* — it
+/// prints `TargetPath`, exits 0, and writes neither `obj/` nor `bin/`. Naming the
+/// target is what restores the build, and with it the non-zero exit code that
+/// makes the failure branch below reachable at all; without it every build
+/// "succeeds", including one that never happened.
+///
+/// That same evaluation is exactly what is wanted once the project has built
+/// itself: `already_built` drops the target and the call becomes the question
+/// "where did it land", which is the one thing MSBuild can answer and a rule
+/// about `bin/Debug/<framework>/` cannot.
+///
+/// `dotnet build`, not `dotnet msbuild -t:Build`: measured, both print the same
+/// `TargetPath`, but msbuild does not restore, so a freshly cloned project fails
+/// with NETSDK1004 ("Assets file … not found. Run a NuGet package restore")
+/// before it ever reaches the debugger.
+fn build_args(program: &str, already_built: bool) -> Vec<String> {
     let mut args = vec!["build".to_string()];
     // A project file is named outright. Anything else — a lone `.cs` file the
     // user asked to debug — leaves the SDK to find the one project in the
     // folder, which is what it does when given no project at all.
-    if is_dotnet_project(&target.program) {
-        args.push(target.program.clone());
+    if is_dotnet_project(program) {
+        args.push(program.to_string());
+    }
+    if !already_built {
+        args.push("-t:Build".to_string());
     }
     args.extend(
         ["-getProperty:TargetPath", "-v:q", "-nologo"]
             .iter()
             .map(|arg| (*arg).to_string()),
     );
+    args
+}
 
-    let output = super::adapter_command("dotnet", &args)
+/// Builds a .NET target and answers with the assembly to attach to.
+///
+/// `project_build` is the repository's own command, when it has one. It replaces
+/// the build rather than joining it: a project that says `dotnet build App.sln`
+/// has already produced this target, and MSBuild is then only asked where.
+async fn dotnet_assembly(
+    target: &DebugTarget,
+    project_build: Option<ProjectBuild<'_>>,
+) -> Result<String, String> {
+    let built_by_the_project = project_build.is_some();
+    if let Some(build) = project_build {
+        build.run().await?;
+    }
+    let output = super::adapter_command("dotnet", build_args(&target.program, built_by_the_project))
         .current_dir(&target.cwd)
         .output()
         .await
@@ -644,6 +722,16 @@ async fn dotnet_assembly(target: &DebugTarget) -> Result<String, String> {
     let assembly = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if assembly.is_empty() {
         return Err("The build produced no assembly to debug.".to_string());
+    }
+    // A path is not an artifact. netcoredbg takes a missing assembly without a
+    // word of complaint — it answers `launch` with success and then hands the
+    // user the .NET muxer's reply, "Could not execute because the specified
+    // command or file was not found", which reads as a broken editor rather
+    // than as a build that produced nothing.
+    if !Path::new(&assembly).is_file() {
+        return Err(format!(
+            "The build reported {assembly}, but nothing is there to debug."
+        ));
     }
     Ok(assembly)
 }
@@ -660,7 +748,50 @@ fn pick_message(stdout: &str, stderr: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{spec_for, ArchiveUrl, Prepare, Runner, Transport, ADAPTERS, TOOLCHAIN_BINS};
+    use super::{
+        build_args, dotnet_assembly, spec_for, ArchiveUrl, DebugTarget, Prepare, ProjectBuild, Runner,
+        Transport, ADAPTERS, TOOLCHAIN_BINS,
+    };
+
+    /// The whole point of the call is the artifact, and `-getProperty` alone
+    /// makes it an evaluation that writes nothing: `dotnet build` then "succeeds"
+    /// in under a second, prints a path, and leaves `bin/` empty.
+    #[test]
+    fn a_dotnet_build_names_its_target_or_it_only_evaluates() {
+        let args = build_args("C:/repo/src/Api/Api.csproj", false);
+        assert_eq!(args.first().map(String::as_str), Some("build"));
+        assert!(
+            args.iter().any(|arg| arg == "-t:Build"),
+            "no build target: {args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "-getProperty:TargetPath"),
+            "the assembly path is what the caller needs: {args:?}"
+        );
+    }
+
+    /// Once the project has built itself, building again is the wrong question:
+    /// all that is left to ask is where the artifact landed.
+    #[test]
+    fn a_target_the_project_already_built_is_only_asked_where_it_is() {
+        let args = build_args("C:/repo/src/Api/Api.csproj", true);
+        assert!(
+            !args.iter().any(|arg| arg == "-t:Build"),
+            "the project built it; MSBuild should not build it again: {args:?}"
+        );
+        assert!(args.iter().any(|arg| arg == "-getProperty:TargetPath"));
+    }
+
+    /// A `.cs` file is handed to the SDK without a project, which is how it
+    /// finds the one project in the folder.
+    #[test]
+    fn only_a_project_file_is_named_on_the_command_line() {
+        assert!(build_args("C:/repo/src/Api/Api.csproj", false)
+            .contains(&"C:/repo/src/Api/Api.csproj".to_string()));
+        assert!(!build_args("C:/repo/src/Api/Program.cs", false)
+            .iter()
+            .any(|arg| arg.ends_with(".cs")));
+    }
 
     #[test]
     fn node_and_typescript_share_the_one_adapter_that_reads_source_maps() {
@@ -827,5 +958,156 @@ mod tests {
                 archive.unpacks_to
             );
         }
+    }
+
+    /// The regression this file exists for, proved the only way it can be:
+    /// by building a real project and looking for the artifact on disk.
+    ///
+    /// Skipped where no .NET SDK is installed - the build step is the SDK's, and
+    /// a machine without one has nothing to assert about.
+    #[tokio::test]
+    async fn a_built_target_leaves_an_assembly_where_it_says_it_did() {
+        let Some(framework) = installed_target_framework() else {
+            eprintln!("skipped: no .NET SDK on this machine");
+            return;
+        };
+        let project = std::env::temp_dir().join("aime-dotnet-build-test");
+        let _ = std::fs::remove_dir_all(&project);
+        std::fs::create_dir_all(&project).expect("temp project");
+        std::fs::write(
+            project.join("Probe.csproj"),
+            // An executable, so `TargetPath` names an assembly a debugger could
+            // really attach to - which is what the caller asked for.
+            format!(
+                r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>{framework}</TargetFramework>
+  </PropertyGroup>
+</Project>
+"#
+            ),
+        )
+        .expect("project file");
+        std::fs::write(
+            project.join("Program.cs"),
+            "System.Console.WriteLine(\"probe\");\n",
+        )
+        .expect("program");
+
+        let target = DebugTarget {
+            id: "csharp:Probe.csproj".to_string(),
+            label: "Probe.csproj".to_string(),
+            language_id: "csharp".to_string(),
+            program: project.join("Probe.csproj").to_string_lossy().to_string(),
+            cwd: project.to_string_lossy().to_string(),
+        };
+        let assembly = dotnet_assembly(&target, None)
+            .await
+            .expect("the probe project builds");
+        assert!(
+            std::path::Path::new(&assembly).is_file(),
+            "{assembly} was reported but never built"
+        );
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    /// The repository whose build unit is not the target Aime resolved.
+    ///
+    /// Modelled on the shape that started this: a nopCommerce plugin writes its
+    /// assembly into the web project's `Plugins/` folder and is referenced by
+    /// nothing, so building the web project rebuilds everything except the code
+    /// being edited. Here `Extra` is that plugin. The project's own command is
+    /// the only thing that builds it, and the assembly to debug still has to be
+    /// found afterwards.
+    #[tokio::test]
+    async fn a_project_that_builds_itself_gets_what_it_asked_for_built() {
+        let Some(framework) = installed_target_framework() else {
+            eprintln!("skipped: no .NET SDK on this machine");
+            return;
+        };
+        let project = std::env::temp_dir().join("aime-project-build-test");
+        let _ = std::fs::remove_dir_all(&project);
+        std::fs::create_dir_all(project.join("Extra")).expect("temp project");
+        std::fs::write(
+            project.join("Probe.csproj"),
+            format!(
+                r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>{framework}</TargetFramework>
+  </PropertyGroup>
+</Project>
+"#
+            ),
+        )
+        .expect("project file");
+        std::fs::write(
+            project.join("Program.cs"),
+            "System.Console.WriteLine(\"probe\");\n",
+        )
+        .expect("program");
+        // Referenced by nothing, and landing somewhere only this project knows.
+        std::fs::write(
+            project.join("Extra").join("Extra.csproj"),
+            format!(
+                r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>{framework}</TargetFramework>
+    <OutputPath>..\plugins</OutputPath>
+    <OutDir>$(OutputPath)</OutDir>
+  </PropertyGroup>
+</Project>
+"#
+            ),
+        )
+        .expect("plugin project");
+        std::fs::write(
+            project.join("Extra").join("Extra.cs"),
+            "public static class Extra { public static int Answer => 42; }\n",
+        )
+        .expect("plugin source");
+
+        let target = DebugTarget {
+            id: "csharp:Probe.csproj".to_string(),
+            label: "Probe.csproj".to_string(),
+            language_id: "csharp".to_string(),
+            program: project.join("Probe.csproj").to_string_lossy().to_string(),
+            cwd: project.to_string_lossy().to_string(),
+        };
+        let assembly = dotnet_assembly(
+            &target,
+            Some(ProjectBuild {
+                command: "dotnet build Probe.csproj && dotnet build Extra/Extra.csproj",
+                dir: &project,
+            }),
+        )
+        .await
+        .expect("the project's own command builds both");
+
+        assert!(
+            std::path::Path::new(&assembly).is_file(),
+            "{assembly} was reported but never built"
+        );
+        assert!(
+            project.join("plugins").join("Extra.dll").is_file(),
+            "the project's command was not run: nothing else builds Extra"
+        );
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    /// `net9.0` on a machine whose only SDK is 10 fails for a reason that has
+    /// nothing to do with the thing under test, so the framework follows the SDK.
+    fn installed_target_framework() -> Option<String> {
+        let output = std::process::Command::new("dotnet")
+            .arg("--version")
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let version = String::from_utf8_lossy(&output.stdout);
+        let major = version.trim().split('.').next()?;
+        Some(format!("net{major}.0"))
     }
 }

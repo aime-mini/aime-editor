@@ -14,7 +14,66 @@ const path = require("node:path");
 
 const project = path.resolve(__dirname, "..");
 const application = path.join(project, "src-tauri", "target", "debug", "ai-mini-editor.exe");
-const nativeDriver = process.env.AIME_EDGE_DRIVER ?? path.join(os.homedir(), ".aime-e2e", "msedgedriver.exe");
+
+/** Where drivers are kept, one per WebView2 major version (see e2e/README.md). */
+const DRIVER_DIR = path.join(os.homedir(), ".aime-e2e");
+
+/**
+ * The major version of the WebView2 runtime this machine will actually start.
+ *
+ * Read from the runtime's own install folder rather than remembered: it updates
+ * itself in the background, and the driver that matched last month refuses the
+ * session this month - "This version of Microsoft Edge WebDriver only supports
+ * Microsoft Edge version 151", measured against a 153 runtime, which reads like
+ * a broken suite rather than a stale download.
+ */
+function installedWebViewMajor() {
+  const roots = [
+    path.join(
+      process.env["ProgramFiles(x86)"] ?? "C:/Program Files (x86)",
+      "Microsoft/EdgeWebView/Application",
+    ),
+    path.join(process.env.ProgramFiles ?? "C:/Program Files", "Microsoft/EdgeWebView/Application"),
+  ];
+  const versions = roots
+    .filter((root) => fs.existsSync(root))
+    .flatMap((root) => fs.readdirSync(root))
+    .map((name) => Number.parseInt(name, 10))
+    .filter((major) => Number.isFinite(major));
+  return versions.length === 0 ? null : Math.max(...versions);
+}
+
+/** What a driver answers to `--version`, as a major number. */
+function driverMajor(binary) {
+  const asked = require("node:child_process").spawnSync(binary, ["--version"], { encoding: "utf8" });
+  const major = /(\d+)\./.exec(asked.stdout ?? "");
+  return major === null ? null : Number(major[1]);
+}
+
+/**
+ * The driver to drive this machine's WebView2 with.
+ *
+ * `AIME_EDGE_DRIVER` still wins, for a driver kept somewhere else. Otherwise
+ * every driver in the folder is asked its version and the one that matches the
+ * runtime is taken, so keeping the previous major around costs nothing and the
+ * next runtime update is one download rather than a debugging session.
+ */
+function edgeDriver() {
+  if (process.env.AIME_EDGE_DRIVER) return process.env.AIME_EDGE_DRIVER;
+  const wanted = installedWebViewMajor();
+  const candidates = fs.existsSync(DRIVER_DIR)
+    ? fs
+        .readdirSync(DRIVER_DIR)
+        .filter((name) => name.startsWith("msedgedriver") && name.endsWith(".exe"))
+        .map((name) => path.join(DRIVER_DIR, name))
+    : [];
+  const matching = candidates.find((binary) => driverMajor(binary) === wanted);
+  // No match is still a path: the session then fails with the driver's own
+  // version complaint, which names both numbers and is the useful message.
+  return matching ?? candidates[0] ?? path.join(DRIVER_DIR, "msedgedriver.exe");
+}
+
+const nativeDriver = edgeDriver();
 
 /**
  * The Edge driver gives every WebView2 it starts a scratch profile in the system
@@ -44,7 +103,7 @@ fs.writeFileSync(
     {
       name: "api",
       private: true,
-      scripts: { test: 'node -e "console.log(\'the api suite ran here\')"' },
+      scripts: { test: "node -e \"console.log('the api suite ran here')\"" },
     },
     null,
     2,

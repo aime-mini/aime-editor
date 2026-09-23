@@ -127,20 +127,24 @@ function TargetRow({ resolved }: { resolved: ResolvedTarget }) {
     choices.push(openFileTarget);
   }
   const options = launchOptions[resolved.target.id];
-  const passes = (options?.args?.length ?? 0) > 0 || Object.keys(options?.env ?? {}).length > 0;
+  const build = options?.build ?? "";
+  const passes =
+    (options?.args?.length ?? 0) > 0 || Object.keys(options?.env ?? {}).length > 0 || build !== "";
+  // A build command that replaces the language's own step is the kind of thing
+  // a run must never do silently, so the tooltip names it above the arguments.
+  const passing = [
+    ...(build === "" ? [] : [t("debug.buildSet", { command: build })]),
+    t("debug.argsSet", {
+      args: (options?.args ?? []).join(" "),
+      count: String(Object.keys(options?.env ?? {}).length),
+    }),
+  ].join("\n");
   const argumentsButton = (
     <button
       onClick={() => {
         openArgumentsEditor(resolved.target.id);
       }}
-      title={
-        passes
-          ? t("debug.argsSet", {
-              args: (options?.args ?? []).join(" "),
-              count: String(Object.keys(options?.env ?? {}).length),
-            })
-          : t("debug.argsOpen")
-      }
+      title={passes ? passing : t("debug.argsOpen")}
       className={`flex shrink-0 items-center gap-1 rounded border border-line px-1.5 py-0.5 hover:text-fg ${
         passes ? "text-accent" : ""
       }`}

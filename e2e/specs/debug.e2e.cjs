@@ -144,6 +144,84 @@ function dotnetProject() {
   return { dir, projectFile: project_file };
 }
 
+/**
+ * A plugin, the way nopCommerce has them: a second project nothing references,
+ * writing its assembly into a `plugins` folder beside the program, which loads
+ * whatever it finds there at run time.
+ *
+ * Both halves matter. Without the loading, building the program alone really is
+ * the right build - measured, a real model said exactly that, and was right.
+ *
+ * Returns the path that proves it was built - no project reference reaches it,
+ * so nothing but the repository's own build command can put it there.
+ */
+function withAnUnreferencedProject(dir, projectFile) {
+  // The framework the SDK on this machine just chose for the console project,
+  // rather than a version pinned here that the next SDK will not have.
+  const framework = /<TargetFramework>([^<]+)</.exec(
+    fs.readFileSync(path.join(dir, projectFile), "utf8"),
+  )?.[1];
+  if (framework === undefined) throw new Error(`${projectFile} declares no target framework`);
+
+  fs.mkdirSync(path.join(dir, "Extra"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "Extra", "Extra.csproj"),
+    [
+      '<Project Sdk="Microsoft.NET.Sdk">',
+      "  <PropertyGroup>",
+      `    <TargetFramework>${framework}</TargetFramework>`,
+      "    <OutputPath>../bin/Debug/$(TargetFramework)/plugins</OutputPath>",
+      "    <OutDir>$(OutputPath)</OutDir>",
+      "  </PropertyGroup>",
+      "</Project>",
+      "",
+    ].join("\n"),
+  );
+  fs.writeFileSync(
+    path.join(dir, "Extra", "Extra.cs"),
+    "public static class Extra { public static int Answer => 42; }\n",
+  );
+  // The outer project must not compile the inner one's sources, or the SDK's
+  // own generated AssemblyInfo arrives twice (CS0579, measured). nopCommerce
+  // writes exactly this line for exactly this reason: `<Compile Remove="Plugins\**" />`.
+  const outer = path.join(dir, projectFile);
+  fs.writeFileSync(
+    outer,
+    fs
+      .readFileSync(outer, "utf8")
+      .replace(
+        "</Project>",
+        '  <ItemGroup>\n    <Compile Remove="Extra\\**" />\n    <None Remove="Extra\\**" />\n  </ItemGroup>\n</Project>',
+      ),
+  );
+  fs.appendFileSync(
+    path.join(dir, "Program.cs"),
+    [
+      'var plugins = System.IO.Path.Combine(System.AppContext.BaseDirectory, "plugins");',
+      "if (System.IO.Directory.Exists(plugins))",
+      '    foreach (var plugin in System.IO.Directory.GetFiles(plugins, "*.dll"))',
+      "        System.Reflection.Assembly.LoadFrom(plugin);",
+      "",
+    ].join("\n"),
+  );
+  return path.join(dir, "bin", "Debug", framework, "plugins", "Extra.dll");
+}
+
+/**
+ * A solution holding the given projects, made by the SDK itself so it is
+ * whichever format this SDK writes (`.sln` or `.slnx`) rather than one pinned here.
+ */
+function withASolutionHolding(dir, projectFiles) {
+  const dotnet = (args) => {
+    const made = require("node:child_process").spawnSync("dotnet", args, { cwd: dir, encoding: "utf8" });
+    if (made.status !== 0) throw new Error(`dotnet ${args.join(" ")} failed:\n${made.stdout}${made.stderr}`);
+  };
+  dotnet(["new", "sln", "-n", "Whole"]);
+  const solution = fs.readdirSync(dir).find((name) => name.startsWith("Whole.sln"));
+  if (solution === undefined) throw new Error(`dotnet new sln wrote no solution into ${dir}`);
+  dotnet(["sln", solution, "add", ...projectFiles]);
+}
+
 function projectWithNoProgramInIt() {
   const dir = project("notes");
   fs.writeFileSync(path.join(dir, "NOTES.md"), "# Notes\n\nNothing in this file runs.\n");
@@ -801,6 +879,47 @@ describe("Debugging", () => {
   });
 
   /**
+   * A web program is only half-run until its page is open. The server says its
+   * address the way servers do, and the browser Aime opens is proved by the
+   * request it makes - the server logs it into the same console - rather than
+   * by Aime saying it opened something.
+   */
+  it("opens a web program's page once it says where it listens", async () => {
+    const dir = project("server");
+    fs.writeFileSync(
+      path.join(dir, "app.js"),
+      [
+        'const http = require("node:http");',
+        "const server = http.createServer((request, response) => {",
+        '  console.log("request", request.method, request.url);',
+        '  response.end("hello");',
+        "});",
+        'server.listen(0, "127.0.0.1", () => {',
+        "  console.log(`Listening on http://127.0.0.1:${server.address().port}`);",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    await open(dir);
+    await openFromTheTree("app.js", 8);
+    await showDebugView();
+    if ((await bodyText()).toLowerCase().includes("download it")) {
+      console.log("[debug.e2e] SKIPPED: js-debug is not downloaded on this machine.");
+      return;
+    }
+
+    await browser.keys(["F5"]);
+    await waitForText("in the browser", "Aime never opened the address the server printed", 60_000);
+    await waitForText("request GET /", "no browser ever asked the server for its page", 60_000);
+
+    await browser.keys(["Shift", "F5"]);
+    await browser.waitUntil(async () => !(await bodyText()).toLowerCase().includes("call stack"), {
+      timeout: 30_000,
+      timeoutMsg: "Shift+F5 did not end the session",
+    });
+  });
+
+  /**
    * Mobile's one extra concept: the program runs on a device, and the adapter
    * takes its id as a launch field. The list comes from the adapter's own
    * command - here one that prints exactly what `flutter devices --machine`
@@ -978,6 +1097,111 @@ describe("Debugging", () => {
   });
 
   /**
+   * A repository whose build unit is not the target F5 resolved.
+   *
+   * The shape that made this necessary: a nopCommerce plugin writes its assembly
+   * into the web project's Plugins folder and is referenced by nothing, so
+   * building the web project rebuilds everything except the code being edited.
+   * `Extra` is that plugin here - only the command typed into Arguments builds
+   * it, and the program still has to run and stop afterwards.
+   */
+  it("builds the way the project says to, not the way the language usually does", async () => {
+    const made = dotnetProject();
+    if (made === null) {
+      console.log("[debug.e2e] SKIPPED: no .NET SDK on this machine.");
+      return;
+    }
+    const plugin = withAnUnreferencedProject(made.dir, made.projectFile);
+    await open(made.dir);
+    await openFromTheTree("Program.cs", 6);
+    await showDebugView();
+    if ((await bodyText()).toLowerCase().includes("download it")) {
+      console.log("[debug.e2e] SKIPPED: netcoredbg is not downloaded on this machine.");
+      return;
+    }
+
+    const command = `dotnet build ${made.projectFile} && dotnet build Extra/Extra.csproj`;
+    await (await $("button*=Arguments")).click();
+    await waitForText("Build command", "the Arguments dialog has no build command");
+    await fill(await $('input[placeholder^="dotnet build"]'), command);
+    await (await $("button=Save")).click();
+    // The button says what a run will do before the run happens.
+    await browser.waitUntil(
+      async () => (await (await $("button*=Arguments")).getAttribute("title")).includes(command),
+      { timeout: 10_000, timeoutMsg: "the Arguments button never took the build command" },
+    );
+
+    await openFromTheTree("Program.cs", 6);
+    await clickLineContaining("int total = a + b");
+    await browser.keys(["F9"]);
+    await showDebugView();
+    await browser.keys(["F5"]);
+    // Nothing references Extra, so the file appearing is the build command
+    // having run - and waiting for the file rather than for a word on screen is
+    // what makes this assertion about the build instead of about the clock.
+    try {
+      await browser.waitUntil(() => fs.existsSync(plugin), { timeout: 240_000 });
+    } catch {
+      // The console is where the run explains itself, and a message built after
+      // the wait is the only one that can carry it.
+      throw new Error(`nothing built ${plugin}. The debug console said:\n${await bodyText()}`);
+    }
+    await waitForText("total", "the C# program never stopped in its own source", 240_000);
+
+    await browser.keys(["Shift", "F5"]);
+    await browser.waitUntil(async () => !(await bodyText()).toLowerCase().includes("call stack"), {
+      timeout: 30_000,
+      timeoutMsg: "Shift+F5 did not end the session",
+    });
+  });
+
+  /**
+   * The same repository shape, with nobody telling Aime how it builds.
+   *
+   * The only place the answer is written down is the solution file that holds
+   * both projects, so the plugin appearing means the AI read the repository,
+   * said a command that cites it, and Aime stored and ran that command. This is
+   * the real configured CLI, not a stand-in: what is being proven is that an
+   * actual model reads this shape correctly.
+   */
+  it("reads how the repository builds when nobody has said", async () => {
+    const made = dotnetProject();
+    if (made === null) {
+      console.log("[debug.e2e] SKIPPED: no .NET SDK on this machine.");
+      return;
+    }
+    const plugin = withAnUnreferencedProject(made.dir, made.projectFile);
+    withASolutionHolding(made.dir, [made.projectFile, path.join("Extra", "Extra.csproj")]);
+    await open(made.dir);
+    await openFromTheTree("Program.cs", 6);
+    await showDebugView();
+    if ((await bodyText()).toLowerCase().includes("download it")) {
+      console.log("[debug.e2e] SKIPPED: netcoredbg is not downloaded on this machine.");
+      return;
+    }
+
+    await clickLineContaining("int total = a + b");
+    await browser.keys(["F9"]);
+    await browser.keys(["F5"]);
+    try {
+      await browser.waitUntil(() => fs.existsSync(plugin), { timeout: 480_000 });
+    } catch {
+      throw new Error(`nothing built ${plugin}. The debug console said:\n${await bodyText()}`);
+    }
+    // Said out loud, and kept where a person can change it.
+    await waitForText("This project builds with", "the console never said what the AI read");
+    await waitForText("total", "the C# program never stopped in its own source", 240_000);
+    const learned = await (await $("button*=Arguments")).getAttribute("title");
+    console.log(`[debug.e2e] the AI's build command: ${learned}`);
+
+    await browser.keys(["Shift", "F5"]);
+    await browser.waitUntil(async () => !(await bodyText()).toLowerCase().includes("call stack"), {
+      timeout: 30_000,
+      timeoutMsg: "Shift+F5 did not end the session",
+    });
+  });
+
+  /**
    * The Roslyn language server, which Aime downloads itself and has to be told
    * which project it is looking at. The status chip turns green only once the
    * server started, answered `initialize` and survived - and it does not survive
@@ -1089,7 +1313,16 @@ ${(await bodyText()).slice(0, 1200)}`);
    */
   it("offers no debugger and takes no breakpoint in a file that is not a program", async () => {
     await open(projectWithNoProgramInIt());
-    await openFromTheTree("NOTES.md", 3);
+    // Markdown opens as the rendered document; the breakpoint gestures belong
+    // to the text, so the test goes there the way a person does.
+    await (await $('button[title="Explorer"]')).click();
+    await waitForText("NOTES.md", "the project never opened");
+    await (await $("span=NOTES.md")).click();
+    await (await $("button=Text")).click();
+    await browser.waitUntil(async () => (await $$(".view-line")).length >= 3, {
+      timeout: 20_000,
+      timeoutMsg: "the Text switch never showed NOTES.md in the editor",
+    });
 
     const body = (await bodyText()).toLowerCase();
     assert.ok(!body.includes("let ai set it up"), "a Markdown file was offered a debugger it can never use");

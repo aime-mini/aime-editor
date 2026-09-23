@@ -39,16 +39,37 @@ const MAX_CHARACTERS = 200_000;
  * show, so a telemetry storm causes no re-render.
  */
 export function appendOutput(segments: OutputSegment[], body: OutputEventBody): OutputSegment[] {
-  if (HIDDEN_CATEGORIES.has(body.category ?? "")) return segments;
-  const text = body.output ?? "";
-  if (text === "") return segments;
+  return appendOutputs(segments, [body]);
+}
 
-  const category = categoryOf(body.category);
-  const last = segments[segments.length - 1] as OutputSegment | undefined;
-  const merged =
-    last && last.category === category
-      ? [...segments.slice(0, -1), { category, text: last.text + text }]
-      : [...segments, { category, text }];
+/**
+ * Appends a batch of `output` events at once.
+ *
+ * The batch is joined per run of one stream before anything is copied, and the
+ * cap is applied once: a program printing 20,000 lines arrives as 20,000
+ * events, and one copy of the console per event was measured freezing the
+ * window for minutes.
+ */
+export function appendOutputs(segments: OutputSegment[], bodies: OutputEventBody[]): OutputSegment[] {
+  const runs: { category: OutputCategory; parts: string[] }[] = [];
+  for (const body of bodies) {
+    const text = body.output ?? "";
+    if (HIDDEN_CATEGORIES.has(body.category ?? "") || text === "") continue;
+    const category = categoryOf(body.category);
+    const run = runs.at(-1);
+    if (run?.category === category) run.parts.push(text);
+    else runs.push({ category, parts: [text] });
+  }
+  if (runs.length === 0) return segments;
+
+  const merged = [...segments];
+  for (const run of runs) {
+    const text = run.parts.join("");
+    const last = merged.at(-1);
+    if (last?.category === run.category)
+      merged[merged.length - 1] = { category: run.category, text: last.text + text };
+    else merged.push({ category: run.category, text });
+  }
   return trim(merged);
 }
 

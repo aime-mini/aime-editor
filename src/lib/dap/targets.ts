@@ -36,6 +36,12 @@ export interface DebugTarget {
 export interface TargetLaunchOptions {
   args?: string[];
   env?: Record<string, string>;
+  /**
+   * How this project builds this target, when Aime's built-in step for the
+   * language is not what this repository does. Run through a shell, and it
+   * replaces the built-in step rather than running beside it.
+   */
+  build?: string;
 }
 
 /** Where a resolved target came from, which is what the panel explains. */

@@ -921,6 +921,19 @@ export const vi: Record<TranslationKey, string> = {
   "debug.argsTitle": "Chạy {target}",
   "debug.argsLabel": "Tham số",
   "debug.argsHint": "Tách như dòng lệnh - dấu ngoặc kép giữ nguyên cụm.",
+  "debug.buildLabel": "Lệnh build",
+  "debug.buildReading": "Đang đọc dự án để biết nó build thế nào…",
+  "debug.buildDefaultFits": "Cách build thường của ngôn ngữ này vừa với dự án.",
+  "debug.serverOpened": "Đã mở {address} trên trình duyệt.",
+  "debug.serverOpenFailed": "Không mở được {address} trên trình duyệt: {reason}",
+  "debug.buildLearned": "Dự án này build bằng: {command} (đọc từ {source}). Đổi trong mục Tham số.",
+  "debug.buildRejected": "Bỏ qua `{command}`: máy này chưa cài {program}.",
+  "debug.buildCannotRead":
+    "AI CLI đang chọn không giới hạn được ở mức chỉ đọc file, nên Aime không hỏi nó cách dự án build; build theo cách thường.",
+  "debug.buildAskFailed": "Không đọc được cách dự án build ({reason}); build theo cách thường.",
+  "debug.buildHint":
+    "Chạy trước khi chương trình khởi động, ở thư mục gốc của repo. Để trống thì Aime build theo cách thường của ngôn ngữ - điền vào khi repo này build kiểu khác, ví dụ build cả solution chứ không phải một project.",
+  "debug.buildSet": "Build bằng: {command}",
   "debug.envLabel": "Biến môi trường",
   "debug.envHint": "Mỗi dòng một KEY=VALUE, thêm vào môi trường Aime đang chạy.",
   "debug.targetAssumed":

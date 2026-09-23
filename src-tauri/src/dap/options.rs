@@ -26,12 +26,33 @@ pub struct LaunchOptions {
     /// the file reads the same after every write.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// How this project builds this target, as a command line a person could
+    /// have typed (`dotnet build NopCommerce.sln`, `./gradlew assemble`).
+    ///
+    /// Aime's built-in step per language is right for the ordinary shape of a
+    /// project and wrong for plenty of real ones: a nopCommerce plugin writes
+    /// its output into the web project's `Plugins/` folder and is referenced by
+    /// nothing, so building the web project alone never rebuilds the code the
+    /// user is editing — the solution is the unit there. No rule in Aime can
+    /// know which repository is which, so the repository gets to say, and what
+    /// it says wins over the built-in step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
 }
 
 impl LaunchOptions {
     /// Nothing to pass — the entry is then dropped rather than stored empty.
     fn is_empty(&self) -> bool {
-        self.args.is_empty() && self.env.is_empty()
+        self.args.is_empty() && self.env.is_empty() && self.build_command().is_none()
+    }
+
+    /// The build command, when there is one worth running. A field left as an
+    /// empty string is the dialog's way of saying "no command", not a command.
+    pub fn build_command(&self) -> Option<&str> {
+        self.build
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
     }
 }
 
@@ -69,6 +90,11 @@ fn read(root: &Path) -> LaunchFile {
 #[tauri::command]
 pub fn dap_launch_options(root: String) -> BTreeMap<String, LaunchOptions> {
     read(Path::new(&root)).targets
+}
+
+/// What this project stored for one target — nothing at all being the normal case.
+pub fn options_for(root: &Path, target_id: &str) -> LaunchOptions {
+    read(root).targets.remove(target_id).unwrap_or_default()
 }
 
 /// Stores what to pass one target, or forgets it when there is nothing to pass.
@@ -118,7 +144,48 @@ mod tests {
                 .iter()
                 .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
                 .collect(),
+            build: None,
         }
+    }
+
+    fn with_build(command: &str) -> LaunchOptions {
+        LaunchOptions {
+            build: Some(command.to_string()),
+            ..LaunchOptions::default()
+        }
+    }
+
+    /// The whole point of the field: a repository whose build unit is not the
+    /// target Aime resolved keeps its own command, and keeps it between runs.
+    #[test]
+    fn a_project_that_builds_differently_keeps_its_own_command() {
+        let root = project("build-command");
+        let path = root.to_string_lossy().to_string();
+        dap_set_launch_options(
+            path.clone(),
+            "csharp:src/Presentation/Nop.Web/Nop.Web.csproj".into(),
+            with_build("dotnet build src/NopCommerce.sln"),
+        )
+        .expect("stored");
+
+        let stored = dap_launch_options(path);
+        assert_eq!(
+            stored["csharp:src/Presentation/Nop.Web/Nop.Web.csproj"].build_command(),
+            Some("dotnet build src/NopCommerce.sln")
+        );
+    }
+
+    /// An empty box in the dialog is not a command, and storing it would make
+    /// every run shell out to nothing.
+    #[test]
+    fn a_blank_build_command_is_no_command_at_all() {
+        let root = project("blank-build");
+        let path = root.to_string_lossy().to_string();
+        dap_set_launch_options(path.clone(), "node:app.js".into(), with_build("   ")).expect("stored");
+        assert!(
+            dap_launch_options(path).is_empty(),
+            "a blank command is nothing to store"
+        );
     }
 
     #[test]
