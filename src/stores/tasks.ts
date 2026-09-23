@@ -7,7 +7,7 @@ import {
   parseDiscoveredTasks,
   type DiscoveredTask,
 } from "../lib/aiTasks";
-import { aiOneshot } from "../lib/aiOneshot";
+import { agentTurn } from "../lib/agentTurn";
 import { formatProviderError } from "../lib/providerErrors";
 import { readExitCode, stripAnsi } from "../lib/taskOutput";
 import { useAi } from "./ai";
@@ -157,7 +157,19 @@ export const useTasks = create<TasksState>((set, get) => ({
       // again later would pay for the same reading twice.
       const missing = TASK_KINDS.filter((candidate) => !get().tasks.some((t) => t.kind === candidate));
       const wanted = missing.includes(kind) ? missing : [kind, ...missing];
-      const found = parseDiscoveredTasks(await aiOneshot(buildDiscoverTasksPrompt(wanted), rootPath));
+      // An agent turn held to reading files, because the brief is "read this
+      // repository": a one-shot has no tools and answered from general
+      // knowledge of the stack instead (measured on the debug build question,
+      // which asks the same kind of thing). A CLI that cannot be held to files
+      // throws `TOOLS_UNRESTRICTED`, and the catch below says so.
+      const outcome = await agentTurn({
+        prompt: buildDiscoverTasksPrompt(wanted),
+        cwd: rootPath,
+        permission: "readOnly",
+        tools: "filesOnly",
+      });
+      if (outcome.code !== 0) throw new Error(`The AI CLI exited with ${String(outcome.code)}`);
+      const found = parseDiscoveredTasks(outcome.text);
       if (found.length === 0) {
         await invoke("save_tasks", { rootPath, tasks: [] });
         set({ rejected: [translate("tasks.aiFoundNothing")] });
@@ -267,6 +279,10 @@ useWorkspace.subscribe((state, prev) => {
  */
 async function profileNewProject(rootPath: string): Promise<void> {
   if (await invoke<boolean>("task_profile_exists", { rootPath })) return;
+  // Asked rather than read: a project is opened before the AI panel mounts and
+  // probes the CLI, so at this moment the answer is still "unknown" - measured,
+  // that skipped this pass on every single open.
+  if (useAi.getState().providerHealth === "unknown") await useAi.getState().checkHealth();
   if (useAi.getState().providerHealth !== "ok") return;
   // Let the instant detection land first: it decides which outcomes are still
   // missing, and asking about all five when four are known wastes the call.

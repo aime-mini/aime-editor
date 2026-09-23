@@ -746,13 +746,18 @@ pub fn save_tasks(root_path: String, tasks: Vec<TaskDef>) -> Result<(), String> 
 
 /// Records that this project has been read for its tasks, so opening it again
 /// does not spend another AI call on a question already answered.
-const PROFILE_MARKER: &str = "task-profile";
+///
+/// Not the first name this marker had. `task-profile` was stamped by a reading
+/// that could not open a file - a one-shot with no tools - so every "found
+/// nothing" under it is an answer about a repository the model never saw, and
+/// keeping that name would make those guesses permanent.
+const PROFILE_MARKER: &str = "task-profile-read";
 
 /// Whether the AI has already read this project's tasks.
 ///
 /// Deliberately a file rather than a session flag: a developer who opens the
 /// same repository every morning should pay for that reading once, not once a
-/// day. Deleting `.aime/task-profile` asks again, which is the escape hatch
+/// day. Deleting `.aime/task-profile-read` asks again, which is the escape hatch
 /// for a repository that has since grown a build.
 #[tauri::command]
 pub fn task_profile_exists(root_path: String) -> bool {
