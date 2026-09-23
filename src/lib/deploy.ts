@@ -2,6 +2,7 @@ import type { CloudAccount, CloudResource } from "../stores/cloud";
 import { shortKind } from "./cloudIcons";
 import type { PlannedRead } from "./cloudReads";
 import { dialectOf, recipeOf } from "./deployDialect";
+import { withoutSignatures } from "./signedUrls";
 
 export { DEPLOYABLE } from "./deployDialect";
 
@@ -203,6 +204,16 @@ const ANSWER_LIMIT = 6_000;
 /** How much of a failed command's output the fix prompt carries - its tail, where it explains itself. */
 const OUTPUT_LIMIT = 6_000;
 
+/**
+ * One read's answer as a prompt carries it. Signed URLs lose their query first:
+ * the reads a plan asks for are the model's choice, and one of them can answer
+ * with a live credential in a URL (`signedUrls.ts`).
+ */
+function answerBlock(answer: ReadAnswer): string {
+  const refused = answer.ok ? "" : " (the CLI refused)";
+  return `### ${answer.label}${refused}\n${withoutSignatures(answer.json).slice(0, ANSWER_LIMIT)}`;
+}
+
 /** The one program whose presence changes the shape of a plan: build here, or in the cloud. */
 export const TOOLING_TO_REPORT = ["docker"];
 
@@ -312,14 +323,7 @@ export function planPrompt(input: {
         ]),
     ...(input.answers.length === 0
       ? []
-      : [
-          "What the reads you asked for answered:",
-          ...input.answers.map(
-            (answer) =>
-              `### ${answer.label}${answer.ok ? "" : " (the CLI refused)"}\n${answer.json.slice(0, ANSWER_LIMIT)}`,
-          ),
-          "",
-        ]),
+      : ["What the reads you asked for answered:", ...input.answers.map(answerBlock), ""]),
     `Tools on this machine: ${input.tooling.length === 0 ? "docker is NOT installed - build in the cloud" : input.tooling.join(", ")}.`,
     "",
     "Answer:",
@@ -444,14 +448,7 @@ export function fixPrompt(input: {
       : ["", "The person watching this run said, while it was failing:", `> ${input.asked}`]),
     ...(input.answers.length === 0
       ? []
-      : [
-          "",
-          "What the reads you asked for answered:",
-          ...input.answers.map(
-            (answer) =>
-              `### ${answer.label}${answer.ok ? "" : " (the CLI refused)"}\n${answer.json.slice(0, ANSWER_LIMIT)}`,
-          ),
-        ]),
+      : ["", "What the reads you asked for answered:", ...input.answers.map(answerBlock)]),
     "",
     "Answer:",
     "- `steps`: the steps to run now, from the failed one on - fixed, replaced or added. Same target, same " +

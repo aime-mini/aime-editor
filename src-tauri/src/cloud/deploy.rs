@@ -1506,6 +1506,28 @@ Options
         }
     }
 
+    /// The same through the gate on the two CLIs whose global flags were read
+    /// from their own help: a step that runs as somebody else, or answers in a
+    /// shape Aime did not ask for, is not a deployment step.
+    #[test]
+    fn a_gcloud_or_az_step_may_not_change_who_runs_it_or_what_it_answers() {
+        for flag in [
+            "--impersonate-service-account",
+            "--configuration",
+            "--flags-file",
+            "--log-http",
+        ] {
+            let reason = shape_for(gcloud(), &["run", "deploy", "web", flag, "x"], false)
+                .expect_err(&format!("`gcloud … {flag}` is not a step"));
+            assert!(reason.contains(flag), "{reason}");
+        }
+        for flag in ["--debug", "--query"] {
+            let reason = shape_for(az(), &["webapp", "up", "--name", "web", flag, "x"], false)
+                .expect_err(&format!("`az … {flag}` is not a step"));
+            assert!(reason.contains(flag), "{reason}");
+        }
+    }
+
     /// `az rest` is a raw ARM request: it would carry a DELETE straight past
     /// every rule in this module, so it is refused by name.
     #[test]

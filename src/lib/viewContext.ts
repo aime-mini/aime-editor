@@ -1,5 +1,6 @@
 import { activeEditor } from "./monacoAccess";
 import { commandOf, type PlannedRead } from "./cloudReads";
+import { withoutSignatures } from "./signedUrls";
 import { answerKey, useCloud, type CloudResource } from "../stores/cloud";
 import { CLOUD_TAB, useWorkspace } from "../stores/workspace";
 
@@ -222,6 +223,8 @@ function loadedReads(
   return plan.reads.filter(shareable).flatMap((read) => {
     const answer = cloud.answers[answerKey(resource, read)];
     if (answer?.kind !== "loaded") return [];
-    return [{ command: commandOf(cloudId, accountId, resource, read), json: answer.json }];
+    // Not a secret read is not the same as no credential in it: a Lambda's
+    // overview answers with a pre-signed URL to its code.
+    return [{ command: commandOf(cloudId, accountId, resource, read), json: withoutSignatures(answer.json) }];
   });
 }

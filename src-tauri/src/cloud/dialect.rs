@@ -240,10 +240,31 @@ impl Dialect {
         // `--quiet` is Aime's because prompts are already disabled for every
         // CLI it runs; a plan that adds it is a plan expecting a question.
         own_flags: &["--project", "--account", "--format", "--quiet"],
-        // Nothing measured here yet: `gcloud`'s own command-line flags have
-        // not been gone through the way `aws`'s global options were, and a
-        // list written from memory is the thing this file refuses to keep.
-        refused_flags: &[],
+        // Every one read from GLOBAL FLAGS in `gcloud help`, Cloud SDK 583.0.0,
+        // 2026-09-23. `--flags-file` carries parameters the checker never saw,
+        // and `--help`/`--version` answer with text instead of doing the work.
+        // `--configuration`, `--access-token-file` and
+        // `--impersonate-service-account` run the step as somebody other than
+        // the account the panel shows, and `--billing-project` charges another
+        // project for it. `--log-http`, `--trace-token` and `--verbosity` turn
+        // the run into a diagnostic one - the first prints the requests, tokens
+        // included, into the log. `--flatten` and `--no-user-output-enabled`
+        // reshape or silence the answer a plan is proved by.
+        refused_flags: &[
+            "--flags-file",
+            "--help",
+            "--version",
+            "--configuration",
+            "--access-token-file",
+            "--impersonate-service-account",
+            "--billing-project",
+            "--log-http",
+            "--trace-token",
+            "--verbosity",
+            "--flatten",
+            "--user-output-enabled",
+            "--no-user-output-enabled",
+        ],
         // The account, the money, the sign-in and the CLI itself.
         refused_groups: &[
             "projects",
@@ -312,8 +333,13 @@ impl Dialect {
         // `--output` is `az`'s `--format`, and `-o` its short spelling; a plan
         // that sets either is choosing the shape Aime parses.
         own_flags: &["--subscription", "--output", "-o"],
-        // As for Google Cloud: not measured, so not claimed.
-        refused_flags: &[],
+        // From "Global Arguments" in `az group list --help`, az 2.90.0,
+        // 2026-09-23: `--debug` prints the requests into the log, `--help`
+        // answers with text instead of doing the work, and `--query` filters
+        // the answer before Aime parses it. `--verbose` and `--only-show-errors`
+        // only change how much of the CLI's own logging reaches stderr, so a
+        // step may keep them.
+        refused_flags: &["--debug", "--help", "--query"],
         // The same four concerns as Google Cloud, in this CLI's own words
         // (every name checked against `az --help`, 2026-09-17), plus the two
         // ways out of the checker itself: `rest` sends a raw ARM request,
@@ -779,6 +805,37 @@ mod tests {
             "--no-verify-ssl",
         ] {
             assert!(aws.refused_flags.contains(&flag), "{flag}");
+        }
+    }
+
+    /// The flags that run a step as somebody else, or out of the checker's
+    /// sight, on the two CLIs whose lists were read from their own help.
+    #[test]
+    fn gcloud_and_az_refuse_the_flags_that_go_around_the_checker() {
+        let gcloud = Dialect::of("gcp").expect("gcp");
+        for flag in [
+            "--flags-file",
+            "--impersonate-service-account",
+            "--configuration",
+            "--log-http",
+        ] {
+            assert!(gcloud.refused_flags.contains(&flag), "{flag}");
+        }
+        let az = Dialect::of("azure").expect("azure");
+        for flag in ["--debug", "--query"] {
+            assert!(az.refused_flags.contains(&flag), "{flag}");
+        }
+    }
+
+    /// A flag is either Aime's to add or refused outright, never both: the
+    /// check reads `own_flags` first, so an overlap would hide the refusal.
+    #[test]
+    fn no_refused_flag_is_also_one_aime_adds() {
+        for id in ["gcp", "azure", "aws", "supabase"] {
+            let dialect = Dialect::of(id).expect("a known cloud");
+            for flag in dialect.refused_flags {
+                assert!(!dialect.own_flags.contains(flag), "{id}: {flag}");
+            }
         }
     }
 

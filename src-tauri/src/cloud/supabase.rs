@@ -28,7 +28,10 @@
 //! an organization the token cannot name shows an id and not a name. The one
 //! project this account has holds no Edge Function and no preview branch -
 //! `functions list` and `branches list` both answered `[]`, which is captured
-//! too; only the non-empty shape of those two is still the document's.
+//! too. Their non-empty answers were captured on 2026-09-23 by deploying a
+//! probe function to that project and removing it again; a preview branch
+//! needs the Pro plan (the create answers 402 `entitlement_required` on Free),
+//! so the one branch captured is the default one that attempt left behind.
 //!
 //! What an "account" is here: a PROJECT, under the organization that owns it -
 //! the same two levels as Azure's user → subscription and Google's account →
@@ -347,16 +350,23 @@ fn functions_in(json: &str, project_ref: &str, region: &str) -> Vec<CloudResourc
 }
 
 /// Preview branches, by name.
+///
+/// Not the default branch. Its `project_ref` is the project's own - it IS the
+/// project, which the panel already shows as its database - and it exists as
+/// soon as branching was ever tried: measured, a create refused with 402 on the
+/// Free plan still left a `main` with `is_default: true` behind. Listed, it
+/// would be a branch nobody made, and every branch action on it would land on
+/// production.
 fn branches_in(json: &str, project_ref: &str, region: &str) -> Vec<CloudResource> {
     let list: Vec<serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
     list.iter()
         .filter_map(|entry| {
             let name = field(entry, "name");
-            if name.is_empty() {
+            if name.is_empty() || field(entry, "project_ref") == project_ref {
                 return None;
             }
             let mut tags = BTreeMap::new();
-            for key in ["status", "git_branch", "is_default", "persistent"] {
+            for key in ["status", "preview_project_status", "git_branch", "persistent"] {
                 if let Some(value) = entry.get(key) {
                     tags.insert(key.to_string(), scalar(value));
                 }
@@ -444,16 +454,58 @@ mod tests {
     /// a project may hold neither, and the panel must still show its database.
     const NOTHING_LISTED: &str = "[]\n";
 
-    /// Edge Functions and preview branches with something in them. Still the
-    /// OpenAPI document's shape (`FunctionResponse_Output`,
-    /// `BranchResponse_Output`): the project reachable from this machine has
-    /// none, and deploying one to somebody's real project to photograph the
-    /// answer is not a test's business.
+    /// `functions list -o json` with one function deployed, captured
+    /// 2026-09-23 (CLI 2.116.0) with the ids masked. Three fields the OpenAPI
+    /// document did not promise arrive too - `entrypoint_path`, `ezbr_sha256`,
+    /// `import_map` - and `created_at` is epoch milliseconds, not a date.
     const FUNCTIONS: &str = r#"[
-  {"id":"f1","slug":"resize","name":"resize","status":"ACTIVE","version":7,"created_at":1735689600000,"updated_at":1735689600000,"verify_jwt":true}
+  {
+    "created_at": 1790152939008,
+    "entrypoint_path": "file:///tmp/user_fn_abcdefghijklmnopqrst_00000000-0000-0000-0000-000000000001_1/source/supabase/functions/resize/index.ts",
+    "ezbr_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "id": "00000000-0000-0000-0000-000000000001",
+    "import_map": false,
+    "name": "resize",
+    "slug": "resize",
+    "status": "ACTIVE",
+    "updated_at": 1790152939008,
+    "verify_jwt": true,
+    "version": 1
+  }
 ]"#;
+
+    /// `branches list -o json` after branching was tried once, captured
+    /// 2026-09-23 with the ids masked: the default branch, which is the
+    /// project itself. The second entry is a preview branch in the same
+    /// shape - a real one needs the Pro plan, so its values are this entry's
+    /// with what makes it a preview changed: its own ref and `is_default` false.
     const BRANCHES: &str = r#"[
-  {"id":"b1","name":"main","project_ref":"abcdefghijklmnopqrst","parent_project_ref":"abcdefghijklmnopqrst","is_default":true,"persistent":true,"status":"FUNCTIONS_DEPLOYED","created_at":"2025-01-10T03:14:15Z","updated_at":"2025-01-10T03:14:15Z","with_data":false}
+  {
+    "created_at": "2026-09-23T08:42:39.90582+00:00",
+    "id": "00000000-0000-0000-0000-00000000000b",
+    "is_default": true,
+    "name": "main",
+    "parent_project_ref": "abcdefghijklmnopqrst",
+    "persistent": false,
+    "preview_project_status": "ACTIVE_HEALTHY",
+    "project_ref": "abcdefghijklmnopqrst",
+    "status": "FUNCTIONS_DEPLOYED",
+    "updated_at": "2026-09-23T08:42:39.90582+00:00",
+    "with_data": false
+  },
+  {
+    "created_at": "2026-09-23T08:42:39.90582+00:00",
+    "id": "00000000-0000-0000-0000-00000000000c",
+    "is_default": false,
+    "name": "feature-login",
+    "parent_project_ref": "abcdefghijklmnopqrst",
+    "persistent": false,
+    "preview_project_status": "ACTIVE_HEALTHY",
+    "project_ref": "zyxwvutsrqponmlkjihg",
+    "status": "FUNCTIONS_DEPLOYED",
+    "updated_at": "2026-09-23T08:42:39.90582+00:00",
+    "with_data": false
+  }
 ]"#;
 
     fn organizations() -> BTreeMap<String, String> {
@@ -519,18 +571,27 @@ mod tests {
         );
         assert_eq!(functions[0].name, "resize");
         assert_eq!(functions[0].kind, "supabase/function");
-        assert_eq!(functions[0].tags.get("version").map(String::as_str), Some("7"));
+        assert_eq!(functions[0].tags.get("version").map(String::as_str), Some("1"));
         assert_eq!(
             functions[0].tags.get("verify_jwt").map(String::as_str),
             Some("true")
         );
 
+        // The default branch is the project, already shown as its database.
         let branches = branches_in(BRANCHES, "abcdefghijklmnopqrst", "ap-southeast-1");
-        assert_eq!(branches[0].id, "supabase://abcdefghijklmnopqrst/branches/main");
+        assert_eq!(
+            branches.len(),
+            1,
+            "only the preview branch is a resource of its own"
+        );
+        assert_eq!(
+            branches[0].id,
+            "supabase://abcdefghijklmnopqrst/branches/feature-login"
+        );
         assert_eq!(branches[0].kind, "supabase/branch");
         assert_eq!(
-            branches[0].tags.get("is_default").map(String::as_str),
-            Some("true")
+            branches[0].tags.get("preview_project_status").map(String::as_str),
+            Some("ACTIVE_HEALTHY")
         );
 
         assert!(project_in(PROJECTS, "nope").is_none());
