@@ -12,19 +12,15 @@ while its options were still loading.
 cargo install tauri-driver --locked
 ```
 
-Plus the Edge WebDriver matching the installed WebView2 runtime. Find the
-version under `C:\Program Files (x86)\Microsoft\EdgeWebView\Application`, then:
-
-```bash
-curl -L -o edgedriver.zip https://msedgedriver.microsoft.com/<version>/edgedriver_win64.zip
-unzip edgedriver.zip -d ~/.aime-e2e
-```
-
-Keep each one under a name of its own - `msedgedriver-edge153.exe` - and leave the
-older ones there. The runner asks every `msedgedriver*.exe` in that folder for its
-version and takes the one whose major matches the runtime, so a WebView2 that
-updated itself overnight costs one download rather than a suite that fails with
-"This version of Microsoft Edge WebDriver only supports Microsoft Edge version N".
+The Edge WebDriver has to match the installed WebView2 runtime, and the runner
+sees to that itself. It reads the runtime's version out of
+`C:\Program Files (x86)\Microsoft\EdgeWebView\Application`, asks every
+`msedgedriver*.exe` in `~/.aime-e2e` for its own, and takes the one whose major
+matches. When none does - WebView2 updates itself in the background - it
+downloads `https://msedgedriver.microsoft.com/<version>/edgedriver_<arch>.zip`
+for this machine's architecture and keeps it there as `msedgedriver-edge<major>.exe`,
+next to the older ones. Measured 2026-09-24: with no 153 driver in the folder, the
+run fetched 153.0.4234.48 for a 153.0.4234.48 runtime and went on green.
 
 Point `AIME_EDGE_DRIVER` at a driver kept somewhere else; it still wins.
 

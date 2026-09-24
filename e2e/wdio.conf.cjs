@@ -7,7 +7,7 @@
  * reach the editor at all - the Open Folder button opens a native dialog no
  * driver can click.
  */
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -18,8 +18,29 @@ const application = path.join(project, "src-tauri", "target", "debug", "ai-mini-
 /** Where drivers are kept, one per WebView2 major version (see e2e/README.md). */
 const DRIVER_DIR = path.join(os.homedir(), ".aime-e2e");
 
+/** Microsoft's own download host; every runtime version has a driver of the same number. */
+const DRIVER_DOWNLOADS = "https://msedgedriver.microsoft.com";
+
+/** The driver archive for this machine's architecture - one per runtime identifier. */
+const DRIVER_ARCHIVE = {
+  x64: "edgedriver_win64.zip",
+  arm64: "edgedriver_arm64.zip",
+  ia32: "edgedriver_win32.zip",
+};
+
+/** Orders `153.0.4234.48`-style versions by their numbers, not by their text. */
+function compareVersions(left, right) {
+  const a = left.split(".").map(Number);
+  const b = right.split(".").map(Number);
+  for (let part = 0; part < Math.max(a.length, b.length); part += 1) {
+    const difference = (a[part] ?? 0) - (b[part] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
 /**
- * The major version of the WebView2 runtime this machine will actually start.
+ * The version of the WebView2 runtime this machine will actually start.
  *
  * Read from the runtime's own install folder rather than remembered: it updates
  * itself in the background, and the driver that matched last month refuses the
@@ -27,7 +48,7 @@ const DRIVER_DIR = path.join(os.homedir(), ".aime-e2e");
  * Microsoft Edge version 151", measured against a 153 runtime, which reads like
  * a broken suite rather than a stale download.
  */
-function installedWebViewMajor() {
+function installedWebViewVersion() {
   const roots = [
     path.join(
       process.env["ProgramFiles(x86)"] ?? "C:/Program Files (x86)",
@@ -38,16 +59,48 @@ function installedWebViewMajor() {
   const versions = roots
     .filter((root) => fs.existsSync(root))
     .flatMap((root) => fs.readdirSync(root))
-    .map((name) => Number.parseInt(name, 10))
-    .filter((major) => Number.isFinite(major));
-  return versions.length === 0 ? null : Math.max(...versions);
+    .filter((name) => /^\d+(\.\d+){3}$/.test(name))
+    .sort(compareVersions);
+  return versions.at(-1) ?? null;
 }
+
+const majorOf = (version) => Number(version.split(".")[0]);
 
 /** What a driver answers to `--version`, as a major number. */
 function driverMajor(binary) {
-  const asked = require("node:child_process").spawnSync(binary, ["--version"], { encoding: "utf8" });
+  const asked = spawnSync(binary, ["--version"], { encoding: "utf8" });
   const major = /(\d+)\./.exec(asked.stdout ?? "");
   return major === null ? null : Number(major[1]);
+}
+
+/**
+ * Fetches the driver built for `version` into the driver folder.
+ *
+ * Unpacked with Windows' own `tar.exe`, named by path: under Git Bash the `tar`
+ * found first on PATH is GNU tar, which does not read zip archives.
+ */
+async function downloadEdgeDriver(version) {
+  const archive = DRIVER_ARCHIVE[process.arch];
+  if (!archive) throw new Error(`no Edge driver is published for ${process.arch}`);
+  const url = `${DRIVER_DOWNLOADS}/${version}/${archive}`;
+  const response = await fetch(url);
+  if (!response.ok)
+    throw new Error(`the Edge driver for WebView2 ${version} is not at ${url}: ${response.status}`);
+
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "aime-edgedriver-"));
+  try {
+    const zip = path.join(scratch, archive);
+    fs.writeFileSync(zip, Buffer.from(await response.arrayBuffer()));
+    const tar = path.join(process.env.SystemRoot ?? "C:/Windows", "System32", "tar.exe");
+    const unpacked = spawnSync(tar, ["-xf", zip, "-C", scratch, "msedgedriver.exe"], { encoding: "utf8" });
+    if (unpacked.status !== 0) throw new Error(`could not unpack ${url}: ${unpacked.stderr}`);
+    fs.mkdirSync(DRIVER_DIR, { recursive: true });
+    const driver = path.join(DRIVER_DIR, `msedgedriver-edge${majorOf(version)}.exe`);
+    fs.copyFileSync(path.join(scratch, "msedgedriver.exe"), driver);
+    return driver;
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -55,25 +108,25 @@ function driverMajor(binary) {
  *
  * `AIME_EDGE_DRIVER` still wins, for a driver kept somewhere else. Otherwise
  * every driver in the folder is asked its version and the one that matches the
- * runtime is taken, so keeping the previous major around costs nothing and the
- * next runtime update is one download rather than a debugging session.
+ * runtime is taken; when none does - the runtime updated itself since the last
+ * run - the matching one is downloaded next to the others, so an update costs
+ * the next run a few seconds instead of a debugging session.
  */
-function edgeDriver() {
+async function edgeDriver() {
   if (process.env.AIME_EDGE_DRIVER) return process.env.AIME_EDGE_DRIVER;
-  const wanted = installedWebViewMajor();
+  const version = installedWebViewVersion();
+  if (version === null) throw new Error("no WebView2 runtime is installed - see e2e/README.md");
   const candidates = fs.existsSync(DRIVER_DIR)
     ? fs
         .readdirSync(DRIVER_DIR)
         .filter((name) => name.startsWith("msedgedriver") && name.endsWith(".exe"))
         .map((name) => path.join(DRIVER_DIR, name))
     : [];
-  const matching = candidates.find((binary) => driverMajor(binary) === wanted);
-  // No match is still a path: the session then fails with the driver's own
-  // version complaint, which names both numbers and is the useful message.
-  return matching ?? candidates[0] ?? path.join(DRIVER_DIR, "msedgedriver.exe");
+  const matching = candidates.find((binary) => driverMajor(binary) === majorOf(version));
+  if (matching) return matching;
+  process.stdout.write(`[e2e] no Edge driver for WebView2 ${version} yet - downloading it\n`);
+  return downloadEdgeDriver(version);
 }
-
-const nativeDriver = edgeDriver();
 
 /**
  * The Edge driver gives every WebView2 it starts a scratch profile in the system
@@ -289,7 +342,8 @@ exports.config = {
   // five minutes when the machine is busy.
   mochaOpts: { ui: "bdd", timeout: 600_000 },
 
-  onPrepare: () => {
+  onPrepare: async () => {
+    const nativeDriver = await edgeDriver();
     if (!fs.existsSync(nativeDriver)) {
       throw new Error(`no Edge driver at ${nativeDriver} - see e2e/README.md`);
     }
