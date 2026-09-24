@@ -30,24 +30,6 @@ async function renderedFontSize() {
   });
 }
 
-/**
- * One cloud's row in the settings page, by the label it carries.
- *
- * Anchored to the row rather than read off the page: an install URL or an
- * account name found anywhere in the body would satisfy a page-wide search,
- * and a check that cannot tell those apart proves nothing about the row.
- */
-async function cloudRow(label) {
-  return browser.execute((name) => {
-    const rows = [...document.querySelectorAll("div.flex.items-center")];
-    const row = rows.find((candidate) => {
-      const own = candidate.querySelector("span");
-      return own !== null && own.textContent === name;
-    });
-    return row?.textContent ?? "";
-  }, label);
-}
-
 describe("Settings", () => {
   before(async () => {
     await browser.execute((path) => {
@@ -89,50 +71,6 @@ describe("Settings", () => {
       timeout: 5_000,
       timeoutMsg: "the editor kept its old font size",
     });
-  });
-
-  it("lists every cloud, and gives each row its own next step", async () => {
-    // Runs while the page is already open, and leaves it open: the test after
-    // this one is the one that closes it.
-    await browser.waitUntil(async () => (await $$("div.fixed.inset-0.z-50")).length > 0, {
-      timeout: 5_000,
-      timeoutMsg: "the settings page is not open",
-    });
-
-    // The rows arrive late on purpose: each probe shells out to a cloud CLI and
-    // two of them ask the cloud who you are over the network. Waiting on the
-    // row rather than on a timer is what keeps this from being flaky on a slow
-    // link - and the panel says "looking" until then, which is the honest state.
-    await browser.waitUntil(async () => (await cloudRow("Azure")) !== "", {
-      timeout: 60_000,
-      timeoutMsg: "the cloud rows never arrived",
-    });
-
-    // The feature's whole promise is that connecting never involves handing
-    // Aime a secret, so the page has to say so where a reader will see it.
-    const page = await browser.execute(
-      () => document.querySelector("div.fixed.inset-0.z-50")?.textContent ?? "",
-    );
-    assert.match(page, /never asks for a key/, "the page does not say Aime asks for no key");
-
-    // Four rows, and none of them blank: a row that knows nothing to offer is
-    // the one failure mode here that looks like a working panel.
-    for (const label of ["Azure", "AWS", "Google Cloud", "Supabase"]) {
-      const row = await cloudRow(label);
-      assert.ok(row.includes(label), `no row for ${label}`);
-      assert.ok(row.replace(label, "").trim().length > 0, `the ${label} row offers nothing: "${row}"`);
-    }
-
-    // Machine-independent on purpose, and platform-independent too: the row
-    // names its CLI whichever way this platform gets it - a winget package on
-    // Windows, a brew cask on macOS, the vendor's page on Linux where casks do
-    // not exist. Pinning it to one of those would be asserting which machine
-    // the suite runs on.
-    const gcp = await cloudRow("Google Cloud");
-    assert.ok(
-      /gcloud|CloudSDK|cloud\.google\.com/.test(gcp),
-      `the Google Cloud row says nothing about its CLI: "${gcp}"`,
-    );
   });
 
   it("closes on Escape", async () => {

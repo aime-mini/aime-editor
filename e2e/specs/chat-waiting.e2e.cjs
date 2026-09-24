@@ -65,7 +65,7 @@ const PROBE_SOURCE =
   "void (async () => {\n" +
   "  await silence(); // not a word written yet\n" +
   '  if (mode === "silent") return; // the turn that answers nothing at all\n' +
-  '  process.stdout.write(JSON.stringify({ text: ' +
+  "  process.stdout.write(JSON.stringify({ text: " +
   JSON.stringify(ANSWER) +
   ' }) + "\\n");\n' +
   "  await silence(); // the answer is still arriving\n" +
@@ -243,10 +243,20 @@ describe("The chat panel while the AI is still answering", () => {
     );
     assert.equal(streaming.dots, 0, "the thinking dots outstayed the first word");
     assert.ok(streaming.caretIsLast, "the caret is in the bubble but not behind the text");
-    assert.ok(streaming.answerShown, "the caret arrived without the answer it belongs to");
     if (!streaming.reducedMotion) {
       assert.equal(streaming.caretAnimation, "caret", "the caret is on screen but not blinking");
     }
+
+    // The words are typed out over a few hundred milliseconds (`lib/typewriter`),
+    // so the first frame with a caret carries only the start of them. The caret
+    // has to stay behind the text until all of it is on screen.
+    const typed = await waitForMark(
+      (m) => m.answerShown || m.carets === 0,
+      "the answer never finished typing out",
+    );
+    assert.ok(typed.answerShown, "the caret went away before the answer it belongs to was on screen");
+    assert.equal(typed.carets, 1, "the caret left while the turn was still running");
+    assert.ok(typed.caretIsLast, "the typed-out answer pushed the caret away from its end");
 
     // 3. The turn is over: every mark goes, and what it wrote stays.
     const done = await waitForMark(
