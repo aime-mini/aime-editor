@@ -820,14 +820,62 @@ fn parse_branches(text: &str) -> Vec<GitBranch> {
         .collect()
 }
 
+/// How many times a branch's upstream is written when git could not write it.
+const UPSTREAM_ATTEMPTS: u32 = 5;
+
+/// The pause between those attempts: long enough for a reader to let go of the file.
+const UPSTREAM_RETRY: std::time::Duration = std::time::Duration::from_millis(120);
+
 /// Checks out a remote-tracking branch as a local branch that tracks it.
 ///
 /// `--track origin/x` rather than the bare `x`: the shorthand only works while
 /// exactly one remote has the branch, and a second remote turns it into an
 /// "ambiguous" refusal that nothing in the menu explains.
+///
+/// The tracking is then checked rather than taken on git's word. On Windows git
+/// writes `.git/config` by renaming a new file over it, which fails while any
+/// other process has the file open - another git reading the repository is
+/// enough - and `checkout --track` then prints "could not write config file
+/// .git/config: Permission denied", announces the branch as "set up to track"
+/// all the same, and exits 0 (measured 2026-09-24, Git for Windows). What is left
+/// is a branch that tracks nothing, and a push that asks where to go.
 #[tauri::command]
 pub async fn git_checkout_tracking(root: String, name: String) -> Result<String, String> {
-    run_git(&root, &["checkout", "--track", &name]).await
+    let output = run_git(&root, &["checkout", "--track", &name]).await?;
+    // The branch git just made, named by git: it strips the remote itself.
+    let local = run_git(&root, &["branch", "--show-current"]).await?;
+    ensure_upstream(&root, local.trim(), &name).await?;
+    Ok(output)
+}
+
+/// Makes `local` track `upstream`, writing it again until git can say it does.
+async fn ensure_upstream(root: &str, local: &str, upstream: &str) -> Result<(), String> {
+    let tracked = format!("{local}@{{upstream}}");
+    let set_upstream = format!("--set-upstream-to={upstream}");
+    let mut last_error = String::new();
+    for attempt in 1..=UPSTREAM_ATTEMPTS {
+        if run_git(root, &["rev-parse", "--abbrev-ref", &tracked])
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        if attempt > 1 {
+            tokio::time::sleep(UPSTREAM_RETRY).await;
+        }
+        if let Err(err) = run_git(root, &["branch", &set_upstream, local]).await {
+            last_error = err;
+        }
+    }
+    if run_git(root, &["rev-parse", "--abbrev-ref", &tracked])
+        .await
+        .is_ok()
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "{local} was checked out, but it could not be set to track {upstream}: {last_error}"
+    ))
 }
 
 /// Adds a detached worktree at `path`, for a run that must not share the
@@ -1178,6 +1226,79 @@ mod tests {
         assert!(
             !branches.iter().any(|b| b.name == "origin"),
             "origin/HEAD leaked in as a branch named after the remote: {names:?}"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// The failure is Windows' own - a file another process holds open cannot be
+    /// renamed over - so that is what the test does: `.git/config` is held the
+    /// way a reading git holds it, without delete sharing, while the branch is
+    /// checked out, and let go a moment later. Everywhere else the rename
+    /// succeeds and the test is the plain promise: the branch tracks its remote.
+    #[tokio::test]
+    async fn a_remote_branch_checked_out_tracks_it_even_when_git_could_not_say_so() {
+        let base = std::env::temp_dir().join(format!("aime-tracking-{}", std::process::id()));
+        let source = base.join("src");
+        let clone = base.join("clone");
+        std::fs::create_dir_all(&source).expect("mkdir");
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&source, &["init", "-q", "-b", "main"]);
+        git(&source, &["config", "user.email", "t@t"]);
+        git(&source, &["config", "user.name", "t"]);
+        git(&source, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&source, &["branch", "team/only-on-remote"]);
+        git(
+            &base,
+            &[
+                "clone",
+                "-q",
+                source.to_str().expect("utf8"),
+                clone.to_str().expect("utf8"),
+            ],
+        );
+
+        #[cfg(target_os = "windows")]
+        let held = {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_SHARE_READ: u32 = 0x1;
+            let config = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(clone.join(".git").join("config"))
+                .expect("the config opens");
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                drop(config);
+            })
+        };
+
+        git_checkout_tracking(
+            clone.to_string_lossy().to_string(),
+            "origin/team/only-on-remote".into(),
+        )
+        .await
+        .expect("checked out and tracking");
+
+        #[cfg(target_os = "windows")]
+        held.join().expect("the config was let go");
+        assert_eq!(
+            git(
+                &clone,
+                &["rev-parse", "--abbrev-ref", "team/only-on-remote@{upstream}"]
+            ),
+            "origin/team/only-on-remote"
         );
         std::fs::remove_dir_all(&base).ok();
     }

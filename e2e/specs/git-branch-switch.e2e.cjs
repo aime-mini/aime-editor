@@ -136,14 +136,20 @@ const BRANCH_LISTING_ROUNDS = 3;
 gitIn(crowded, "init", "-b", "main");
 gitIn(crowded, "config", "user.email", "e2e@aime.test");
 gitIn(crowded, "config", "user.name", "Aime E2E");
-fs.writeFileSync(path.join(crowded, "crowded.txt"), "one file, a thousand branches" + String.fromCharCode(10));
+fs.writeFileSync(
+  path.join(crowded, "crowded.txt"),
+  "one file, a thousand branches" + String.fromCharCode(10),
+);
 gitIn(crowded, "add", ".");
 gitIn(crowded, "commit", "-m", "first");
 
 const firstCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: crowded }).toString().trim();
 const number = (i) => String(i).padStart(4, "0");
 const refs = [
-  ...Array.from({ length: LOCAL_BRANCHES }, (_, i) => `create refs/heads/feature/branch-${number(i)} ${firstCommit}`),
+  ...Array.from(
+    { length: LOCAL_BRANCHES },
+    (_, i) => `create refs/heads/feature/branch-${number(i)} ${firstCommit}`,
+  ),
   ...Array.from(
     { length: REMOTE_ONLY_BRANCHES },
     (_, i) => `create refs/remotes/origin/team/theirs-${number(i)} ${firstCommit}`,
@@ -269,14 +275,27 @@ describe("Git panel across an external branch switch", () => {
         "team/only-on-remote",
       { timeout: 20_000, timeoutMsg: "picking the remote branch did not check it out locally" },
     );
-    const upstream = execFileSync(
-      "git",
-      ["rev-parse", "--abbrev-ref", "team/only-on-remote@{upstream}"],
-      { cwd: repo },
-    )
-      .toString()
-      .trim();
-    assert.equal(upstream, "origin/team/only-on-remote", "the new local branch tracks nothing");
+    // Waited for, not read once: on Windows git can fail to write the tracking
+    // while anything else has .git/config open - this test's own polling git
+    // included - and Aime then writes it again a moment after the switch
+    // (`git_checkout_tracking`). A branch that never tracks still fails here.
+    const upstreamOf = () => {
+      try {
+        return execFileSync("git", ["rev-parse", "--abbrev-ref", "team/only-on-remote@{upstream}"], {
+          cwd: repo,
+          stdio: "pipe",
+        })
+          .toString()
+          .trim();
+      } catch {
+        return null;
+      }
+    };
+    await browser
+      .waitUntil(() => upstreamOf() === "origin/team/only-on-remote", { timeout: 10_000, interval: 250 })
+      .catch(() => {
+        assert.fail(`the new local branch tracks ${upstreamOf() ?? "nothing"}`);
+      });
 
     // Back to main so the next test starts where it expects to.
     git("checkout", "main");
@@ -371,7 +390,10 @@ describe("The branch menu on a repository a team has been working in", () => {
 
     // The actions are what a menu is opened for as often as the list is; below
     // a thousand branches they would be past the last row that gets rendered.
-    assert.ok(menu.text.includes("New branch"), `the actions are not on the menu: ${menu.text.slice(0, 120)}`);
+    assert.ok(
+      menu.text.includes("New branch"),
+      `the actions are not on the menu: ${menu.text.slice(0, 120)}`,
+    );
 
     // Rendered rows are capped - and what is not rendered is accounted for, in
     // a line that says how much of the list the filter box still reaches.
