@@ -43,6 +43,7 @@ pub fn run() {
         .manage(dap::DapState::default())
         .manage(exec::ExecState::default())
         .manage(splash::SplashState::default())
+        .manage(session::closing::ClosingWindows::default())
         .manage(cloud::sign_in::SignInState::default())
         .manage(cloud::credentials::CredentialWatch::default())
         .setup(|app| {
@@ -61,13 +62,15 @@ pub fn run() {
             }
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) {
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => session::closing::hold_close(window, api),
+            tauri::WindowEvent::Destroyed => {
                 fs_watch::drop_watcher_for(window);
                 terminal::kill_for_window(window);
                 lsp::stop_for_window(window);
                 dap::stop_for_window(window);
             }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             cli::initial_folder,
@@ -177,6 +180,9 @@ pub fn run() {
             git::git_stash_drop,
             session::load_ai_sessions,
             session::save_ai_sessions,
+            session::load_workspace_state,
+            session::save_workspace_state,
+            session::closing::window_flushed,
             memory::memory_paths,
             memory::project_memory_paths,
             memory::ensure_memory_bridge,

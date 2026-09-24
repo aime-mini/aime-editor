@@ -30,6 +30,8 @@ const STARTUP_BUDGET_MS = 5000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 import { useT } from "./i18n";
 import { startAutoSave } from "./lib/autoSave";
+// For its effect: every workspace is reopened the way it was left.
+import "./stores/workspaceSession";
 import { EnvironmentCheck } from "./components/EnvironmentCheck";
 import { HomeNews } from "./components/HomeNews";
 import { CommandPalette } from "./components/CommandPalette";

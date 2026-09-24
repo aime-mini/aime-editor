@@ -55,8 +55,8 @@ const EN: HelpTopic[] = [
     id: "switch-close",
     section: "Workspace",
     title: "Switch or close the workspace",
-    body: "Hover the project name on top of the file tree: the folder icon opens another workspace, the X closes it and returns to the welcome screen. Right-clicking the name offers the same actions.",
-    keywords: "close folder back exit change project",
+    body: "Hover the project name on top of the file tree: the folder icon opens another workspace, the X closes it and returns to the welcome screen. Right-clicking the name offers the same actions.\n\nA workspace opens the way you left it - after a restart, or on coming back from another folder: the same tabs in the same order, the file that was in front, each file at the line and scroll position you left it, the folders you had open in the tree, the sidebar view, and the cloud panel's tab. Text you had not saved comes back too, still unsaved, with its dot. If the file on disk changed while Aime was closed, or can no longer be read, your unsaved text is kept and a line above the editor says so: Keep my edits closes the question, the other button gives your text up for the file on disk (or closes a tab whose file is gone). Closing the window waits for this to be written, but never more than a second and a half. Terminals, debug sessions and running tasks are processes and cannot come back; the AI chat has its own history in the AI panel.",
+    keywords: "close folder back exit change project restore reopen tabs session unsaved hot exit",
   },
   {
     id: "file-tree",
@@ -440,8 +440,8 @@ const VI: HelpTopic[] = [
     id: "switch-close",
     section: "Workspace",
     title: "Đổi hoặc đóng workspace",
-    body: "Rê chuột vào tên dự án trên đầu cây file: icon thư mục để mở workspace khác, dấu X để đóng và quay về màn hình chào. Chuột phải vào tên cũng có các lệnh này.",
-    keywords: "đóng thư mục quay lại close folder",
+    body: "Rê chuột vào tên dự án trên đầu cây file: icon thư mục để mở workspace khác, dấu X để đóng và quay về màn hình chào. Chuột phải vào tên cũng có các lệnh này.\n\nMở lại một workspace - sau khi khởi động lại, hoặc khi quay về từ thư mục khác - là thấy đúng như lúc rời đi: cùng các tab và đúng thứ tự, file đang xem, mỗi file đúng dòng và vị trí cuộn, các thư mục đang mở trong cây file, view ở thanh bên, và tab cloud. Phần sửa chưa lưu cũng quay lại, vẫn là chưa lưu, vẫn có chấm. Nếu file trên đĩa bị thay đổi trong lúc Aime đóng, hoặc không đọc được nữa, phần bạn sửa vẫn được giữ và một dòng phía trên editor báo điều đó: Giữ bản của tôi là đóng câu hỏi, nút còn lại bỏ phần đã sửa để lấy bản trên đĩa (hoặc đóng tab của file không còn). Đóng cửa sổ sẽ chờ phần này được ghi xong, nhưng không bao giờ quá một giây rưỡi. Terminal, phiên debug và task đang chạy là tiến trình nên không quay lại được; chat AI có lịch sử riêng trong khung AI.",
+    keywords: "đóng thư mục quay lại close folder mở lại khôi phục tab chưa lưu phiên",
   },
   {
     id: "file-tree",

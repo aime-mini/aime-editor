@@ -11,6 +11,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => un
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: () => Promise.resolve(null) }));
 
 const { CLOUD_TAB, useWorkspace } = await import("./workspace");
+type ResumedWorkspace = import("./workspace").ResumedWorkspace;
 
 const A = "C:\\project\\src\\a.ts";
 const B = "C:\\project\\src\\b.ts";
@@ -251,5 +252,130 @@ describe("special views over the cloud panel", () => {
         after.workItemId,
       ]).toEqual([null, null, null, null, null]);
     }
+  });
+});
+
+describe("a workspace coming back as it was left", () => {
+  const ROOT = "C:\\project";
+  const resumed = (overrides: Partial<ResumedWorkspace> = {}): ResumedWorkspace => ({
+    tabs: [A, B],
+    files: {
+      [A]: { content: "a, edited", savedContent: "a on disk" },
+      [B]: { content: "b on disk", savedContent: "b on disk" },
+    },
+    notices: {},
+    active: A,
+    cloudOpen: false,
+    expanded: ["C:\\project\\src"],
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    useWorkspace.setState({
+      rootPath: ROOT,
+      openTabs: [],
+      buffers: {},
+      openFilePath: null,
+      fileContent: "",
+      savedContent: "",
+      dirty: false,
+      cloudOpen: false,
+      expandedDirs: [],
+      diskNotices: {},
+    });
+  });
+
+  it("puts back the tabs, the file in front and its unsaved text", () => {
+    useWorkspace.getState().resume(ROOT, resumed());
+    const state = useWorkspace.getState();
+    expect(state.openTabs).toEqual([A, B]);
+    expect(state.openFilePath).toBe(A);
+    expect([state.fileContent, state.savedContent, state.dirty]).toEqual(["a, edited", "a on disk", true]);
+    // The tab behind is parked like any other, ready to switch to.
+    useWorkspace.getState().activateTab(B);
+    expect(useWorkspace.getState().fileContent).toBe("b on disk");
+    expect(useWorkspace.getState().expandedDirs).toEqual(["C:\\project\\src"]);
+  });
+
+  it("keeps what was opened while it was being read, and keeps it in front", async () => {
+    await openAll(C);
+    useWorkspace.getState().setContent("typed while the snapshot was read");
+    useWorkspace.getState().resume(ROOT, resumed());
+    const state = useWorkspace.getState();
+    expect(state.openTabs).toEqual([A, B, C]);
+    expect(state.openFilePath).toBe(C);
+    expect(state.fileContent).toBe("typed while the snapshot was read");
+  });
+
+  it("prefers the open tab's own text over the snapshot's copy of it", async () => {
+    await openAll(A);
+    useWorkspace.getState().setContent("newer than the snapshot");
+    useWorkspace.getState().resume(ROOT, resumed());
+    expect(useWorkspace.getState().fileContent).toBe("newer than the snapshot");
+  });
+
+  it("does nothing for a folder that is no longer the open one", () => {
+    useWorkspace.getState().resume("C:\\another", resumed());
+    expect(useWorkspace.getState().openTabs).toEqual([]);
+  });
+
+  it("brings the cloud panel back in front when that is how it was left", () => {
+    useWorkspace.getState().resume(ROOT, resumed({ tabs: [A, CLOUD_TAB], cloudOpen: true }));
+    const state = useWorkspace.getState();
+    expect(state.cloudOpen).toBe(true);
+    expect(state.openFilePath).toBe(A); // still behind the panel, as it was
+  });
+
+  it("gives up unsaved text for the disk's only when asked, and closes a tab whose file is gone", async () => {
+    useWorkspace.getState().resume(ROOT, resumed({ notices: { [A]: "changed", [B]: "missing" } }));
+    readFile.mockResolvedValueOnce("a as the disk has it now");
+    await useWorkspace.getState().takeDiskVersion(A);
+    let state = useWorkspace.getState();
+    expect([state.fileContent, state.dirty, state.diskNotices[A]]).toEqual([
+      "a as the disk has it now",
+      false,
+      undefined,
+    ]);
+    await useWorkspace.getState().takeDiskVersion(B);
+    state = useWorkspace.getState();
+    expect(state.openTabs).toEqual([A]);
+    expect(state.diskNotices[B]).toBeUndefined();
+  });
+
+  it("keeps the text and the notice when the file on disk cannot be read after all", async () => {
+    useWorkspace.getState().resume(ROOT, resumed({ notices: { [A]: "changed" } }));
+    readFile.mockRejectedValueOnce(new Error("locked by another process"));
+    await expect(useWorkspace.getState().takeDiskVersion(A)).rejects.toThrow("locked");
+    const state = useWorkspace.getState();
+    expect([state.fileContent, state.diskNotices[A]]).toEqual(["a, edited", "changed"]);
+  });
+
+  it("keeps the unsaved text when the notice is dismissed", () => {
+    useWorkspace.getState().resume(ROOT, resumed({ notices: { [A]: "changed" } }));
+    useWorkspace.getState().dismissDiskNotice(A);
+    const state = useWorkspace.getState();
+    expect(state.diskNotices[A]).toBeUndefined();
+    expect(state.fileContent).toBe("a, edited");
+  });
+
+  it("follows open folders and notices through a rename, and forgets folders that are deleted", () => {
+    useWorkspace.getState().resume(ROOT, resumed({ notices: { [A]: "changed" } }));
+    useWorkspace.getState().setDirExpanded("C:\\project\\src\\nested", true);
+    useWorkspace.getState().handlePathRenamed("C:\\project\\src", "C:\\project\\lib");
+    let state = useWorkspace.getState();
+    expect(state.expandedDirs).toEqual(["C:\\project\\lib", "C:\\project\\lib\\nested"]);
+    expect(state.diskNotices["C:\\project\\lib\\a.ts"]).toBe("changed");
+    useWorkspace.getState().handlePathDeleted("C:\\project\\lib\\nested");
+    state = useWorkspace.getState();
+    expect(state.expandedDirs).toEqual(["C:\\project\\lib"]);
+  });
+
+  it("opens a folder in the tree once, and closes it once", () => {
+    const { setDirExpanded } = useWorkspace.getState();
+    setDirExpanded("C:\\project\\src", true);
+    setDirExpanded("C:\\project\\src", true);
+    expect(useWorkspace.getState().expandedDirs).toEqual(["C:\\project\\src"]);
+    setDirExpanded("C:\\project\\src", false);
+    expect(useWorkspace.getState().expandedDirs).toEqual([]);
   });
 });

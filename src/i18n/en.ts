@@ -1078,6 +1078,12 @@ export const en = {
   "modal.stashTitle": "Stash message",
   "modal.stashHint": "Optional - leave empty for the default. Untracked files are included.",
   "editor.conflictBanner": "This file has merge conflicts",
+  "editor.diskChanged": "This file changed on disk while Aime was closed. Your unsaved edits are kept.",
+  "editor.diskMissing":
+    "This file can no longer be read from disk - moved, deleted or locked. Your unsaved edits are kept.",
+  "editor.keepMine": "Keep my edits",
+  "editor.useDisk": "Use the file on disk",
+  "editor.discardMine": "Discard my edits",
   "file.viewTable": "Table",
   "file.viewPreview": "Preview",
   "file.viewTree": "Tree",

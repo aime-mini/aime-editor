@@ -264,17 +264,19 @@ async function waitForText(text, message) {
   const needle = text.toLowerCase();
   // A plain string: the driver does not await a function here, and an async one
   // costs the diagnostic exactly when it is needed.
-  await browser.waitUntil(async () => (await $("body").getText()).toLowerCase().includes(needle), {
-    timeout: 30_000,
-    timeoutMsg: `${message ?? "text never appeared"} (looked for "${text}")`,
-  }).catch(async (error) => {
-    // The panel's own words are the diagnosis; without them a timeout says only
-    // that something did not happen.
-    const page = await $("body").getText();
-    throw new Error(`${error.message}
+  await browser
+    .waitUntil(async () => (await $("body").getText()).toLowerCase().includes(needle), {
+      timeout: 30_000,
+      timeoutMsg: `${message ?? "text never appeared"} (looked for "${text}")`,
+    })
+    .catch(async (error) => {
+      // The panel's own words are the diagnosis; without them a timeout says only
+      // that something did not happen.
+      const page = await $("body").getText();
+      throw new Error(`${error.message}
 --- on screen ---
 ${page.slice(0, 2500)}`);
-  });
+    });
 }
 
 /** Opens a folder the only way a driver can: through the recent list. */
@@ -303,7 +305,8 @@ function repository(prefix) {
 /** Opens a project and switches the sidebar to its work items. */
 async function openWorkItems(dir) {
   await open(dir);
-  await waitForText("readme.md", `${dir} never opened`);
+  // The status bar names the open folder whichever sidebar view came back with it.
+  await waitForText(dir, `${dir} never opened`);
   await (await $('button[title="Work items"]')).click();
 }
 

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { translate } from "../i18n";
+import type { DiskState } from "../lib/workspaceSession";
 import { useAi } from "./ai";
 import { useRecent } from "./recent";
 
@@ -10,6 +11,24 @@ import { useRecent } from "./recent";
 interface TabBuffer {
   content: string;
   savedContent: string;
+}
+
+/**
+ * Why an unsaved file needs a word when it comes back: the disk moved on while
+ * Aime was closed. "unchanged" needs none, so it never appears here.
+ */
+export type DiskNotice = Exclude<DiskState, "unchanged">;
+
+/** A workspace as it was left, read back and checked against the disk (`stores/workspaceSession.ts`). */
+export interface ResumedWorkspace {
+  /** In tab order; files that could not come back are already left out. */
+  tabs: string[];
+  /** The text each file comes back with. */
+  files: Record<string, TabBuffer>;
+  notices: Record<string, DiskNotice>;
+  active: string | null;
+  cloudOpen: boolean;
+  expanded: string[];
 }
 
 interface WorkspaceState {
@@ -47,12 +66,26 @@ interface WorkspaceState {
   savedContent: string;
   dirty: boolean;
   treeVersion: number; // bump to make FileTree reload
+  /** Folders open in the file tree - kept here, not in each row, so they outlive a restart. */
+  expandedDirs: string[];
+  /** Files that came back with unsaved text the disk no longer matches. */
+  diskNotices: Record<string, DiskNotice | undefined>;
 
   openFolder: () => Promise<void>;
   /** Makes `path` the workspace root and starts watching it (dialog + CLI entry points). */
   adoptFolder: (path: string) => Promise<void>;
   /** Returns to the welcome screen: flushes the AI session, stops the watcher. */
   closeFolder: () => void;
+  /**
+   * Puts back a workspace as it was left. Tabs opened while it was being read
+   * stay, after the ones that come back, and whatever is on screen stays there.
+   */
+  resume: (root: string, resumed: ResumedWorkspace) => void;
+  setDirExpanded: (path: string, expanded: boolean) => void;
+  /** Keeps the unsaved text a notice was about, and drops the notice. */
+  dismissDiskNotice: (path: string) => void;
+  /** Gives up the unsaved text for what the disk holds, closing a tab whose file is gone. */
+  takeDiskVersion: (path: string) => Promise<void>;
   openFile: (path: string) => Promise<void>;
   /** Shows an already-open file, parking the current one's unsaved text. */
   activateTab: (path: string) => void;
@@ -129,13 +162,35 @@ function parkActive(state: WorkspaceState): Record<string, TabBuffer | undefined
   return buffers;
 }
 
-/** Buffers without one entry - a file whose text is about to become live, or gone. */
-function without(
-  buffers: Record<string, TabBuffer | undefined>,
-  path: string,
-): Record<string, TabBuffer | undefined> {
-  return Object.fromEntries(Object.entries(buffers).filter(([key]) => key !== path));
+/** A record without one entry - a file whose text is about to become live, or gone. */
+function without<T>(record: Record<string, T>, path: string): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).filter(([key]) => key !== path));
 }
+
+/** What a workspace starts from before anything is opened in it. */
+const EMPTY_EDITOR: Pick<
+  WorkspaceState,
+  | "openTabs"
+  | "buffers"
+  | "openFilePath"
+  | "fileContent"
+  | "savedContent"
+  | "dirty"
+  | "expandedDirs"
+  | "diskNotices"
+  | "cloudOpen"
+> = {
+  openTabs: [],
+  buffers: {},
+  openFilePath: null,
+  fileContent: "",
+  savedContent: "",
+  dirty: false,
+  expandedDirs: [],
+  diskNotices: {},
+  // The panel is a tab like any other, and the tabs are the folder's.
+  cloudOpen: false,
+};
 
 let fsListenerReady = false;
 
@@ -174,6 +229,8 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     savedContent: "",
     dirty: false,
     treeVersion: 0,
+    expandedDirs: [],
+    diskNotices: {},
 
     openFolder: async () => {
       const selected = await open({
@@ -186,16 +243,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
 
     adoptFolder: async (path: string) => {
       useRecent.getState().remember(path);
-      set({
-        rootPath: path,
-        openTabs: [],
-        buffers: {},
-        openFilePath: null,
-        fileContent: "",
-        savedContent: "",
-        dirty: false,
-        treeVersion: get().treeVersion + 1,
-      });
+      set({ ...EMPTY_EDITOR, rootPath: path, treeVersion: get().treeVersion + 1 });
       try {
         await ensureFsListener();
         await invoke("watch_workspace", { path });
@@ -210,14 +258,67 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       invoke("unwatch_workspace").catch((err: unknown) => {
         console.error("failed to stop workspace watcher:", err);
       });
+      set({ ...EMPTY_EDITOR, rootPath: null });
+    },
+
+    resume: (root, resumed) => {
+      const state = get();
+      if (state.rootPath !== root) return; // another folder was opened meanwhile
+      const opened = new Set(state.openTabs);
+      // What was opened while the snapshot was read is newer than the snapshot.
+      const buffers = parkActive(state);
+      for (const [path, buffer] of Object.entries(resumed.files)) {
+        if (!opened.has(path)) buffers[path] = buffer;
+      }
+      const returning = new Set(resumed.tabs);
+      const openTabs = [...resumed.tabs, ...state.openTabs.filter((tab) => !returning.has(tab))];
+      const candidate = state.openFilePath ?? resumed.active;
+      const active = candidate !== null && buffers[candidate] ? candidate : null;
+      const live = active === null ? undefined : buffers[active];
       set({
-        rootPath: null,
-        openTabs: [],
-        buffers: {},
-        openFilePath: null,
-        fileContent: "",
-        savedContent: "",
-        dirty: false,
+        openTabs,
+        buffers: active === null ? buffers : without(buffers, active),
+        openFilePath: active,
+        fileContent: live?.content ?? "",
+        savedContent: live?.savedContent ?? "",
+        dirty: live ? live.content !== live.savedContent : false,
+        cloudOpen:
+          state.cloudOpen || (state.openFilePath === null && resumed.cloudOpen && returning.has(CLOUD_TAB)),
+        expandedDirs: [...new Set([...resumed.expanded, ...state.expandedDirs])],
+        diskNotices: { ...resumed.notices, ...state.diskNotices },
+      });
+    },
+
+    setDirExpanded: (path, expanded) => {
+      set((s) => {
+        if (expanded === s.expandedDirs.includes(path)) return {};
+        return {
+          expandedDirs: expanded ? [...s.expandedDirs, path] : s.expandedDirs.filter((dir) => dir !== path),
+        };
+      });
+    },
+
+    dismissDiskNotice: (path) => {
+      set((s) => ({ diskNotices: without(s.diskNotices, path) }));
+    },
+
+    takeDiskVersion: async (path) => {
+      if (get().diskNotices[path] === "missing") {
+        get().closeTab(path); // takes the notice with it
+        return;
+      }
+      // Read before anything is let go: a read that fails leaves the text and
+      // the notice about it exactly as they were.
+      const content = await invoke<string>("read_file", { path });
+      set((s) => {
+        const diskNotices = without(s.diskNotices, path);
+        if (s.openFilePath === path) {
+          return { diskNotices, fileContent: content, savedContent: content, dirty: false };
+        }
+        const buffer = s.buffers[path];
+        return buffer
+          ? { diskNotices, buffers: { ...s.buffers, [path]: { content, savedContent: content } } }
+          : { diskNotices };
       });
     },
 
@@ -271,8 +372,9 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       const state = get();
       const openTabs = state.openTabs.filter((tab) => tab !== path);
       const buffers = without(state.buffers, path);
+      const diskNotices = without(state.diskNotices, path);
       if (state.openFilePath !== path) {
-        set({ openTabs, buffers });
+        set({ openTabs, buffers, diskNotices });
         return;
       }
       // The active tab went: show the one that took its place, else the last.
@@ -282,6 +384,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         set({
           openTabs,
           buffers,
+          diskNotices,
           openFilePath: null,
           fileContent: "",
           savedContent: "",
@@ -293,6 +396,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       const buffer = buffers[next];
       set({
         openTabs,
+        diskNotices,
         buffers: without(buffers, next),
         openFilePath: next,
         fileContent: buffer?.content ?? "",
@@ -393,6 +497,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         .forEach((tab) => {
           get().closeTab(tab);
         });
+      set((s) => ({ expandedDirs: s.expandedDirs.filter((dir) => !isUnder(dir, path)) }));
     },
 
     handlePathRenamed: (from: string, to: string) => {
@@ -400,10 +505,14 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       const rename = (tab: string) => (isUnder(tab, from) ? to + tab.slice(from.length) : tab);
       const buffers: Record<string, TabBuffer | undefined> = {};
       for (const [tab, buffer] of Object.entries(state.buffers)) buffers[rename(tab)] = buffer;
+      const diskNotices: Record<string, DiskNotice | undefined> = {};
+      for (const [tab, notice] of Object.entries(state.diskNotices)) diskNotices[rename(tab)] = notice;
       set({
         openTabs: state.openTabs.map(rename),
         buffers,
+        diskNotices,
         openFilePath: state.openFilePath ? rename(state.openFilePath) : null,
+        expandedDirs: state.expandedDirs.map(rename),
       });
     },
   };

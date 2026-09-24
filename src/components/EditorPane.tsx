@@ -41,6 +41,7 @@ import { StructuredView } from "./StructuredView";
 import { WorkItemView } from "./WorkItemView";
 import { DebugToolbar } from "./DebugToolbar";
 import { useDebugGutter } from "./useDebugGutter";
+import { useKeptViewState } from "./useKeptViewState";
 
 /**
  * Offers to close whatever gap this file's language has.
@@ -607,6 +608,7 @@ export function EditorPane() {
   const debuggableRef = useRef<MonacoEditor.IContextKey<boolean> | null>(null);
 
   useDebugGutter(editorInstance, openFilePath);
+  useKeptViewState(editorInstance, openFilePath);
 
   // A .csv opens as a table, a .md as a document, a .json or .xml as a tree;
   // the text behind any of them is one click away. Keyed to the path, so
@@ -796,6 +798,7 @@ export function EditorPane() {
           {t("editor.conflictBanner")} — {t("git.resolve")}
         </button>
       )}
+      <DiskNoticeBanner path={openFilePath} />
       <EditorTabs />
       {relativeOpenPath !== null && (
         <SetupOffer languageId={languageOf(openFilePath)} relativePath={relativeOpenPath} />
@@ -836,6 +839,46 @@ export function EditorPane() {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Said once, over a file that came back with unsaved text the disk no longer
+ * matches. The text is kept either way - the choice is only whether to give it
+ * up - so nothing is lost by closing the question with the first button.
+ */
+function DiskNoticeBanner({ path }: { path: string }) {
+  const notice = useWorkspace((s) => s.diskNotices[path]);
+  const dismissDiskNotice = useWorkspace((s) => s.dismissDiskNotice);
+  const takeDiskVersion = useWorkspace((s) => s.takeDiskVersion);
+  const t = useT();
+  if (notice === undefined) return null;
+  const button = "shrink-0 rounded border border-warn/40 px-2 py-0.5 hover:bg-warn/20";
+  return (
+    <div className="flex items-center gap-2 border-b border-warn/40 bg-warn/10 px-3 py-1 text-[12px] text-warn">
+      <TriangleAlert size={12} className="shrink-0" />
+      <span className="min-w-0 flex-1">
+        {t(notice === "changed" ? "editor.diskChanged" : "editor.diskMissing")}
+      </span>
+      <button
+        className={button}
+        onClick={() => {
+          dismissDiskNotice(path);
+        }}
+      >
+        {t("editor.keepMine")}
+      </button>
+      <button
+        className={button}
+        onClick={() => {
+          takeDiskVersion(path).catch((err: unknown) => {
+            console.error(`could not read ${path} back from disk:`, err);
+          });
+        }}
+      >
+        {t(notice === "changed" ? "editor.useDisk" : "editor.discardMine")}
+      </button>
     </div>
   );
 }

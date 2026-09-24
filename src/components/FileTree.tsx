@@ -85,7 +85,9 @@ function TreeNode({
   /** Already decided by the parent: an ignored folder ignores everything in it. */
   ignored: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  // In the store, not in the row: a folder left open stays open across a restart.
+  const expanded = useWorkspace((s) => s.expandedDirs.includes(entry.path));
+  const setDirExpanded = useWorkspace((s) => s.setDirExpanded);
   const [children, setChildren] = useState<DirEntry[] | null>(null);
   const { openFile, openFilePath, treeVersion } = useWorkspace();
   const t = useT();
@@ -110,7 +112,7 @@ function TreeNode({
       void openFile(entry.path);
       return;
     }
-    setExpanded(!expanded);
+    setDirExpanded(entry.path, !expanded);
   };
 
   const active = openFilePath === entry.path;

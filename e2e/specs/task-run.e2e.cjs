@@ -499,7 +499,8 @@ async function rowFor(id) {
  */
 async function startRun(repo) {
   await open(repo);
-  await waitForText("package.json", "the sample never opened");
+  // The status bar names the open folder whichever sidebar view came back with it.
+  await waitForText(repo, "the sample never opened");
   await (await $('button[title="Work items"]')).click();
 
   await browser.waitUntil(
@@ -675,10 +676,7 @@ describe("Task run", () => {
 
     // The delivery evidence is real files Aime checked, not a claim:
     // one artifact named after the case, and proof the deployed thing answered.
-    assert.ok(
-      fs.existsSync(path.join(repo, ".aime", "evidence", "TC1.txt")),
-      "no artifact for TC1 on disk",
-    );
+    assert.ok(fs.existsSync(path.join(repo, ".aime", "evidence", "TC1.txt")), "no artifact for TC1 on disk");
     assert.ok(
       fs.existsSync(path.join(repo, ".aime", "evidence", "deploy", "health.txt")),
       "no proof the deployed software answered",
@@ -763,7 +761,8 @@ ${suite.output}`,
     await browser.refresh();
     await waitForText("recent", "the welcome screen never rendered");
     await (await $(`span=${repo.split(/[\\/]/).pop()}`)).click();
-    await waitForText("package.json", "the sample never reopened");
+    // The status bar, not the tree: the sidebar comes back on the view it was left on.
+    await waitForText(repo, "the sample never reopened");
 
     await browser.keys(["Control", "p"]);
     // '>' narrows the palette to commands, so Enter cannot land on a file whose
@@ -853,10 +852,10 @@ ${suite.output}`,
 
     // The panel shows the second run - its title in the header, not merely
     // somewhere on a page that also lists the item - with a tab for each.
-    await browser.waitUntil(
-      async () => (await $("header h1").getText()).includes("Show the currency code"),
-      { timeout: 60_000, timeoutMsg: "the second run never took the panel" },
-    );
+    await browser.waitUntil(async () => (await $("header h1").getText()).includes("Show the currency code"), {
+      timeout: 60_000,
+      timeoutMsg: "the second run never took the panel",
+    });
     // Looked up inside the run panel's own header: the work-items sidebar also
     // carries the item's title, earlier in the DOM, and clicking that opens
     // the item view instead of switching runs.
@@ -868,19 +867,16 @@ ${suite.output}`,
     // so "finished" somewhere on the page proves nothing about THIS run.
     await waitForPhase("Hand over", "Ready on bugfix/13-", "the worktree run never finished", 300_000);
     await (await $("header").$("button*=Round the total")).click();
-    await browser.waitUntil(
-      async () => (await $("header h1").getText()).includes("Round the total"),
-      { timeout: 30_000, timeoutMsg: "the tab did not switch back to the first run" },
-    );
+    await browser.waitUntil(async () => (await $("header h1").getText()).includes("Round the total"), {
+      timeout: 30_000,
+      timeoutMsg: "the tab did not switch back to the first run",
+    });
     await waitForPhase("Hand over", "Ready on bugfix/12-", "the first run never finished", 300_000);
 
     // What git says, which is the part that cannot be faked: two worktrees,
     // one branch per run, the worktree's change committed on its branch, and
     // the user's own tree still carrying the first run's uncommitted change.
-    const worktrees = execFileSync("git", ["worktree", "list"], { cwd: repo })
-      .toString()
-      .trim()
-      .split("\n");
+    const worktrees = execFileSync("git", ["worktree", "list"], { cwd: repo }).toString().trim().split("\n");
     assert.equal(worktrees.length, 2, `the second run left no worktree: ${worktrees.join(" | ")}`);
     const branches = execFileSync("git", ["branch", "--list"], { cwd: repo }).toString();
     assert.match(branches, /bugfix\/12-/, `no branch for the first run: ${branches}`);

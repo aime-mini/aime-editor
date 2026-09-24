@@ -1071,6 +1071,13 @@ export const vi: Record<TranslationKey, string> = {
   "modal.stashTitle": "Nội dung stash",
   "modal.stashHint": "Không bắt buộc - để trống dùng mặc định. File chưa track cũng được stash.",
   "editor.conflictBanner": "File này đang có xung đột merge",
+  "editor.diskChanged":
+    "File này đã bị thay đổi trên đĩa trong lúc Aime đóng. Phần bạn sửa chưa lưu vẫn được giữ.",
+  "editor.diskMissing":
+    "Không đọc được file này trên đĩa nữa - bị chuyển, xoá hoặc đang bị khoá. Phần bạn sửa chưa lưu vẫn được giữ.",
+  "editor.keepMine": "Giữ bản của tôi",
+  "editor.useDisk": "Lấy bản trên đĩa",
+  "editor.discardMine": "Bỏ phần đã sửa",
   "file.viewTable": "Bảng",
   "file.viewPreview": "Xem trước",
   "file.viewTree": "Cây",

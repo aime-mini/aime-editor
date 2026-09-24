@@ -5,7 +5,13 @@ import { create } from "zustand";
  * itself (autoSaveId); this store only tracks visibility so the status bar
  * and keyboard shortcuts can control panels from outside the PanelGroup.
  */
-export type SidebarView = "files" | "git" | "workItems" | "debug";
+export const SIDEBAR_VIEWS = ["files", "git", "workItems", "debug"] as const;
+export type SidebarView = (typeof SIDEBAR_VIEWS)[number];
+
+/** Whether a stored string names a view this version has. */
+export function isSidebarView(value: string): value is SidebarView {
+  return (SIDEBAR_VIEWS as readonly string[]).includes(value);
+}
 
 /** The bottom panel hosts three things; only one is on screen at a time. */
 export type BottomView = "terminal" | "debug" | "plugins";
