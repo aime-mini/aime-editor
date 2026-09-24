@@ -71,3 +71,20 @@ rather than `setValue` directly.
 Two places a guard cannot reach: text typed into Monaco and into the terminal
 goes in keystroke by keystroke with no field to read back. If one of those turns
 red for no reason, suspect the keyboard first.
+
+## What the app inherits, and what it does not
+
+The app is started by tauri-driver, which `wdio.conf.cjs` spawns - so whatever
+is in the runner's environment reaches every process the app starts: the
+program being debugged, js-debug, language servers, the AI CLIs. wdio puts two
+things there for itself (`NODE_ENV=test`, and `--import <tsx>` in
+`NODE_OPTIONS`), and until 2026-09-24 both leaked through: every Node program
+under test ran through tsx, and a top-level `throw` read as handled because
+tsx's loader had wrapped it. `appEnvironment()` takes both back out, so the app
+sees the environment the suite was started from, plus `AIME_UNATTENDED`.
+
+A program the app runs is also slower here than on a desktop, by design of the
+run rather than of Aime: the window is off-screen and never focused. Measured
+the same day, the same bare DAP client printing 20,000 lines through js-debug
+took 1.9 s from a terminal and 4.0 s from inside the test app. Time what the
+suite does against the suite, never against a figure taken at a desk.

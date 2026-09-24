@@ -70,15 +70,12 @@ function projectWithALoop() {
 /** Throws, uncaught, so an exception filter has something to catch. */
 function projectThatThrows() {
   const dir = project("throws");
-  // Thrown from a timer, not at the top level: under the e2e the program is
-  // loaded through wdio's own tsx loader (it leaks in via NODE_OPTIONS), and a
-  // top-level throw then surfaces inside the loader's await chain - which
-  // js-debug classifies as handled. A timer callback has no promise around it,
-  // so this is the uncaught exception the filter is about. Measured.
-  fs.writeFileSync(
-    path.join(dir, "app.js"),
-    ["setTimeout(() => {", '  throw new Error("kaboom");', "}, 0);", ""].join("\n"),
-  );
+  // A top-level throw, the plainest uncaught exception there is. It used to be
+  // thrown from a timer instead, because wdio's tsx loader leaked into every
+  // program the app started and wrapped the top level in its own await chain -
+  // which js-debug then classified as handled. `appEnvironment` in
+  // wdio.conf.cjs keeps the loader out, so the program runs as it would for a user.
+  fs.writeFileSync(path.join(dir, "app.js"), ['throw new Error("kaboom");', ""].join("\n"));
   return dir;
 }
 
@@ -1271,7 +1268,7 @@ describe("Debugging", () => {
       localStorage.setItem(key, JSON.stringify({ javascript: ["uncaught"] }));
     }, dir);
     await open(dir);
-    await openFromTheTree("app.js", 3);
+    await openFromTheTree("app.js", 1);
     await showDebugView();
     if ((await bodyText()).toLowerCase().includes("download it")) {
       console.log("[debug.e2e] SKIPPED: js-debug is not downloaded on this machine.");

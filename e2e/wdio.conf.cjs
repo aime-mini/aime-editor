@@ -175,6 +175,48 @@ function tauriDriverPath() {
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? "tauri-driver";
 }
 
+/** How a Node loader flag names tsx - the one wdio adds to load its own config. */
+const TSX_LOADER = /[\\/]tsx[\\/]/;
+
+/** `NODE_OPTIONS` without the `--import`/`--loader` flag that points at tsx. */
+function withoutTsxLoader(nodeOptions) {
+  const flags = nodeOptions.split(/\s+/).filter(Boolean);
+  const kept = [];
+  for (let index = 0; index < flags.length; index += 1) {
+    const isLoader = flags[index] === "--import" || flags[index] === "--loader";
+    if (isLoader && TSX_LOADER.test(flags[index + 1] ?? "")) {
+      index += 1; // the flag and the path it takes
+      continue;
+    }
+    kept.push(flags[index]);
+  }
+  return kept.join(" ");
+}
+
+/**
+ * The environment the app under test starts in: the one the suite was started
+ * from, without what wdio put there for its own sake.
+ *
+ * wdio's bin sets `NODE_ENV=test` and its launcher appends `--import <tsx>` to
+ * `NODE_OPTIONS`. Both reached tauri-driver, the app, and through the app every
+ * Node process it starts: the program being debugged, js-debug, language
+ * servers, the AI CLIs. Measured 2026-09-24 from inside a debuggee: the tsx
+ * loader was in its `NODE_OPTIONS`, so a program that only runs because tsx
+ * compiles it would pass here and fail on every user's machine.
+ *
+ * `AIME_UNATTENDED` is the one addition, and it is deliberate: the window is
+ * parked off the desktop and never takes focus, so a run does not maximize
+ * over - and type into - whatever else is open.
+ */
+function appEnvironment() {
+  const env = { ...process.env, AIME_UNATTENDED: "1" };
+  const nodeOptions = withoutTsxLoader(env.NODE_OPTIONS ?? "");
+  if (nodeOptions === "") delete env.NODE_OPTIONS;
+  else env.NODE_OPTIONS = nodeOptions;
+  if (env.NODE_ENV === "test") delete env.NODE_ENV;
+  return env;
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -251,12 +293,8 @@ exports.config = {
     if (!fs.existsSync(nativeDriver)) {
       throw new Error(`no Edge driver at ${nativeDriver} - see e2e/README.md`);
     }
-    // AIME_UNATTENDED reaches the app through tauri-driver, which spawns it:
-    // the window is parked off the desktop and never takes focus, so a run
-    // does not maximize over - and type into - whatever else is open.
-    tauriDriver = spawn(tauriDriverPath(), ["--native-driver", nativeDriver], {
-      env: { ...process.env, AIME_UNATTENDED: "1" },
-    });
+    // The app inherits its environment from tauri-driver, which spawns it.
+    tauriDriver = spawn(tauriDriverPath(), ["--native-driver", nativeDriver], { env: appEnvironment() });
     tauriDriver.stderr.on("data", (chunk) => {
       process.stderr.write(`[tauri-driver] ${chunk}`);
     });
