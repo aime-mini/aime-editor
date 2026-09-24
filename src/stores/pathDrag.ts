@@ -21,6 +21,17 @@ import { create } from "zustand";
 /** How far the pointer must travel before a press becomes a drag. */
 const DRAG_THRESHOLD_PX = 4;
 
+/**
+ * The drag listens in the capture phase, ahead of every element.
+ *
+ * A drop target is free to stop its event from bubbling, and the tree's rows
+ * do. Listening while it bubbles, the release never reached the window after
+ * a drop on a row: the drag stayed live, its label kept following the pointer,
+ * and the next click on any file in the tree moved the dragged file next to it
+ * (measured in the running app, 2026-09-24).
+ */
+const LISTEN: AddEventListenerOptions = { capture: true };
+
 interface PathDragState {
   /** The path being dragged, or null when nothing is. */
   path: string | null;
@@ -50,16 +61,16 @@ export const usePathDrag = create<PathDragState>((set, get) => ({
       set({ path, x: event.clientX, y: event.clientY });
     };
     const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointermove", onMove, LISTEN);
+      window.removeEventListener("pointerup", onUp, LISTEN);
       // Cleared on the next frame, not now: a drop target reads this in its own
       // pointerup handler, which runs after this one.
       requestAnimationFrame(() => {
         set({ path: null });
       });
     };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointermove", onMove, LISTEN);
+    window.addEventListener("pointerup", onUp, LISTEN);
   },
 
   cancel: () => {
