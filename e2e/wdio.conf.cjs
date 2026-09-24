@@ -292,6 +292,37 @@ function driverProfilesOfThisRun() {
     });
 }
 
+/**
+ * Where the app keeps what it remembers per project - the chat, and the editor
+ * a workspace is reopened with (`session/mod.rs`). This is the user's own
+ * app data folder: the suite shares it with the Aime they use every day.
+ */
+const APP_STORES = ["sessions", "workspaces"].map((kind) =>
+  path.join(process.env.APPDATA ?? "", "com.iodm.aiminieditor", kind),
+);
+
+/**
+ * A store written for one of this run's throwaway folders: named after an
+ * `mkdtemp` folder (`aime-<name>-<six random characters>`), and created after
+ * the run began. Both, so a project of the user's that happens to be called
+ * aime-something, or a store written before the run, is never touched.
+ */
+const THROWAWAY_STORE = /^aime-[a-z0-9-]+-[a-z0-9]{6}-[0-9a-f]{16}\.json$/;
+
+function removeThrowawayStores() {
+  let removed = 0;
+  for (const dir of APP_STORES.filter((store) => fs.existsSync(store))) {
+    for (const name of fs.readdirSync(dir).filter((file) => THROWAWAY_STORE.test(file))) {
+      const file = path.join(dir, name);
+      const stats = fs.statSync(file, { throwIfNoEntry: false });
+      if (!stats || (stats.birthtimeMs || stats.mtimeMs) < startedAt) continue;
+      fs.rmSync(file, { force: true });
+      removed += 1;
+    }
+  }
+  process.stdout.write(`[e2e] removed ${removed} stores the run's throwaway projects left in app data\n`);
+}
+
 async function removeDriverProfiles() {
   const profiles = driverProfilesOfThisRun();
   if (profiles.length === 0) return;
@@ -381,6 +412,7 @@ exports.config = {
   onComplete: async () => {
     tauriDriver?.kill();
     fs.rmSync(workspace, { recursive: true, force: true });
+    removeThrowawayStores();
     await removeDriverProfiles();
   },
 };
