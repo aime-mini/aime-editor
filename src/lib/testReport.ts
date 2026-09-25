@@ -208,7 +208,137 @@ const vitestReader: Reader = {
 };
 
 /**
+ * Jest. Measured 2026-09-25 against real failing runs of Jest 30.5, output
+ * piped the way Aime runs it (all of it on stderr, colours only inside the code
+ * frames): each test file opens with `FAIL <file>` or `PASS <file>`, each
+ * failure under it is `● <describe> › <test>`, and the run ends with
+ * `Tests:       3 failed, 3 passed, 6 total`.
+ *
+ * A failure is named after its file as well, `src/cart.test.js › cart ›
+ * rounds to cents`: Jest's own bullet line carries only the describe path, and
+ * two files with a test of the same name are two tests. A file that does not
+ * even load answers `● Test suite failed to run`, which is kept - under its file
+ * - because a change that breaks an import breaks every test in that file.
+ */
+const JEST_TOTAL = /^Tests:\s+.*?(\d+) total$/;
+const JEST_FILE = /^(?:FAIL|PASS)\s+(\S+)/;
+const JEST_FAILURE = /^●\s+(.+)$/;
+
+const jestReader: Reader = {
+  name: "jest",
+  read: (text) => {
+    const lines = text.split("\n").map((line) => line.trim());
+    const summary = lines.map((line) => JEST_TOTAL.exec(line)).find((match) => match !== null);
+    if (summary === undefined) return null;
+    const failed: string[] = [];
+    let file = "";
+    for (const line of lines) {
+      const opened = JEST_FILE.exec(line);
+      if (opened !== null) {
+        file = opened[1];
+        continue;
+      }
+      const failure = JEST_FAILURE.exec(line);
+      if (failure !== null) failed.push(file === "" ? failure[1] : `${file} › ${failure[1]}`);
+    }
+    return { failed: [...new Set(failed)], total: Number(summary[1]) };
+  },
+};
+
+/**
+ * Playwright Test. Measured 2026-09-25 against real failing runs of 1.63 with
+ * the list, line, dot and html reporters, piped: whichever reporter runs, the
+ * output opens with `Running 6 tests using 2 workers` and closes on the same
+ * epilogue -
+ *
+ *     4 failed
+ *       [chromium] › tests\cart.spec.ts:4:7 › cart › rounds to cents ──────
+ *     1 flaky
+ *       [chromium] › tests\flaky.spec.ts:2:5 › sometimes fails ────────────
+ *     2 passed (4.2s)
+ *
+ * Only the lines under `failed` are failures: a flaky test passed on a retry,
+ * and blocking a change on it would blame the change for the test. The name
+ * keeps the project and the title path but drops the `:line:col`, because a
+ * change that adds a test above another one moves it, and the gate compares
+ * names across the two runs.
+ */
+const PLAYWRIGHT_RUNNING = /^Running (\d+) tests? using \d+ workers?/;
+const PLAYWRIGHT_HEADING = /^\d+ (failed|flaky|skipped|passed|did not run|interrupted)\b/;
+const PLAYWRIGHT_LOCATION = /(\S):\d+:\d+ › /;
+
+const playwrightReader: Reader = {
+  name: "playwright",
+  read: (text) => {
+    const lines = text.split("\n").map((line) => line.trim());
+    const running = lines.map((line) => PLAYWRIGHT_RUNNING.exec(line)).find((match) => match !== null);
+    if (running === undefined || !lines.some((line) => PLAYWRIGHT_HEADING.test(line))) return null;
+    const failed: string[] = [];
+    let section = "";
+    for (const line of lines) {
+      const heading = PLAYWRIGHT_HEADING.exec(line);
+      if (heading !== null) {
+        section = heading[1];
+      } else if (section === "failed" && line.includes(" › ")) {
+        failed.push(line.replace(/[\s─]+$/, "").replace(PLAYWRIGHT_LOCATION, "$1 › "));
+      } else if (line !== "") {
+        section = "";
+      }
+    }
+    return { failed: [...new Set(failed)], total: Number(running[1]) };
+  },
+};
+
+/**
+ * pytest. Measured 2026-09-25 against real runs of pytest 9.1, default and
+ * `-q`: failures are listed under "short test summary info" as `FAILED
+ * tests/test_cart.py::TestDiscount::test_never_negative - assert -1 >= 0`, a
+ * fixture that broke as `ERROR <node id> - …`, a file that does not import as a
+ * bare `ERROR <file>`, and the run ends with `4 failed, 2 passed, 1 skipped,
+ * 1 error in 0.14s` - framed by `=` in the default output, bare under `-q`.
+ *
+ * The node id is kept to its closing bracket - a parametrised test is
+ * `test_amounts[2]` - and the reason after ` - ` is dropped: it is the
+ * assertion's text, which a fix changes without the test being any different.
+ * Deselected tests did not run and are not counted.
+ */
+const PYTEST_SUMMARY = /^=*\s*((?:\d+ [a-z]+(?:, )?)+) in [\d.]+s\b/;
+const PYTEST_NOTHING = /^=*\s*no tests ran in [\d.]+s\b/;
+const PYTEST_FAILURE = /^(?:FAILED|ERROR) ([^\s[]+(?:\[[^\]]*\])?)/;
+const PYTEST_COUNTED = new Set(["failed", "passed", "skipped", "error", "errors", "xfailed", "xpassed"]);
+
+const pytestReader: Reader = {
+  name: "pytest",
+  read: (text) => {
+    const lines = text.split("\n").map((line) => line.trim());
+    if (lines.some((line) => PYTEST_NOTHING.test(line))) return { failed: [], total: 0 };
+    const summary = lines.map((line) => PYTEST_SUMMARY.exec(line)).find((match) => match !== null);
+    if (summary === undefined) return null;
+    const total = summary[1]
+      .split(", ")
+      .map((part) => part.split(" "))
+      .filter(([, word]) => PYTEST_COUNTED.has(word))
+      .reduce((sum, [count]) => sum + Number(count), 0);
+    const failed = lines
+      .map((line) => PYTEST_FAILURE.exec(line))
+      .filter((match) => match !== null)
+      .map((match) => match[1]);
+    return { failed: [...new Set(failed)], total };
+  },
+};
+
+/**
  * In the order they are tried. Cargo first because its `test result:` line is
  * unmistakable; a reader that is unsure answers null and lets the next look.
+ * The summaries do not overlap - Jest's `Tests:` has a colon where Vitest's
+ * `Tests` has none, pytest's `FAILED` is not Vitest's `FAIL ` - so the order
+ * decides nothing between them.
  */
-const READERS: Reader[] = [cargoReader, dotnetReader, vitestReader];
+const READERS: Reader[] = [
+  cargoReader,
+  dotnetReader,
+  vitestReader,
+  jestReader,
+  playwrightReader,
+  pytestReader,
+];

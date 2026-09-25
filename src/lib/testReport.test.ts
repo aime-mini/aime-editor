@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { compareRuns, isRegression, readTestOutput } from "./testReport";
 
 /**
- * Both fixtures are real output, captured from real failing runs rather than
+ * Every fixture is real output, captured from real failing runs rather than
  * written from memory: the cargo one from this project's own suite while the
  * headless runner was being built, the vitest one from a sample project run
  * for the purpose. A format nobody has measured has no reader here.
@@ -115,6 +115,317 @@ A total of 1 test files matched the specified pattern.
 Passed!  - Failed:     0, Passed:     5, Skipped:     1, Total:     6, Duration: 254 ms - Sample.Tests.dll (net9.0)
 `;
 
+/**
+ * Jest 30.5, Playwright 1.63 and pytest 9.1, captured 2026-09-25 from sample
+ * projects run with their output piped - the way Aime runs a suite, so no TTY
+ * and Jest's all on stderr. Code frames and stack lines inside the scratch
+ * folder are cut and the folder itself is shortened; every line a reader looks
+ * at is as the runner printed it. The Playwright run used two projects' worth
+ * of config, `--retries=1` and one test that passes only on its retry.
+ */
+const JEST_FAILING = `
+FAIL src/cart.test.js
+  ● cart › rounds to cents
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 0.3
+    Received: 0.30000000000000004
+
+      at Object.toBe (src/cart.test.js:3:51)
+
+  ● cart › discount › never goes negative
+
+    expect(received).toBeGreaterThanOrEqual(expected)
+
+    Expected: >= 0
+    Received:    -1
+
+      at Object.toBeGreaterThanOrEqual (src/cart.test.js:5:50)
+
+FAIL src/util.test.js
+  ● parses money
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 2
+    Received: 1.5
+
+      at Object.toBe (src/util.test.js:2:52)
+
+FAIL src/broken.test.js
+  ● Test suite failed to run
+
+    Jest encountered an unexpected token
+
+    Jest failed to parse a file. This happens e.g. when your code or its dependencies use non-standard JavaScript syntax, or when Jest is not configured to support such syntax.
+
+    Out of the box Jest supports Babel, which will be used to transform your files into valid JS based on your Babel configuration.
+
+    By default "node_modules" folder is ignored by transformers.
+
+    Here's what you can do:
+     • If you are trying to use TypeScript, see https://jestjs.io/docs/getting-started#using-typescript
+     • To have some of your "node_modules" files transformed, you can specify a custom "transformIgnorePatterns" in your config.
+     • If you need a custom transformation, specify a "transform" option in your config.
+     • If you simply want to mock your non-JS modules (e.g. binary assets) you can stub them out with the "moduleNameMapper" config option.
+
+    You'll find more details and examples of these config options in the docs:
+    https://jestjs.io/docs/configuration
+    For information about custom transformations, see:
+    https://jestjs.io/docs/code-transformation
+
+    Details:
+
+    SyntaxError: C:\\…\\jest\\src\\broken.test.js: Illegal newline after throw. (1:43)
+
+      at constructor (node_modules/@babel/parser/src/parse-error.ts:96:45)
+          at parser.next (<anonymous>)
+          at normalizeFile.next (<anonymous>)
+          at run.next (<anonymous>)
+          at transform.next (<anonymous>)
+
+Test Suites: 3 failed, 1 passed, 4 total
+Tests:       3 failed, 3 passed, 6 total
+Snapshots:   0 total
+Time:        2.392 s, estimated 8 s
+Ran all test suites.
+
+`;
+
+const PLAYWRIGHT_FAILING = `
+
+Running 5 tests using 2 workers
+
+[1/5] [chromium] › tests\\cart.spec.ts:3:7 › cart › adds two items
+[2/5] [chromium] › tests\\flaky.spec.ts:2:5 › sometimes fails
+[3/5] [chromium] › tests\\cart.spec.ts:4:7 › cart › rounds to cents
+[4/5] (retries) [chromium] › tests\\flaky.spec.ts:2:5 › sometimes fails (retry #1)
+  1) [chromium] › tests\\flaky.spec.ts:2:5 › sometimes fails ────────────────────────────────────────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: 1
+    Received: 0
+
+    Error Context: test-results\\flaky-sometimes-fails-chromium\\error-context.md
+
+[5/5] [chromium] › tests\\flaky.spec.ts:3:6 › not yet
+[6/5] (retries) [chromium] › tests\\cart.spec.ts:4:7 › cart › rounds to cents (retry #1)
+  2) [chromium] › tests\\cart.spec.ts:4:7 › cart › rounds to cents ──────────────────────────────────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: 0.3
+    Received: 0.30000000000000004
+
+    Error Context: test-results\\cart-cart-rounds-to-cents-chromium\\error-context.md
+
+    Retry #1 ───────────────────────────────────────────────────────────────────────────────────────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: 0.3
+    Received: 0.30000000000000004
+
+    Error Context: test-results\\cart-cart-rounds-to-cents-chromium-retry1\\error-context.md
+
+[7/5] [chromium] › tests\\cart.spec.ts:6:5 › login shows error
+[8/5] (retries) [chromium] › tests\\cart.spec.ts:6:5 › login shows error (retry #1)
+  3) [chromium] › tests\\cart.spec.ts:6:5 › login shows error ───────────────────────────────────────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: "b"
+    Received: "a"
+
+    Error Context: test-results\\cart-login-shows-error-chromium\\error-context.md
+
+    Retry #1 ───────────────────────────────────────────────────────────────────────────────────────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: "b"
+    Received: "a"
+
+    Error Context: test-results\\cart-login-shows-error-chromium-retry1\\error-context.md
+
+  2 failed
+    [chromium] › tests\\cart.spec.ts:4:7 › cart › rounds to cents ───────────────────────────────────
+    [chromium] › tests\\cart.spec.ts:6:5 › login shows error ────────────────────────────────────────
+  1 flaky
+    [chromium] › tests\\flaky.spec.ts:2:5 › sometimes fails ─────────────────────────────────────────
+  1 skipped
+  1 passed (14.1s)
+
+`;
+
+const PLAYWRIGHT_FLAKY_GREEN = `
+
+Running 2 tests using 1 worker
+
+  ✘  1 [chromium] › tests\\flaky.spec.ts:2:5 › sometimes fails (53ms)
+  ✓  2 [chromium] › tests\\flaky.spec.ts:2:5 › sometimes fails (retry #1) (23ms)
+  -  3 [chromium] › tests\\flaky.spec.ts:3:6 › not yet
+
+  1) [chromium] › tests\\flaky.spec.ts:2:5 › sometimes fails ────────────────────────────────────────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: 1
+    Received: 0
+
+    Error Context: test-results\\flaky-sometimes-fails-chromium\\error-context.md
+
+  1 flaky
+    [chromium] › tests\\flaky.spec.ts:2:5 › sometimes fails ─────────────────────────────────────────
+  1 skipped
+
+`;
+
+const PYTEST_FAILING = `
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\\…\\py
+collected 8 items
+
+tests\\test_cart.py .FF.FsF                                               [ 87%]
+tests\\test_setup.py E                                                    [100%]
+
+=================================== ERRORS ====================================
+_____________________ ERROR at setup of test_reads_orders _____________________
+
+    @pytest.fixture
+    def db():
+>       raise ConnectionError("no database")
+E       ConnectionError: no database
+
+tests\\test_setup.py:5: ConnectionError
+================================== FAILURES ===================================
+____________________________ test_rounds_to_cents _____________________________
+
+    def test_rounds_to_cents():
+>       assert 0.1 + 0.2 == 0.3
+E       assert (0.1 + 0.2) == 0.3
+
+tests\\test_cart.py:7: AssertionError
+______________________ TestDiscount.test_never_negative _______________________
+
+self = <test_cart.TestDiscount object at 0x00000199F36713D0>
+
+    def test_never_negative(self):
+>       assert -1 >= 0
+E       assert -1 >= 0
+
+tests\\test_cart.py:11: AssertionError
+_______________________________ test_amounts[2] _______________________________
+
+amount = 2
+
+    @pytest.mark.parametrize("amount", [1, 2])
+    def test_amounts(amount):
+>       assert amount == 1
+E       assert 2 == 1
+
+tests\\test_cart.py:15: AssertionError
+_________________________________ test_errors _________________________________
+
+    def test_errors():
+>       raise RuntimeError("boom")
+E       RuntimeError: boom
+
+tests\\test_cart.py:22: RuntimeError
+=========================== short test summary info ===========================
+FAILED tests/test_cart.py::test_rounds_to_cents - assert (0.1 + 0.2) == 0.3
+FAILED tests/test_cart.py::TestDiscount::test_never_negative - assert -1 >= 0
+FAILED tests/test_cart.py::test_amounts[2] - assert 2 == 1
+FAILED tests/test_cart.py::test_errors - RuntimeError: boom
+ERROR tests/test_setup.py::test_reads_orders - ConnectionError: no database
+=============== 4 failed, 2 passed, 1 skipped, 1 error in 0.14s ===============
+
+`;
+
+const PYTEST_QUIET = `
+.FF.FsF                                                                  [100%]
+================================== FAILURES ===================================
+____________________________ test_rounds_to_cents _____________________________
+
+    def test_rounds_to_cents():
+>       assert 0.1 + 0.2 == 0.3
+E       assert (0.1 + 0.2) == 0.3
+
+tests\\test_cart.py:7: AssertionError
+______________________ TestDiscount.test_never_negative _______________________
+
+self = <test_cart.TestDiscount object at 0x000001A4F75816A0>
+
+    def test_never_negative(self):
+>       assert -1 >= 0
+E       assert -1 >= 0
+
+tests\\test_cart.py:11: AssertionError
+_______________________________ test_amounts[2] _______________________________
+
+amount = 2
+
+    @pytest.mark.parametrize("amount", [1, 2])
+    def test_amounts(amount):
+>       assert amount == 1
+E       assert 2 == 1
+
+tests\\test_cart.py:15: AssertionError
+_________________________________ test_errors _________________________________
+
+    def test_errors():
+>       raise RuntimeError("boom")
+E       RuntimeError: boom
+
+tests\\test_cart.py:22: RuntimeError
+=========================== short test summary info ===========================
+FAILED tests/test_cart.py::test_rounds_to_cents - assert (0.1 + 0.2) == 0.3
+FAILED tests/test_cart.py::TestDiscount::test_never_negative - assert -1 >= 0
+FAILED tests/test_cart.py::test_amounts[2] - assert 2 == 1
+FAILED tests/test_cart.py::test_errors - RuntimeError: boom
+4 failed, 2 passed, 1 skipped in 0.73s
+
+`;
+
+const PYTEST_WONT_IMPORT = `
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\\…\\py
+collected 8 items / 1 error
+
+=================================== ERRORS ====================================
+________________ ERROR collecting tests/test_broken_import.py _________________
+ImportError while importing test module 'C:\\…\\py\\tests\\test_broken_import.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+C:\\Python312\\Lib\\importlib\\__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\\test_broken_import.py:1: in <module>
+    import not_a_module
+E   ModuleNotFoundError: No module named 'not_a_module'
+=========================== short test summary info ===========================
+ERROR tests/test_broken_import.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+============================== 1 error in 0.60s ===============================
+
+`;
+
+const PYTEST_PASSING = `
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\\…\\py
+collected 7 items / 5 deselected / 2 selected
+
+tests\\test_cart.py .s                                                    [100%]
+
+================= 1 passed, 1 skipped, 5 deselected in 0.02s ==================
+
+`;
+
 describe("readTestOutput", () => {
   it("reads cargo's own words, and counts every test rather than the tail", () => {
     const report = readTestOutput(CARGO_FAILING, 101);
@@ -166,6 +477,82 @@ describe("readTestOutput", () => {
     );
     expect(report.reader).toBeNull();
     expect(report.total).toBeNull();
+  });
+
+  it("reads jest, naming each failure after its file and keeping a file that would not load", () => {
+    const report = readTestOutput(JEST_FAILING, 1);
+    expect(report.reader).toBe("jest");
+    expect(report.failed).toEqual([
+      "src/cart.test.js › cart › rounds to cents",
+      "src/cart.test.js › cart › discount › never goes negative",
+      "src/util.test.js › parses money",
+      "src/broken.test.js › Test suite failed to run",
+    ]);
+    expect(report.total).toBe(6);
+  });
+
+  it("reads playwright's epilogue, leaving out a test that only passed on its retry", () => {
+    const report = readTestOutput(PLAYWRIGHT_FAILING, 1);
+    expect(report.reader).toBe("playwright");
+    expect(report.failed).toEqual([
+      "[chromium] › tests\\cart.spec.ts › cart › rounds to cents",
+      "[chromium] › tests\\cart.spec.ts › login shows error",
+    ]);
+    expect(report.total).toBe(5);
+  });
+
+  it("does not call a playwright run that ended flaky a failure of any test", () => {
+    const report = readTestOutput(PLAYWRIGHT_FLAKY_GREEN, 0);
+    expect(report.reader).toBe("playwright");
+    expect(report.passed).toBe(true);
+    expect(report.failed).toEqual([]);
+  });
+
+  it("matches a playwright test across a change that moved it down the file", () => {
+    const moved = PLAYWRIGHT_FAILING.replaceAll("cart.spec.ts:4:7", "cart.spec.ts:9:7");
+    const comparison = compareRuns(readTestOutput(PLAYWRIGHT_FAILING, 1), readTestOutput(moved, 1));
+    expect(comparison.broken).toEqual([]);
+    expect(comparison.alreadyBroken).toHaveLength(2);
+  });
+
+  it("reads pytest's short summary, a fixture that broke included, and drops the assertion text", () => {
+    const report = readTestOutput(PYTEST_FAILING, 1);
+    expect(report.reader).toBe("pytest");
+    expect(report.failed).toEqual([
+      "tests/test_cart.py::test_rounds_to_cents",
+      "tests/test_cart.py::TestDiscount::test_never_negative",
+      "tests/test_cart.py::test_amounts[2]",
+      "tests/test_cart.py::test_errors",
+      "tests/test_setup.py::test_reads_orders",
+    ]);
+    expect(report.total).toBe(8);
+  });
+
+  it("reads pytest -q, whose summary has no frame around it", () => {
+    const report = readTestOutput(PYTEST_QUIET, 1);
+    expect(report.reader).toBe("pytest");
+    expect(report.failed).toHaveLength(4);
+    expect(report.total).toBe(7);
+  });
+
+  it("names the pytest file that would not import, the one thing that ran", () => {
+    const report = readTestOutput(PYTEST_WONT_IMPORT, 2);
+    expect(report.failed).toEqual(["tests/test_broken_import.py"]);
+    expect(report.total).toBe(1);
+  });
+
+  it("does not count tests pytest deselected", () => {
+    const report = readTestOutput(PYTEST_PASSING, 0);
+    expect(report.reader).toBe("pytest");
+    expect(report.failed).toEqual([]);
+    expect(report.total).toBe(2);
+  });
+
+  it("leaves each runner's output to its own reader", () => {
+    const readers = [JEST_FAILING, PLAYWRIGHT_FAILING, PYTEST_FAILING, VITEST_FAILING, DOTNET_FAILING].map(
+      (output) => readTestOutput(output, 1).reader,
+    );
+    expect(readers).toEqual(["jest", "playwright", "pytest", "vitest", "dotnet"]);
   });
 
   it("sees through the colours a terminal leaves behind", () => {
