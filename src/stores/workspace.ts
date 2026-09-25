@@ -238,7 +238,12 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         multiple: false,
         title: translate("dialog.openFolderTitle"),
       });
-      if (typeof selected === "string") await get().adoptFolder(selected);
+      if (typeof selected !== "string") return;
+      // A folder already open stays open: the new one becomes a tab of its
+      // own beside it (`src-tauri/src/workspaces.rs`). Only the welcome screen
+      // is replaced in place.
+      if (get().rootPath === null) await get().adoptFolder(selected);
+      else await invoke("workspace_open", { folder: selected });
     },
 
     adoptFolder: async (path: string) => {

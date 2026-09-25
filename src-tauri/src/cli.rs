@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use tauri::{State, Window};
 
+use crate::workspaces::Workspaces;
+
 /// Workspace folder passed on the command line (`aime <folder>`), resolved once at startup.
 pub struct InitialFolder(Option<String>);
 
@@ -27,11 +29,19 @@ fn resolve_folder_arg(arg: String) -> Option<String> {
         .then(|| canonical.to_string_lossy().to_string())
 }
 
-/// Returns the folder the app was launched with — only for the main window,
-/// so editor windows opened later still start on the welcome screen.
+/// The folder a window opens with: the one the app was launched with, for the
+/// first window; the one a new workspace tab was opened on, for that tab's
+/// window; none - the welcome screen - for any other.
 #[tauri::command]
-pub fn initial_folder(window: Window, state: State<'_, InitialFolder>) -> Option<String> {
-    (window.label() == "main").then(|| state.0.clone()).flatten()
+pub fn initial_folder(
+    window: Window,
+    state: State<'_, InitialFolder>,
+    workspaces: State<'_, Workspaces>,
+) -> Option<String> {
+    if window.label() == "main" {
+        return state.0.clone();
+    }
+    workspaces.take_pending(window.label())
 }
 
 #[cfg(test)]

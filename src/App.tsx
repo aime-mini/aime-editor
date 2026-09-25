@@ -46,6 +46,8 @@ import { PromptModal } from "./components/PromptModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { StatusBar } from "./components/StatusBar";
 import { UpdateNotice } from "./components/UpdateNotice";
+import { WorkspaceTabs } from "./components/WorkspaceTabs";
+import { useWorkspaceTabs } from "./stores/workspaceTabs";
 import { useAi } from "./stores/ai";
 import { useDebug } from "./stores/debug";
 import { useLayout } from "./stores/layout";
@@ -295,6 +297,8 @@ function runDebugShortcut(key: string, shift: boolean): void {
 
 export default function App() {
   const rootPath = useWorkspace((s) => s.rootPath);
+  // A folder open, or more than one tab: the strip is how the others are reached.
+  const showTabs = useWorkspaceTabs((s) => rootPath !== null || s.tabs.length > 1);
   const { toggleSidebar, toggleAiPanel, toggleBottomPanel, helpOpen, toggleHelp, setHelpOpen } = useLayout();
   const { paletteOpen, togglePalette, setPaletteOpen } = useLayout();
   const { memoryOpen, setMemoryOpen, mcpOpen, setMcpOpen } = useLayout();
@@ -428,6 +432,7 @@ export default function App() {
   return (
     <div className="flex h-full flex-col">
       <UpdateNotice />
+      {showTabs && <WorkspaceTabs />}
       <main className="min-h-0 flex-1">
         {rootPath ? (
           <Suspense fallback={<div className="h-full bg-bg" />}>

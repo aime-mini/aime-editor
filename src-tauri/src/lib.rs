@@ -25,6 +25,7 @@ mod trackers;
 mod updates;
 mod window_cmds;
 mod wire;
+mod workspaces;
 
 use tauri::Manager;
 
@@ -45,6 +46,7 @@ pub fn run() {
         .manage(exec::ExecState::default())
         .manage(splash::SplashState::default())
         .manage(session::closing::ClosingWindows::default())
+        .manage(workspaces::Workspaces::default())
         .manage(cloud::sign_in::SignInState::default())
         .manage(cloud::credentials::CredentialWatch::default())
         .setup(|app| {
@@ -70,6 +72,7 @@ pub fn run() {
                 terminal::kill_for_window(window);
                 lsp::stop_for_window(window);
                 dap::stop_for_window(window);
+                workspaces::forget_window(window.app_handle(), window.label());
             }
             _ => {}
         })
@@ -192,6 +195,12 @@ pub fn run() {
             exec::exec_run,
             exec::exec_cancel,
             net::net_reachable,
+            workspaces::workspace_register,
+            workspaces::workspace_tabs,
+            workspaces::workspace_open,
+            workspaces::workspace_switch,
+            workspaces::workspace_detach,
+            workspaces::workspace_close,
             tasks::task_command_line,
             tasks::check_task_commands,
             tasks::save_tasks,

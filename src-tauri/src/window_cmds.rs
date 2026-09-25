@@ -4,7 +4,7 @@ use tauri::{AppHandle, LogicalSize, PhysicalPosition, WebviewUrl, WebviewWindow,
 static WINDOW_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Preferred restore size (logical px) when the monitor is large enough.
-const IDEAL_RESTORE: (f64, f64) = (1280.0, 800.0);
+pub const IDEAL_RESTORE: (f64, f64) = (1280.0, 800.0);
 /// Restored windows fill at most this fraction of the monitor work area.
 const WORK_AREA_FILL: f64 = 0.9;
 
@@ -78,11 +78,37 @@ fn park_offscreen(window: &WebviewWindow) {
     }
 }
 
+/// A label no window has had yet.
+pub fn next_label() -> String {
+    format!("editor-{}", WINDOW_COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Shows `to` exactly where `from` stands - maximized on the same monitor, or
+/// at its position and size - then hides `from`. `to` is shown first, so the
+/// screen never goes without a window in between.
+pub fn take_place(from: &WebviewWindow, to: &WebviewWindow) -> Result<(), String> {
+    if unattended() {
+        park_offscreen(to);
+    } else {
+        let position = from.outer_position().map_err(|e| e.to_string())?;
+        to.set_position(position).map_err(|e| e.to_string())?;
+        if from.is_maximized().map_err(|e| e.to_string())? {
+            to.maximize().map_err(|e| e.to_string())?;
+        } else {
+            to.set_size(from.outer_size().map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        }
+        to.show().map_err(|e| e.to_string())?;
+        to.set_focus().map_err(|e| e.to_string())?;
+    }
+    from.hide().map_err(|e| e.to_string())
+}
+
 /// Opens a new editor window — each window is an independent workspace
 /// (frontend state is isolated per webview; AI events are filtered by run_id).
 #[tauri::command]
 pub async fn open_new_window(app: AppHandle) -> Result<(), String> {
-    let label = format!("editor-{}", WINDOW_COUNTER.fetch_add(1, Ordering::Relaxed));
+    let label = next_label();
     // Created hidden; fit_and_maximize sizes it to the monitor and shows it.
     let window = WebviewWindowBuilder::new(&app, &label, WebviewUrl::default())
         .title("Aime - AI Mini Editor")
