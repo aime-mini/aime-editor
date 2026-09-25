@@ -54,6 +54,13 @@ const keysFile = path.join(configDir, "api-keys.json");
 const MODE_FILE = path.join(os.tmpdir(), "aime-run-probe-mode.txt");
 const PROBE_SCRIPT = path.join(os.tmpdir(), "aime-run-probe.cjs");
 
+/**
+ * Where the sample's own server listens when a test needs it: fixed rather than
+ * picked, because the fake AI has to name it in its answer before the sample
+ * exists.
+ */
+const SERVICE_PORT = 47813;
+
 const ORGANIZATION = "aime-run";
 const PROJECT = "Probe";
 const TOKEN = "pat-run-1";
@@ -123,7 +130,15 @@ const mode = fs.existsSync(${JSON.stringify(MODE_FILE)})
   ? fs.readFileSync(${JSON.stringify(MODE_FILE)}, "utf8").trim()
   : "sound";
 
-if (prompt.includes("answer both questions at once")) {
+if (prompt.includes("these test suites of this repository failed")) {
+  // What the suites need running: the sample's own server script, on the port
+  // its test reaches. Aime has to start it, wait for the port and stop it.
+  stream({
+    why: "the suite asks the sample's server for a page",
+    setup: [],
+    services: [{ command: "npm run serve", dir: ".", ready: "http://127.0.0.1:${SERVICE_PORT}" }],
+  });
+} else if (prompt.includes("answer both questions at once")) {
   // The ticket and the ground it lands on, in one reply: Aime takes its keys
   // out of the same JSON object.
   stream({
@@ -240,6 +255,39 @@ import(cart).then((module) => {
 `;
 
 /**
+ * A suite that is green only while the sample's server is up - the Playwright
+ * shape without the browser: it asks a local address for a page and fails
+ * with "connection refused" when nothing is listening there.
+ */
+const SAMPLE_TEST_NEEDING_SERVER = `
+const assert = require("node:assert");
+const http = require("node:http");
+const { pathToFileURL } = require("node:url");
+
+const cart = pathToFileURL(require("node:path").join(__dirname, "src", "cart.js")).href;
+http
+  .get("http://127.0.0.1:${SERVICE_PORT}/", (response) => {
+    response.resume();
+    import(cart).then((module) => {
+      assert.equal(module.subtotal([{ price: 10, quantity: 2 }]), 20, "subtotal adds every line");
+      console.log("Tests  2 passed (2)");
+    });
+  })
+  .on("error", (error) => {
+    console.log("FAIL  test.cjs > the app answers - " + error.code);
+    console.log("Tests  1 failed | 1 passed (2)");
+    process.exit(1);
+  });
+`;
+
+/** The sample's own server, which its package declares as `npm run serve`. */
+const SAMPLE_SERVER = `
+require("node:http")
+  .createServer((request, response) => response.end("ok"))
+  .listen(${SERVICE_PORT}, "127.0.0.1", () => console.log("listening on ${SERVICE_PORT}"));
+`;
+
+/**
  * The project's own check, so the quality gate has something real to run.
  *
  * Deliberately a rule this project made up for itself rather than anything
@@ -312,6 +360,7 @@ function giveItALanguageService(dir) {
 
 function sampleProject({
   declaresTest = true,
+  needsServer = false,
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "aime-run-")),
 } = {}) {
   fs.mkdirSync(path.join(dir, "src"), { recursive: true });
@@ -325,15 +374,18 @@ function sampleProject({
         // `declaresTest: false` models the Gradle/Makefile world: the tests
         // exist, but no manifest script names them, so the run has to ask and
         // then verify the answer by running it.
-        scripts: declaresTest
-          ? { test: "node test.cjs", check: "node check.cjs" }
-          : { check: "node check.cjs" },
+        scripts: {
+          ...(declaresTest ? { test: "node test.cjs" } : {}),
+          check: "node check.cjs",
+          ...(needsServer ? { serve: "node server.cjs" } : {}),
+        },
       },
       null,
       2,
     ),
   );
-  fs.writeFileSync(path.join(dir, "test.cjs"), SAMPLE_TEST);
+  fs.writeFileSync(path.join(dir, "test.cjs"), needsServer ? SAMPLE_TEST_NEEDING_SERVER : SAMPLE_TEST);
+  if (needsServer) fs.writeFileSync(path.join(dir, "server.cjs"), SAMPLE_SERVER);
   fs.writeFileSync(path.join(dir, "check.cjs"), SAMPLE_CHECK);
   fs.writeFileSync(path.join(dir, "src", "cart.js"), SAMPLE_CART);
   fs.writeFileSync(path.join(dir, "src", "checkout.js"), SAMPLE_CHECKOUT);
@@ -556,6 +608,18 @@ async function approve(repo) {
     "the run wrote code before it was approved",
   );
   await (await $("button*=Approved")).click();
+}
+
+/** Whether anything accepts a connection on this loopback port right now. */
+function portOpen(port) {
+  return new Promise((resolve) => {
+    const socket = require("node:net").connect({ host: "127.0.0.1", port });
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", () => resolve(false));
+  });
 }
 
 /** Runs the sample's own suite, so "fixed" is checked and not taken on trust. */
@@ -808,6 +872,31 @@ ${suite.output}`,
     await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
     const [report] = reportsIn(repo);
     assert.match(report, /\| PASS \|/, `the case was not proved end to end: ${report}`);
+  });
+
+  it("starts the server a suite needs instead of blaming the change for a refused connection", async () => {
+    // The suite is red before any change because nothing listens where it
+    // looks. Asked why, the model names the sample's own `serve` script; Aime
+    // has to start it, wait for the port, run the suites with it up - and stop
+    // it again, so nothing outlives the run.
+    fs.writeFileSync(MODE_FILE, "sound");
+    repo = freshRepo(repo, { needsServer: true });
+    assert.equal(await portOpen(SERVICE_PORT), false, `something already listens on ${SERVICE_PORT}`);
+    await startRun(repo);
+    // Measured with the server up, the baseline is green: the refused
+    // connection is not a failure anybody inherits.
+    await waitForPhase(
+      "Understand the task and the code",
+      "0 test(s) already failing",
+      "the baseline still counted the refused connection as a failing test",
+    );
+    await approve(repo);
+
+    await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
+    const [report] = reportsIn(repo);
+    assert.match(report, /kept up while they ran: `npm run serve`, answering on http:\/\/127\.0\.0\.1:47813/);
+    assert.match(report, /\| PASS \|/, `the case was not proved with the server up: ${report}`);
+    assert.equal(await portOpen(SERVICE_PORT), false, "the server outlived the run");
   });
 
   it("stops only after trying, and says so, when it cannot fix what it broke", async () => {

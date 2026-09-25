@@ -13,6 +13,7 @@ mod git;
 mod lsp;
 mod mcp;
 mod memory;
+mod net;
 mod plugins;
 mod program;
 mod providers;
@@ -190,6 +191,7 @@ pub fn run() {
             tasks::detect_tasks,
             exec::exec_run,
             exec::exec_cancel,
+            net::net_reachable,
             tasks::task_command_line,
             tasks::check_task_commands,
             tasks::save_tasks,

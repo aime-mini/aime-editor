@@ -765,6 +765,17 @@ export const vi: Record<TranslationKey, string> = {
   "run.reportEvidence": "{count} file bằng chứng các suite để lại",
   "run.reportReady": "Xong trên {branch}",
   "run.tryingDiscovered": "Đang chạy thử {count} lệnh test đọc được từ cấu hình của chính dự án",
+  "run.environmentAsking":
+    "{count} suite đỏ ngay trước khi sửa gì - đang hỏi AI xem có cần bật thứ gì trước không",
+  "run.environmentNotNeeded": "Không cần bật gì: lỗi là của chính code. {why}",
+  "run.environmentUnreadable":
+    "Không đọc được câu trả lời của AI về thứ các suite cần; chúng chạy như hiện trạng",
+  "run.environmentSetupFailed": "Chuẩn bị máy hỏng ở `{command}`; các suite chạy như hiện trạng",
+  "run.environmentNoHelp": "Bật thứ AI nêu không làm suite nói khác đi, nên không giữ. {detail}",
+  "run.environmentKept": "Các suite cần bật thứ khác trước, và giờ đã chạy được với nó: {why}",
+  "run.environmentUp": "Đang bật thứ các suite cần: {services}",
+  "run.environmentSilent": "`{command}` không bao giờ trả lời ở {ready}",
+  "run.environmentExited": "`{command}` dừng trước khi trả lời: {detail}",
   "run.discoveredSuites":
     "Dự án không khai script test; đọc được {found} lệnh từ CI và file cấu hình, {ran} lệnh chạy được thật:",
   "run.suiteRan": "chạy được",

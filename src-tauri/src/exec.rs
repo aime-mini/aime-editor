@@ -239,6 +239,10 @@ where
     Sink: Fn(&'static str, &str) + Send + 'static,
 {
     let started = Instant::now();
+    // A group of its own, so ending it can end what it started too
+    // (`end_tree`). Windows has taskkill /T for that instead.
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = command
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -324,20 +328,35 @@ async fn wait_for_end(child: &mut Child, kill_rx: oneshot::Receiver<()>, timeout
 /// grandchild: killing the shell alone leaves `npm test` running, still holding
 /// the pipes and still eating the machine. Measured on Windows — a 300 ms
 /// deadline over `ping -n 61` returned after 61 s, because the shell died and
-/// ping did not.
+/// ping did not. The same holds for `sh -c`, which is why every command starts
+/// in a process group of its own and the whole group is ended here: a dev
+/// server a test suite needed would otherwise outlive the run that started it.
 async fn end_tree(child: &mut Child, pid: Option<u32>) {
-    #[cfg(target_os = "windows")]
     if let Some(pid) = pid {
-        // /T takes the tree, /F does not ask. Failure is fine: the process may
-        // have ended between the deadline and here.
-        let mut kill = Command::new("taskkill");
-        kill.args(["/T", "/F", "/PID", &pid.to_string()]);
-        kill.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let _ = kill.output().await;
+        // Failure is fine either way: the process may have ended between the
+        // deadline and here.
+        let _ = tree_killer(pid).output().await;
     }
-    #[cfg(not(target_os = "windows"))]
-    let _ = pid;
     let _ = child.kill().await;
+}
+
+/// The command that ends a process and everything it started.
+#[cfg(target_os = "windows")]
+fn tree_killer(pid: u32) -> Command {
+    // /T takes the tree, /F does not ask.
+    let mut kill = Command::new("taskkill");
+    kill.args(["/T", "/F", "/PID", &pid.to_string()]);
+    kill.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    kill
+}
+
+/// The command that ends a process and everything it started: a negative pid
+/// names the process group, which `run_child` made the command the leader of.
+#[cfg(not(target_os = "windows"))]
+fn tree_killer(pid: u32) -> Command {
+    let mut kill = Command::new("kill");
+    kill.args(["-KILL", "--", &format!("-{pid}")]);
+    kill
 }
 
 /// Drains one stream into its shared capture, passing each line on as it

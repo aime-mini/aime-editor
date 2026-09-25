@@ -57,6 +57,16 @@ import {
   type SuiteRun,
 } from "../lib/regressionGate";
 import { renderReport, collectEvidence } from "../lib/runReport";
+import {
+  environmentPrompt,
+  folderIn,
+  machineLauncher,
+  needsAnything,
+  parseEnvironment,
+  withServices,
+  type EnvironmentFailure,
+  type TestEnvironment,
+} from "../lib/testEnvironment";
 import { caseEvidence, deployProof, DEPLOY_PROOF_DIR, EVIDENCE_DIR } from "../lib/evidenceFile";
 import { emptyTrash, trashOf, untrackedNow, type TrashItem } from "../lib/runTrash";
 import {
@@ -171,6 +181,12 @@ interface Artifacts {
   rules: RuleFile[];
   /** Git's untracked list at the baseline: the "was already there" side of cleanup. */
   untrackedBefore: string[];
+  /**
+   * What the suites need running before they can answer - a dev server, a
+   * database - when the baseline showed they need anything. Every pass over
+   * the suites brings it up around itself (`runSuitesIn`).
+   */
+  environment: TestEnvironment | null;
 }
 
 const NOTHING_YET: Artifacts = {
@@ -188,6 +204,7 @@ const NOTHING_YET: Artifacts = {
   discovered: [],
   rules: [],
   untrackedBefore: [],
+  environment: null,
 };
 
 /**
@@ -683,6 +700,7 @@ function slotFrom(saved: SavedRun, home: string, interrupted: boolean): RunSlot 
     discovered: saved.discovered,
     rules: saved.rules,
     untrackedBefore: saved.untrackedBefore,
+    environment: saved.environment ?? null,
   };
 }
 
@@ -843,6 +861,7 @@ function artifactsOf(slot: RunSlot): Artifacts {
     discovered: slot.discovered,
     rules: slot.rules,
     untrackedBefore: slot.untrackedBefore,
+    environment: slot.environment,
   };
 }
 
@@ -867,7 +886,7 @@ function update(set: Setter, change: (run: Run) => Run): void {
 async function runPhase(phase: PhaseId, context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
   switch (phase) {
     case "understand":
-      return understand(context, set);
+      return understand(context, set, get);
     case "design":
       return design(context, set, get);
     case "implement":
@@ -902,7 +921,7 @@ interface Groundwork {
   detail: string;
 }
 
-async function takeBaseline(context: Context, set: Setter): Promise<Groundwork> {
+async function takeBaseline(context: Context, set: Setter, get: Getter): Promise<Groundwork> {
   // A branch left over from an earlier run is the common case, and it is not a
   // reason to hand the task back: the run takes the next free name instead.
   // Only a git that refuses every name has genuinely stopped anything.
@@ -936,7 +955,13 @@ async function takeBaseline(context: Context, set: Setter): Promise<Groundwork> 
 
   const nextId = commandIdFor(context.id);
   const tasks = await tasksOf(context.workRoot);
-  const suites = await runSuites(tasks, context.workRoot, nextId, runCommand(set, "understand"));
+  const suites = await settleEnvironment(
+    tasks,
+    await runSuitesIn(tasks, context, set, "understand", null),
+    context,
+    set,
+    get,
+  );
   set({ baseline: suites });
   const checks = await runChecks(tasks, context.workRoot, nextId, runCommand(set, "understand"));
   set({ checks });
@@ -993,8 +1018,8 @@ async function takeBaseline(context: Context, set: Setter): Promise<Groundwork> 
  * that had settled its architecture in writing could be ignored by the very run
  * told to follow its architecture.
  */
-async function understand(context: Context, set: Setter): Promise<PhaseResult> {
-  const ground = await takeBaseline(context, set);
+async function understand(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
+  const ground = await takeBaseline(context, set, get);
   if (ground.refused !== null) return { state: "blocked", summary: ground.refused };
 
   const rules = await readProjectRules(context.workRoot);
@@ -1037,11 +1062,12 @@ async function understand(context: Context, set: Setter): Promise<PhaseResult> {
       ...(suite.dir === "." ? {} : { cwd: suite.dir }),
     }));
     note(set, "understand", translate("run.tryingDiscovered", { count: candidates.length }));
-    const pass = await runSuites(
+    const pass = await settleEnvironment(
       candidates,
-      context.workRoot,
-      commandIdFor(context.id),
-      runCommand(set, "understand"),
+      await runSuitesIn(candidates, context, set, "understand", null),
+      context,
+      set,
+      get,
     );
     const usable = candidates.filter((candidate) =>
       pass.suites.some((suite) => suite.id === candidate.id && suite.run !== null),
@@ -1868,6 +1894,7 @@ async function report(context: Context, set: Setter, get: Getter): Promise<Phase
     outcomes,
     evidence,
     evidenceRequired,
+    environment: state.environment,
   });
   await writeReport(context.home, state.run.id, markdown);
 
@@ -1975,13 +2002,162 @@ async function suitesNow(
   before: Baseline | null,
   skip?: ReadonlySet<string>,
 ): Promise<Baseline> {
-  return runSuites(
+  return runSuitesIn(
     await allSuiteTasks(context.workRoot, get),
-    context.workRoot,
-    commandIdFor(context.id),
-    runCommand(set, phase),
+    context,
+    set,
+    phase,
+    get().environment,
     skip ?? (before === null ? new Set<string>() : skipList(before)),
   );
+}
+
+/**
+ * One pass over the suites, with whatever they need running brought up around
+ * it and stopped after it (`lib/testEnvironment`).
+ *
+ * A service that will not come up is not a verdict on the change: every suite
+ * of the pass is reported as unable to run, with the service's own last words,
+ * so the gate says the harness broke rather than blaming the code - and rather
+ * than handing "connection refused" to the repair round as a bug to fix.
+ */
+async function runSuitesIn(
+  tasks: TaskDef[],
+  context: Context,
+  set: Setter,
+  phase: PhaseId,
+  environment: TestEnvironment | null,
+  skip?: ReadonlySet<string>,
+): Promise<Baseline> {
+  const pass = () =>
+    runSuites(tasks, context.workRoot, commandIdFor(context.id), runCommand(set, phase), skip);
+  const services = environment?.services ?? [];
+  if (services.length === 0) return pass();
+  note(
+    set,
+    phase,
+    translate("run.environmentUp", { services: services.map((one) => one.command).join(", ") }),
+  );
+  const outcome = await withServices(
+    services,
+    context.workRoot,
+    machineLauncher(serviceIdFor(context.id)),
+    pass,
+  );
+  if ("result" in outcome) return outcome.result;
+  const detail = serviceFailure(outcome.failure);
+  note(set, phase, detail, "output");
+  return {
+    suites: testTasksOf(tasks)
+      .filter((task) => skip?.has(task.id) !== true)
+      .map((task) => ({
+        id: task.id,
+        label: task.label,
+        run: null,
+        silence: { reason: "couldNotRun", detail },
+      })),
+  };
+}
+
+/** A service that did not come up, as one line for the log and the gate. */
+function serviceFailure(failure: EnvironmentFailure): string {
+  return failure.output === null
+    ? translate("run.environmentSilent", { command: failure.service.command, ready: failure.service.ready })
+    : translate("run.environmentExited", { command: failure.service.command, detail: failure.output });
+}
+
+/**
+ * Suites that failed before any change was made, asked about once: did they
+ * fail because the code is wrong, or because something they need is not
+ * running?
+ *
+ * The AI reads the repository and answers what has to be running and how this
+ * project starts it; Aime prepares it, runs the failing suites again with it,
+ * and keeps it only when they say something different - fewer failures, or
+ * none. An environment that changes nothing is dropped rather than carried into
+ * every later pass, and the baseline stays what the suites said without it.
+ */
+async function settleEnvironment(
+  tasks: TaskDef[],
+  first: Baseline,
+  context: Context,
+  set: Setter,
+  get: Getter,
+): Promise<Baseline> {
+  const failing = measured(first).flatMap((suite) =>
+    suite.run === null || suite.run.report.passed ? [] : [{ suite, run: suite.run }],
+  );
+  if (failing.length === 0 || get().environment !== null) return first;
+
+  note(set, "understand", translate("run.environmentAsking", { count: failing.length }));
+  const asking = environmentPrompt(
+    failing.map(({ run }) => ({ command: run.command, output: allOutput(run.outcome) })),
+  );
+  const environment = parseEnvironment(await readRepository(context, asking, set, "understand"));
+  if (environment === null) {
+    note(set, "understand", translate("run.environmentUnreadable"));
+    return first;
+  }
+  if (!needsAnything(environment)) {
+    note(set, "understand", translate("run.environmentNotNeeded", { why: environment.why }));
+    return first;
+  }
+
+  for (const step of environment.setup) {
+    const outcome = await runCommand(set, "understand")(
+      commandIdFor(context.id)(),
+      step.command,
+      folderIn(context.workRoot, step.dir),
+      SETUP_TIMEOUT_MS,
+    );
+    if (outcome.code !== 0) {
+      note(set, "understand", translate("run.environmentSetupFailed", { command: step.command }));
+      return first;
+    }
+  }
+
+  const retried = new Set(failing.map(({ suite }) => suite.id));
+  const again = await runSuitesIn(
+    tasks.filter((task) => retried.has(task.id)),
+    context,
+    set,
+    "understand",
+    environment,
+  );
+  if (!helped(first, again)) {
+    note(set, "understand", translate("run.environmentNoHelp", { detail: describeSilence(again) }));
+    return first;
+  }
+  set({ environment });
+  note(set, "understand", translate("run.environmentKept", { why: environment.why }));
+  return {
+    suites: first.suites.map(
+      (suite) => again.suites.find((retry) => retry.id === suite.id && retry.run !== null) ?? suite,
+    ),
+  };
+}
+
+/** Whether running the suites with the environment made any of them say less that is bad. */
+function helped(before: Baseline, after: Baseline): boolean {
+  return measured(after).some((retry) => {
+    const was = before.suites.find((suite) => suite.id === retry.id)?.run?.report;
+    const now = retry.run?.report;
+    if (was === undefined || now === undefined) return false;
+    return now.passed || now.failed.length < was.failed.length;
+  });
+}
+
+/** How long one setup command - a browser download, a migration - is given. */
+const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Ids for the services a pass brings up. Not `commandIdFor`: that one marks the
+ * command as what Cancel pulls, and Cancel has to stop the suite that is
+ * running - the services then go with the pass that started them.
+ */
+function serviceIdFor(runId: string): () => string {
+  let count = 0;
+  return () => `${runId}-service-${String(Date.now())}-${String(++count)}`;
 }
 
 /**

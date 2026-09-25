@@ -770,6 +770,18 @@ export const en = {
   "run.reportEvidence": "{count} file(s) of evidence the suites left behind",
   "run.reportReady": "Ready on {branch}",
   "run.tryingDiscovered": "Trying the {count} test command(s) read out of this project's own config",
+  "run.environmentAsking":
+    "{count} suite(s) failed before any change - asking the AI whether they need something running first",
+  "run.environmentNotNeeded": "Nothing to start: the failures are the code's own. {why}",
+  "run.environmentUnreadable":
+    "The AI's answer about what the suites need could not be read; they run as they are",
+  "run.environmentSetupFailed": "Preparing the machine failed at `{command}`; the suites run as they are",
+  "run.environmentNoHelp":
+    "Starting what the AI named changed nothing the suites said, so it is not kept. {detail}",
+  "run.environmentKept": "The suites needed something running first, and now answer with it: {why}",
+  "run.environmentUp": "Starting what the suites need: {services}",
+  "run.environmentSilent": "`{command}` never answered on {ready}",
+  "run.environmentExited": "`{command}` stopped before it answered: {detail}",
   "run.discoveredSuites":
     "No test script is declared; {found} command(s) were read from CI and config files, {ran} ran for real:",
   "run.suiteRan": "ran",

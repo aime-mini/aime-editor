@@ -3,6 +3,7 @@ import type { Brief, Plan, Review, Solution, TestCases } from "./aiRun";
 import type { GateVerdict } from "./regressionGate";
 import type { Run } from "./runPlan";
 import type { CaseGap, CaseVerdict } from "./testCaseFile";
+import type { TestEnvironment } from "./testEnvironment";
 
 /**
  * The record a run leaves behind: the case table, and the evidence.
@@ -131,6 +132,8 @@ export interface ReportInput {
    * rather than the longest set it could have.
    */
   evidenceRequired: boolean;
+  /** What the suites were run with, when they needed anything running. */
+  environment: TestEnvironment | null;
 }
 
 /**
@@ -240,6 +243,7 @@ export function renderReport(input: ReportInput): string {
     }
     for (const quiet of verdict.silent) lines.push(`| ${cell(quiet.label)} | — | — | stopped answering |`);
   }
+  if (input.environment !== null) lines.push(...environmentLines(input.environment));
   if (review !== null && (review.risks.length > 0 || review.findings.length > 0)) {
     lines.push("", "## Review");
     if (review.risks.length > 0) {
@@ -263,6 +267,20 @@ export function renderReport(input: ReportInput): string {
 }
 
 /** One table cell: a pipe inside it would silently split the row in two. */
+/**
+ * What the suites were run with, under their table: a reader who sees a green
+ * browser suite should know a dev server was started for it, and by which
+ * command, before trusting the green.
+ */
+function environmentLines(environment: TestEnvironment): string[] {
+  const lines = ["", `The suites needed something running first - ${environment.why}`];
+  for (const step of environment.setup) lines.push(`- prepared once: \`${step.command}\``);
+  for (const service of environment.services) {
+    lines.push(`- kept up while they ran: \`${service.command}\`, answering on ${service.ready}`);
+  }
+  return lines;
+}
+
 function cell(text: string): string {
   return text.replace(/\|/g, "\\|").replace(/\n/g, " ");
 }

@@ -6,6 +6,7 @@ import type { RuleFile } from "./projectRules";
 import type { CheckPass } from "./qualityGate";
 import type { Baseline, GateVerdict, SuiteRun } from "./regressionGate";
 import type { Run } from "./runPlan";
+import type { TestEnvironment } from "./testEnvironment";
 
 /**
  * A run, on disk — and every run before it.
@@ -83,6 +84,12 @@ export interface SavedRun {
    * trash button may ever offer.
    */
   untrackedBefore: string[];
+  /**
+   * What the suites needed running, when the baseline showed they needed
+   * something. Optional rather than a version bump: a run journaled before
+   * this needed nothing as far as it knew.
+   */
+  environment?: TestEnvironment | null;
   /**
    * The repository the run belonged to, when the project holds several and it
    * was not the project itself. Optional like `workRoot`, for the same reason.

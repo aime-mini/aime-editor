@@ -3,6 +3,7 @@ import type { Brief, Plan, Solution, TestCases } from "./aiRun";
 import { newRun, type Run } from "./runPlan";
 import { isEvidence, renderReport } from "./runReport";
 import type { CaseVerdict } from "./testCaseFile";
+import type { TestEnvironment } from "./testEnvironment";
 
 const RUN: Run = { ...newRun("run-1", "42", "Login forgets the language", 0), branch: "bugfix/42-login" };
 
@@ -41,7 +42,12 @@ const PLAN: Plan = {
   raw: "",
 };
 
-function reportOf(verdict: CaseVerdict, evidence: string[] = [], evidenceRequired = true): string {
+function reportOf(
+  verdict: CaseVerdict,
+  evidence: string[] = [],
+  evidenceRequired = true,
+  environment: TestEnvironment | null = null,
+): string {
   return renderReport({
     run: RUN,
     brief: BRIEF,
@@ -53,6 +59,7 @@ function reportOf(verdict: CaseVerdict, evidence: string[] = [], evidenceRequire
     outcomes: new Map<string, CaseVerdict>([["TC1", verdict]]),
     evidence,
     evidenceRequired,
+    environment,
   });
 }
 
@@ -114,6 +121,18 @@ describe("renderReport", () => {
     expect(reportOf(PASSED)).not.toContain("## Evidence");
   });
 
+  it("says what the suites were run with, so a green browser suite is not taken on faith", () => {
+    const page = reportOf(PASSED, [], true, {
+      why: "the e2e suite drives the dev server",
+      setup: [{ command: "npx playwright install chromium", dir: "." }],
+      services: [{ command: "npm run dev", dir: ".", ready: "http://localhost:5173" }],
+    });
+    expect(page).toContain("The suites needed something running first - the e2e suite drives the dev server");
+    expect(page).toContain("- prepared once: `npx playwright install chromium`");
+    expect(page).toContain("- kept up while they ran: `npm run dev`, answering on http://localhost:5173");
+    expect(reportOf(PASSED)).not.toContain("needed something running");
+  });
+
   it("renders a run that got nowhere without inventing sections", () => {
     const bare = renderReport({
       run: RUN,
@@ -126,6 +145,7 @@ describe("renderReport", () => {
       outcomes: new Map(),
       evidence: [],
       evidenceRequired: true,
+      environment: null,
     });
 
     expect(bare).toContain("# Task run — Login forgets the language");
