@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus } from "../stores/git";
+import { inRepository, repositoryOf } from "./repositories";
 import { collectEvidence } from "./runReport";
 
 /**
@@ -71,13 +72,24 @@ export async function trashOf(
     items.set(normal, { path: absolute, shown, keeper: keeper || (seen?.keeper ?? false) });
   };
 
-  for (const path of freshUntracked(untrackedBefore, await untrackedNow(root))) {
-    put(`${base}/${path}`, false);
+  const [untracked, repository] = await Promise.all([untrackedNow(root), repositoryAround(root)]);
+  for (const path of freshUntracked(untrackedBefore, untracked)) {
+    put(inRepository(repository, path), false);
   }
   for (const path of await collectEvidence(root, since)) {
     put(path, path.replace(/\\/g, "/").includes("/.aime/evidence/"));
   }
   return [...items.values()].sort((a, b) => a.shown.localeCompare(b.shown));
+}
+
+/**
+ * The root git names `root`'s untracked files from: `root` itself, unless it is
+ * a folder inside a repository - where joining git's path onto `root` would
+ * name a different file, one the run may never have touched.
+ */
+async function repositoryAround(root: string): Promise<string> {
+  const repositories = await invoke<string[]>("git_repositories", { root });
+  return repositoryOf(root, repositories) ?? root;
 }
 
 /**

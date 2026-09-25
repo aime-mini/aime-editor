@@ -43,9 +43,14 @@ describe("freshUntracked", () => {
 });
 
 describe("trashOf", () => {
-  function project(untrackedNow: string[], evidence: { path: string; modified: number }[]): void {
+  function project(
+    untrackedNow: string[],
+    evidence: { path: string; modified: number }[],
+    repository = "C:/work",
+  ): void {
     invoke.mockImplementation((command: string, args: { path?: string }) => {
       if (command === "git_status") return Promise.resolve(statusWith(untrackedNow));
+      if (command === "git_repositories") return Promise.resolve([repository]);
       if (command === "list_dir") {
         const dir = (args.path ?? "").replace(/\\/g, "/");
         return Promise.resolve(
@@ -83,6 +88,18 @@ describe("trashOf", () => {
     // at all - not even unticked. They were never this run's to offer.
     expect(items.some((item) => item.shown === "notes.txt")).toBe(false);
     expect(items.some((item) => item.shown.includes("cart.js"))).toBe(false);
+  });
+
+  it("names a new file from the repository's root when the project is a folder inside one", async () => {
+    // git answers from the repository's root; the project is its `web` folder.
+    project(["README.md", "web/scratch.log"], [], "C:/repo");
+    const items = await trashOf("C:/repo/web", [], 1_000);
+    expect(items.map((item) => item.path.replaceAll("\\", "/"))).toEqual([
+      "C:/repo/README.md",
+      "C:/repo/web/scratch.log",
+    ]);
+    // Never `C:/repo/web/README.md` - a file of the same name the run did not make.
+    expect(items.map((item) => item.shown)).toEqual(["C:/repo/README.md", "scratch.log"]);
   });
 
   it("leaves another run's artifacts alone", async () => {
