@@ -410,6 +410,7 @@ export const en = {
     "The AWS CLI spells `{command}` differently from its own service model, so Aime could not run it.",
   "cloud.propertyCount": "{count} properties",
   "cloud.readEmpty": "The command ran and answered with nothing - this resource has none of these set.",
+  "cloud.readAbsent": "Not set up on this resource. The CLI said: {words}",
   "cloud.opsTitle": "What you can do to this",
   "cloud.opsPlanning": "Asking the AI what can be done to a {kind} - once for this kind, then never again…",
   "cloud.opsNoAnswer": "Aime could not read the AI's answer at all. What came back:",

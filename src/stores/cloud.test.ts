@@ -74,6 +74,8 @@ vi.mock("@tauri-apps/api/core", () => ({
     switch (command) {
       case "cloud_read_plan":
         return Promise.resolve(planOnDisk);
+      case "cloud_read_catalog":
+        return Promise.resolve(null);
       case "cloud_check_reads":
         return Promise.resolve(
           checkedPlans.shift() ?? { reads: checked.shift() ?? [], facts: [], rejected: [] },
@@ -731,5 +733,116 @@ describe("proving a read against the resource it was planned for", () => {
     expect(written[0].reads).toEqual([]);
     const plan = useCloud.getState().plans["gcp/iam.googleapis.com/ServiceAccount"];
     expect(plan?.kind === "ready" && plan.reads).toEqual([]);
+  });
+});
+
+/**
+ * Measured 2026-09-25 on a real AWS account: `lambda get-function-url-config`
+ * answers a function that has no URL with exactly the sentence it answers a
+ * function that does not exist with. Read on its own that was a red error and
+ * a command for the AI to "fix" - on a read that was right all along.
+ */
+describe("a read about something the resource does not have", () => {
+  const lambda = {
+    id: "arn:aws:lambda:ap-southeast-2:111122223333:function:Task-Listener",
+    name: "Task-Listener",
+    cliName: "Task-Listener",
+    kind: "lambda/function",
+    location: "ap-southeast-2",
+    group: "111122223333",
+    tags: {},
+  };
+  const key = (read: PlannedRead) => `${lambda.id}#${read.label}`;
+  const getFunction: PlannedRead = {
+    purpose: "overview",
+    label: "aws lambda get-function",
+    args: ["lambda", "get-function", "--function-name", "<name>"],
+  };
+  const urlConfig: PlannedRead = {
+    purpose: "connection",
+    label: "aws lambda get-function-url-config",
+    args: ["lambda", "get-function-url-config", "--function-name", "<name>"],
+  };
+  /** The CLI's own words, captured from the real call. */
+  const NO_URL =
+    "An error occurred (ResourceNotFoundException) when calling the GetFunctionUrlConfig operation: " +
+    "The resource you requested does not exist.";
+
+  beforeEach(() => {
+    planOnDisk = null;
+    storedReads = null;
+    checked = [];
+    checkedPlans = [];
+    proofs = [];
+    runs = [];
+    replies = [];
+    written.length = 0;
+    asked = 0;
+    commands.length = 0;
+    useCloud.setState({
+      tab: "aws",
+      selected: { aws: "default" },
+      plans: {},
+      answers: {},
+      detail: null,
+    });
+  });
+
+  it("keeps the read and shows it as absent once the resource itself has answered", async () => {
+    // The connection read is listed first on purpose: the overview still has
+    // to be proved before it, or "not found" could mean the command is wrong.
+    checked = [[urlConfig, getFunction]];
+    proofs = [null, NO_URL];
+    replies = ["{}"];
+
+    useCloud.getState().openDetail(lambda);
+    await settle();
+
+    expect(asked).toBe(1);
+    expect(written[0].reads).toEqual([getFunction, urlConfig]);
+    expect(written[0].proved).toBe(true);
+    expect(useCloud.getState().answers[key(urlConfig)]).toEqual({ kind: "absent", reason: NO_URL });
+  });
+
+  it('still treats "not found" as a failure when the resource never answered to that name', async () => {
+    checked = [[getFunction, urlConfig], [getFunction]];
+    proofs = [NO_URL, NO_URL, null];
+    replies = ["{}", "{}"];
+
+    useCloud.getState().openDetail(lambda);
+    await settle();
+
+    expect(asked).toBe(2);
+    expect(useCloud.getState().answers[key(getFunction)]).toEqual({ kind: "loaded", json: '{"ok":true}' });
+  });
+
+  it("reads a resource clicked while its kind was still being planned from pointing at it", async () => {
+    planOnDisk = { reads: [getFunction, urlConfig], facts: [], proved: true };
+    runs = [null, NO_URL];
+
+    // Pointing starts the plan; the click lands before it is in.
+    useCloud.getState().warmPlan(lambda);
+    useCloud.getState().openDetail(lambda);
+    await settle();
+
+    expect(useCloud.getState().answers[key(getFunction)]).toEqual({ kind: "loaded", json: '{"keys":[]}' });
+    expect(useCloud.getState().answers[key(urlConfig)]).toEqual({ kind: "absent", reason: NO_URL });
+  });
+
+  it("asks the AI for no repair when a clicked read finds nothing on a resource that answered", async () => {
+    useCloud.setState({
+      plans: {
+        "aws/lambda/function": { kind: "ready", reads: [getFunction, urlConfig], facts: [], rejected: [] },
+      },
+      answers: { [key(getFunction)]: { kind: "loaded", json: "{}" } },
+    });
+    runs = [NO_URL];
+
+    await useCloud.getState().runRead(lambda, urlConfig);
+    await settle();
+
+    expect(asked).toBe(0);
+    expect(written).toHaveLength(0);
+    expect(useCloud.getState().answers[key(urlConfig)]).toEqual({ kind: "absent", reason: NO_URL });
   });
 });

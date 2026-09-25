@@ -10,6 +10,7 @@ import {
   EyeOff,
   Loader2,
   MapPin,
+  Minus,
   Play,
   Plug,
   RefreshCw,
@@ -465,6 +466,11 @@ function ReadBlock({ resource, read }: { resource: CloudResource; read: PlannedR
       {answer?.kind === "failed" && (
         <ReadFailure reason={answer.reason} onFixed={() => void runRead(resource, read)} />
       )}
+      {answer?.kind === "absent" && (
+        <p className="p-2.5 text-[11px] text-muted">
+          {t("cloud.readAbsent", { words: shortCliError(answer.reason) })}
+        </p>
+      )}
       {answer?.kind === "loaded" && !(secret && hidden) && (
         <div className="p-2">
           {/* An empty answer is an answer: measured on a real Supabase
@@ -488,6 +494,7 @@ function AnswerStatus({ answer, rows }: { answer: AnswerState | undefined; rows:
   if (answer === undefined) return null;
   if (answer.kind === "loading") return <Loader2 size={12} className="shrink-0 animate-spin text-muted" />;
   if (answer.kind === "failed") return <TriangleAlert size={12} className="shrink-0 text-danger" />;
+  if (answer.kind === "absent") return <Minus size={12} className="shrink-0 text-muted" />;
   return (
     <span className="shrink-0 text-[10px] text-muted">
       {t("cloud.propertyCount", { count: countOf(rows) })}

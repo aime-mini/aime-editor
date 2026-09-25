@@ -1,4 +1,5 @@
 import { activeEditor } from "./monacoAccess";
+import { shortCliError } from "./cloudErrors";
 import { commandOf, type PlannedRead } from "./cloudReads";
 import { withoutSignatures } from "./signedUrls";
 import { inRepository, isWithin } from "./repositories";
@@ -50,7 +51,7 @@ export interface CloudFocus {
   cloudLabel: string;
   account: { id: string; label: string } | null;
   resource: Pick<CloudResource, "id" | "kind" | "name" | "location" | "group"> | null;
-  /** Non-secret reads the panel has already run for that resource. */
+  /** Non-secret reads the panel has already run for that resource, and what each answered. */
   reads: { command: string; json: string }[];
 }
 
@@ -239,9 +240,13 @@ function loadedReads(
   const shareable = (read: PlannedRead) => read.purpose !== "secret";
   return plan.reads.filter(shareable).flatMap((read) => {
     const answer = cloud.answers[answerKey(resource, read)];
+    const command = commandOf(cloudId, accountId, resource, read);
+    // "This function has no URL" is worth as much to the AI as a URL would
+    // be, and the CLI's own sentence says it.
+    if (answer?.kind === "absent") return [{ command, json: shortCliError(answer.reason) }];
     if (answer?.kind !== "loaded") return [];
     // Not a secret read is not the same as no credential in it: a Lambda's
     // overview answers with a pre-signed URL to its code.
-    return [{ command: commandOf(cloudId, accountId, resource, read), json: withoutSignatures(answer.json) }];
+    return [{ command, json: withoutSignatures(answer.json) }];
   });
 }

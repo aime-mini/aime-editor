@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { billingOff, cliRefusal, disabledApi, looksLikeSignIn, shortCliError } from "./cloudErrors";
+import {
+  billingOff,
+  cliRefusal,
+  disabledApi,
+  looksLikeSignIn,
+  saysNothingThere,
+  shortCliError,
+} from "./cloudErrors";
 
 /**
  * Captured from the real CLI on 2026-09-09, clicking a Google Cloud project in
@@ -176,5 +183,24 @@ describe("shortCliError", () => {
 
   it("leaves a plain message alone, whitespace closed up", () => {
     expect(shortCliError(LOG_BUCKET_NOT_FOUND)).toBe(LOG_BUCKET_NOT_FOUND.replace(/\s+/g, " ").trim());
+  });
+});
+
+describe("saysNothingThere", () => {
+  // Each captured 2026-09-25 from the real AWS CLI on resources that exist.
+  it.each([
+    "An error occurred (ResourceNotFoundException) when calling the GetFunctionUrlConfig operation: The resource you requested does not exist.",
+    "An error occurred (NoSuchWebsiteConfiguration) when calling the GetBucketWebsite operation: The specified bucket does not have a website configuration",
+    "An error occurred (NoSuchCORSConfiguration) when calling the GetBucketCors operation: The CORS configuration does not exist",
+  ])("hears the AWS CLI saying there is none: %s", (reason) => {
+    expect(saysNothingThere(reason)).toBe(true);
+  });
+
+  it("does not hear it in a refusal that is about something else", () => {
+    expect(saysNothingThere(ASSET_API_OFF)).toBe(false);
+    expect(saysNothingThere(AZURE_EXPIRED)).toBe(false);
+    expect(
+      saysNothingThere("ERROR: (gcloud.iam.service-accounts.describe) HTTPError 404: <!DOCTYPE html>"),
+    ).toBe(false);
   });
 });

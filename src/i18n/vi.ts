@@ -411,6 +411,7 @@ export const vi: Record<TranslationKey, string> = {
     "AWS CLI đặt tên `{command}` khác với service model của chính nó, nên Aime không chạy được.",
   "cloud.propertyCount": "{count} thuộc tính",
   "cloud.readEmpty": "Lệnh chạy xong và không trả về gì - resource này chưa đặt giá trị nào thuộc loại đó.",
+  "cloud.readAbsent": "Resource này chưa có cấu hình này. CLI trả lời: {words}",
   "cloud.opsTitle": "Làm được gì với cái này",
   "cloud.opsPlanning": "Đang hỏi AI xem làm được gì với {kind} - một lần cho loại này, sau không hỏi nữa…",
   "cloud.opsNoAnswer": "Aime không đọc nổi câu trả lời của AI. Đây là thứ nhận về:",

@@ -181,6 +181,30 @@ export function cliRefusal(reason: string): CliRefusal {
   return wall ? "wall" : "command";
 }
 
+/**
+ * The AWS CLI's error line when what an operation asked about does not exist,
+ * by the code the service answered with.
+ *
+ * Measured 2026-09-25 on a real account: `lambda get-function-url-config`
+ * answers *An error occurred (ResourceNotFoundException) when calling the
+ * GetFunctionUrlConfig operation: The resource you requested does not exist.*
+ * - word for word the same for a function that has no URL as for a function
+ * that is not there at all. Which of the two it is, the words cannot say.
+ */
+const AWS_NOTHING_THERE =
+  /An error occurred \((ResourceNotFoundException|NoSuch\w+|\w*NotFound\w*)\) when calling/;
+
+/**
+ * Whether the CLI is saying the thing a read asked about is not there.
+ *
+ * On its own that is ambiguous - see `AWS_NOTHING_THERE` - so it means "this
+ * resource has none" only once the resource itself has answered to the same
+ * name; the caller holds that half.
+ */
+export function saysNothingThere(reason: string): boolean {
+  return AWS_NOTHING_THERE.test(reason);
+}
+
 /** How much of a CLI's answer is worth reading when it went wrong. */
 const CLI_ERROR_SHOWN = 300;
 

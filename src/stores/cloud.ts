@@ -8,7 +8,7 @@ import { discoverPrompt, parseArchitecture } from "../lib/cloudDiscovery";
 import { agentTurn } from "../lib/agentTurn";
 import type { Basis } from "../lib/cloudMap";
 import { renderCloudNote, spliceCloudNote, type CloudNote } from "../lib/cloudMemory";
-import { cliRefusal, shortCliError } from "../lib/cloudErrors";
+import { cliRefusal, saysNothingThere, shortCliError } from "../lib/cloudErrors";
 import {
   opCommand,
   opsPrompt,
@@ -173,6 +173,11 @@ export type AnswerState =
   | { kind: "loading" }
   /** The CLI's own JSON, kept verbatim - it is that cloud's own vocabulary. */
   | { kind: "loaded"; json: string }
+  /**
+   * The CLI found the resource and says it has none of what this read asks
+   * for - a function with no URL. An answer, not a failure: nothing to fix.
+   */
+  | { kind: "absent"; reason: string }
   | { kind: "failed"; reason: string };
 
 /** A sign-in started from the panel, as far as it has got. */
@@ -661,9 +666,11 @@ export const useCloud = create<CloudState>((set, get) => ({
       const json = await invoke<string>("cloud_run_read", { cloudId, account, resource, read });
       set((state) => ({ answers: { ...state.answers, [key]: { kind: "loaded", json } } }));
     } catch (error: unknown) {
-      const reason = String(error);
-      set((state) => ({ answers: { ...state.answers, [key]: { kind: "failed", reason } } }));
-      if (cliRefusal(reason) === "command") await repairAfterClick(resource, read, reason, get, set);
+      const answer = refusedAnswer(String(error), read, overviewAnswered(get(), resource));
+      set((state) => ({ answers: { ...state.answers, [key]: answer } }));
+      if (answer.kind === "failed" && cliRefusal(answer.reason) === "command") {
+        await repairAfterClick(resource, read, answer.reason, get, set);
+      }
     }
   },
 
@@ -883,23 +890,78 @@ async function planAndRead(resource: CloudResource, get: Get, set: Set): Promise
   const cloudId = get().tab;
   const plan = await ensurePlan(cloudId, resource, get, set);
   if (plan === null || get().detail?.id !== resource.id) return;
-  for (const read of plan.reads) {
-    if (read.purpose === "secret") continue;
-    if (get().answers[answerKey(resource, read)] !== undefined) continue;
-    void get().runRead(resource, read);
-  }
+  const unread = plan.reads.filter(
+    (read) => read.purpose !== "secret" && get().answers[answerKey(resource, read)] === undefined,
+  );
+  // The overview goes first and alone: its answer is what tells "this function
+  // has no URL" apart from "this command cannot find the function"
+  // (`refusedAnswer`), so the other reads are judged only once it is in.
+  for (const read of unread.filter(isOverview)) await get().runRead(resource, read);
+  for (const read of unread.filter((read) => !isOverview(read))) void get().runRead(resource, read);
 }
 
-async function ensurePlan(
+function isOverview(read: PlannedRead): boolean {
+  return read.purpose === "overview";
+}
+
+/** Whether one of this resource's overview reads has answered - the proof the CLI can find it. */
+function overviewAnswered(state: CloudState, resource: CloudResource): boolean {
+  const plan = state.plans[slotOf(state.tab, resource.kind)];
+  return (
+    plan?.kind === "ready" &&
+    plan.reads.some((read) => isOverview(read) && state.answers[answerKey(resource, read)]?.kind === "loaded")
+  );
+}
+
+/**
+ * What a read the CLI refused has to show.
+ *
+ * "Not found" from a read about a resource whose own overview has answered is
+ * the resource saying it has none of this. The CLI's words are the same either
+ * way (`saysNothingThere`), so the overview is what decides. Without it a
+ * Lambda with no URL was a red error, and the AI was handed a correct read to
+ * rewrite.
+ */
+function refusedAnswer(reason: string, read: PlannedRead, resourceFound: boolean): RefusedAnswer {
+  const absent = resourceFound && !isOverview(read) && saysNothingThere(reason);
+  return absent ? { kind: "absent", reason } : { kind: "failed", reason };
+}
+
+/** An answer the CLI gave in words rather than JSON. */
+type RefusedAnswer = Extract<AnswerState, { reason: string }>;
+
+/**
+ * The plans being made right now, by kind, so whoever asks while one is on its
+ * way waits for it rather than leaving with nothing.
+ *
+ * Pointing at a row starts the plan (`warmPlan`) and clicking it asks for the
+ * same plan a moment later. Measured 2026-09-25 driving the app: the click
+ * landed while the plan was still in flight, was told "nothing yet", and the
+ * resource then sat open with no reads run at all - for a kind the AI was
+ * planning, a minute of waiting that ended on an empty page.
+ */
+const plansInFlight = new Map<string, Promise<ReadPlan | null>>();
+
+function ensurePlan(cloudId: string, resource: CloudResource, get: Get, set: Set): Promise<ReadPlan | null> {
+  const key = slotOf(cloudId, resource.kind);
+  const known = get().plans[key];
+  if (known?.kind === "ready") {
+    return Promise.resolve({ reads: known.reads, facts: known.facts, rejected: known.rejected });
+  }
+  const pending = plansInFlight.get(key);
+  if (pending !== undefined) return pending;
+  const planning = makePlan(cloudId, resource, get, set).finally(() => plansInFlight.delete(key));
+  plansInFlight.set(key, planning);
+  return planning;
+}
+
+async function makePlan(
   cloudId: string,
   resource: CloudResource,
   get: Get,
   set: Set,
 ): Promise<ReadPlan | null> {
   const key = slotOf(cloudId, resource.kind);
-  const known = get().plans[key];
-  if (known?.kind === "ready") return { reads: known.reads, facts: known.facts, rejected: known.rejected };
-  if (known?.kind === "planning") return null;
   if (!isPlannable(cloudId)) {
     setPlan(set, key, { kind: "failed", reason: translate("cloud.readsNoCloud") });
     return null;
@@ -991,17 +1053,23 @@ async function proveAndStore(
   let unusable: FailedRead[] = plan.rejected.flatMap((entry) =>
     entry.command === null ? [] : [{ read: entry.command, reason: entry.reason }],
   );
+  let resourceFound = false;
   for (let round = 0; candidates.length > 0 || unusable.length > 0; round++) {
-    for (const read of candidates) {
-      const refusal = await prove(cloudId, account, resource, read, set);
-      if (refusal === null) {
+    // Overviews first, so an answer from the resource itself is in hand
+    // before a "not found" from any other read is judged (`refusedAnswer`).
+    const ordered = [...candidates.filter(isOverview), ...candidates.filter((read) => !isOverview(read))];
+    for (const read of ordered) {
+      const refusal = await prove(cloudId, account, resource, read, resourceFound, set);
+      if (refusal === null || refusal.kind === "absent") {
         kept.push(read);
-      } else if (cliRefusal(refusal) === "wall") {
+        resourceFound ||= refusal === null && isOverview(read);
+      } else if (cliRefusal(refusal.reason) === "wall") {
         kept.push(read);
         proved = false;
       } else {
-        rejected.push({ label: read.label, reason: shortCliError(refusal), command: read });
-        unusable.push({ read, reason: withPlaceholders(shortCliError(refusal), resource) });
+        const reason = shortCliError(refusal.reason);
+        rejected.push({ label: read.label, reason, command: read });
+        unusable.push({ read, reason: withPlaceholders(reason, resource) });
       }
     }
     if (unusable.length === 0 || round >= REPAIR_ROUNDS) break;
@@ -1030,8 +1098,8 @@ async function proveAndStore(
 }
 
 /**
- * One read tried for real: null when it answered, the CLI's own words when it
- * did not.
+ * One read tried for real: null when it answered, otherwise what the refusal
+ * amounts to - the resource having none of this, or the read failing.
  *
  * The answer is kept, so the panel shows what the trial run already fetched
  * instead of running the same command a second time; a `secret` read is never
@@ -1042,17 +1110,18 @@ async function prove(
   account: string,
   resource: CloudResource,
   read: PlannedRead,
+  resourceFound: boolean,
   set: Set,
-): Promise<string | null> {
+): Promise<RefusedAnswer | null> {
   const key = answerKey(resource, read);
   try {
     const json = await invoke<string | null>("cloud_prove_read", { cloudId, account, resource, read });
     if (json !== null) set((state) => ({ answers: { ...state.answers, [key]: { kind: "loaded", json } } }));
     return null;
   } catch (error: unknown) {
-    const reason = String(error);
-    set((state) => ({ answers: { ...state.answers, [key]: { kind: "failed", reason } } }));
-    return reason;
+    const answer = refusedAnswer(String(error), read, resourceFound);
+    set((state) => ({ answers: { ...state.answers, [key]: answer } }));
+    return answer;
   }
 }
 
