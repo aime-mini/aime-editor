@@ -89,9 +89,11 @@ pub async fn open_new_window(app: AppHandle) -> Result<(), String> {
         .inner_size(IDEAL_RESTORE.0, IDEAL_RESTORE.1)
         .min_inner_size(960.0, 600.0)
         .visible(false)
-        // Tauri's native drag-drop handler swallows HTML5 drag events on
-        // Windows — disabled so in-app DnD (file tree moves) works.
-        .disable_drag_drop_handler()
+        // The native drag-drop handler stays on, as it is in the first window
+        // (`dragDropEnabled` in tauri.conf.json): it is what hands the page a
+        // file dropped from the OS file manager with its path on disk. The file
+        // tree no longer needs DOM drag events for its own moves - it drags on
+        // pointer events (`stores/pathDrag.ts`) - so nothing is lost by it.
         .build()
         .map_err(|e| e.to_string())?;
     fit_and_maximize(&window);
