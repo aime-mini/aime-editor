@@ -156,7 +156,7 @@ const EN: HelpTopic[] = [
     id: "ai-undo",
     section: "AI",
     title: "Taking a turn back",
-    body: "Letting an AI change your project is only comfortable if changing it back is one click. Under every answer that touched files, Aime says how many it changed and offers Undo this turn, which puts each of them back exactly as it was before you sent the message - including files the AI created, which are removed. Anything you had staged yourself stays staged, and your own edits from before the turn are kept. This needs the project to be a git repository; without one, no undo is offered rather than a promise that cannot be kept.",
+    body: "Letting an AI change your project is only comfortable if changing it back is one click. Under every answer that touched files, Aime says how many it changed and offers Undo this turn, which puts each of them back exactly as it was before you sent the message - including files the AI created, which are removed. Anything you had staged yourself stays staged, and your own edits from before the turn are kept. This needs git: a folder holding several repositories - a frontend and a backend side by side - is covered too, every one of them put back in the same click. A folder with no repository at all gets no undo, rather than a promise that cannot be kept.",
     keywords: "undo revert rollback checkpoint mistake ai changed files safety",
   },
   {
@@ -548,7 +548,7 @@ const VI: HelpTopic[] = [
     id: "ai-undo",
     section: "AI",
     title: "Lấy lại một lượt AI",
-    body: "Để AI sửa dự án chỉ thoải mái khi việc sửa ngược lại chỉ tốn một cú bấm. Dưới mỗi câu trả lời có đụng vào file, Aime nói rõ nó sửa bao nhiêu file và cho nút 'Hoàn tác lượt này' - đưa từng file về đúng như trước lúc anh gửi tin nhắn, kể cả file do AI tạo ra cũng bị xoá đi. Phần anh đã stage vẫn nguyên, và những sửa đổi của chính anh trước lượt đó vẫn được giữ. Việc này cần dự án là repo git; không có git thì Aime không hiện nút hoàn tác, thay vì hứa một điều không giữ được.",
+    body: "Để AI sửa dự án chỉ thoải mái khi việc sửa ngược lại chỉ tốn một cú bấm. Dưới mỗi câu trả lời có đụng vào file, Aime nói rõ nó sửa bao nhiêu file và cho nút 'Hoàn tác lượt này' - đưa từng file về đúng như trước lúc anh gửi tin nhắn, kể cả file do AI tạo ra cũng bị xoá đi. Phần anh đã stage vẫn nguyên, và những sửa đổi của chính anh trước lượt đó vẫn được giữ. Việc này cần git: thư mục chứa nhiều repo - frontend và backend đặt cạnh nhau - cũng được, mọi repo đều được đưa về trong cùng một cú bấm. Thư mục không có repo nào thì Aime không hiện nút hoàn tác, thay vì hứa một điều không giữ được.",
     keywords: "hoàn tác undo rollback checkpoint sai an toàn ai sửa file",
   },
   {

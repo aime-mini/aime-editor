@@ -25,28 +25,40 @@ const SKIPPED: &[&str] = &["node_modules", "target", "bin", "obj", "dist", "buil
 /// workspace sits in comes first, the ones below it after, in path order.
 #[tauri::command]
 pub async fn git_repositories(root: String) -> Result<Vec<String>, String> {
-    let workspace = PathBuf::from(&root);
+    Ok(repositories_in(Path::new(&root))
+        .await?
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect())
+}
+
+/// The repositories of `workspace`, as `git_repositories` lists them - also
+/// what an AI turn's checkpoint covers, since the turn can change any of them.
+pub async fn repositories_in(workspace: &Path) -> Result<Vec<PathBuf>, String> {
     let mut found = Vec::new();
-    if let Some(enclosing) = enclosing_repository(&workspace).await {
+    if let Some(enclosing) = enclosing_repository(workspace).await {
         found.push(enclosing);
     }
+    let folder = workspace.to_path_buf();
     let scanned = tokio::task::spawn_blocking(move || {
         let mut below = Vec::new();
-        scan(&workspace, SCAN_DEPTH, &mut below);
+        scan(&folder, SCAN_DEPTH, &mut below);
         below.sort();
         below
     })
     .await
-    .map_err(|err| format!("could not look for repositories in {root}: {err}"))?;
+    .map_err(|err| {
+        format!(
+            "could not look for repositories in {}: {err}",
+            workspace.display()
+        )
+    })?;
     for repository in scanned {
         if !found.contains(&repository) {
             found.push(repository);
         }
     }
-    Ok(found
-        .into_iter()
-        .map(|path| path.to_string_lossy().to_string())
-        .collect())
+    Ok(found)
 }
 
 /// The repository `folder` is inside of, reached from `folder` itself.

@@ -517,8 +517,9 @@ export const useAi = create<AiState>((set, get) => {
       lastStderrLine = "";
       const provider = get().providers.find((candidate) => candidate.id === get().providerId);
       // Taken before the CLI runs, so an unwanted turn is always reversible.
-      // Costs nothing when the AI changes nothing, and is skipped outside a
-      // git repository, where the UI then offers no undo rather than a lie.
+      // Costs nothing when the AI changes nothing, covers every repository the
+      // workspace holds, and is skipped where it holds none - the UI then
+      // offers no undo rather than a lie.
       let checkpoint: Checkpoint | null = null;
       try {
         checkpoint = await invoke<Checkpoint | null>("checkpoint_create", { root: cwd });

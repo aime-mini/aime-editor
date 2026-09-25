@@ -52,10 +52,13 @@ export function truncateDetail(text: string, max = 100): string {
 
 export type MessagePart = { kind: "text"; text: string } | { kind: "tool"; name: string; detail: string };
 
-/** Mirror of the Rust `Checkpoint` (checkpoint.rs). */
+/**
+ * Mirror of the Rust `Checkpoint` (checkpoint.rs): one snapshot per repository
+ * of the workspace. Opaque here - it is only ever handed back to the backend,
+ * which also still reads the single-snapshot shape older sessions stored.
+ */
 export interface Checkpoint {
-  sha: string;
-  untracked: string[];
+  repositories: { root: string; sha: string; untracked: string[] }[];
 }
 
 export interface ChatMessage {
