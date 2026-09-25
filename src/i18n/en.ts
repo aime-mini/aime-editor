@@ -380,7 +380,12 @@ export const en = {
   "cloud.tierData": "Where the data lives",
   "cloud.tierSupport": "Around it - logs, identity, registries",
   "cloud.flowNote":
-    "The three lanes are always drawn, so an empty one is a fact too: nothing takes requests, or nothing holds state. The arrows are that tier flow, not measured dependencies - a real dependency lives in each service's own configuration, which the resource detail reads. Each box is one kind of resource, with its instances inside.",
+    "The three lanes are always drawn, so an empty one is a fact too: nothing takes requests, or nothing holds state. The grey arrows between lanes are that tier flow. The coloured arrows are measured: one resource's own configuration names another - Trace connections reads them, and every resource you open adds its own. Each box is one kind of resource, with its instances inside.",
+  "cloud.trace": "Trace connections",
+  "cloud.traceHint":
+    "Reads the configuration of all {count} resources here - one CLI call each, never a credential - and draws what each names",
+  "cloud.tracing": "Reading {done} of {total}…",
+  "cloud.linksTitle": "{count} connection(s) found in their configuration",
   "cloud.field.name": "Name",
   "cloud.field.kind": "Type",
   "cloud.connectIdentity": "What this resource is, as the cloud names it",

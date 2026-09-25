@@ -846,3 +846,49 @@ describe("a read about something the resource does not have", () => {
     expect(useCloud.getState().answers[key(urlConfig)]).toEqual({ kind: "absent", reason: NO_URL });
   });
 });
+
+describe("tracing an application's links", () => {
+  const fn = (name: string) => ({
+    id: `arn:aws:lambda:ap-southeast-2:111122223333:function:${name}`,
+    name,
+    cliName: name,
+    kind: "lambda/function",
+    location: "ap-southeast-2",
+    group: "111122223333",
+    tags: {},
+  });
+  const overview: PlannedRead = {
+    purpose: "overview",
+    label: "aws lambda get-function",
+    args: ["lambda", "get-function", "--function-name", "<name>"],
+  };
+  const secret: PlannedRead = {
+    purpose: "secret",
+    label: "aws lambda get-policy",
+    args: ["lambda", "get-policy", "--function-name", "<name>"],
+  };
+
+  beforeEach(() => {
+    planOnDisk = { reads: [overview, secret], facts: [], proved: true };
+    runs = [];
+    commands.length = 0;
+    useCloud.setState({ tab: "aws", selected: { aws: "default" }, plans: {}, answers: {}, tracing: null });
+  });
+
+  it("reads every resource's configuration once, never a secret, and says when it is done", async () => {
+    const first = fn("Orders-Create");
+    const second = fn("Orders-Ship");
+    useCloud.setState({ answers: { [`${second.id}#${overview.label}`]: { kind: "loaded", json: "{}" } } });
+
+    await useCloud.getState().traceLinks([first, second]);
+
+    // One read: the second function had already answered, and the secret read waits for a click.
+    expect(commands.filter((command) => command === "cloud_run_read")).toHaveLength(1);
+    expect(useCloud.getState().answers[`${first.id}#${overview.label}`]).toEqual({
+      kind: "loaded",
+      json: '{"keys":[]}',
+    });
+    expect(useCloud.getState().answers[`${first.id}#${secret.label}`]).toBeUndefined();
+    expect(useCloud.getState().tracing).toBeNull();
+  });
+});

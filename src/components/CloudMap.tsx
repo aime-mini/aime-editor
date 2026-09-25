@@ -1,11 +1,13 @@
-import { createElement, useMemo, useState } from "react";
+import { createElement, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   ArrowLeft,
   Boxes,
   ChevronDown,
   ChevronUp,
+  Loader2,
   MapPin,
   TriangleAlert,
+  Waypoints,
   type LucideIcon,
 } from "lucide-react";
 import { useT } from "../i18n";
@@ -23,7 +25,8 @@ import {
   type BasisOption,
   type KindNode,
 } from "../lib/cloudMap";
-import { useCloud, type CloudResource } from "../stores/cloud";
+import { linksOf, type CloudLink } from "../lib/cloudLinks";
+import { readAnswersOf, useCloud, type CloudResource } from "../stores/cloud";
 
 /**
  * What is deployed in one account, drawn as applications rather than listed.
@@ -38,10 +41,12 @@ import { useCloud, type CloudResource } from "../stores/cloud";
  * it, one click from their own detail. That is how an architecture diagram is
  * drawn by hand, and it is the only way this many resources become a picture.
  *
- * Honest about its two claims, both on screen: the application comes from the
+ * Honest about its claims, all on screen: the application comes from the
  * basis named in the header - a tag the team wrote, the stack the cloud
- * recorded, the group - and the person can change it; and the arrows are the
- * tier flow, not measured dependencies (`lib/cloudMap.ts` says why).
+ * recorded, the group - and the person can change it; the grey arrows between
+ * lanes are the tier flow (`lib/cloudMap.ts` says why); and the coloured ones
+ * are measured - one resource's configuration naming another
+ * (`lib/cloudLinks.ts`), each listed with where it was found.
  */
 export function CloudMap({
   resources,
@@ -106,6 +111,7 @@ export function CloudMap({
         ) : (
           <AppDiagram
             app={focus}
+            account={resources}
             onOpen={onOpen}
             onBack={() => {
               setFocusName(null);
@@ -394,20 +400,27 @@ export function ServiceBadge({ kind, size = 4 }: { kind: string; size?: 4 | 5 | 
  */
 function AppDiagram({
   app,
+  account,
   onOpen,
   onBack,
 }: {
   app: AppGroup;
+  /** Every resource of the account, because a link can reach outside the application. */
+  account: CloudResource[];
   onOpen: (resource: CloudResource) => void;
   onBack: () => void;
 }) {
   const t = useT();
   const shape = useMemo(() => shapeOf(app), [app]);
   const untagged = app.name === UNTAGGED;
+  const links = useLinks(app, account);
+  const linked = useMemo(() => new Set(links.flatMap((link) => [link.from, link.to])), [links]);
+  const diagram = useRef<HTMLDivElement>(null);
 
   return (
-    <div className="flex flex-col gap-3 p-4">
-      <div className="flex items-center gap-2">
+    // The right padding is the gutter the measured arrows swing through.
+    <div ref={diagram} className="relative flex flex-col gap-3 py-4 pr-12 pl-4">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={onBack}
           title={t("cloud.allApps")}
@@ -420,7 +433,7 @@ function AppDiagram({
         ) : (
           <Boxes size={16} className="shrink-0 text-accent" />
         )}
-        <h2 className="min-w-0 flex-1 truncate text-[15px] font-semibold">
+        <h2 className="min-w-40 flex-1 truncate text-[15px] font-semibold">
           {untagged ? t("cloud.appUnnamed") : app.name}
         </h2>
         <span className="shrink-0 text-muted">
@@ -432,6 +445,7 @@ function AppDiagram({
             {region.name}
           </span>
         ))}
+        <TraceButton app={app} />
       </div>
 
       {/* Three lanes, top to bottom, the same shape for every application - so
@@ -441,16 +455,289 @@ function AppDiagram({
           every lane name to "NƠI ..." and every resource to "Imp...". */}
       {shape.path.map(([tier, nodes], index) => (
         <div key={tier} className="flex flex-col">
-          <Lane tier={tier} nodes={nodes} onOpen={onOpen} />
+          <Lane tier={tier} nodes={nodes} linked={linked} onOpen={onOpen} />
           {index < shape.path.length - 1 && <FlowArrow />}
         </div>
       ))}
 
-      {shape.support.length > 0 && <Lane tier="support" nodes={shape.support} onOpen={onOpen} />}
+      {shape.support.length > 0 && (
+        <Lane tier="support" nodes={shape.support} linked={linked} onOpen={onOpen} />
+      )}
 
+      <LinkList links={links} account={account} onOpen={onOpen} />
       <p className="text-[11px] text-muted">{t("cloud.flowNote")}</p>
+      <LinkArrows links={links} container={diagram} />
     </div>
   );
+}
+
+/**
+ * The links the panel can already see among this application's resources:
+ * whatever their read configuration names, anywhere in the account. Recomputed
+ * as answers arrive, so opening a resource's detail adds its links for free.
+ */
+function useLinks(app: AppGroup, account: CloudResource[]): CloudLink[] {
+  const answers = useCloud((s) => s.answers);
+  const plans = useCloud((s) => s.plans);
+  const tab = useCloud((s) => s.tab);
+  return useMemo(
+    () => linksOf(readAnswersOf({ answers, plans, tab }, app.resources), account),
+    [answers, plans, tab, app, account],
+  );
+}
+
+/**
+ * Reads the whole application's configuration, so its links can be drawn.
+ *
+ * A button rather than something that happens on open, because it costs a
+ * CLI call per resource into somebody's cloud - its tooltip says how many - and
+ * a diagram is often opened only to see what an application is made of.
+ */
+function TraceButton({ app }: { app: AppGroup }) {
+  const t = useT();
+  const tracing = useCloud((s) => s.tracing);
+  const traceLinks = useCloud((s) => s.traceLinks);
+  if (tracing !== null) {
+    return (
+      <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted">
+        <Loader2 size={12} className="animate-spin" />
+        {t("cloud.tracing", { done: tracing.done, total: tracing.total })}
+      </span>
+    );
+  }
+  return (
+    <button
+      onClick={() => void traceLinks(app.resources)}
+      title={t("cloud.traceHint", { count: app.resources.length })}
+      className="flex shrink-0 items-center gap-1.5 rounded border border-line px-2 py-1 text-[11px] text-muted hover:border-accent hover:text-fg"
+    >
+      <Waypoints size={12} className="text-accent" />
+      {t("cloud.trace")}
+    </button>
+  );
+}
+
+/**
+ * Every link in words, grouped by the resource whose configuration holds it:
+ * the check behind each arrow, and the only place a link to a resource outside
+ * this application can be shown at all.
+ *
+ * Names wrap rather than truncate. The panel is a few hundred pixels wide, and
+ * measured on the first real trace, a row of `source -> target -> path` cut
+ * every one of them to "Pay…" - a list of links nobody could read.
+ */
+function LinkList({
+  links,
+  account,
+  onOpen,
+}: {
+  links: CloudLink[];
+  account: CloudResource[];
+  onOpen: (resource: CloudResource) => void;
+}) {
+  const t = useT();
+  const byId = useMemo(() => new Map(account.map((resource) => [resource.id, resource])), [account]);
+  const bySource = useMemo(() => linksBySource(links), [links]);
+  if (links.length === 0) return null;
+  return (
+    <section className="rounded-xl border border-accent/30 bg-accent-soft/30 p-2.5">
+      <header className="mb-1.5 flex items-center gap-1.5 px-1 text-[10px] tracking-wide text-accent uppercase">
+        <Waypoints size={11} />
+        <span className="flex-1">{t("cloud.linksTitle", { count: links.length })}</span>
+      </header>
+      <ul className="flex flex-col gap-1.5">
+        {[...bySource].map(([source, targets]) => (
+          <li key={source} className="flex flex-col gap-0.5 px-1 text-[11px]">
+            <LinkEnd resource={byId.get(source)} onOpen={onOpen} />
+            {targets.map((link) => (
+              <div key={link.to} className="flex items-baseline gap-1.5 pl-4">
+                <span className="shrink-0 text-accent">→</span>
+                <div className="flex min-w-0 flex-col">
+                  <LinkEnd resource={byId.get(link.to)} onOpen={onOpen} />
+                  <code className="text-[10px] text-muted" title={link.where}>
+                    {lastKeyOf(link.where)}
+                  </code>
+                </div>
+              </div>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * The links under the resource whose configuration holds them, in the order
+ * they were found. By hand rather than `Map.groupBy`, which the WebKit webviews
+ * this runs in on macOS and Linux do not all have yet.
+ */
+function linksBySource(links: CloudLink[]): Map<string, CloudLink[]> {
+  const groups = new Map<string, CloudLink[]>();
+  for (const link of links) groups.set(link.from, [...(groups.get(link.from) ?? []), link]);
+  return groups;
+}
+
+/** One end of a link: the resource's icon and name, opening its detail. */
+function LinkEnd({
+  resource,
+  onOpen,
+}: {
+  resource: CloudResource | undefined;
+  onOpen: (resource: CloudResource) => void;
+}) {
+  if (resource === undefined) return null;
+  return (
+    <button
+      onClick={() => {
+        onOpen(resource);
+      }}
+      title={resource.kind}
+      className="flex min-w-0 items-baseline gap-1 text-left wrap-anywhere hover:text-accent"
+    >
+      {createElement(iconOfKind(resource.kind), {
+        size: 11,
+        className: `shrink-0 self-center ${classesOfKind(resource.kind).icon}`,
+      })}
+      {resource.name}
+    </button>
+  );
+}
+
+/**
+ * The last key of where a link was found - `QUEUE_URL` out of
+ * `Configuration.Environment.Variables.QUEUE_URL` - which is the part that
+ * says what the reference is for; the whole path is its tooltip.
+ */
+function lastKeyOf(where: string): string {
+  return where.split(".").at(-1) ?? where;
+}
+
+/** One arrow as drawn: from the right edge of one row to the left edge of another. */
+interface Arrow {
+  key: string;
+  path: string;
+}
+
+/**
+ * The measured links as arrows over the diagram, between the rows of the two
+ * resources - or the header of the box holding one, when its row is folded
+ * away or scrolled out of its box.
+ *
+ * An SVG laid over the diagram and positioned from the rows' own boxes, re-laid
+ * whenever the diagram resizes or a box scrolls: the lanes wrap with the
+ * panel's width, and an arrow drawn from coordinates of a previous layout would
+ * point at nothing.
+ */
+function LinkArrows({
+  links,
+  container,
+}: {
+  links: CloudLink[];
+  container: RefObject<HTMLDivElement | null>;
+}) {
+  const [arrows, setArrows] = useState<Arrow[]>([]);
+  useLayoutEffect(() => {
+    const root = container.current;
+    if (root === null) return;
+    const lay = () => {
+      setArrows(arrowsFor(links, root));
+    };
+    lay();
+    const resized = new ResizeObserver(lay);
+    resized.observe(root);
+    root.addEventListener("scroll", lay, true);
+    return () => {
+      resized.disconnect();
+      root.removeEventListener("scroll", lay, true);
+    };
+  }, [links, container]);
+  if (arrows.length === 0) return null;
+  return (
+    <svg className="pointer-events-none absolute inset-0 size-full overflow-visible text-accent" aria-hidden>
+      <defs>
+        <marker
+          id="link-head"
+          viewBox="0 0 10 10"
+          refX="9"
+          refY="5"
+          markerWidth="7"
+          markerHeight="7"
+          orient="auto"
+        >
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor" />
+        </marker>
+      </defs>
+      {arrows.map((arrow) => (
+        <path
+          key={arrow.key}
+          d={arrow.path}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeOpacity="0.85"
+          markerEnd="url(#link-head)"
+        />
+      ))}
+    </svg>
+  );
+}
+
+/**
+ * How far past the wider of two rows an arrow swings out. Both ends sit on the
+ * rows' right edges and the curve runs in the gutter beside the boxes: the
+ * lanes are stacked, so an arrow drawn straight from one row to another
+ * crossed every name between them (measured on the first real trace).
+ */
+const ARROW_SWING_PX = 36;
+
+function arrowsFor(links: CloudLink[], root: HTMLElement): Arrow[] {
+  const origin = root.getBoundingClientRect();
+  return links.flatMap((link) => {
+    const from = anchorOf(root, link.from);
+    const to = anchorOf(root, link.to);
+    if (from === null || to === null || from === to) return [];
+    const a = edgeOf(from, origin);
+    const b = edgeOf(to, origin);
+    const swing = Math.max(a.right, b.right) + ARROW_SWING_PX;
+    const rise = (b.middle - a.middle) / 4;
+    return [
+      {
+        key: `${link.from}>${link.to}`,
+        path: [
+          `M${String(a.right)},${String(a.middle)}`,
+          `C${String(swing)},${String(a.middle + rise)}`,
+          `${String(swing)},${String(b.middle - rise)}`,
+          `${String(b.right)},${String(b.middle)}`,
+        ].join(" "),
+      },
+    ];
+  });
+}
+
+/** An element's right edge and vertical middle, in the diagram's own coordinates. */
+function edgeOf(element: HTMLElement, origin: DOMRect): { right: number; middle: number } {
+  const box = element.getBoundingClientRect();
+  return { right: box.right - origin.left, middle: box.top + box.height / 2 - origin.top };
+}
+
+/**
+ * The element an arrow for this resource attaches to: its own row while that
+ * row is on screen inside its box, the box's header otherwise; null for a
+ * resource this diagram does not draw.
+ */
+function anchorOf(root: HTMLElement, id: string): HTMLElement | null {
+  const row = root.querySelector<HTMLElement>(`[data-resource-id="${CSS.escape(id)}"]`);
+  if (row !== null) {
+    const list = row.parentElement;
+    const shown = list === null ? row.getBoundingClientRect() : list.getBoundingClientRect();
+    const box = row.getBoundingClientRect();
+    if (box.bottom > shown.top && box.top < shown.bottom) return row;
+  }
+  const kind =
+    row?.closest<HTMLElement>("[data-kind]") ??
+    root.querySelector<HTMLElement>(`[data-holds~="${CSS.escape(id)}"]`);
+  return kind?.querySelector<HTMLElement>("[data-kind-head]") ?? null;
 }
 
 /** The arrow between two lanes: the direction a request travels. */
@@ -467,10 +754,13 @@ function FlowArrow() {
 function Lane({
   tier,
   nodes,
+  linked,
   onOpen,
 }: {
   tier: Tier;
   nodes: KindNode[];
+  /** Resources a measured link touches, drawn first in their box so an arrow can reach them. */
+  linked: ReadonlySet<string>;
   onOpen: (resource: CloudResource) => void;
 }) {
   const t = useT();
@@ -498,7 +788,13 @@ function Lane({
       </header>
       <div className="flex flex-wrap gap-2">
         {nodes.map((node) => (
-          <KindBox key={node.kind} kind={node.kind} resources={node.resources} onOpen={onOpen} />
+          <KindBox
+            key={node.kind}
+            kind={node.kind}
+            resources={node.resources}
+            linked={linked}
+            onOpen={onOpen}
+          />
         ))}
       </div>
     </section>
@@ -515,22 +811,35 @@ const NAMES_SHOWN = 6;
 function KindBox({
   kind,
   resources,
+  linked,
   onOpen,
 }: {
   kind: string;
   resources: CloudResource[];
+  linked: ReadonlySet<string>;
   onOpen: (resource: CloudResource) => void;
 }) {
   const t = useT();
   const warmPlan = useCloud((s) => s.warmPlan);
   const [open, setOpen] = useState(false);
   const classes = classesOfKind(kind);
-  const shown = open ? resources : resources.slice(0, NAMES_SHOWN);
+  const ordered = useMemo(
+    () => [
+      ...resources.filter((one) => linked.has(one.id)),
+      ...resources.filter((one) => !linked.has(one.id)),
+    ],
+    [resources, linked],
+  );
+  const shown = open ? ordered : ordered.slice(0, NAMES_SHOWN);
   const hidden = resources.length - shown.length;
 
   return (
-    <div className="flex min-w-56 flex-1 flex-col rounded-lg border border-line bg-panel shadow-sm">
-      <div className={`flex items-center gap-2 rounded-t-lg px-2 py-1.5 ${classes.chip}`}>
+    <div
+      data-kind={kind}
+      data-holds={resources.map((one) => one.id).join(" ")}
+      className="flex min-w-56 flex-1 flex-col rounded-lg border border-line bg-panel shadow-sm"
+    >
+      <div data-kind-head className={`flex items-center gap-2 rounded-t-lg px-2 py-1.5 ${classes.chip}`}>
         {createElement(iconOfKind(kind), { size: 14, className: `shrink-0 ${classes.icon}` })}
         <span className="min-w-0 flex-1 truncate font-semibold" title={kind}>
           {shortKind(kind)}
@@ -543,6 +852,7 @@ function KindBox({
         {shown.map((resource) => (
           <button
             key={resource.id}
+            data-resource-id={resource.id}
             onClick={() => {
               onOpen(resource);
             }}
@@ -552,6 +862,7 @@ function KindBox({
             title={`${resource.name}${resource.location === "" ? "" : ` · ${resource.location}`}`}
             className="flex items-center gap-1.5 px-2 py-0.5 text-left hover:bg-elevated"
           >
+            {linked.has(resource.id) && <span className="size-1.5 shrink-0 rounded-full bg-accent" />}
             <span className="min-w-0 flex-1 truncate">{resource.name}</span>
           </button>
         ))}

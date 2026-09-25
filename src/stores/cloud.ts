@@ -9,6 +9,7 @@ import { agentTurn } from "../lib/agentTurn";
 import type { Basis } from "../lib/cloudMap";
 import { renderCloudNote, spliceCloudNote, type CloudNote } from "../lib/cloudMemory";
 import { cliRefusal, saysNothingThere, shortCliError } from "../lib/cloudErrors";
+import type { ReadAnswer } from "../lib/cloudLinks";
 import {
   opCommand,
   opsPrompt,
@@ -344,6 +345,17 @@ interface CloudState {
   warmPlan: (resource: CloudResource) => void;
   /** Runs one planned read against one resource - the only way a secret is read. */
   runRead: (resource: CloudResource, read: PlannedRead) => Promise<void>;
+  /**
+   * Reads the configuration of every resource given, so the map can draw what
+   * each one's configuration names (`lib/cloudLinks.ts`).
+   *
+   * Only reads that never carry a credential, only ones not answered yet, a
+   * few at a time; a kind with no plan is planned first, once, as opening one
+   * of its resources would.
+   */
+  traceLinks: (resources: CloudResource[]) => Promise<void>;
+  /** How far the running trace has got, or null when none is running. */
+  tracing: { done: number; total: number } | null;
   /** Forgets the plan for a resource's kind and asks the AI again, for this resource first. */
   replan: (resource: CloudResource) => Promise<void>;
   /**
@@ -407,6 +419,7 @@ export const useCloud = create<CloudState>((set, get) => ({
   ops: {},
   running: null,
   signIns: {},
+  tracing: null,
 
   openTab: async (id) => {
     set({ tab: id, detail: null });
@@ -671,6 +684,26 @@ export const useCloud = create<CloudState>((set, get) => ({
       if (answer.kind === "failed" && cliRefusal(answer.reason) === "command") {
         await repairAfterClick(resource, read, answer.reason, get, set);
       }
+    }
+  },
+
+  traceLinks: async (resources) => {
+    if (get().tracing !== null) return;
+    const cloudId = get().tab;
+    set({ tracing: { done: 0, total: resources.length } });
+    try {
+      await inBatches(resources, TRACE_PARALLEL, async (resource) => {
+        const plan = await ensurePlan(cloudId, resource, get, set);
+        for (const read of plan?.reads ?? []) {
+          if (read.purpose === "secret" || get().answers[answerKey(resource, read)] !== undefined) continue;
+          await get().runRead(resource, read);
+        }
+        set((state) => ({
+          tracing: state.tracing === null ? null : { ...state.tracing, done: state.tracing.done + 1 },
+        }));
+      });
+    } finally {
+      set({ tracing: null });
     }
   },
 
@@ -1009,6 +1042,41 @@ async function planWithAi(cloudId: PlannableCloud, resource: CloudResource): Pro
   const cwd = useWorkspace.getState().rootPath ?? ".";
   const { reads: proposed, facts } = parseReadPlan(await aiOneshot(prompt, cwd, true));
   return invoke<ReadPlan>("cloud_check_reads", { cloudId, kind: resource.kind, proposed, facts });
+}
+
+/**
+ * How many resources a trace reads at once. Each is a CLI process and a call
+ * into somebody's cloud; four keeps a trace of forty resources to seconds
+ * without turning it into a burst the provider throttles.
+ */
+const TRACE_PARALLEL = 4;
+
+/** Runs `work` over every item, never more than `width` at a time. */
+async function inBatches<T>(items: T[], width: number, work: (item: T) => Promise<void>): Promise<void> {
+  const queue = [...items];
+  const worker = async () => {
+    for (let item = queue.shift(); item !== undefined; item = queue.shift()) await work(item);
+  };
+  await Promise.all(Array.from({ length: Math.min(width, queue.length) }, worker));
+}
+
+/**
+ * Every answer the panel holds for these resources that never carries a
+ * credential - the configuration a link can be read out of.
+ */
+export function readAnswersOf(
+  state: Pick<CloudState, "answers" | "plans" | "tab">,
+  resources: CloudResource[],
+): ReadAnswer[] {
+  return resources.flatMap((resource) => {
+    const plan = state.plans[slotOf(state.tab, resource.kind)];
+    if (plan?.kind !== "ready") return [];
+    return plan.reads.flatMap((read) => {
+      if (read.purpose === "secret") return [];
+      const answer = state.answers[answerKey(resource, read)];
+      return answer?.kind === "loaded" ? [{ resource, json: answer.json }] : [];
+    });
+  });
 }
 
 /** How many times a failing read is handed back to the AI with the CLI's words. */

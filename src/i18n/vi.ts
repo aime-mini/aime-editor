@@ -381,7 +381,12 @@ export const vi: Record<TranslationKey, string> = {
   "cloud.tierData": "Nơi lưu dữ liệu",
   "cloud.tierSupport": "Xung quanh - log, quyền, registry",
   "cloud.flowNote":
-    "Ba làn luôn được vẽ, nên một làn trống cũng là một thông tin: app này không nhận request, hoặc không tự giữ dữ liệu. Mũi tên là luồng theo tầng đó, không phải phụ thuộc đo được - phụ thuộc thật nằm trong cấu hình của từng service, mở detail của resource là đọc được. Mỗi ô là một loại resource, instance nằm bên trong.",
+    "Ba làn luôn được vẽ, nên một làn trống cũng là một thông tin: app này không nhận request, hoặc không tự giữ dữ liệu. Mũi tên xám giữa các làn là luồng theo tầng đó. Mũi tên màu là đo được: cấu hình của một resource gọi tên một resource khác - nút Dò kết nối đọc chúng, và resource nào anh mở cũng góp phần của nó. Mỗi ô là một loại resource, instance nằm bên trong.",
+  "cloud.trace": "Dò kết nối",
+  "cloud.traceHint":
+    "Đọc cấu hình của cả {count} resource ở đây - mỗi cái một lệnh CLI, không bao giờ đọc bí mật - rồi vẽ những gì chúng gọi tên",
+  "cloud.tracing": "Đang đọc {done}/{total}…",
+  "cloud.linksTitle": "{count} kết nối tìm thấy trong cấu hình",
   "cloud.field.name": "Tên",
   "cloud.field.kind": "Loại",
   "cloud.connectIdentity": "Resource này là gì, theo đúng cách cloud gọi nó",

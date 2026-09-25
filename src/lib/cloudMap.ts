@@ -24,12 +24,13 @@ import type { CloudResource } from "../stores/cloud";
  *    grouping, and what is left is ranked by how much it covers. The person
  *    can pick any candidate; the map always says which it used.
  *
- * 2. **The arrows are tiers, and the map says so.** A real dependency graph -
- *    this function reads that table - is not in any listing; it lives in each
- *    service's own configuration. What IS a fact is the tier a service belongs
- *    to, because that is a property of what it is: something faces the world,
- *    something runs code, something holds state. Drawing that flow is useful
- *    and true. Drawing measured dependencies would be neither.
+ * 2. **The lane arrows are tiers, and the map says so.** A real dependency
+ *    graph is not in any listing; it lives in each service's own
+ *    configuration. What IS a fact from the listing alone is the tier a service
+ *    belongs to, because that is a property of what it is: something faces the
+ *    world, something runs code, something holds state. The dependencies that
+ *    configuration does name are read separately, on request, and drawn as
+ *    arrows of their own (`cloudLinks.ts`) - never inferred from here.
  */
 
 /** What the grouping is based on, so the UI can say it out loud. */
