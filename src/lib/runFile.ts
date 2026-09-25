@@ -84,8 +84,13 @@ export interface SavedRun {
    */
   untrackedBefore: string[];
   /**
-   * Where the run worked, when that was a worktree of its own rather than the
-   * project — a run that ran beside another one. Absent for the common case,
+   * The repository the run belonged to, when the project holds several and it
+   * was not the project itself. Optional like `workRoot`, for the same reason.
+   */
+  tree?: string;
+  /**
+   * Where the run worked, when that was a worktree of its own rather than its
+   * tree — a run that ran beside another one. Absent for the common case,
    * and optional rather than a version bump: an old file without it reads
    * correctly as "worked in the project itself".
    */

@@ -88,6 +88,7 @@ import {
   type PhaseResult,
   type Run,
 } from "../lib/runPlan";
+import { isWithin } from "../lib/repositories";
 import { branchNameFor } from "../lib/workItems";
 import { useGit } from "./git";
 import { folderOf, type TaskDef } from "./tasks";
@@ -199,8 +200,10 @@ const NOTHING_YET: Artifacts = {
 export interface RunSlot extends Artifacts {
   run: Run;
   log: LogLine[];
+  /** The user's own folder this run belongs to (`treeFor`). */
+  tree: string;
   /**
-   * Where this run works. The first run of a project gets the user's own tree
+   * Where this run works. The first run of a tree gets the user's own tree
    * — fast, and every cache is warm. A run started while another is live gets
    * a git worktree of its own, because two runs sharing one checkout would
    * overwrite each other's files and measure each other's damage.
@@ -307,6 +310,7 @@ export const useRun = create<RunState>((set, get) => ({
   start: async (item) => {
     const home = useWorkspace.getState().rootPath;
     if (home === null) return;
+    const tree = treeFor(home);
     // The same item twice is a race, not parallelism: the panel switches to
     // the run that is already on it.
     const already = Object.values(get().slots).find(
@@ -326,14 +330,15 @@ export const useRun = create<RunState>((set, get) => ({
     // run waiting at its approval gate holds the tree as surely as one that is
     // driving: its branch is checked out there and its tests will land there.
     const sharedTreeTaken = Object.values(get().slots).some(
-      (slot) => slot.workRoot === home && !isOver(slot.run),
+      (slot) => slot.workRoot === tree && !isOver(slot.run),
     );
     const engine = engineFor(id);
     engine.driving = true;
     const slot: RunSlot = {
       run: newRun(id, item.id, item.title, startedAt),
       log: [],
-      workRoot: home,
+      tree,
+      workRoot: tree,
       ...NOTHING_YET,
     };
     set((state) => ({
@@ -346,11 +351,11 @@ export const useRun = create<RunState>((set, get) => ({
     useWorkspace.getState().openRun();
 
     const ops = opsFor(id);
-    let workRoot = home;
+    let workRoot = tree;
     if (sharedTreeTaken) {
       // Another run holds the user's tree, so this one gets a worktree of its
       // own — the price of parallelism, paid only when it buys something.
-      const made = await prepareWorktree(home, id, ops.set);
+      const made = await prepareWorktree(home, tree, id, ops.set);
       if (made === null) {
         engine.driving = false;
         ops.set((current) => ({
@@ -368,7 +373,7 @@ export const useRun = create<RunState>((set, get) => ({
       workRoot = made;
       ops.set({ workRoot });
     }
-    await drive(id, "understand", { item, home, workRoot, id }, ops.set, ops.get);
+    await drive(id, "understand", { item, home, tree, workRoot, id }, ops.set, ops.get);
   },
 
   approvePlan: async () => {
@@ -383,7 +388,13 @@ export const useRun = create<RunState>((set, get) => ({
     const ops = opsFor(id);
     // From the first phase allowed to write: everything before it was reading,
     // deciding and asking, and all of it is what the reader just agreed to.
-    await drive(id, "implement", { item, home, workRoot: shown.workRoot, id }, ops.set, ops.get);
+    await drive(
+      id,
+      "implement",
+      { item, home, tree: shown.tree, workRoot: shown.workRoot, id },
+      ops.set,
+      ops.get,
+    );
   },
 
   cancel: async () => {
@@ -415,7 +426,7 @@ export const useRun = create<RunState>((set, get) => ({
     await drive(
       id,
       shown.run.current ?? "understand",
-      { item, home, workRoot: shown.workRoot, id },
+      { item, home, tree: shown.tree, workRoot: shown.workRoot, id },
       ops.set,
       ops.get,
     );
@@ -507,13 +518,12 @@ export const useRun = create<RunState>((set, get) => ({
 
   previewTrash: async () => {
     const shown = shownSlot(get());
-    const home = useWorkspace.getState().rootPath;
-    if (shown === null || home === null) return;
+    if (shown === null) return;
     const items = await trashOf(shown.workRoot, shown.untrackedBefore, shown.run.startedAt);
     // A worktree run's own checkout is offered too - its change is already
     // committed on the branch, so the tree is disposable, but the evidence
     // lives inside it, so keeping it stays the default.
-    if (shown.workRoot !== home) {
+    if (shown.workRoot !== shown.tree) {
       items.push({ path: shown.workRoot, shown: shown.workRoot, keeper: true });
     }
     set({ trash: items, trashResult: null });
@@ -521,9 +531,8 @@ export const useRun = create<RunState>((set, get) => ({
 
   sweepTrash: async (paths) => {
     const shown = shownSlot(get());
-    const home = useWorkspace.getState().rootPath;
-    if (shown === null || home === null) return;
-    const worktreeTicked = shown.workRoot !== home && paths.includes(shown.workRoot);
+    if (shown === null) return;
+    const worktreeTicked = shown.workRoot !== shown.tree && paths.includes(shown.workRoot);
     // Files inside a worktree that is itself going die with it; deleting them
     // first would only race the removal.
     const files = worktreeTicked
@@ -532,7 +541,7 @@ export const useRun = create<RunState>((set, get) => ({
     const trashResult = await emptyTrash(files);
     if (worktreeTicked) {
       try {
-        await invoke("git_worktree_remove", { root: home, path: shown.workRoot });
+        await invoke("git_worktree_remove", { root: shown.tree, path: shown.workRoot });
         trashResult.deleted += 1;
       } catch {
         trashResult.failed.push(shown.workRoot);
@@ -564,6 +573,16 @@ function isOver(run: Run): boolean {
   return run.ended !== null && run.ended.kind !== "waiting" && run.ended.kind !== "interrupted";
 }
 
+/**
+ * The user's own folder a run belongs to: the repository on screen, since its
+ * branch, its baseline and its suites all belong to one repository - or the
+ * workspace itself when it sits inside that repository, or holds none.
+ */
+function treeFor(home: string): string {
+  const { repoRoot } = useGit.getState();
+  return repoRoot !== null && !isWithin(home, repoRoot) ? repoRoot : home;
+}
+
 /** The slot the panel is looking at: the opened past run, or the shown live one. */
 function shownSlot(state: RunState): RunSlot | null {
   return state.past ?? (state.shownId === null ? null : (state.slots[state.shownId] ?? null));
@@ -578,14 +597,16 @@ function shownSlot(state: RunState): RunSlot | null {
  * project that declares none. A failed install is noted and not fatal — the
  * baseline's own suites will say precisely what is missing.
  */
-async function prepareWorktree(home: string, id: string, set: Setter): Promise<string | null> {
+async function prepareWorktree(home: string, tree: string, id: string, set: Setter): Promise<string | null> {
   const base = home.replace(/[\\/]+$/, "");
   // Named by the run's id, which is unique by construction - a timestamp alone
-  // could collide when two runs start in the same millisecond.
-  const path = `${base}-${id}`;
+  // could collide when two runs start in the same millisecond. Beside the
+  // project, never inside it: a worktree in the folder the user has open would
+  // show in their tree, and as one more repository in the Git panel.
+  const path = tree === home ? `${base}-${id}` : `${base}-${id}-${folderName(tree)}`;
   note(set, "understand", translate("run.worktreeCreating", { path }));
   try {
-    await invoke("git_worktree_add", { root: home, path });
+    await invoke("git_worktree_add", { root: tree, path });
   } catch (error: unknown) {
     note(set, "understand", String(error), "problem");
     return null;
@@ -606,6 +627,16 @@ async function prepareWorktree(home: string, id: string, set: Setter): Promise<s
     note(set, "understand", String(error), "problem");
   }
   return path;
+}
+
+/** The last segment of a path: `Front end` for `C:/IODM/Frontend/Front end`. */
+function folderName(path: string): string {
+  return (
+    path
+      .replace(/[\\/]+$/, "")
+      .split(/[\\/]/)
+      .pop() ?? path
+  );
 }
 
 /** Scoped read and write for one slot, so a phase can only touch its own run. */
@@ -636,7 +667,8 @@ function slotFrom(saved: SavedRun, home: string, interrupted: boolean): RunSlot 
       ? { ...saved.run, ended: { kind: "interrupted", phase: saved.run.current ?? "understand" } }
       : saved.run,
     log: [],
-    workRoot: saved.workRoot ?? home,
+    tree: saved.tree ?? home,
+    workRoot: saved.workRoot ?? saved.tree ?? home,
     brief: saved.brief,
     survey: saved.survey,
     radius: saved.radius,
@@ -697,7 +729,9 @@ interface Context {
   item: WorkItem;
   /** The project the user has open: journal, history and report live here. */
   home: string;
-  /** Where this run works: `home`, or this run's own worktree. */
+  /** The user's own folder the run belongs to (`treeFor`). */
+  tree: string;
+  /** Where this run works: `tree`, or this run's own worktree of it. */
   workRoot: string;
   /** The run's id, which is also its engine's key. */
   id: string;
@@ -787,7 +821,8 @@ function journal(context: Context, get: Getter): void {
   void saveRun(context.home, {
     run: slot.run,
     ...artifactsOf(slot),
-    workRoot: context.workRoot === context.home ? undefined : context.workRoot,
+    tree: context.tree === context.home ? undefined : context.tree,
+    workRoot: context.workRoot === context.tree ? undefined : context.workRoot,
   });
 }
 
@@ -892,7 +927,7 @@ async function takeBaseline(context: Context, set: Setter): Promise<Groundwork> 
   }
   set((slot) => ({ run: { ...slot.run, branch } }));
   // The user's own panel should show the branch the run just took their tree to.
-  if (context.workRoot === context.home) void useGit.getState().refresh();
+  if (context.workRoot === context.tree) void useGit.getState().refresh();
 
   // Git's untracked list, before anything runs: whatever is untracked later and
   // not in here is what this run created — the only files the cleanup button
@@ -1026,11 +1061,12 @@ async function understand(context: Context, set: Setter): Promise<PhaseResult> {
 
   // Imported here rather than at the top: the probe speaks to Monaco, and this
   // store is loaded long before an editor exists. The probe is pointed at the
-  // project the user has open even for a worktree run: the language servers run
-  // there, and at this point in the run the two trees hold the same commit.
+  // user's own tree even for a worktree run: the language servers run in the
+  // project the user has open, and at this point the two trees hold the same
+  // commit.
   const { languageServerProbe } = await import("../lib/lsp/impact");
   note(set, "understand", translate("run.asking", { count: files.length }));
-  const radius = await radiusFrom(files, languageServerProbe(context.home));
+  const radius = await radiusFrom(files, languageServerProbe(context.tree));
   set({ radius });
 
   // A question does not stop the run. Waiting for an answer from a desk nobody
@@ -1793,7 +1829,7 @@ async function report(context: Context, set: Setter, get: Getter): Promise<Phase
   // work reaches them at home. A run in the user's tree commits nothing - the
   // uncommitted diff is theirs to review, exactly as before.
   let committed = "";
-  if (context.workRoot !== context.home) {
+  if (context.workRoot !== context.tree) {
     try {
       await invoke("git_commit_all", {
         root: context.workRoot,

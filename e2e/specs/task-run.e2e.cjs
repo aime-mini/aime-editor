@@ -310,9 +310,11 @@ function giveItALanguageService(dir) {
   );
 }
 
-function sampleProject({ declaresTest = true } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aime-run-"));
-  fs.mkdirSync(path.join(dir, "src"));
+function sampleProject({
+  declaresTest = true,
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "aime-run-")),
+} = {}) {
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
   fs.writeFileSync(
     path.join(dir, "package.json"),
     JSON.stringify(
@@ -477,6 +479,8 @@ async function open(dir) {
   await (await $(`span=${dir.split(/[\\/]/).pop()}`)).click();
 }
 
+const gitIn = (dir, ...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe" }).toString().trim();
+
 /** The branch the repository is standing on right now. */
 const currentBranch = (dir) =>
   execFileSync("git", ["branch", "--show-current"], { cwd: dir }).toString().trim();
@@ -496,11 +500,20 @@ async function rowFor(id) {
  * The board is connected once and the credential is the machine's, so the
  * second project of the run is asked which board it uses rather than for a
  * token again - both doors have to be handled.
+ *
+ * `repository` names the Git panel's chip to pick first, for a project that
+ * holds several.
  */
-async function startRun(repo) {
+async function startRun(repo, { repository = null } = {}) {
   await open(repo);
   // The status bar names the open folder whichever sidebar view came back with it.
   await waitForText(repo, "the sample never opened");
+  if (repository !== null) {
+    await (await $('button[title="Git"]')).click();
+    const chip = await (await $('[role="tablist"]')).$(`button*=${repository}`);
+    await chip.waitForExist({ timeout: 20_000, timeoutMsg: `the Git panel offered no ${repository} chip` });
+    await chip.click();
+  }
   await (await $('button[title="Work items"]')).click();
 
   await browser.waitUntil(
@@ -823,6 +836,54 @@ ${suite.output}`,
     );
   });
 
+  /**
+   * A product folder with its shop - the sample - and its api side by side,
+   * each its own repository; the folder itself is none.
+   */
+  function freshProduct() {
+    try {
+      if (repo) fs.rmSync(repo, { recursive: true, force: true });
+    } catch {
+      // Windows keeps a handle on the folder the app has open; the temp sweep gets it.
+    }
+    const product = fs.mkdtempSync(path.join(os.tmpdir(), "aime-run-product-"));
+    repo = product;
+    const shop = path.join(product, "shop");
+    sampleProject({ dir: shop });
+    const api = path.join(product, "api");
+    fs.mkdirSync(api);
+    fs.writeFileSync(path.join(api, "server.js"), "export const port = 8080;\n");
+    gitIn(api, "init", "-b", "main");
+    gitIn(api, "config", "user.email", "probe@example.com");
+    gitIn(api, "config", "user.name", "Probe");
+    gitIn(api, "add", ".");
+    gitIn(api, "commit", "-m", "first");
+    return { product, shop, api };
+  }
+
+  it("works in the repository on screen when the project holds several", async () => {
+    // A product folder with its shop and its api side by side: the folder is
+    // not a repository, so a run that took its branch there was refused at
+    // its first step. The branch, the suites and the change belong to the
+    // repository the Git panel shows - and the other one is left alone.
+    fs.writeFileSync(MODE_FILE, "sound");
+    const { product, shop, api } = freshProduct();
+
+    await startRun(product, { repository: "shop" });
+    await approve(shop);
+    assert.match(currentBranch(shop), /^bugfix\/12-/, "the run took no branch in the repository on screen");
+    assert.equal(currentBranch(api), "main", "the run moved the other repository off its branch");
+
+    await waitForPhase("Hand over", "Ready on bugfix/12-", "the run in the shop never finished", 300_000);
+    assert.match(
+      fs.readFileSync(path.join(shop, "src", "cart.js"), "utf8"),
+      /Math\.round/,
+      "the change never reached the shop",
+    );
+    assert.equal(gitIn(api, "status", "--porcelain"), "", "the run changed the other repository");
+    assert.ok(reportsIn(product).length >= 1, "the report was not kept with the project");
+  });
+
   it("runs two items at once, the second in a worktree of its own", async () => {
     // A developer holds two tickets and hands both over. They cannot share a
     // checkout - the second run would overwrite the first's files and measure
@@ -895,6 +956,53 @@ ${suite.output}`,
     try {
       const stray = worktrees[1].split(" ")[0];
       execFileSync("git", ["worktree", "remove", "--force", stray], { cwd: repo, stdio: "pipe" });
+    } catch {
+      // Windows may still hold a handle; the temp sweep gets it.
+    }
+  });
+
+  it("puts a second run's worktree beside the product folder, never inside it", async () => {
+    // Inside it, the worktree would show in the user's tree and as one more
+    // repository in the Git panel - a workplace the user never asked to see.
+    fs.writeFileSync(MODE_FILE, "sound");
+    const { product, shop, api } = freshProduct();
+    await startRun(product, { repository: "shop" });
+    await waitForText("read the approach", "the first run never reached its gate", 240_000);
+    await (await $("button*=Run to the end")).click();
+    const approveButton = await $("button*=Approved");
+    await approveButton.scrollIntoView({ block: "center" });
+    await approveButton.click();
+
+    await (await $('button[title="Work items"]')).click();
+    await waitForText("show the currency", "the second item never reached the panel");
+    const row = await rowFor(13);
+    await row.moveTo();
+    await (await row.$('button[title="Work on this with AI"]')).click();
+    await waitForPhase("Hand over", "Ready on bugfix/13-", "the worktree run never finished", 300_000);
+
+    // Compared as the disk spells them: git answers with long names, the temp
+    // folder is handed out by its 8.3 short one.
+    const real = (dir) => fs.realpathSync.native(dir);
+    const worktrees = gitIn(shop, "worktree", "list", "--porcelain")
+      .split("\n")
+      .filter((line) => line.startsWith("worktree "))
+      .map((line) => real(line.slice("worktree ".length)));
+    assert.equal(worktrees.length, 2, `the second run left no worktree: ${worktrees.join(" | ")}`);
+    const beside = worktrees.find((tree) => tree !== real(shop));
+    assert.equal(
+      path.dirname(beside),
+      path.dirname(real(product)),
+      `the worktree is not beside the product: ${beside}`,
+    );
+    assert.deepEqual(
+      fs.readdirSync(product).sort(),
+      [".aime", "api", "shop"],
+      "the run left something in the product folder",
+    );
+    assert.equal(gitIn(api, "status", "--porcelain"), "", "the run changed the other repository");
+
+    try {
+      gitIn(shop, "worktree", "remove", "--force", beside);
     } catch {
       // Windows may still hold a handle; the temp sweep gets it.
     }
