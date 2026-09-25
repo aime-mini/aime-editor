@@ -21,6 +21,7 @@ import { registerInlineAi } from "../lib/aiInline";
 import { renderedViewOf, type RenderedView } from "../lib/fileViews";
 import { installableDebugger } from "../lib/dap/availability";
 import { LANGUAGES_MONACO_OUTLINES, languageOf } from "../lib/languages";
+import { inRepository, relativeTo, repositoryOf } from "../lib/repositories";
 import { setActiveEditor } from "../lib/monacoAccess";
 import { useAi } from "../stores/ai";
 import { useDebug } from "../stores/debug";
@@ -412,7 +413,9 @@ interface DiffSides {
  *   panes otherwise, and the overview ruler is left on as the map of the rest.
  */
 function DiffView({ relativePath }: { relativePath: string }) {
-  const { rootPath, closeDiff, treeVersion } = useWorkspace();
+  const { closeDiff, treeVersion } = useWorkspace();
+  // Opened from the panel, so the path is relative to the repository it shows.
+  const repoRoot = useGit((s) => s.repoRoot);
   const theme = useTheme((s) => s.theme);
   // The worktree side goes stale with any file change (treeVersion), the HEAD
   // side when the last commit moves - together they are "is this still true?".
@@ -423,19 +426,19 @@ function DiffView({ relativePath }: { relativePath: string }) {
   const t = useT();
 
   useEffect(() => {
-    if (!rootPath) return;
+    if (!repoRoot) return;
     let stale = false;
-    const absolute = `${rootPath}/${relativePath}`;
     void Promise.all([
-      invoke<string>("git_show_head", { root: rootPath, path: relativePath }),
-      invoke<string>("read_file", { path: absolute }).catch(() => ""), // deleted in worktree
+      invoke<string>("git_show_head", { root: repoRoot, path: relativePath }),
+      // Deleted in the worktree reads as empty.
+      invoke<string>("read_file", { path: inRepository(repoRoot, relativePath) }).catch(() => ""),
     ]).then(([head, working]) => {
       if (!stale) setSides({ path: relativePath, head, working });
     });
     return () => {
       stale = true;
     };
-  }, [rootPath, relativePath, treeVersion, headCommit]);
+  }, [repoRoot, relativePath, treeVersion, headCommit]);
 
   // New content means a new diff to land on. `revealFirstDiff` waits for the
   // computation itself, so this is safe the moment the sides arrive.
@@ -505,17 +508,18 @@ function formatBlame(line: BlameLine): string {
 /** Full-file blame: every line with its commit, author, and date — click a
  *  commit to open its patch. Opened from the file tree context menu. */
 function BlameView({ relativePath }: { relativePath: string }) {
-  const { rootPath, closeDiff, openCommit } = useWorkspace();
+  const { closeDiff, openCommit } = useWorkspace();
+  const repoRoot = useGit((s) => s.repoRoot);
   const [blame, setBlame] = useState<BlameLine[] | null>(null);
   const [lines, setLines] = useState<string[]>([]);
   const t = useT();
 
   useEffect(() => {
-    if (!rootPath) return;
+    if (!repoRoot) return;
     let stale = false;
     void Promise.all([
-      invoke<BlameLine[]>("git_blame", { root: rootPath, path: relativePath }),
-      invoke<string>("read_file", { path: `${rootPath}/${relativePath}` }).catch(() => ""),
+      invoke<BlameLine[]>("git_blame", { root: repoRoot, path: relativePath }),
+      invoke<string>("read_file", { path: inRepository(repoRoot, relativePath) }).catch(() => ""),
     ]).then(([blameLines, content]) => {
       if (stale) return;
       setBlame(blameLines);
@@ -524,7 +528,7 @@ function BlameView({ relativePath }: { relativePath: string }) {
     return () => {
       stale = true;
     };
-  }, [rootPath, relativePath]);
+  }, [repoRoot, relativePath]);
 
   return (
     <div className="flex h-full flex-col">
@@ -597,7 +601,10 @@ export function EditorPane() {
   const theme = useTheme((s) => s.theme);
   const t = useT();
   const openConflict = useWorkspace((s) => s.openConflict);
-  const gitFiles = useGit((s) => s.status?.files);
+  const repositories = useGit((s) => s.repositories);
+  /** The repository the open file lives in: the gutter, blame and conflicts are its. */
+  const fileRepository = openFilePath === null ? null : repositoryOf(openFilePath, repositories);
+  const gitFiles = useGit((s) => (fileRepository === null ? undefined : s.statuses[fileRepository]?.files));
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const decorationsRef = useRef<MonacoEditor.IEditorDecorationsCollection | null>(null);
   const blameRef = useRef<BlameLine[]>([]);
@@ -639,9 +646,12 @@ export function EditorPane() {
 
   const relativeOpenPath =
     openFilePath && rootPath ? openFilePath.slice(rootPath.length + 1).replaceAll("\\", "/") : null;
+  /** The open file as git names it in its repository - not always relative to the workspace. */
+  const pathInRepository =
+    openFilePath === null || fileRepository === null ? null : relativeTo(fileRepository, openFilePath);
   const openFileConflicted =
-    relativeOpenPath !== null &&
-    (gitFiles ?? []).some((file) => file.conflicted && file.path === relativeOpenPath);
+    pathInRepository !== null &&
+    (gitFiles ?? []).some((file) => file.conflicted && file.path === pathInRepository);
 
   /** GitLens-style inline blame on the cursor line only — subtle, zero-config. */
   const renderBlameForLine = useCallback((lineNumber: number) => {
@@ -681,10 +691,9 @@ export function EditorPane() {
 
   // Git gutter marks: refreshed when the open file or the workspace changes.
   useEffect(() => {
-    if (!openFilePath || !rootPath) return;
-    const relative = openFilePath.slice(rootPath.length + 1).replaceAll("\\", "/");
+    if (!openFilePath || !fileRepository) return;
     let stale = false;
-    invoke<string>("git_file_diff", { root: rootPath, path: relative })
+    invoke<string>("git_file_diff", { root: fileRepository, path: relativeTo(fileRepository, openFilePath) })
       .then((diff) => {
         if (stale) return;
         const decorations = parseHunks(diff).map((range) => ({
@@ -699,16 +708,15 @@ export function EditorPane() {
     return () => {
       stale = true;
     };
-  }, [openFilePath, rootPath, treeVersion]);
+  }, [openFilePath, fileRepository, treeVersion]);
 
   // Blame data for the open file; the cursor listener renders it per line.
   useEffect(() => {
     blameRef.current = [];
     blameDecoRef.current?.clear();
-    if (!openFilePath || !rootPath) return;
-    const relative = openFilePath.slice(rootPath.length + 1).replaceAll("\\", "/");
+    if (!openFilePath || !fileRepository) return;
     let stale = false;
-    invoke<BlameLine[]>("git_blame", { root: rootPath, path: relative })
+    invoke<BlameLine[]>("git_blame", { root: fileRepository, path: relativeTo(fileRepository, openFilePath) })
       .then((blame) => {
         if (stale) return;
         blameRef.current = blame;
@@ -721,7 +729,7 @@ export function EditorPane() {
     return () => {
       stale = true;
     };
-  }, [openFilePath, rootPath, treeVersion, renderBlameForLine]);
+  }, [openFilePath, fileRepository, treeVersion, renderBlameForLine]);
 
   if (cloudOpen) {
     // The strip stays: the panel is one of the tabs, and the files behind it
@@ -790,7 +798,8 @@ export function EditorPane() {
       {openFileConflicted && (
         <button
           onClick={() => {
-            openConflict(relativeOpenPath);
+            // The panel follows the file in front, so the resolver reads this repository.
+            openConflict(pathInRepository);
           }}
           className="flex items-center gap-1.5 border-b border-danger/40 bg-danger/10 px-3 py-1 text-left text-[12px] text-danger hover:bg-danger/20"
         >

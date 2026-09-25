@@ -1,7 +1,9 @@
 import { activeEditor } from "./monacoAccess";
 import { commandOf, type PlannedRead } from "./cloudReads";
 import { withoutSignatures } from "./signedUrls";
+import { inRepository, isWithin } from "./repositories";
 import { answerKey, useCloud, type CloudResource } from "../stores/cloud";
+import { useGit } from "../stores/git";
 import { CLOUD_TAB, useWorkspace } from "../stores/workspace";
 
 /**
@@ -29,10 +31,14 @@ const MAX_READ_CHARS = 6_000;
 const MAX_READS_CHARS = 16_000;
 const MAX_OTHER_FILES = 20;
 
-/** A view that takes the editor area instead of a file. */
+/**
+ * A view that takes the editor area instead of a file. Paths are relative to
+ * the workspace, where the CLI runs; a commit names the repository below the
+ * workspace it belongs to, or null when git in the workspace already finds it.
+ */
 export type SpecialView =
   | { kind: "diff"; path: string }
-  | { kind: "commit"; hash: string }
+  | { kind: "commit"; hash: string; repository: string | null }
   | { kind: "conflict"; path: string }
   | { kind: "blame"; path: string }
   | { kind: "workItem"; id: string }
@@ -101,7 +107,9 @@ function describeSpecialView(inFront: SpecialView): string[] {
     case "diff":
       return [`- In front: the diff of ${inFront.path} against HEAD`];
     case "commit":
-      return [`- In front: commit ${inFront.hash}`];
+      return inFront.repository === null
+        ? [`- In front: commit ${inFront.hash}`]
+        : [`- In front: commit ${inFront.hash} of the repository in ${inFront.repository}/`];
     case "conflict":
       return [`- In front: the merge-conflict resolver for ${inFront.path}`];
     case "blame":
@@ -170,20 +178,29 @@ export function currentView(): ViewSnapshot | null {
     otherFiles: workspace.openTabs.filter((tab) => tab !== workspace.openFilePath && tab !== CLOUD_TAB),
     cursorLine: editor?.getPosition()?.lineNumber ?? null,
     selection: selected,
-    inFront: specialViewInFront(),
+    inFront: specialViewInFront(workspace.rootPath),
   };
 }
 
 /** Mirrors the order `EditorPane` decides in: the first view that is set wins. */
-function specialViewInFront(): SpecialView | null {
+function specialViewInFront(rootPath: string): SpecialView | null {
   const w = useWorkspace.getState();
+  // The git views name what they show the way git does in the repository the
+  // panel is on, which is not always the workspace.
+  const { repoRoot } = useGit.getState();
+  const inWorkspace = (path: string) =>
+    repoRoot === null ? path : relative(inRepository(repoRoot, path), rootPath);
   if (w.cloudOpen) return { kind: "cloud", cloud: cloudFocus() };
   if (w.runOpen) return { kind: "run" };
   if (w.workItemId !== null) return { kind: "workItem", id: w.workItemId };
-  if (w.conflictPath !== null) return { kind: "conflict", path: w.conflictPath };
-  if (w.blamePath !== null) return { kind: "blame", path: w.blamePath };
-  if (w.commitHash !== null) return { kind: "commit", hash: w.commitHash };
-  if (w.diffPath !== null) return { kind: "diff", path: w.diffPath };
+  if (w.conflictPath !== null) return { kind: "conflict", path: inWorkspace(w.conflictPath) };
+  if (w.blamePath !== null) return { kind: "blame", path: inWorkspace(w.blamePath) };
+  if (w.commitHash !== null) {
+    // A repository the workspace sits in is the one git finds from the workspace already.
+    const below = repoRoot !== null && !isWithin(rootPath, repoRoot);
+    return { kind: "commit", hash: w.commitHash, repository: below ? relative(repoRoot, rootPath) : null };
+  }
+  if (w.diffPath !== null) return { kind: "diff", path: inWorkspace(w.diffPath) };
   return null;
 }
 

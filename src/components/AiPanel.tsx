@@ -33,7 +33,7 @@ import { fuzzyFilter } from "../lib/fuzzy";
 import { activeMention, applyMention } from "../lib/mentions";
 import { currentView, describeView } from "../lib/viewContext";
 import { projectFiles } from "../lib/projectFiles";
-import { useGit } from "../stores/git";
+import { changedFileCount, useGit } from "../stores/git";
 import { useTasks } from "../stores/tasks";
 import { useAi } from "../stores/ai";
 import { useLayout } from "../stores/layout";
@@ -490,7 +490,8 @@ export function AiPanel() {
       observer.disconnect();
     };
   }, []);
-  const changedFiles = useGit((s) => s.status?.files.length ?? 0);
+  // The AI works in the whole workspace, so its "uncommitted changes" are every repository's.
+  const changedFiles = useGit(changedFileCount);
   const hasTests = useTasks((s) => s.tasks.some((task) => task.kind === "test"));
   const openFilePath = useWorkspace((s) => s.openFilePath);
   const t = useT();

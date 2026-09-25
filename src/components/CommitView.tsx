@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { X } from "lucide-react";
 import { useI18n, useT } from "../i18n";
 import { whenText } from "../lib/workItems";
+import { useGit } from "../stores/git";
 import { monacoThemeOf, useTheme } from "../stores/theme";
 import { useWorkspace } from "../stores/workspace";
 
@@ -42,16 +43,18 @@ interface CommitDetail {
 }
 
 export function CommitView({ hash }: { hash: string }) {
-  const { rootPath, closeDiff } = useWorkspace();
+  const { closeDiff } = useWorkspace();
+  // A commit of the repository the panel shows: its history is where it was clicked.
+  const repoRoot = useGit((state) => state.repoRoot);
   const t = useT();
   const [detail, setDetail] = useState<CommitDetail | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
 
   useEffect(() => {
-    if (rootPath === null) return undefined;
+    if (repoRoot === null) return undefined;
     let stale = false;
-    invoke<CommitDetail>("git_commit_detail", { root: rootPath, hash })
+    invoke<CommitDetail>("git_commit_detail", { root: repoRoot, hash })
       .then((found) => {
         if (stale) return;
         setDetail(found);
@@ -65,7 +68,7 @@ export function CommitView({ hash }: { hash: string }) {
     return () => {
       stale = true;
     };
-  }, [rootPath, hash]);
+  }, [repoRoot, hash]);
 
   const file = detail?.files.find((candidate) => candidate.path === selected) ?? null;
 
@@ -199,18 +202,18 @@ const STATUS_COLOURS: Record<string, string> = {
 
 /** The patch of the selected file, fetched when it is selected and not before. */
 function Patch({ hash, file }: { hash: string; file: CommitFile }) {
-  const rootPath = useWorkspace((state) => state.rootPath);
+  const repoRoot = useGit((state) => state.repoRoot);
   const theme = useTheme((state) => state.theme);
   const t = useT();
   const [patch, setPatch] = useState<string | null>(null);
 
   useEffect(() => {
-    if (rootPath === null) return undefined;
+    if (repoRoot === null) return undefined;
     let stale = false;
     // Both names for a rename: with only the new one git cannot pair the two and
     // prints the file as freshly added rather than as moved.
     invoke<string>("git_show_commit_file", {
-      root: rootPath,
+      root: repoRoot,
       hash,
       path: file.path,
       origPath: file.origPath,
@@ -224,7 +227,7 @@ function Patch({ hash, file }: { hash: string; file: CommitFile }) {
     return () => {
       stale = true;
     };
-  }, [rootPath, hash, file.path, file.origPath]);
+  }, [repoRoot, hash, file.path, file.origPath]);
 
   if (file.binary) return <p className="p-4 text-[12px] text-muted">{t("commit.binary")}</p>;
   if (patch === null) return <p className="p-4 text-[12px] text-muted">{t("commit.reading")}</p>;

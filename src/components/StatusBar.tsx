@@ -29,6 +29,7 @@ import { useI18n, useT } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
 import { languageOf } from "../lib/languages";
 import { capabilitiesOf } from "../lib/providers";
+import { repositoryLabel } from "../lib/repositories";
 import { useAi } from "../stores/ai";
 import { useGit } from "../stores/git";
 import { useLayout } from "../stores/layout";
@@ -107,6 +108,12 @@ export function StatusBar() {
   const toggleHelp = useLayout((s) => s.toggleHelp);
   const setSidebarView = useLayout((s) => s.setSidebarView);
   const gitStatus = useGit((s) => s.status);
+  // Named only when there is more than one to tell apart.
+  const repositoryName = useGit((s) =>
+    s.repositories.length > 1 && s.repoRoot !== null && rootPath !== null
+      ? repositoryLabel(s.repoRoot, rootPath)
+      : null,
+  );
   const openFilePath = useWorkspace((s) => s.openFilePath);
   const openCloud = useWorkspace((s) => s.openCloud);
   const cloudOpen = useWorkspace((s) => s.cloudOpen);
@@ -226,6 +233,7 @@ export function StatusBar() {
             title={t("sidebar.git")}
           >
             <GitBranch size={11} />
+            {repositoryName !== null && <span className="opacity-70">{repositoryName}</span>}
             {gitStatus.branch}
             {gitStatus.ahead > 0 && (
               <span className="flex items-center">

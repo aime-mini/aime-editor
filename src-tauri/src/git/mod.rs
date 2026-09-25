@@ -1,6 +1,8 @@
 //! Git integration: spawns the system `git` (inherits the user's credentials,
 //! SSH setup, and hooks) and parses `status --porcelain=v2 -z`.
 
+pub mod repositories;
+
 use serde::Serialize;
 use tokio::process::Command;
 

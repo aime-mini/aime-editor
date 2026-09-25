@@ -11,6 +11,7 @@ import {
   type Section,
 } from "../lib/conflicts";
 import { aiOneshot } from "../lib/aiOneshot";
+import { inRepository } from "../lib/repositories";
 import { useAi } from "../stores/ai";
 import { useGit } from "../stores/git";
 import { useWorkspace } from "../stores/workspace";
@@ -230,7 +231,9 @@ function ConflictCard({
 
 /** Full-screen merge-conflict resolver for one file. */
 export function ConflictView({ relativePath }: { relativePath: string }) {
-  const { rootPath, closeDiff, openFilePath, openFile } = useWorkspace();
+  const { closeDiff, openFilePath, openFile } = useWorkspace();
+  // Named relative to the repository the panel shows, which follows the file in front.
+  const repoRoot = useGit((s) => s.repoRoot);
   const providerHealth = useAi((s) => s.providerHealth);
   const [sections, setSections] = useState<Section[] | null>(null);
   const [resolutions, setResolutions] = useState<(Resolution | null)[]>([]);
@@ -239,7 +242,7 @@ export function ConflictView({ relativePath }: { relativePath: string }) {
   const [error, setError] = useState<string | null>(null);
   const t = useT();
 
-  const absolutePath = rootPath ? `${rootPath}/${relativePath}` : null;
+  const absolutePath = repoRoot ? inRepository(repoRoot, relativePath) : null;
 
   useEffect(() => {
     if (!absolutePath) return;
@@ -292,7 +295,7 @@ export function ConflictView({ relativePath }: { relativePath: string }) {
 
   const resolveWithAi = async (index: number) => {
     const conflict = conflicts[index];
-    if (!rootPath || aiBusy !== null) return;
+    if (!repoRoot || aiBusy !== null) return;
     setAiBusy(index);
     setError(null);
     try {
@@ -300,7 +303,7 @@ export function ConflictView({ relativePath }: { relativePath: string }) {
       const merged = await aiOneshot(
         `Resolve this git merge conflict in ${relativePath}. Output ONLY the merged code for the conflicted region - no markers, no fences, no commentary. Preserve the intent of BOTH sides when they don't contradict.\n\n` +
           `FILE CONTEXT:\n${contextAround(index)}\n\nOURS (${conflict.oursLabel}):\n${conflict.ours}\n${basePart}\nTHEIRS (${conflict.theirsLabel}):\n${conflict.theirs}`,
-        rootPath,
+        repoRoot,
       );
       setResolution(index, { kind: "custom", text: merged });
     } catch (err: unknown) {
@@ -320,13 +323,13 @@ export function ConflictView({ relativePath }: { relativePath: string }) {
   };
 
   const save = async () => {
-    if (!sections || !absolutePath || !rootPath || remaining > 0) return;
+    if (!sections || !absolutePath || !repoRoot || remaining > 0) return;
     setSaving(true);
     setError(null);
     try {
       const content = rebuildContent(sections, resolutions);
       await invoke("write_file", { path: absolutePath, content });
-      await invoke("git_stage", { root: rootPath, paths: [relativePath] });
+      await invoke("git_stage", { root: repoRoot, paths: [relativePath] });
       if (openFilePath === absolutePath) await openFile(absolutePath);
       await useGit.getState().refresh();
       closeDiff();

@@ -999,6 +999,8 @@ export const vi: Record<TranslationKey, string> = {
   "git.unstage": "Bỏ stage",
   "git.discard": "Hủy thay đổi",
   "git.notRepo": "Thư mục này chưa phải repo git.",
+  "git.repositories": "Các repository trong thư mục này",
+  "git.repositoryTitle": "{path} - {branch} - {count} thay đổi",
   "git.initRepo": "Khởi tạo repository",
   "git.aiMessage": "AI viết nội dung commit",
   "git.busy.stage": "Đang stage…",

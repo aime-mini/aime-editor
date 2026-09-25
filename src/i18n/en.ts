@@ -1006,6 +1006,8 @@ export const en = {
   "git.unstage": "Unstage",
   "git.discard": "Discard changes",
   "git.notRepo": "This folder is not a git repository.",
+  "git.repositories": "Repositories in this folder",
+  "git.repositoryTitle": "{path} - {branch} - {count} changed",
   "git.initRepo": "Initialize repository",
   "git.aiMessage": "Generate commit message with AI",
   "git.busy.stage": "Staging…",

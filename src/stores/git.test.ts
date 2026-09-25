@@ -25,6 +25,8 @@ const oneshotPrompts: string[] = [];
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (command: string) => {
     if (command === "git_pending_diff") return Promise.resolve(pendingDiff);
+    // The workspace is its own repository, the one the store reads.
+    if (command === "git_repositories") return Promise.resolve(["C:\\repo"]);
     if (command !== "git_status") return Promise.resolve([]);
     statusCalls += 1;
     const answer = statusOfCall(statusCalls);
@@ -51,6 +53,14 @@ const { useWorkspace } = await import("./workspace");
 /** Lets every settled promise chain run out before the test looks at state. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** Releases the held git_status once a pass has asked for it - after it looked for repositories. */
+async function answer() {
+  await vi.waitFor(() => {
+    expect(held.length).toBeGreaterThan(0);
+  });
+  held.shift()?.();
+}
+
 describe("git refresh single-flight", () => {
   beforeEach(async () => {
     gated = false;
@@ -64,13 +74,12 @@ describe("git refresh single-flight", () => {
   it("folds calls made during a pass into one trailing pass", async () => {
     const first = useGit.getState().refresh();
     const during = [useGit.getState().refresh(), useGit.getState().refresh(), useGit.getState().refresh()];
+    await answer(); // pass 1 answers
     expect(statusCalls).toBe(1); // the three latecomers started no processes
-
-    held.shift()?.(); // pass 1 answers
     await vi.waitFor(() => {
       expect(statusCalls).toBe(2); // exactly one trailing pass, not three
     });
-    held.shift()?.(); // trailing pass answers
+    await answer(); // trailing pass answers
     await Promise.all([first, ...during]);
 
     expect(statusCalls).toBe(2);
@@ -80,11 +89,11 @@ describe("git refresh single-flight", () => {
 
   it("runs a fresh pass once the previous one has finished", async () => {
     const first = useGit.getState().refresh();
-    held.shift()?.();
+    await answer();
     await first;
 
     const second = useGit.getState().refresh();
-    held.shift()?.();
+    await answer();
     await second;
 
     expect(statusCalls).toBe(2); // sequential calls are not folded

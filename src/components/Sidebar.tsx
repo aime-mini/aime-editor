@@ -1,6 +1,6 @@
 import { Bug, Files, GitBranch, ListChecks } from "lucide-react";
 import { useT } from "../i18n";
-import { useGit } from "../stores/git";
+import { changedFileCount, hasConflicts, useGit } from "../stores/git";
 import { useLayout, type SidebarView } from "../stores/layout";
 import { DebugPanel } from "./DebugPanel";
 import { FileTree } from "./FileTree";
@@ -26,8 +26,9 @@ export function Sidebar() {
   const t = useT();
   // Subscribed to narrowly: this strip re-renders on every git refresh, and a
   // repository with two thousand changed files must cost it one number.
-  const changed = useGit((s) => s.status?.files.length ?? 0);
-  const conflicted = useGit((s) => s.status?.files.some((file) => file.conflicted) ?? false);
+  // Every repository's, like VS Code's badge: the tab is for all of them.
+  const changed = useGit(changedFileCount);
+  const conflicted = useGit(hasConflicts);
 
   const tab = (view: SidebarView, icon: React.ReactNode, title: string, badge?: Badge) => (
     <button

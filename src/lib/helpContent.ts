@@ -196,6 +196,14 @@ const EN: HelpTopic[] = [
     keywords: "commit stage diff push pull branch source control version init",
   },
   {
+    id: "git-repositories",
+    section: "Git",
+    title: "Several repositories in one folder",
+    body: "Open the folder that holds a product's repositories side by side - a frontend and a backend, say - and Aime finds each of them, down to two levels below the folder (so `apps/web` counts too); dependency and build folders such as node_modules, target, bin, obj and dist are never searched. With more than one, a row of chips sits at the top of the Git panel, one per repository, each with its branch and how many changes are waiting in it: click one to show it, and everything in the panel - staging, commit, branches, history, stash - acts on that repository. Opening a file moves the panel to the file's repository by itself, the status bar names the repository before its branch, and a commit message you started in one waits for you while you look at another. The file tree marks changes in all of them at once, the folders leading to them included, and the badge on the Git tab counts every repository's changes. A folder opened from inside a repository works too: git is asked from the repository's own root, so the tree marks the right files and staging reaches them. A folder with no repository at all offers Initialize repository, and one made later - from the terminal, or by a clone - shows up on its own.",
+    keywords:
+      "multiple repositories monorepo multi-repo frontend backend parent folder subfolder switcher chip",
+  },
+  {
     id: "git-review",
     section: "Git",
     title: "A second opinion before you commit",
@@ -578,6 +586,13 @@ const VI: HelpTopic[] = [
     title: "Panel Git",
     body: "Tab Git ở sidebar (hoặc bấm tên branch trên status bar) hiển thị thay đổi: stage/bỏ stage từng file hoặc tất cả, hủy thay đổi, commit (Ctrl+Enter trong ô nội dung), push và pull. Bấm vào file để xem diff so với HEAD. Khung diff đó nhảy thẳng tới thay đổi đầu tiên chứ không đứng ở dòng 1, tự cập nhật khi anh sửa tiếp file đó, và hiện cả thay đổi chỉ dịch khoảng trắng - loại mà một khung diff mặc định giấu đi. Nếu hai bên đúng là giống hệt nhau thì nó nói thẳng, thay vì để anh đi tìm một thay đổi không có trên màn hình: khi đó cái git liệt kê là thay đổi đã stage, thay đổi kiểu xuống dòng, hoặc đổi quyền file. Chính tab Git mang một huy hiệu ghi số file chưa commit, đổi sang đỏ khi có file xung đột, nên anh biết có gì đang chờ mà không cần rời tab đang xem. Khu Lịch sử (gập/mở, cuộn riêng, nút Tải thêm) liệt kê commit - bấm một commit để mở nó thành danh sách các file nó đụng tới, bấm một file để xem patch của đúng file đó. File bị đổi tên được hỏi bằng cả hai tên nên đọc ra đúng là đổi tên chứ không phải thêm mới nguyên file; commit merge được đọc theo nhánh mà anh merge vào, vì đó là cách duy nhất git chịu hiện thứ nó mang về; còn file mà git báo không có thay đổi theo dòng thì nói thẳng ra chứ không mở một editor trống. Thay đổi, Lịch sử và Stash là ba khu, mỗi khu một thanh chia: kéo một khu thì khu kia nhường, gập một khu thì nó chỉ còn một dòng. File mới được liệt kê từng file kể cả khi cả thư mục là mới, không có file nào nấp sau một dòng thư mục. File thay đổi có chữ trạng thái trong cây file, file bị git bỏ qua thì hiện mờ ở đó (cả thư mục bị ignore mờ một lượt, không phải liệt kê từng file bên trong), còn dòng thay đổi có vạch màu ở lề editor. Mọi thao tác đều nói là nó đang chạy: fetch, pull, push hiện spinner ngay trên nút anh vừa bấm, còn thứ khởi từ menu đã đóng - merge, chuyển nhánh, stash, tag, revert, reset - thì tự xưng tên trên một dòng dưới thanh nhánh. Trước đây chúng im lặng suốt mấy giây làm việc với remote, đọc ra thành app treo chứ không phải app đang chạy. Thông minh mặc định: commit khi chưa stage gì sẽ tự stage toàn bộ, push lần đầu của nhánh mới tự thiết lập upstream. Hoạt động hoàn toàn không cần AI; có AI thì nút lấp lánh tự viết nội dung commit từ đúng thứ commit tới sẽ mang: index nếu đã stage, còn không thì thay đổi trong thư mục làm việc - kể cả file git chưa từng thấy, vì `git diff` không hiện file mới nào cả, mà một thay đổi toàn file mới lại đúng là loại cần được mô tả nhất.",
     keywords: "commit stage diff push pull nhánh branch quản lý phiên bản init",
+  },
+  {
+    id: "git-repositories",
+    section: "Git",
+    title: "Nhiều repo trong một thư mục",
+    body: "Mở thư mục chứa các repo của một sản phẩm đặt cạnh nhau - ví dụ frontend và backend - Aime tìm ra từng repo, sâu tới hai cấp dưới thư mục (nên `apps/web` cũng được tính); các thư mục thư viện và build như node_modules, target, bin, obj, dist không bao giờ bị quét. Khi có từ hai repo, đầu panel Git hiện một hàng chip, mỗi repo một chip kèm nhánh và số thay đổi đang chờ: bấm chip nào thì panel hiện repo đó, và mọi thứ trong panel - stage, commit, nhánh, lịch sử, stash - chạy trên repo đó. Mở một file thì panel tự chuyển sang repo của file, status bar ghi tên repo trước tên nhánh, và câu commit đang gõ dở ở repo này vẫn còn nguyên khi anh xem repo khác rồi quay lại. Cây file đánh dấu thay đổi của mọi repo cùng lúc, kể cả các thư mục dẫn tới chúng, và số trên tab Git là tổng thay đổi của mọi repo. Mở một thư mục con nằm trong repo cũng đúng: git được hỏi từ gốc của repo, nên cây file đánh dấu đúng file và stage đúng file. Thư mục chưa có repo nào thì có nút Khởi tạo repository, và repo tạo sau đó - từ terminal hay do clone - tự hiện ra.",
+    keywords: "nhiều repo monorepo multi-repo frontend backend thư mục cha thư mục con chuyển repo chip",
   },
   {
     id: "git-review",

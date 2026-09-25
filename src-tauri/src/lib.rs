@@ -152,6 +152,7 @@ pub fn run() {
             git::git_commit_detail,
             git::git_show_commit_file,
             git::git_branches,
+            git::repositories::git_repositories,
             git::git_checkout_tracking,
             git::git_worktree_add,
             git::git_worktree_remove,

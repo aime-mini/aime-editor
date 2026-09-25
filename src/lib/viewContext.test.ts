@@ -44,6 +44,15 @@ describe("describeView", () => {
     );
   });
 
+  it("names the repository of a commit only when git in the workspace would not find it", () => {
+    expect(
+      describeView({ ...empty, inFront: { kind: "commit", hash: "abc1234", repository: null } }),
+    ).toContain("- In front: commit abc1234\n");
+    expect(
+      describeView({ ...empty, inFront: { kind: "commit", hash: "abc1234", repository: "backend" } }),
+    ).toContain("- In front: commit abc1234 of the repository in backend/");
+  });
+
   it("describes the cloud panel down to the open resource and what was read, never a secret", () => {
     const text = describeView({
       ...empty,

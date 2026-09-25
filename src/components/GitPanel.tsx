@@ -28,6 +28,7 @@ import {
   X,
 } from "lucide-react";
 import { useT } from "../i18n";
+import { inRepository, repositoryLabel } from "../lib/repositories";
 import { useAi } from "../stores/ai";
 import {
   isStaged,
@@ -102,7 +103,8 @@ type GitDialog =
 function ReviewPanel() {
   const review = useGit((s) => s.review);
   const dismissReview = useGit((s) => s.dismissReview);
-  const rootPath = useWorkspace((s) => s.rootPath);
+  // The diff under review was the repository's, so its paths are relative to it.
+  const repoRoot = useGit((s) => s.repoRoot);
   const openFile = useWorkspace((s) => s.openFile);
   const t = useT();
   if (!review) return null;
@@ -135,7 +137,7 @@ function ReviewPanel() {
           <button
             key={index}
             onClick={() => {
-              if (rootPath && finding.file) void openFile(`${rootPath}/${finding.file}`);
+              if (repoRoot && finding.file) void openFile(inRepository(repoRoot, finding.file));
             }}
             className="flex items-start gap-1.5 rounded px-1 py-0.5 text-left text-[11px] hover:bg-elevated"
           >
@@ -152,6 +154,57 @@ function ReviewPanel() {
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The repositories of a workspace that holds more than one - a product folder
+ * with its frontend and its backend - one chip each: its folder, its branch and
+ * how much is waiting in it. The chosen one is what everything below acts on;
+ * opening a file of another one moves here by itself (`stores/git.ts`).
+ */
+function RepositorySwitcher() {
+  const repositories = useGit((s) => s.repositories);
+  const repoRoot = useGit((s) => s.repoRoot);
+  const statuses = useGit((s) => s.statuses);
+  const selectRepository = useGit((s) => s.selectRepository);
+  const workspace = useWorkspace((s) => s.rootPath);
+  const t = useT();
+  if (repositories.length < 2 || workspace === null) return null;
+  return (
+    <div role="tablist" aria-label={t("git.repositories")} className="flex shrink-0 flex-wrap gap-1 px-1">
+      {repositories.map((repository) => {
+        const status = statuses[repository];
+        const chosen = repository === repoRoot;
+        const changed = status?.files.length ?? 0;
+        return (
+          <button
+            key={repository}
+            role="tab"
+            aria-selected={chosen}
+            onClick={() => {
+              selectRepository(repository);
+            }}
+            title={t("git.repositoryTitle", {
+              path: repository,
+              branch: status?.branch ?? "?",
+              count: String(changed),
+            })}
+            className={`flex max-w-full min-w-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] ${
+              chosen
+                ? "border-accent bg-accent-soft text-fg"
+                : "border-line text-muted hover:border-accent hover:text-fg"
+            }`}
+          >
+            <span className="truncate font-medium">{repositoryLabel(repository, workspace)}</span>
+            {status?.branch && <span className="truncate opacity-70">{status.branch}</span>}
+            {changed > 0 && (
+              <span className="shrink-0 rounded-full bg-accent/20 px-1 text-accent">{changed}</span>
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -1054,6 +1107,7 @@ export function GitPanel() {
 
   return (
     <div className="flex h-full flex-col gap-2 p-2 select-none">
+      <RepositorySwitcher />
       {/* The panels get everything the stash strip below does not need. Their
           own height has to come from this box rather than from the window, or
           the library's `height: 100%` would push that strip off the bottom. */}

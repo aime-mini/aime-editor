@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { useT } from "../i18n";
+import { foldersUpTo, inRepository, relativeTo, repositoryOf } from "../lib/repositories";
 import { useGit } from "../stores/git";
 import { usePathDrag } from "../stores/pathDrag";
 import { useWorkspace } from "../stores/workspace";
@@ -220,10 +221,25 @@ function DragGhost() {
   );
 }
 
+/**
+ * Runs a git action on the repository an entry lives in, naming the entry the
+ * way git does there. The panel is moved to that repository first, since that
+ * is the one every operation acts on - and where the result shows.
+ */
+function inItsRepository<T>(path: string, act: (relative: string) => T): T | undefined {
+  const git = useGit.getState();
+  const repository = repositoryOf(path, git.repositories);
+  if (repository === null) return undefined;
+  git.selectRepository(repository);
+  return act(relativeTo(repository, path));
+}
+
 export function FileTree() {
   const { rootPath, treeVersion, refreshTree, handlePathDeleted, handlePathRenamed } = useWorkspace();
   const { openFolder, closeFolder, openFile, openBlame } = useWorkspace();
-  const isRepo = useGit((s) => s.status?.is_repo ?? false);
+  const repositories = useGit((s) => s.repositories);
+  /** The repository an entry lives in, or null - a workspace can hold several, or none. */
+  const repositoryAt = (path: string) => repositoryOf(path, repositories);
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [menu, setMenu] = useState<MenuTarget | null>(null);
   const [modal, setModal] = useState<ModalAction | null>(null);
@@ -264,31 +280,34 @@ export function FileTree() {
     },
   };
 
-  const gitFiles = useGit((s) => s.status?.files);
-  const ignored = useGit((s) => s.ignored);
+  // Every repository's, not only the one the panel shows: the tree is the whole workspace.
+  const statuses = useGit((s) => s.statuses);
+  const ignoredIn = useGit((s) => s.ignoredIn);
   const badges: GitBadges = useMemo(() => {
     const map: GitBadges = new Map();
-    if (!gitFiles || !rootPath) return map;
-    for (const file of gitFiles) {
-      const worktreeChanged = file.unstaged !== " " && file.unstaged !== ".";
-      const letter = file.conflicted
-        ? "!"
-        : file.unstaged === "?"
-          ? "U"
-          : worktreeChanged
-            ? file.unstaged
-            : file.staged;
-      map.set(pathKey(`${rootPath}\\${file.path}`), { label: letter, color: badgeColorOf(letter) });
-      // Ancestor folders get a dot so changes are visible while collapsed.
-      let dir = file.path;
-      while (dir.includes("/")) {
-        dir = dir.slice(0, dir.lastIndexOf("/"));
-        const key = pathKey(`${rootPath}\\${dir}`);
-        if (!map.has(key)) map.set(key, { label: "●", color: "text-accent" });
+    if (!rootPath) return map;
+    for (const [repository, status] of Object.entries(statuses)) {
+      for (const file of status?.files ?? []) {
+        const worktreeChanged = file.unstaged !== " " && file.unstaged !== ".";
+        const letter = file.conflicted
+          ? "!"
+          : file.unstaged === "?"
+            ? "U"
+            : worktreeChanged
+              ? file.unstaged
+              : file.staged;
+        const path = inRepository(repository, file.path);
+        map.set(pathKey(path), { label: letter, color: badgeColorOf(letter) });
+        // Every folder up to the workspace gets a dot, so a change shows while
+        // collapsed - the repository's own folder among them.
+        for (const folder of foldersUpTo(path, rootPath)) {
+          const key = pathKey(folder);
+          if (!map.has(key)) map.set(key, { label: "●", color: "text-accent" });
+        }
       }
     }
     return map;
-  }, [gitFiles, rootPath]);
+  }, [statuses, rootPath]);
 
   /**
    * Absolute paths git ignores, as the tree keys them.
@@ -298,10 +317,15 @@ export function FileTree() {
    * and a tree that pretends they do not exist sends them to Explorer. The
    * colour is the whole message - this is not part of the repository.
    */
-  const ignoredPaths: ReadonlySet<string> = useMemo(() => {
-    if (!rootPath) return new Set<string>();
-    return new Set(ignored.map((path) => pathKey(`${rootPath}\\${path}`)));
-  }, [ignored, rootPath]);
+  const ignoredPaths: ReadonlySet<string> = useMemo(
+    () =>
+      new Set(
+        Object.entries(ignoredIn).flatMap(([repository, paths]) =>
+          (paths ?? []).map((path) => pathKey(inRepository(repository, path))),
+        ),
+      ),
+    [ignoredIn],
+  );
 
   /**
    * Absolute paths git has never been told about.
@@ -310,12 +334,15 @@ export function FileTree() {
    * a record of its own here - which is what makes "would ignoring this do
    * anything?" answerable without asking git a second question.
    */
-  const untrackedPaths: string[] = useMemo(() => {
-    if (!rootPath) return [];
-    return (gitFiles ?? [])
-      .filter((file) => file.unstaged === "?")
-      .map((file) => pathKey(`${rootPath}\\${file.path}`));
-  }, [gitFiles, rootPath]);
+  const untrackedPaths: string[] = useMemo(
+    () =>
+      Object.entries(statuses).flatMap(([repository, status]) =>
+        (status?.files ?? [])
+          .filter((file) => file.unstaged === "?")
+          .map((file) => pathKey(inRepository(repository, file.path))),
+      ),
+    [statuses],
+  );
 
   useEffect(() => {
     if (!rootPath) return;
@@ -344,12 +371,10 @@ export function FileTree() {
             handlePathDeleted(modal.entry.path);
             break;
           case "untrack": {
-            // Reachable only from inside a repository, but this runs above the
-            // component's own root guard, so it asks again rather than assume.
-            if (rootPath === null) break;
             // The file stays where it is; only git stops carrying it.
-            const path = modal.entry.path.slice(rootPath.length + 1).replaceAll("\\", "/");
-            await useGit.getState().untrackAndIgnore([path]);
+            await inItsRepository(modal.entry.path, (relative) =>
+              useGit.getState().untrackAndIgnore([relative]),
+            );
             break;
           }
         }
@@ -360,7 +385,7 @@ export function FileTree() {
         setModal(null);
       }
     },
-    [modal, refreshTree, handlePathDeleted, handlePathRenamed, rootPath],
+    [modal, refreshTree, handlePathDeleted, handlePathRenamed],
   );
 
   if (!rootPath) return null;
@@ -385,8 +410,10 @@ export function FileTree() {
    * Whether this entry is git's business at all: inside a repository, not the
    * repository itself, and not already grey.
    */
-  const ignorable = (target: MenuTarget): boolean =>
-    isRepo && !target.ignored && target.entry.path !== rootPath;
+  const ignorable = (target: MenuTarget): boolean => {
+    const repository = repositoryAt(target.entry.path);
+    return repository !== null && !target.ignored && pathKey(target.entry.path) !== pathKey(repository);
+  };
 
   /**
    * The same wish for a path git already tracks, which `.gitignore` alone cannot
@@ -408,12 +435,12 @@ export function FileTree() {
           void openFile(target.entry.path);
         },
       });
-      if (isRepo) {
+      if (repositoryAt(target.entry.path) !== null) {
         items.push({
           label: t("menu.gitBlame"),
           icon: <FileClock size={14} />,
           onClick: () => {
-            openBlame(target.entry.path.slice(rootPath.length + 1).replaceAll("\\", "/"));
+            inItsRepository(target.entry.path, openBlame);
           },
         });
       }
@@ -445,13 +472,14 @@ export function FileTree() {
         },
       );
     }
-    const relative = () => target.entry.path.slice(rootPath.length + 1).replaceAll("\\", "/");
     if (canIgnore(target)) {
       items.push({
         label: t("menu.gitIgnore"),
         icon: <EyeOff size={14} />,
         onClick: () => {
-          void useGit.getState().ignore([relative()]);
+          inItsRepository(target.entry.path, (relative) => {
+            void useGit.getState().ignore([relative]);
+          });
         },
       });
     } else if (canUntrack(target)) {

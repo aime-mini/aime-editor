@@ -5,6 +5,7 @@ import type { TranslationKey } from "../i18n/en";
 import { aiOneshot } from "../lib/aiOneshot";
 import { formatProviderError } from "../lib/providerErrors";
 import { parseReview, REVIEW_PROMPT, type Review } from "../lib/aiReview";
+import { repositoryOf } from "../lib/repositories";
 import { useWorkspace } from "./workspace";
 
 export interface GitFile {
@@ -46,6 +47,31 @@ export interface GitStashEntry {
 
 const LOG_PAGE = 30;
 
+/**
+ * What a workspace with no repository in it reads as: the panel offers to make
+ * one, rather than showing nothing.
+ */
+const NO_REPOSITORY: GitStatus = {
+  is_repo: false,
+  branch: null,
+  upstream: null,
+  ahead: 0,
+  behind: 0,
+  files: [],
+};
+
+type Statuses = Record<string, GitStatus | undefined>;
+
+/** Changed files in every repository of the workspace - what the Git tab counts. */
+export function changedFileCount({ statuses }: { statuses: Statuses }): number {
+  return Object.values(statuses).reduce((count, status) => count + (status?.files.length ?? 0), 0);
+}
+
+/** Whether any repository of the workspace is in the middle of a conflict. */
+export function hasConflicts({ statuses }: { statuses: Statuses }): boolean {
+  return Object.values(statuses).some((status) => status?.files.some((file) => file.conflicted) ?? false);
+}
+
 /** True when the index holds something for this file. */
 export function isStaged(file: GitFile): boolean {
   return file.staged !== " " && file.staged !== "." && file.staged !== "?";
@@ -57,6 +83,22 @@ export function isUnstaged(file: GitFile): boolean {
 }
 
 interface GitState {
+  /**
+   * Every repository the workspace holds (`git_repositories`): the one it sits
+   * inside of first, the ones below it after. Empty for a folder with none.
+   */
+  repositories: string[];
+  /** The repository the panel shows and every operation acts on; null when there is none. */
+  repoRoot: string | null;
+  /** Each repository's status: the tree marks files in all of them, the switcher counts their changes. */
+  statuses: Record<string, GitStatus | undefined>;
+  /** What git ignores in each repository, relative to it. */
+  ignoredIn: Record<string, string[] | undefined>;
+  /** Shows another repository; the commit message typed for this one waits for its return. */
+  selectRepository: (root: string) => void;
+  /** Looks for the workspace's repositories again - after one was made inside it. */
+  discover: () => Promise<void>;
+  /** The status of `repoRoot`. */
   status: GitStatus | null;
   log: GitLogEntry[];
   /** Current history page size; grows via loadMoreLog. */
@@ -64,9 +106,9 @@ interface GitState {
   loadMoreLog: () => Promise<void>;
   stashes: GitStashEntry[];
   /**
-   * Repo-relative paths git ignores, a fully ignored directory collapsed into
-   * one entry. The file tree greys them out; everything under such a directory
-   * inherits, which is why the list stays a dozen entries instead of thousands.
+   * Paths git ignores in `repoRoot`, relative to it, a fully ignored directory
+   * collapsed into one entry. Everything under such a directory inherits,
+   * which is why the list stays a dozen entries instead of thousands.
    */
   ignored: string[];
   busy: boolean;
@@ -181,6 +223,10 @@ async function pendingDiff(root: string): Promise<string> {
 /**
  * Auto-refresh: treeVersion bumps on every fs change (watcher + tree ops),
  * rootPath changes on open/close folder — both mean git state may be stale.
+ *
+ * And the panel follows the file in front, the way VS Code's does: opening a
+ * backend file while the frontend was shown shows the backend, so what the
+ * panel offers to stage is always the repository of what is being edited.
  */
 useWorkspace.subscribe((state, prev) => {
   if (state.rootPath !== prev.rootPath) {
@@ -189,7 +235,17 @@ useWorkspace.subscribe((state, prev) => {
   if (state.rootPath !== prev.rootPath || state.treeVersion !== prev.treeVersion) {
     void useGit.getState().refresh();
   }
+  if (state.openFilePath !== null && state.openFilePath !== prev.openFilePath) {
+    const owner = repositoryOf(state.openFilePath, useGit.getState().repositories);
+    if (owner !== null) useGit.getState().selectRepository(owner);
+  }
 });
+
+const sameList = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((item, index) => item === b[index]);
+
+/** Commit messages typed for repositories not on screen, by root. */
+const drafts = new Map<string, string>();
 
 export const useGit = create<GitState>((set, get) => {
   /**
@@ -214,26 +270,93 @@ export const useGit = create<GitState>((set, get) => {
     return was;
   };
 
+  const discover = async () => {
+    const workspace = useWorkspace.getState().rootPath;
+    if (!workspace) return;
+    let repositories: string[];
+    try {
+      repositories = await invoke<string[]>("git_repositories", { root: workspace });
+    } catch (err: unknown) {
+      set({ lastError: String(err) });
+      return; // what was found before still stands
+    }
+    if (useWorkspace.getState().rootPath !== workspace) return; // another folder by now
+    const { repoRoot } = get();
+    const open = useWorkspace.getState().openFilePath;
+    // The one on screen stays; otherwise the repository of the file in front, then the first.
+    const chosen =
+      (repoRoot !== null && repositories.includes(repoRoot) ? repoRoot : null) ??
+      (open === null ? null : repositoryOf(open, repositories)) ??
+      repositories.at(0) ??
+      null;
+    if (chosen !== repoRoot || !sameList(repositories, get().repositories)) {
+      set({ repositories, repoRoot: chosen });
+    }
+  };
+
+  /** Status and ignored paths of one repository not on screen; a failure costs only its own row. */
+  const readSummary = async (root: string) => {
+    try {
+      const [status, ignored] = await Promise.all([
+        invoke<GitStatus>("git_status", { root }),
+        invoke<string[]>("git_ignored", { root }),
+      ]);
+      return { root, status, ignored };
+    } catch (err: unknown) {
+      console.error(`could not read the repository at ${root}:`, err);
+      return { root, status: undefined, ignored: undefined };
+    }
+  };
+
   const readRepo = async () => {
-    const root = useWorkspace.getState().rootPath;
-    if (!root) {
-      set({ status: null, log: [] });
+    if (useWorkspace.getState().rootPath === null) {
+      set({ status: null, log: [], stashes: [], ignored: [], statuses: {}, ignoredIn: {} });
+      return;
+    }
+    // Every pass looks again: a repository made or cloned inside the workspace
+    // since the last one shows up, and one deleted goes.
+    await discover();
+    const { repositories, repoRoot } = get();
+    if (repoRoot === null) {
+      set({ status: NO_REPOSITORY, log: [], stashes: [], ignored: [], statuses: {}, ignoredIn: {} });
       return;
     }
     try {
-      const [status, log, stashes, ignored] = await Promise.all([
-        invoke<GitStatus>("git_status", { root }),
-        invoke<GitLogEntry[]>("git_log", { root, limit: get().logLimit }),
-        invoke<GitStashEntry[]>("git_stash_list", { root }),
-        invoke<string[]>("git_ignored", { root }),
+      const [[status, log, stashes, ignored], others] = await Promise.all([
+        Promise.all([
+          invoke<GitStatus>("git_status", { root: repoRoot }),
+          invoke<GitLogEntry[]>("git_log", { root: repoRoot, limit: get().logLimit }),
+          invoke<GitStashEntry[]>("git_stash_list", { root: repoRoot }),
+          invoke<string[]>("git_ignored", { root: repoRoot }),
+        ]),
+        Promise.all(repositories.filter((root) => root !== repoRoot).map(readSummary)),
       ]);
-      set({ status, log, stashes, ignored });
+      // Another repository was chosen meanwhile, and its own read is on its way.
+      if (get().repoRoot !== repoRoot) return;
+      set({
+        status,
+        log,
+        stashes,
+        ignored,
+        statuses: {
+          ...Object.fromEntries(others.map((other) => [other.root, other.status])),
+          [repoRoot]: status,
+        },
+        ignoredIn: {
+          ...Object.fromEntries(others.map((other) => [other.root, other.ignored])),
+          [repoRoot]: ignored,
+        },
+      });
     } catch (err: unknown) {
       set({ lastError: String(err) });
     }
   };
 
   return {
+    repositories: [],
+    repoRoot: null,
+    statuses: {},
+    ignoredIn: {},
     status: null,
     log: [],
     logLimit: LOG_PAGE,
@@ -251,6 +374,35 @@ export const useGit = create<GitState>((set, get) => {
     setAmend: (amend) => {
       set({ amend });
     },
+
+    selectRepository: (root) => {
+      const { repoRoot, repositories, commitMessage, statuses, ignoredIn } = get();
+      if (root === repoRoot || !repositories.includes(root)) return;
+      if (repoRoot !== null) drafts.set(repoRoot, commitMessage);
+      // A diff, blame, commit or conflict in front names the repository being
+      // left; read against the next one it would show another file, or nothing.
+      const views = useWorkspace.getState();
+      if (
+        [views.diffPath, views.blamePath, views.conflictPath, views.commitHash].some((view) => view !== null)
+      ) {
+        views.closeDiff();
+      }
+      set({
+        repoRoot: root,
+        status: statuses[root] ?? null,
+        ignored: ignoredIn[root] ?? [],
+        log: [],
+        stashes: [],
+        logLimit: LOG_PAGE,
+        commitMessage: drafts.get(root) ?? "",
+        amend: false,
+        review: null,
+        lastError: null,
+      });
+      void get().refresh();
+    },
+
+    discover,
 
     refresh: async () => {
       if (inFlight) {
@@ -275,17 +427,17 @@ export const useGit = create<GitState>((set, get) => {
     },
 
     stage: async (paths) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.stage", () => invoke("git_stage", { root, paths }));
     },
 
     unstage: async (paths) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.unstage", () => invoke("git_unstage", { root, paths }));
     },
 
     discard: async (file) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (!root) return;
       await runOp(set, "git.busy.discard", () =>
         invoke("git_discard", { root, path: file.path, untracked: file.unstaged === "?" }),
@@ -293,7 +445,7 @@ export const useGit = create<GitState>((set, get) => {
     },
 
     discardMany: async (files) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (!root || files.length === 0) return;
       await runOp(set, "git.busy.discard", async () => {
         for (const file of files) {
@@ -303,17 +455,17 @@ export const useGit = create<GitState>((set, get) => {
     },
 
     ignore: async (paths) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.ignore", () => invoke("git_ignore", { root, paths }));
     },
 
     untrackAndIgnore: async (paths) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.untrack", () => invoke("git_untrack_and_ignore", { root, paths }));
     },
 
     commit: async () => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       const message = get().commitMessage.trim();
       if (!root || (!message && !get().amend)) return; // amend may reuse the old message
       await runOp(set, "git.busy.commit", async () => {
@@ -329,42 +481,44 @@ export const useGit = create<GitState>((set, get) => {
     },
 
     push: async () => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.push", () => invoke("git_push", { root }));
     },
 
     pull: async () => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.pull", () => invoke("git_pull", { root }));
     },
 
     init: async () => {
-      const root = useWorkspace.getState().rootPath;
+      // Where there is no repository yet, the one to make is the workspace's own;
+      // the refresh that follows finds it.
+      const root = get().repoRoot ?? useWorkspace.getState().rootPath;
       if (root) await runOp(set, "git.busy.init", () => invoke("git_init", { root }));
     },
 
     stashPush: async (message) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.stash", () => invoke("git_stash_push", { root, message }));
     },
 
     stashApply: async (index) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.stash", () => invoke("git_stash_apply", { root, index }));
     },
 
     stashPop: async (index) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.stash", () => invoke("git_stash_pop", { root, index }));
     },
 
     stashDrop: async (index) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.stash", () => invoke("git_stash_drop", { root, index }));
     },
 
     listBranches: async () => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (!root) return [];
       try {
         return await invoke<GitBranch[]>("git_branches", { root });
@@ -375,27 +529,27 @@ export const useGit = create<GitState>((set, get) => {
     },
 
     checkout: async (name) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.checkout", () => invoke("git_checkout", { root, name }));
     },
 
     checkoutTracking: async (name) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.checkout", () => invoke("git_checkout_tracking", { root, name }));
     },
 
     createBranch: async (name) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.branch", () => invoke("git_create_branch", { root, name }));
     },
 
     renameBranch: async (from, to) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.branch", () => invoke("git_rename_branch", { root, from, to }));
     },
 
     deleteBranch: async (name, force = false) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (!root) return "failed";
       set({ busy: true, lastError: null });
       try {
@@ -415,17 +569,17 @@ export const useGit = create<GitState>((set, get) => {
     },
 
     mergeBranch: async (name) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.merge", () => invoke("git_merge_branch", { root, name }));
     },
 
     fetch: async () => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.fetch", () => invoke("git_fetch", { root }));
     },
 
     listRemotes: async () => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (!root) return [];
       try {
         return await invoke<GitRemote[]>("git_remotes", { root });
@@ -436,12 +590,12 @@ export const useGit = create<GitState>((set, get) => {
     },
 
     setRemote: async (name, url) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.remote", () => invoke("git_set_remote", { root, name, url }));
     },
 
     listTags: async () => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (!root) return [];
       try {
         return await invoke<string[]>("git_tags", { root });
@@ -452,37 +606,37 @@ export const useGit = create<GitState>((set, get) => {
     },
 
     createTag: async (name, message) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.tag", () => invoke("git_create_tag", { root, name, message }));
     },
 
     deleteTag: async (name) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.tag", () => invoke("git_delete_tag", { root, name }));
     },
 
     pushTags: async () => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.pushTags", () => invoke("git_push_tags", { root }));
     },
 
     revertCommit: async (sha) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.revert", () => invoke("git_revert_commit", { root, sha }));
     },
 
     cherryPick: async (sha) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.cherryPick", () => invoke("git_cherry_pick", { root, sha }));
     },
 
     resetTo: async (sha, mode) => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (root) await runOp(set, "git.busy.reset", () => invoke("git_reset_to", { root, sha, mode }));
     },
 
     reviewChanges: async () => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (!root || get().reviewing) return;
       set({ reviewing: true, lastError: null, review: null });
       try {
@@ -508,7 +662,7 @@ export const useGit = create<GitState>((set, get) => {
     },
 
     generateCommitMessage: async () => {
-      const root = useWorkspace.getState().rootPath;
+      const root = get().repoRoot;
       if (!root || get().generating) return;
       set({ generating: true, lastError: null });
       try {
@@ -527,7 +681,12 @@ export const useGit = create<GitState>((set, get) => {
     },
 
     clear: () => {
+      drafts.clear();
       set({
+        repositories: [],
+        repoRoot: null,
+        statuses: {},
+        ignoredIn: {},
         status: null,
         log: [],
         logLimit: LOG_PAGE,
