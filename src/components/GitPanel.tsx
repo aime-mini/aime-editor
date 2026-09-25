@@ -1010,7 +1010,9 @@ export function GitPanel() {
               </button>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          {/* Wraps rather than clips: at the sidebar's narrowest the amend box
+              no longer fits beside the two buttons, in either language. */}
+          <div className="flex flex-wrap items-center gap-2">
             {canUseAi && (
               <button
                 onClick={() => void git.reviewChanges()}
