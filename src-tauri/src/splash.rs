@@ -14,12 +14,14 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, Window};
 
-use crate::window_cmds;
+use crate::{window_cmds, workspaces};
 
 /// The splash window's label - the same one `capabilities/splash.json` names.
 const LABEL: &str = "splash";
+/// The first editor window, the one the splash hands over to.
+const EDITOR_LABEL: &str = "main";
 
 /// Logical size of the card: wide rather than tall, because the words sit on
 /// the left and the character portrait, when there is one, stands on the right.
@@ -241,10 +243,14 @@ pub fn splash_skip(app: AppHandle) {
     hand_over(&app);
 }
 
-/// The frontend has painted its first screen. Hands over once the greeting has
-/// had its minimum time on screen.
+/// A page has painted its first screen. The first window's hands over from the
+/// splash once the greeting has had its minimum time on screen; any other
+/// window was built hidden for this moment (`workspaces::painted`).
 #[tauri::command]
-pub async fn app_ready(app: AppHandle) {
+pub async fn app_ready(app: AppHandle, window: Window) -> Result<(), String> {
+    if window.label() != EDITOR_LABEL {
+        return workspaces::painted(&app, window.label());
+    }
     // Asked again after every wait, not once before the first.
     //
     // The editor is often ready before the greeting has finished loading, so the
@@ -264,6 +270,7 @@ pub async fn app_ready(app: AppHandle) {
         tokio::time::sleep(remaining).await;
     }
     hand_over(&app);
+    Ok(())
 }
 
 /// Closes the splash and shows the editor - at most once, whoever asks first.
@@ -280,7 +287,7 @@ fn hand_over(app: &AppHandle) {
 }
 
 fn show_editor(app: &AppHandle) {
-    match app.get_webview_window("main") {
+    match app.get_webview_window(EDITOR_LABEL) {
         // Configured hidden; this sizes it to the real monitor work area,
         // maximizes and shows it (see window_cmds::fit_and_maximize).
         Some(window) => window_cmds::fit_and_maximize(&window),

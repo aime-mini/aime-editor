@@ -24,6 +24,7 @@ mod terminal;
 mod trackers;
 mod updates;
 mod window_cmds;
+mod window_show;
 mod wire;
 mod workspaces;
 
@@ -55,6 +56,8 @@ pub fn run() {
             // handover, and shows the editor straight away when there is no
             // splash to show (see splash::start).
             splash::start(app.handle());
+            app.state::<workspaces::Workspaces>()
+                .load_remembered(app.handle());
             // User-defined AI CLIs: a bad file costs its own providers, never
             // the built-in ones. Watched from here on, so a CLI added while
             // Aime runs - by the user or by the agent doing it for them -
@@ -246,7 +249,8 @@ pub fn run() {
             plugins::plugin_list,
             plugins::plugin_source,
             plugins::plugins_folder,
-            window_cmds::open_new_window,
+            workspaces::open_new_window,
+            workspaces::workspace_staged,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

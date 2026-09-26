@@ -53,3 +53,8 @@ reqwest = { version = "0.13", default-features = false, features = [
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 async-trait = "0.1"
 
+
+# The same `windows` Tauri itself builds (0.61, same features): switching
+# workspace tabs places windows through Win32 directly (window_show.rs).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging"] }

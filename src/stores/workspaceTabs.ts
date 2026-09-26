@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { create } from "zustand";
 import { useWorkspace } from "./workspace";
 
@@ -16,12 +17,19 @@ import { useWorkspace } from "./workspace";
 export interface WorkspaceTab {
   label: string;
   folder: string | null;
+  /** Its page is still loading; it takes its place on screen once it has painted. */
+  loading: boolean;
 }
 
 interface WorkspaceTabsState {
   tabs: WorkspaceTab[];
-  /** The tab on screen - this window's own. */
-  active: string | null;
+  /**
+   * The tab on screen. Only the window on screen draws the strip, so that is
+   * always this window's own tab - known here without asking, which keeps a
+   * tab just switched to from showing the previous one lit until the backend
+   * answers.
+   */
+  active: string;
   refresh: () => Promise<void>;
   /** Opens a folder - or the welcome screen - as a new tab and shows it. */
   open: (folder: string | null) => Promise<void>;
@@ -33,11 +41,11 @@ interface WorkspaceTabsState {
 
 export const useWorkspaceTabs = create<WorkspaceTabsState>((set) => ({
   tabs: [],
-  active: null,
+  active: getCurrentWindow().label,
 
   refresh: async () => {
-    const { tabs, active } = await invoke<{ tabs: WorkspaceTab[]; active: string }>("workspace_tabs");
-    set({ tabs, active });
+    const { tabs } = await invoke<{ tabs: WorkspaceTab[] }>("workspace_tabs");
+    set({ tabs });
   },
 
   open: (folder) => invoke("workspace_open", { folder }),
@@ -66,6 +74,20 @@ function register(folder: string | null): void {
 register(useWorkspace.getState().rootPath);
 useWorkspace.subscribe((state, previous) => {
   if (state.rootPath !== previous.rootPath) register(state.rootPath);
+});
+
+// This tab was put on screen beneath the one showing, to draw its first frames
+// unseen (`workspaces.rs`, the stage). Two frames later it has, and it can take
+// that one's place.
+void listen<string>("workspaces:staged", (event) => {
+  if (event.payload !== getCurrentWindow().label) return;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      invoke("workspace_staged").catch((error: unknown) => {
+        console.error("could not take this tab's place on screen:", error);
+      });
+    });
+  });
 });
 
 void listen("workspaces:changed", () => {

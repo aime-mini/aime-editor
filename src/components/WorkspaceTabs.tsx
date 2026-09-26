@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AppWindow, FolderOpen, Plus, X } from "lucide-react";
+import { AppWindow, FolderOpen, Loader2, Plus, X } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { translate, useT } from "../i18n";
 import { tabName, useWorkspaceTabs, type WorkspaceTab } from "../stores/workspaceTabs";
@@ -11,7 +11,8 @@ import { ContextMenu } from "./ContextMenu";
  * Thin on purpose: every pixel here is taken from the editor. A tab is a
  * folder; clicking it shows that workspace where this one stands, and the one
  * left keeps running - its terminals, its AI turn, its language servers. Right
- * click takes a tab out into a window of its own.
+ * click takes a tab out into a window of its own. A tab just opened spins until
+ * its page has painted, then takes this one's place.
  */
 export function WorkspaceTabs() {
   const t = useT();
@@ -25,13 +26,14 @@ export function WorkspaceTabs() {
     >
       {tabs.map((tab) => {
         const current = tab.label === active;
+        const loading = tab.loading && !current;
         return (
           <div
             key={tab.label}
             data-workspace-tab={tab.label}
             onContextMenu={(event) => {
               event.preventDefault();
-              setMenu({ tab, x: event.clientX, y: event.clientY });
+              if (!loading) setMenu({ tab, x: event.clientX, y: event.clientY });
             }}
             className={`group flex max-w-52 min-w-24 items-center gap-1.5 border-r border-line px-2 ${
               current ? "bg-bg text-fg" : "text-muted hover:bg-elevated hover:text-fg"
@@ -41,10 +43,15 @@ export function WorkspaceTabs() {
               onClick={() => {
                 if (!current) void switchTo(tab.label);
               }}
+              disabled={loading}
               title={tab.folder ?? t("tabs.welcome")}
               className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
             >
-              <FolderOpen size={11} className={`shrink-0 ${current ? "text-accent" : ""}`} />
+              {loading ? (
+                <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+              ) : (
+                <FolderOpen size={11} className={`shrink-0 ${current ? "text-accent" : ""}`} />
+              )}
               <span className="truncate">{tabName(tab) ?? t("tabs.welcome")}</span>
             </button>
             <button

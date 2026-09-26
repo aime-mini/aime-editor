@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use tauri::{AppHandle, LogicalSize, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{LogicalSize, PhysicalPosition, WebviewWindow};
+
+use crate::window_show;
 
 static WINDOW_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -26,7 +28,7 @@ pub fn unattended() -> bool {
 }
 
 /// Fits the window's restore bounds inside the monitor work area (taskbar
-/// excluded), maximizes, then shows. Fixed logical sizes overflow on scaled
+/// excluded), then shows it maximized. Fixed logical sizes overflow on scaled
 /// displays (125–150 %), which pushed the restored window's bottom under the
 /// taskbar — so the size is computed from the actual monitor instead.
 pub fn fit_and_maximize(window: &WebviewWindow) {
@@ -51,11 +53,8 @@ pub fn fit_and_maximize(window: &WebviewWindow) {
         Ok(None) => eprintln!("[window] no monitor detected — keeping configured size"),
         Err(err) => eprintln!("[window] current_monitor failed: {err}"),
     }
-    if let Err(err) = window.maximize() {
-        eprintln!("[window] maximize failed: {err}");
-    }
-    if let Err(err) = window.show() {
-        eprintln!("[window] show failed: {err}");
+    if let Err(err) = window_show::maximized(window) {
+        eprintln!("[window] showing maximized failed: {err}");
     }
     if let Err(err) = window.set_focus() {
         eprintln!("[window] set_focus failed: {err}");
@@ -83,45 +82,11 @@ pub fn next_label() -> String {
     format!("editor-{}", WINDOW_COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
-/// Shows `to` exactly where `from` stands - maximized on the same monitor, or
-/// at its position and size - then hides `from`. `to` is shown first, so the
-/// screen never goes without a window in between.
+/// Shows `to` exactly where `from` stands, then hides `from` (`window_show`).
 pub fn take_place(from: &WebviewWindow, to: &WebviewWindow) -> Result<(), String> {
     if unattended() {
         park_offscreen(to);
-    } else {
-        let position = from.outer_position().map_err(|e| e.to_string())?;
-        to.set_position(position).map_err(|e| e.to_string())?;
-        if from.is_maximized().map_err(|e| e.to_string())? {
-            to.maximize().map_err(|e| e.to_string())?;
-        } else {
-            to.set_size(from.outer_size().map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-        }
-        to.show().map_err(|e| e.to_string())?;
-        to.set_focus().map_err(|e| e.to_string())?;
+        return from.hide().map_err(|e| e.to_string());
     }
-    from.hide().map_err(|e| e.to_string())
-}
-
-/// Opens a new editor window — each window is an independent workspace
-/// (frontend state is isolated per webview; AI events are filtered by run_id).
-#[tauri::command]
-pub async fn open_new_window(app: AppHandle) -> Result<(), String> {
-    let label = next_label();
-    // Created hidden; fit_and_maximize sizes it to the monitor and shows it.
-    let window = WebviewWindowBuilder::new(&app, &label, WebviewUrl::default())
-        .title("Aime - AI Mini Editor")
-        .inner_size(IDEAL_RESTORE.0, IDEAL_RESTORE.1)
-        .min_inner_size(960.0, 600.0)
-        .visible(false)
-        // The native drag-drop handler stays on, as it is in the first window
-        // (`dragDropEnabled` in tauri.conf.json): it is what hands the page a
-        // file dropped from the OS file manager with its path on disk. The file
-        // tree no longer needs DOM drag events for its own moves - it drags on
-        // pointer events (`stores/pathDrag.ts`) - so nothing is lost by it.
-        .build()
-        .map_err(|e| e.to_string())?;
-    fit_and_maximize(&window);
-    Ok(())
+    window_show::take_place(from, to)
 }
