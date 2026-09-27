@@ -6,6 +6,7 @@ import type { RuleFile } from "./projectRules";
 import type { CheckPass } from "./qualityGate";
 import type { Baseline, GateVerdict, SuiteRun } from "./regressionGate";
 import type { Run } from "./runPlan";
+import type { JoinedTree, TreeStatus } from "./runTrees";
 import type { TestEnvironment } from "./testEnvironment";
 
 /**
@@ -90,6 +91,13 @@ export interface SavedRun {
    * this needed nothing as far as it knew.
    */
   environment?: TestEnvironment | null;
+  /**
+   * The repositories the run joined beyond its first, for a run that spans a
+   * workspace of several. Optional: a run journaled before this had none.
+   */
+  joined?: JoinedTree[];
+  /** The other repositories of that workspace as they stood when the run began. */
+  othersAtStart?: TreeStatus[];
   /**
    * The repository the run belonged to, when the project holds several and it
    * was not the project itself. Optional like `workRoot`, for the same reason.

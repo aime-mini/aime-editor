@@ -98,9 +98,10 @@ import {
   type PhaseResult,
   type Run,
 } from "../lib/runPlan";
-import { isWithin } from "../lib/repositories";
+import { isWithin, repositoryLabel } from "../lib/repositories";
+import { statusLine, tasksOfTree, treesReached, type JoinedTree, type TreeStatus } from "../lib/runTrees";
 import { branchNameFor } from "../lib/workItems";
-import { useGit } from "./git";
+import { useGit, type GitStatus } from "./git";
 import { folderOf, type TaskDef } from "./tasks";
 import { useTrackers, type WorkItem } from "./trackers";
 import { useWorkspace } from "./workspace";
@@ -187,6 +188,17 @@ interface Artifacts {
    * the suites brings it up around itself (`runSuitesIn`).
    */
   environment: TestEnvironment | null;
+  /**
+   * The repositories this run joined beyond its first, each with what was
+   * untracked there when it joined - for a run that spans a workspace of
+   * several (`lib/runTrees.ts`).
+   */
+  joined: JoinedTree[];
+  /**
+   * Every other repository of that workspace as it stood when the run began,
+   * so a change that strays into one the run never joined is caught.
+   */
+  othersAtStart: TreeStatus[];
 }
 
 const NOTHING_YET: Artifacts = {
@@ -205,6 +217,8 @@ const NOTHING_YET: Artifacts = {
   rules: [],
   untrackedBefore: [],
   environment: null,
+  joined: [],
+  othersAtStart: [],
 };
 
 /**
@@ -347,15 +361,18 @@ export const useRun = create<RunState>((set, get) => ({
     // run waiting at its approval gate holds the tree as surely as one that is
     // driving: its branch is checked out there and its tests will land there.
     const sharedTreeTaken = Object.values(get().slots).some(
-      (slot) => slot.workRoot === tree && !isOver(slot.run),
+      (slot) => (slot.workRoot === tree || slot.workRoot === home) && !isOver(slot.run),
     );
+    // A repository below the workspace is worked on from the workspace itself,
+    // so a change can reach its sibling repositories (`lib/runTrees.ts`).
+    const ownTree = tree !== home && isWithin(tree, home) ? home : tree;
     const engine = engineFor(id);
     engine.driving = true;
     const slot: RunSlot = {
       run: newRun(id, item.id, item.title, startedAt),
       log: [],
       tree,
-      workRoot: tree,
+      workRoot: ownTree,
       ...NOTHING_YET,
     };
     set((state) => ({
@@ -368,7 +385,7 @@ export const useRun = create<RunState>((set, get) => ({
     useWorkspace.getState().openRun();
 
     const ops = opsFor(id);
-    let workRoot = tree;
+    let workRoot = ownTree;
     if (sharedTreeTaken) {
       // Another run holds the user's tree, so this one gets a worktree of its
       // own — the price of parallelism, paid only when it buys something.
@@ -536,11 +553,11 @@ export const useRun = create<RunState>((set, get) => ({
   previewTrash: async () => {
     const shown = shownSlot(get());
     if (shown === null) return;
-    const items = await trashOf(shown.workRoot, shown.untrackedBefore, shown.run.startedAt);
+    const items = await trashOf(shown.workRoot, treesOf(shown), shown.run.startedAt);
     // A worktree run's own checkout is offered too - its change is already
     // committed on the branch, so the tree is disposable, but the evidence
     // lives inside it, so keeping it stays the default.
-    if (shown.workRoot !== shown.tree) {
+    if (inWorktree(shown)) {
       items.push({ path: shown.workRoot, shown: shown.workRoot, keeper: true });
     }
     set({ trash: items, trashResult: null });
@@ -549,7 +566,7 @@ export const useRun = create<RunState>((set, get) => ({
   sweepTrash: async (paths) => {
     const shown = shownSlot(get());
     if (shown === null) return;
-    const worktreeTicked = shown.workRoot !== shown.tree && paths.includes(shown.workRoot);
+    const worktreeTicked = inWorktree(shown) && paths.includes(shown.workRoot);
     // Files inside a worktree that is itself going die with it; deleting them
     // first would only race the removal.
     const files = worktreeTicked
@@ -569,7 +586,7 @@ export const useRun = create<RunState>((set, get) => ({
     const gone = worktreeTicked && !trashResult.failed.includes(shown.workRoot);
     set({
       trashResult,
-      trash: gone ? [] : await trashOf(shown.workRoot, shown.untrackedBefore, shown.run.startedAt),
+      trash: gone ? [] : await trashOf(shown.workRoot, treesOf(shown), shown.run.startedAt),
     });
   },
 }));
@@ -701,6 +718,8 @@ function slotFrom(saved: SavedRun, home: string, interrupted: boolean): RunSlot 
     rules: saved.rules,
     untrackedBefore: saved.untrackedBefore,
     environment: saved.environment ?? null,
+    joined: saved.joined ?? [],
+    othersAtStart: saved.othersAtStart ?? [],
   };
 }
 
@@ -862,6 +881,8 @@ function artifactsOf(slot: RunSlot): Artifacts {
     rules: slot.rules,
     untrackedBefore: slot.untrackedBefore,
     environment: slot.environment,
+    joined: slot.joined,
+    othersAtStart: slot.othersAtStart,
   };
 }
 
@@ -934,7 +955,7 @@ async function takeBaseline(context: Context, set: Setter, get: Getter): Promise
     // store speaks for the folder the user has open, and a parallel run works
     // somewhere else.
     try {
-      await invoke("git_create_branch", { root: context.workRoot, name: branch });
+      await invoke("git_create_branch", { root: gitRootOf(context), name: branch });
       refused = null;
       break;
     } catch (error: unknown) {
@@ -946,15 +967,16 @@ async function takeBaseline(context: Context, set: Setter, get: Getter): Promise
   }
   set((slot) => ({ run: { ...slot.run, branch } }));
   // The user's own panel should show the branch the run just took their tree to.
-  if (context.workRoot === context.tree) void useGit.getState().refresh();
+  if (!inWorktree(context)) void useGit.getState().refresh();
 
   // Git's untracked list, before anything runs: whatever is untracked later and
   // not in here is what this run created — the only files the cleanup button
   // may ever offer to delete.
-  set({ untrackedBefore: await untrackedNow(context.workRoot) });
+  set({ untrackedBefore: await untrackedNow(gitRootOf(context)) });
+  if (spansWorkspace(context)) set({ othersAtStart: await othersNow(context, [context.tree]) });
 
   const nextId = commandIdFor(context.id);
-  const tasks = await tasksOf(context.workRoot);
+  const tasks = await tasksOfRun(context, get);
   const suites = await settleEnvironment(
     tasks,
     await runSuitesIn(tasks, context, set, "understand", null),
@@ -1028,6 +1050,7 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
   const description = await useTrackers.getState().detailOf(context.item);
   const asking = [
     UNDERSTAND_PROMPT,
+    ...(await workspaceBrief(context)),
     `# ${context.item.title}`,
     `Type: ${context.item.itemType} · State: ${context.item.state}`,
     description?.description ?? translate("tracker.noDescription"),
@@ -1046,6 +1069,7 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
   const { brief, found } = answer;
   const files = found.files.slice(0, SURVEY_FILE_LIMIT);
   set({ brief, survey: { ...found, files } });
+  const trees = spansWorkspace(context) ? await joinReachedTrees(context, files, set, get) : NONE_JOINED;
 
   // A project whose manifest declares no test script may still have suites -
   // in a Makefile, a CI file, a build script - and the model was asked to read
@@ -1053,7 +1077,7 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
   // the ones that actually ran, and they become this run's baseline and join
   // every later pass over the suites.
   const discoveredLines: string[] = [];
-  if (testTasksOf(await tasksOf(context.workRoot)).length === 0 && found.suites.length > 0) {
+  if (testTasksOf(await tasksOfRun(context, get)).length === 0 && found.suites.length > 0) {
     const candidates: TaskDef[] = found.suites.slice(0, DISCOVERED_SUITE_LIMIT).map((suite, index) => ({
       id: `ai-suite-${String(index + 1)}`,
       label: suite.command,
@@ -1092,7 +1116,10 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
   // commit.
   const { languageServerProbe } = await import("../lib/lsp/impact");
   note(set, "understand", translate("run.asking", { count: files.length }));
-  const radius = await radiusFrom(files, languageServerProbe(context.tree));
+  // Files are named from where the agent worked, which is the workspace itself
+  // for a run spanning its repositories.
+  const probeRoot = spansWorkspace(context) ? context.workRoot : context.tree;
+  const radius = await radiusFrom(files, languageServerProbe(probeRoot));
   set({ radius });
 
   // A question does not stop the run. Waiting for an answer from a desk nobody
@@ -1113,7 +1140,13 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
     state: "passed",
     // The groundwork's line first: what the suites said before a line was
     // written is the fact every later phase is measured against.
-    summary: [ground.note, read].filter(Boolean).join(" · "),
+    summary: [
+      ground.note,
+      trees.joined.length > 0 ? translate("run.treesJoined", { repositories: trees.joined.join(", ") }) : "",
+      read,
+    ]
+      .filter(Boolean)
+      .join(" · "),
     detail: [
       ...(ground.detail === "" ? [] : [ground.detail, ""]),
       ...(rules.length === 0
@@ -1130,6 +1163,7 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
       ...found.patterns.map((pattern) => `- ${pattern}`),
       ...(found.testsLiveIn === "" ? [] : ["", `${translate("run.testsLiveIn")}: ${found.testsLiveIn}`]),
       ...discoveredLines,
+      ...(trees.lines.length > 0 ? ["", ...trees.lines] : []),
     ].join("\n"),
   };
 }
@@ -1327,6 +1361,7 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
     ...conventionsOf(get().survey),
     ...rulesBlock(get().rules),
     ...whatDependsOnIt(get().radius),
+    ...repositoriesAllowed(context, get),
   ].join("\n");
 
   const tried: string[] = [];
@@ -1347,8 +1382,12 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
       continue;
     }
 
-    const diff = await invoke<string>("git_pending_diff", { root: context.workRoot });
+    const diff = await pendingDiff(context, get);
     if (diff.trim() === "") return { state: "blocked", summary: translate("run.noChange") };
+    const strayed = await strayedInto(context, get);
+    if (strayed.length > 0) {
+      return { state: "blocked", summary: translate("run.strayed", { repositories: strayed.join(", ") }) };
+    }
 
     const missing = testsNotWritten(plan, await existingFiles(context.workRoot));
     if (missing.length === 0) {
@@ -1428,7 +1467,7 @@ async function verify(context: Context, set: Setter, get: Getter): Promise<Phase
  * blamed on it.
  */
 async function measureAndMend(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
-  const tasks = await tasksOf(context.workRoot);
+  const tasks = await tasksOfRun(context, get);
   const before = get().baseline;
   const checksBefore = get().checks ?? { checks: [] };
   const hasChecks = checkTasksOf(tasks).length > 0;
@@ -1578,7 +1617,7 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
 async function buildAndProve(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
   const cases = await agreedCases(context.workRoot, get, set);
   const since = get().run.startedAt;
-  const builds = (await tasksOf(context.workRoot)).filter((task) => task.kind === "build");
+  const builds = (await tasksOfRun(context, get)).filter((task) => task.kind === "build");
   const tried: string[] = [];
 
   // The declared builds first, run by Aime itself: code that does not build has
@@ -1718,7 +1757,7 @@ function needsDeploy(get: Getter): boolean {
  * reported for a person to judge, because a reviewer can simply be wrong.
  */
 async function reviewPhase(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
-  const diff = await invoke<string>("git_pending_diff", { root: context.workRoot });
+  const diff = await pendingDiff(context, get);
   if (diff.trim() === "") return { state: "skipped", summary: translate("run.nothingChanged") };
 
   const asking = [
@@ -1813,7 +1852,7 @@ async function fixFindings(
     );
     if (code === null) return { mended: false, attempts: attempt, tried };
 
-    const tasks = await tasksOf(context.workRoot);
+    const tasks = await tasksOfRun(context, get);
     const checksNow = await runChecks(
       tasks,
       context.workRoot,
@@ -1846,6 +1885,12 @@ async function fixFindings(
  * condition, so the reader never has to reverse-engineer the gate.
  */
 async function report(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
+  // Asked again here and not only after the first write: every repair round
+  // and every review fix wrote code too, and any of them could have strayed.
+  const strayed = await strayedInto(context, get);
+  if (strayed.length > 0) {
+    return { state: "blocked", summary: translate("run.strayed", { repositories: strayed.join(", ") }) };
+  }
   const state = get();
   const evidence = await collectEvidence(context.workRoot, state.run.startedAt);
   set({ evidence });
@@ -1855,7 +1900,7 @@ async function report(context: Context, set: Setter, get: Getter): Promise<Phase
   // work reaches them at home. A run in the user's tree commits nothing - the
   // uncommitted diff is theirs to review, exactly as before.
   let committed = "";
-  if (context.workRoot !== context.tree) {
+  if (inWorktree(context)) {
     try {
       await invoke("git_commit_all", {
         root: context.workRoot,
@@ -1987,6 +2032,186 @@ function tasksOf(root: string): Promise<TaskDef[]> {
 }
 
 /**
+ * Whether a run works from the workspace folder above its repositories - the
+ * repository it started in lies inside where it works - rather than in one
+ * repository or a worktree of it (`lib/runTrees.ts`).
+ */
+function spansWorkspace(run: Pick<RunSlot, "tree" | "workRoot">): boolean {
+  return run.workRoot !== run.tree && isWithin(run.tree, run.workRoot);
+}
+
+/** Whether a run works in a git worktree of its own, beside the user's tree. */
+function inWorktree(run: Pick<RunSlot, "tree" | "workRoot">): boolean {
+  return run.workRoot !== run.tree && !spansWorkspace(run);
+}
+
+/** The repository a run's own branch and baseline live in. */
+function gitRootOf(run: Pick<RunSlot, "tree" | "workRoot">): string {
+  return spansWorkspace(run) ? run.tree : run.workRoot;
+}
+
+/** Every repository a run covers, each with what was untracked there before it began. */
+function treesOf(run: Pick<RunSlot, "tree" | "workRoot" | "untrackedBefore" | "joined">): JoinedTree[] {
+  return [{ tree: gitRootOf(run), untrackedBefore: run.untrackedBefore }, ...run.joined];
+}
+
+/**
+ * The tasks a pass runs: the project's own in a run of one repository; every
+ * covered repository's, named after it and run from its folder, in a run that
+ * spans the workspace - so a backend suite and a frontend suite are never
+ * mistaken for each other by the gate, which matches suites by id.
+ */
+async function tasksOfRun(context: Context, get: Getter): Promise<TaskDef[]> {
+  if (!spansWorkspace(context)) return tasksOf(context.workRoot);
+  const perTree = await Promise.all(
+    treesOf(get()).map(async ({ tree }) => tasksOfTree(await tasksOf(tree), tree, context.workRoot)),
+  );
+  return perTree.flat();
+}
+
+/** The change as it stands, across every repository the run covers, each under its name. */
+async function pendingDiff(context: Context, get: Getter): Promise<string> {
+  const trees = treesOf(get());
+  const diffs = await Promise.all(
+    trees.map(({ tree }) => invoke<string>("git_pending_diff", { root: tree })),
+  );
+  if (trees.length === 1) return diffs[0];
+  return trees
+    .map(({ tree }, index) =>
+      diffs[index].trim() === "" ? "" : `# ${repositoryLabel(tree, context.workRoot)}\n${diffs[index]}`,
+    )
+    .filter((part) => part !== "")
+    .join("\n");
+}
+
+/** Every repository of the workspace but these, as it stands now. */
+async function othersNow(context: Context, covered: readonly string[]): Promise<TreeStatus[]> {
+  const repositories = await invoke<string[]>("git_repositories", { root: context.workRoot });
+  const others = repositories.filter((tree) => !covered.includes(tree));
+  return Promise.all(
+    others.map(async (tree) => ({
+      tree,
+      status: statusLine((await invoke<GitStatus>("git_status", { root: tree })).files),
+    })),
+  );
+}
+
+/**
+ * The repositories the change reached without the run having joined them:
+ * each one whose status is no longer what it was when the run began.
+ *
+ * The agent works from the workspace folder and can write anywhere in it; the
+ * prompt names the repositories it may change, and this is what holds it to
+ * that. A repository changed behind the run's back has no branch and no
+ * baseline, so nothing about it could be measured - the run stops and says
+ * which one rather than handing over a change it cannot vouch for.
+ */
+async function strayedInto(context: Context, get: Getter): Promise<string[]> {
+  if (!spansWorkspace(context)) return [];
+  const covered = treesOf(get()).map(({ tree }) => tree);
+  const before = get().othersAtStart.filter(({ tree }) => !covered.includes(tree));
+  const now = await othersNow(context, covered);
+  return before
+    .filter(({ tree, status }) => now.find((other) => other.tree === tree)?.status !== status)
+    .map(({ tree }) => repositoryLabel(tree, context.workRoot));
+}
+
+/**
+ * What the understand step is told about a workspace of several repositories:
+ * which they are, and that a file is named from the workspace folder - which is
+ * how a change reaching the backend and the screen both gets read as one.
+ */
+async function workspaceBrief(context: Context): Promise<string[]> {
+  if (!spansWorkspace(context)) return [];
+  const repositories = await invoke<string[]>("git_repositories", { root: context.workRoot });
+  if (repositories.length < 2) return [];
+  const labels = repositories.map((tree) => repositoryLabel(tree, context.workRoot));
+  return [
+    `This folder holds several git repositories: ${labels.join(", ")}. The change may land in any of ` +
+      "them - read each one it touches, and name every file by its path from here, repository folder " +
+      "included (`api/src/x.ts`, not `src/x.ts`).",
+  ];
+}
+
+/** The line that holds the implementing agent to the repositories this run covers. */
+function repositoriesAllowed(context: Context, get: Getter): string[] {
+  if (!spansWorkspace(context)) return [];
+  const labels = treesOf(get()).map(({ tree }) => repositoryLabel(tree, context.workRoot));
+  return [
+    "",
+    `Change files only inside these repositories of the folder: ${labels.join(", ")}. The others are ` +
+      "not part of this run - Aime stops it if the change reaches one.",
+  ];
+}
+
+/** The repositories that joined a run, by name, and a line for each one that joined or would not. */
+interface TreesJoined {
+  joined: string[];
+  lines: string[];
+}
+
+const NONE_JOINED: TreesJoined = { joined: [], lines: [] };
+
+/**
+ * Brings every other repository the change reaches into the run, before a line
+ * of it is written: the run's branch, its untracked files, and its suites and
+ * checks as they stand - so the gate compares it the way it compares the first.
+ * A repository whose branch git refuses is left out and said so; the prompt
+ * then keeps the agent out of it, and `strayedInto` holds it to that.
+ */
+async function joinReachedTrees(
+  context: Context,
+  files: string[],
+  set: Setter,
+  get: Getter,
+): Promise<TreesJoined> {
+  const branch = get().run.branch;
+  if (branch === null) return NONE_JOINED;
+  const repositories = await invoke<string[]>("git_repositories", { root: context.workRoot });
+  const reached = treesReached(
+    files,
+    context.workRoot,
+    repositories,
+    treesOf(get()).map(({ tree }) => tree),
+  );
+  const joined: string[] = [];
+  const lines: string[] = [];
+  for (const tree of reached) {
+    const repository = repositoryLabel(tree, context.workRoot);
+    try {
+      await invoke("git_create_branch", { root: tree, name: branch });
+    } catch (error: unknown) {
+      lines.push(translate("run.treeRefused", { repository, detail: String(error) }));
+      continue;
+    }
+    const untrackedBefore = await untrackedNow(tree);
+    set((slot) => ({ joined: [...slot.joined, { tree, untrackedBefore }] }));
+    const tasks = tasksOfTree(await tasksOf(tree), tree, context.workRoot);
+    const suites = await settleEnvironment(
+      tasks,
+      await runSuitesIn(tasks, context, set, "understand", get().environment),
+      context,
+      set,
+      get,
+    );
+    const checks = await runChecks(
+      tasks,
+      context.workRoot,
+      commandIdFor(context.id),
+      runCommand(set, "understand"),
+    );
+    set((slot) => ({
+      baseline: { suites: [...(slot.baseline?.suites ?? []), ...suites.suites] },
+      checks: { checks: [...(slot.checks?.checks ?? []), ...checks.checks] },
+    }));
+    joined.push(repository);
+    lines.push(translate("run.treeJoined", { repository, branch, suites: measured(suites).length }));
+  }
+  if (lines.length > 0) note(set, "understand", lines.join("\n"));
+  return { joined, lines };
+}
+
+/**
  * Every suite, now.
  *
  * Suites the baseline could not run are skipped: paying a fifteen-minute timeout
@@ -2003,7 +2228,7 @@ async function suitesNow(
   skip?: ReadonlySet<string>,
 ): Promise<Baseline> {
   return runSuitesIn(
-    await allSuiteTasks(context.workRoot, get),
+    await allSuiteTasks(context, get),
     context,
     set,
     phase,
@@ -2185,8 +2410,8 @@ function failingSuites(verdict: GateVerdict): Set<string> {
  * and Aime proved able to run. Read together everywhere so no pass can quietly
  * measure fewer suites than the baseline did.
  */
-async function allSuiteTasks(root: string, get: Getter): Promise<TaskDef[]> {
-  return [...(await tasksOf(root)), ...get().discovered];
+async function allSuiteTasks(context: Context, get: Getter): Promise<TaskDef[]> {
+  return [...(await tasksOfRun(context, get)), ...get().discovered];
 }
 
 /**

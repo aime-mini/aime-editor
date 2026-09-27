@@ -784,6 +784,12 @@ export const vi: Record<TranslationKey, string> = {
   "run.environmentNoHelp": "Bật thứ AI nêu không làm suite nói khác đi, nên không giữ. {detail}",
   "run.environmentKept": "Các suite cần bật thứ khác trước, và giờ đã chạy được với nó: {why}",
   "run.environmentUp": "Đang bật thứ các suite cần: {services}",
+  "run.treesJoined": "{repositories} vào lượt chạy",
+  "run.treeJoined":
+    "{repository} vào lượt chạy - thay đổi chạm tới nó: nhánh {branch}, đo {suites} suite trước khi sửa",
+  "run.treeRefused": "{repository} không vào được lượt chạy, nên thay đổi phải tránh nó: {detail}",
+  "run.strayed":
+    "Thay đổi chạm tới {repositories}, repo mà lượt chạy chưa từng nhận - ở đó chưa đo gì, nên dừng tại đây",
   "run.environmentSilent": "`{command}` không bao giờ trả lời ở {ready}",
   "run.environmentExited": "`{command}` dừng trước khi trả lời: {detail}",
   "run.discoveredSuites":

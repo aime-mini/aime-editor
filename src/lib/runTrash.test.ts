@@ -78,7 +78,7 @@ describe("trashOf", () => {
       ],
     );
 
-    const items = await trashOf("C:/work", ["notes.txt"], 1_000);
+    const items = await trashOf("C:/work", [{ tree: "C:/work", untrackedBefore: ["notes.txt"] }], 1_000);
     expect(items.map((item) => [item.shown, item.keeper])).toEqual([
       [".aime/evidence/TC1.png", true],
       ["scratch.log", false],
@@ -93,7 +93,7 @@ describe("trashOf", () => {
   it("names a new file from the repository's root when the project is a folder inside one", async () => {
     // git answers from the repository's root; the project is its `web` folder.
     project(["README.md", "web/scratch.log"], [], "C:/repo");
-    const items = await trashOf("C:/repo/web", [], 1_000);
+    const items = await trashOf("C:/repo/web", [{ tree: "C:/repo/web", untrackedBefore: [] }], 1_000);
     expect(items.map((item) => item.path.replaceAll("\\", "/"))).toEqual([
       "C:/repo/README.md",
       "C:/repo/web/scratch.log",
@@ -104,7 +104,7 @@ describe("trashOf", () => {
 
   it("leaves another run's artifacts alone", async () => {
     project([], [{ path: "C:/work/.aime/evidence/TC1.png", modified: 500 }]);
-    await expect(trashOf("C:/work", [], 1_000)).resolves.toEqual([]);
+    await expect(trashOf("C:/work", [{ tree: "C:/work", untrackedBefore: [] }], 1_000)).resolves.toEqual([]);
   });
 });
 

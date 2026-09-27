@@ -790,6 +790,12 @@ export const en = {
     "Starting what the AI named changed nothing the suites said, so it is not kept. {detail}",
   "run.environmentKept": "The suites needed something running first, and now answer with it: {why}",
   "run.environmentUp": "Starting what the suites need: {services}",
+  "run.treesJoined": "{repositories} joined the run",
+  "run.treeJoined":
+    "{repository} joined the run - the change reaches it: branch {branch}, {suites} suite(s) measured before the change",
+  "run.treeRefused": "{repository} could not join the run, so the change stays out of it: {detail}",
+  "run.strayed":
+    "The change reached {repositories}, which this run never joined - nothing there was measured, so it stops here",
   "run.environmentSilent": "`{command}` never answered on {ready}",
   "run.environmentExited": "`{command}` stopped before it answered: {detail}",
   "run.discoveredSuites":

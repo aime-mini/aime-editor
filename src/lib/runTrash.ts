@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus } from "../stores/git";
 import { inRepository, repositoryOf } from "./repositories";
 import { collectEvidence } from "./runReport";
+import type { JoinedTree } from "./runTrees";
 
 /**
  * What one run left behind, and the strict rules for cleaning it up.
@@ -53,12 +54,14 @@ export function freshUntracked(before: readonly string[], now: readonly string[]
 
 /**
  * Everything this run left that could be swept, evidence marked as worth
- * keeping. `since` is the run's own start: an artifact folder is shared between
- * runs, and one run's button must not offer another run's files.
+ * keeping: the new untracked files of every repository the run covered, each
+ * against its own list from before, and the artifacts under `root`, where the
+ * agent worked. `since` is the run's own start: an artifact folder is shared
+ * between runs, and one run's button must not offer another run's files.
  */
 export async function trashOf(
   root: string,
-  untrackedBefore: readonly string[],
+  trees: readonly JoinedTree[],
   since: number,
 ): Promise<TrashItem[]> {
   const base = root.replace(/[\\/]+$/, "");
@@ -72,9 +75,11 @@ export async function trashOf(
     items.set(normal, { path: absolute, shown, keeper: keeper || (seen?.keeper ?? false) });
   };
 
-  const [untracked, repository] = await Promise.all([untrackedNow(root), repositoryAround(root)]);
-  for (const path of freshUntracked(untrackedBefore, untracked)) {
-    put(inRepository(repository, path), false);
+  for (const { tree, untrackedBefore } of trees) {
+    const [untracked, repository] = await Promise.all([untrackedNow(tree), repositoryAround(tree)]);
+    for (const path of freshUntracked(untrackedBefore, untracked)) {
+      put(inRepository(repository, path), false);
+    }
   }
   for (const path of await collectEvidence(root, since)) {
     put(path, path.replace(/\\/g, "/").includes("/.aime/evidence/"));

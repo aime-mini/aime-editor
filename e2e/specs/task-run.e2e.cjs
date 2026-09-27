@@ -50,7 +50,11 @@ const providersFile = path.join(configDir, "providers.json");
 const trackersFile = path.join(configDir, "trackers.json");
 const keysFile = path.join(configDir, "api-keys.json");
 
-/** Where the fake CLI reads its orders: "sound", "repairs", "breaks" or "sloppy". */
+/**
+ * Where the fake CLI reads its orders: "sound", "repairs", "breaks", "sloppy",
+ * "crossRepo" (the change reaches the api as well) or "strays" (it reaches the
+ * api without saying so).
+ */
 const MODE_FILE = path.join(os.tmpdir(), "aime-run-probe-mode.txt");
 const PROBE_SCRIPT = path.join(os.tmpdir(), "aime-run-probe.cjs");
 
@@ -116,6 +120,11 @@ const TEST_WITH_ROUNDING =
 
 const prompt = fs.readFileSync(0, "utf8");
 const here = (...parts) => path.join(process.cwd(), ...parts);
+// A run in a folder of several repositories works from the folder itself, so
+// the shop's files are one level down and are named from there.
+const inProduct = fs.existsSync(here("shop", "src"));
+const shop = (...parts) => (inProduct ? here("shop", ...parts) : here(...parts));
+const named = (file) => (inProduct ? "shop/" + file : file);
 
 // Two routes reach this script and they read its output differently, which is
 // a real property of the app rather than a quirk of the probe. A phase that can
@@ -145,7 +154,7 @@ if (prompt.includes("these test suites of this repository failed")) {
     goal: "Round the total to two places",
     criteria: [{ id: "AC1", text: "withTax rounds to two decimal places" }],
     questions: [],
-    files: ["src/cart.js"],
+    files: [named("src/cart.js"), ...(mode === "crossRepo" ? ["api/server.js"] : [])],
     patterns: ["plain ES modules, no framework - src/checkout.js"],
     testsLiveIn: "test.cjs at the root, run by node",
     // Read out of "CI config": how this project is really tested. Aime only
@@ -173,8 +182,8 @@ if (prompt.includes("these test suites of this repository failed")) {
         then: "it answers 27.5 rather than 27.500000000000004",
       },
     ],
-    steps: [{ what: "Round in withTax", files: ["src/cart.js"], criteria: ["AC1"] }],
-    tests: [{ name: "rounds to two places", file: "test.cjs", case: "TC1" }],
+    steps: [{ what: "Round in withTax", files: [named("src/cart.js")], criteria: ["AC1"] }],
+    tests: [{ name: "rounds to two places", file: named("test.cjs"), case: "TC1" }],
   });
 } else if (prompt.includes("Implement this work item")) {
   // The code and its tests in one phase, in that order - which is the order the
@@ -182,25 +191,29 @@ if (prompt.includes("these test suites of this repository failed")) {
   // differ in what the repair rounds do about it afterwards.
   const breaks = mode === "breaks" || mode === "repairs";
   const source = breaks ? BREAKS : mode === "sloppy" ? SLOPPY : SOUND;
-  fs.writeFileSync(here("src", "cart.js"), source);
+  fs.writeFileSync(shop("src", "cart.js"), source);
   // The file the plan named. Aime checks it exists before the phase may pass,
   // which is the mechanical half of "the tests were actually written".
-  fs.writeFileSync(here("test.cjs"), TEST_WITH_ROUNDING);
+  fs.writeFileSync(shop("test.cjs"), TEST_WITH_ROUNDING);
   // And the kind of droppings an agent leaves behind: an untracked scratch
   // file, which the cleanup button must offer and the baseline snapshot must
   // not blame on anything that was already there.
-  fs.writeFileSync(here("debug-scratch.log"), "temporary notes\n");
+  fs.writeFileSync(shop("debug-scratch.log"), "temporary notes\n");
+  // The api side of the ticket: announced in the survey, or not.
+  if (mode === "crossRepo" || mode === "strays") {
+    fs.writeFileSync(here("api", "server.js"), "export const port = 8081;\n");
+  }
   process.stdout.write("done\n");
 } else if (prompt.includes("broke this project's own checks")) {
   // The linter caught the stray console.log. Take it out - which is what
   // "fixed and re-run until they pass" has to mean in practice.
-  fs.writeFileSync(here("src", "cart.js"), SOUND);
+  fs.writeFileSync(shop("src", "cart.js"), SOUND);
   process.stdout.write("tidied\n");
 } else if (prompt.includes("Your change broke something")) {
   // In "repairs" mode it puts back what it broke while keeping the new
   // behaviour; in "breaks" mode it stubbornly does not, which is how the
   // bounded give-up gets proved.
-  if (mode === "repairs") fs.writeFileSync(here("src", "cart.js"), SOUND);
+  if (mode === "repairs") fs.writeFileSync(shop("src", "cart.js"), SOUND);
   process.stdout.write("tried\n");
 // Matched on a phrase that sits on ONE line of the prompt: the prompts are
 // wrapped template literals, and a phrase spanning a wrap point never matches.
@@ -640,6 +653,16 @@ function reportsIn(dir) {
     .map((name) => fs.readFileSync(path.join(runs, name), "utf8"));
 }
 
+/** Every run this project journaled, as the app wrote it. */
+function journalsIn(dir) {
+  const runs = path.join(dir, ".aime", "runs");
+  if (!fs.existsSync(runs)) return [];
+  return fs
+    .readdirSync(runs)
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => JSON.parse(fs.readFileSync(path.join(runs, name), "utf8")));
+}
+
 describe("Task run", () => {
   const saved = { providers: null, trackers: null, keys: null };
   let repo = "";
@@ -944,6 +967,11 @@ ${suite.output}`,
     const api = path.join(product, "api");
     fs.mkdirSync(api);
     fs.writeFileSync(path.join(api, "server.js"), "export const port = 8080;\n");
+    fs.writeFileSync(
+      path.join(api, "package.json"),
+      JSON.stringify({ name: "api", private: true, scripts: { test: "node test.cjs" } }, null, 2),
+    );
+    fs.writeFileSync(path.join(api, "test.cjs"), 'console.log("Tests  1 passed (1)");\n');
     gitIn(api, "init", "-b", "main");
     gitIn(api, "config", "user.email", "probe@example.com");
     gitIn(api, "config", "user.name", "Probe");
@@ -973,6 +1001,71 @@ ${suite.output}`,
     );
     assert.equal(gitIn(api, "status", "--porcelain"), "", "the run changed the other repository");
     assert.ok(reportsIn(product).length >= 1, "the report was not kept with the project");
+  });
+
+  it("takes a change into every repository it reaches, each on the run's branch", async () => {
+    // A ticket that changes the api and the shop calling it. The run starts in
+    // the shop; reading the code shows the api is reached too, so the api
+    // joins before anything is written - the same branch, its suite measured
+    // as it stands - and the change lands in both.
+    fs.writeFileSync(MODE_FILE, "crossRepo");
+    const { product, shop, api } = freshProduct();
+    await startRun(product, { repository: "shop" });
+    await waitForPhase(
+      "Understand the task and the code",
+      "api joined the run",
+      "the api was never brought into the run",
+      240_000,
+    );
+    // Measured before a line was written, under the api's own name - the gate
+    // matches suites by id, and a shop suite must never pass for the api's.
+    const baseline = () => journalsIn(product).flatMap((run) => run.baseline?.suites ?? []);
+    try {
+      await browser.waitUntil(
+        async () =>
+          baseline().some((suite) => suite.id.startsWith("api:") && suite.run?.report?.passed === true),
+        { timeout: 10_000 },
+      );
+    } catch {
+      // Named after the wait, so the message shows what the journal holds by then.
+      const ids = baseline().map((suite) => suite.id);
+      throw new Error(`the api's suite was not measured before the change: ${ids.join(", ")}`);
+    }
+    await approve(shop);
+    assert.match(currentBranch(api), /^bugfix\/12-/, "the api was not put on the run's branch");
+
+    await waitForPhase(
+      "Hand over",
+      "Ready on bugfix/12-",
+      "the cross-repository run never finished",
+      300_000,
+    );
+    assert.match(
+      fs.readFileSync(path.join(shop, "src", "cart.js"), "utf8"),
+      /Math\.round/,
+      "no change in the shop",
+    );
+    assert.match(fs.readFileSync(path.join(api, "server.js"), "utf8"), /8081/, "no change in the api");
+  });
+
+  it("stops when the change reaches a repository the run never joined", async () => {
+    // The survey named only the shop, and the agent wrote to the api anyway:
+    // nothing about the api was measured, so the run must not hand it over.
+    fs.writeFileSync(MODE_FILE, "strays");
+    const { product, shop } = freshProduct();
+    await startRun(product, { repository: "shop" });
+    await approve(shop);
+    await waitForPhase(
+      "Write the code and its tests",
+      "which this run never joined",
+      "a change that strayed into the api was handed over",
+      240_000,
+    );
+    assert.equal(
+      (await $("body").getText()).toLowerCase().includes("finished, and every gate agreed"),
+      false,
+      "a run that strayed must never report success",
+    );
   });
 
   it("runs two items at once, the second in a worktree of its own", async () => {
