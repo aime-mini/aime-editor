@@ -13,6 +13,7 @@ const { strict: assert } = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { resizeAppWindow } = require("../support/appWindow.cjs");
 
 function project(name) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `aime-${name}-`));
@@ -109,6 +110,42 @@ const tabsNow = () =>
   browser.executeAsync((done) => {
     window.__TAURI_INTERNALS__.invoke("workspace_tabs").then(done, (error) => done({ error: String(error) }));
   });
+
+/**
+ * The current webview's size and its window's client area, both in CSS
+ * pixels, and the window it sits in - asked of the window itself, so a webview
+ * that did not follow its window shows as a difference.
+ */
+const fitNow = () =>
+  browser.executeAsync((done) => {
+    const { invoke, metadata } = window.__TAURI_INTERNALS__;
+    const label = metadata.currentWindow.label;
+    Promise.all([
+      invoke("plugin:window|inner_size", { label }),
+      invoke("plugin:window|scale_factor", { label }),
+    ]).then(
+      ([size, scale]) =>
+        done({
+          window: label,
+          page: [window.innerWidth, window.innerHeight],
+          client: [Math.round(size.width / scale), Math.round(size.height / scale)],
+        }),
+      (error) => done({ error: String(error) }),
+    );
+  });
+
+/**
+ * Whether a page fills its window's client area. One pixel either way is the
+ * rounding between the window's physical pixels and the page's CSS pixels.
+ */
+const fills = (fit) => fit.page.every((side, index) => Math.abs(side - fit.client[index]) <= 1);
+
+/** Clicks a real element of the strip, in the current webview. */
+async function clickInStrip(selector, button = "left") {
+  const target = await $(`nav[aria-label="Workspaces"] ${selector}`);
+  await target.waitForExist({ timeout: 10_000, timeoutMsg: `nothing in the strip matches ${selector}` });
+  await target.click({ button });
+}
 
 describe("Workspace tabs", () => {
   const first = project("first");
@@ -291,6 +328,120 @@ describe("Workspace tabs", () => {
     await browser.waitUntil(async () => (await tabsNow()).tabs.length === 1, {
       timeout: 20_000,
       timeoutMsg: "closing the second tab left it in the strip",
+    });
+  });
+
+  it("fits every tab to its window when the window changes size, the one parked beside it too", async () => {
+    await openFromRecent(first);
+    const parkedTab = (await tabsNow()).active;
+    const shownTab = await openTab(second);
+    const outer = await browser.executeAsync((done) => {
+      const { invoke, metadata } = window.__TAURI_INTERNALS__;
+      invoke("plugin:window|outer_size", { label: metadata.currentWindow.label }).then(done, done);
+    });
+    const before = await fitNow();
+
+    try {
+      resizeAppWindow(outer.width - 300, outer.height - 200);
+      // The page on screen and the one parked beside it both follow, because
+      // the window's resize moves them (`workspaces::layout`).
+      for (const label of [shownTab, parkedTab]) {
+        await inWorkspace(label);
+        try {
+          await browser.waitUntil(
+            async () => {
+              const fit = await fitNow();
+              return fit.client[0] < before.client[0] && fills(fit);
+            },
+            { timeout: 10_000, interval: 200 },
+          );
+        } catch {
+          throw new Error(`${label} did not follow its window: ${JSON.stringify(await fitNow())}`);
+        }
+      }
+    } finally {
+      resizeAppWindow(outer.width, outer.height);
+    }
+  });
+
+  it("closes the tab on screen by its x, and the tab beside it takes its place", async () => {
+    const { tabs, active } = await tabsNow();
+    assert.equal(
+      tabs.length,
+      2,
+      `the window should hold the two tabs of the previous case: ${JSON.stringify(tabs)}`,
+    );
+    const neighbour = tabs.find((tab) => tab.label !== active)?.label;
+
+    await clickInStrip(`[data-workspace-tab="${active}"] button[title="Close this workspace"]`);
+    await inWorkspace(neighbour);
+    await browser.waitUntil(
+      async () => {
+        const now = await tabsNow();
+        return now.tabs.length === 1 && now.active === neighbour;
+      },
+      { timeout: 20_000, interval: 250, timeoutMsg: "the neighbour never took the closed tab's place" },
+    );
+    assert.ok(
+      (await $("body").getText()).includes("first.txt"),
+      "the tab that came on screen lost its folder",
+    );
+    const handles = [];
+    for (const handle of await browser.getWindowHandles()) {
+      await browser.switchToWindow(handle);
+      handles.push(await browser.execute(() => window.__TAURI_INTERNALS__.metadata.currentWebview.label));
+    }
+    assert.ok(!handles.includes(active), `the closed tab's webview is still alive: ${handles}`);
+  });
+
+  it("takes a tab out into a window of its own from its right-click menu", async () => {
+    await inWorkspace((await tabsNow()).active);
+    const staying = (await tabsNow()).active;
+    const leaving = await openTab(third);
+
+    // From the tab on screen, the other tab's menu: the one taken out is not
+    // the one the person is looking at.
+    await clickInStrip(`[data-workspace-tab="${staying}"]`, "right");
+    const item = await $("//*[@role='menuitem'][contains(., 'Open in a window of its own')]");
+    await item.waitForExist({ timeout: 10_000, timeoutMsg: "the tab's menu offers no way to take it out" });
+    await item.click();
+
+    // Asked of the backend: the page's own idea of its window is fixed when the
+    // page is made, and a webview moved to another window keeps the old name.
+    await inWorkspace(staying);
+    await browser.waitUntil(
+      async () => {
+        const own = await tabsNow();
+        return own.tabs.length === 1 && own.tabs[0].label === staying;
+      },
+      { timeout: 20_000, interval: 250, timeoutMsg: "the tab never left its window" },
+    );
+    // A window of its own opens at the restore size (`window_cmds::IDEAL_RESTORE`,
+    // parked off the desktop in an unattended run), and the tab fills it.
+    const { page } = await fitNow();
+    assert.ok(
+      Math.abs(page[0] - 1280) <= 1 && Math.abs(page[1] - 800) <= 1,
+      `the tab does not fill its new window: ${JSON.stringify(page)}`,
+    );
+
+    await inWorkspace(leaving);
+    const left = await tabsNow();
+    assert.deepEqual(
+      left.tabs.map((tab) => tab.label),
+      [leaving],
+      "the tab taken out is still in the window it left",
+    );
+    assert.equal(left.active, leaving);
+
+    // Close the window of its own through its last tab, as its x would.
+    await inWorkspace(staying);
+    await browser.execute((label) => {
+      void window.__TAURI_INTERNALS__.invoke("workspace_close", { label });
+    }, staying);
+    await inWorkspace(leaving);
+    await browser.waitUntil(async () => (await browser.getWindowHandles()).length === 1, {
+      timeout: 20_000,
+      timeoutMsg: "closing the last tab of the window of its own left the window open",
     });
   });
 });
