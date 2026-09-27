@@ -118,11 +118,6 @@ export interface SavedRun {
    * correctly as "worked in the project itself".
    */
   workRoot?: string;
-  /**
-   * The workspace a run's copy was made from, for a run that worked beside
-   * another in a workspace of several repositories. Optional like `workRoot`.
-   */
-  copiedFrom?: string;
 }
 
 const VERSION = 5;
