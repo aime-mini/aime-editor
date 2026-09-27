@@ -47,6 +47,7 @@ import { capabilitiesOf, effortsOf, type ProviderOption } from "../lib/providers
 import type { ChatMessage, Permission, TokenUsage } from "../lib/types";
 import type { TranslationKey } from "../i18n/en";
 import { StreamingCaret, ThinkingDots } from "./Waiting";
+import { loggedAs } from "../stores/notices";
 
 /**
  * The three permission levels, in the order the shield chip cycles through.
@@ -584,7 +585,7 @@ export function AiPanel() {
       .then((list) => {
         if (!stale) setFileIndex({ root: rootPath, files: list });
       })
-      .catch(console.error);
+      .catch(loggedAs("file-index"));
     return () => {
       stale = true;
     };

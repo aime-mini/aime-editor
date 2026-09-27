@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { CornerDownLeft, ExternalLink, GitBranch, Loader2, Sparkles } from "lucide-react";
-import { useI18n, useT } from "../i18n";
+import { translate, useI18n, useT } from "../i18n";
 import { branchNameFor, readableId, whenText } from "../lib/workItems";
 import { Markdown } from "./Markdown";
 import { useGit } from "../stores/git";
@@ -16,6 +16,7 @@ import {
 } from "../stores/trackers";
 import { PromptModal } from "./PromptModal";
 import { Waiting } from "./Waiting";
+import { failedTo } from "../stores/notices";
 
 /**
  * A read that is still out, or one that has answered - with `null` for an answer
@@ -157,7 +158,7 @@ function Header({ item }: { item: WorkItem }) {
               icon={<ExternalLink size={12} />}
               label={t("tracker.openInBrowser")}
               onClick={() => {
-                openUrl(item.webUrl).catch(console.error);
+                openUrl(item.webUrl).catch(failedTo(translate("notice.openLink", { url: item.webUrl })));
               }}
             />
             <Action

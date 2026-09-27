@@ -1,6 +1,8 @@
 import { Fragment, useMemo, type CSSProperties, type ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { parseMarkdown, type Alignment, type Block, type Inline } from "../lib/markdown";
+import { failedTo } from "../stores/notices";
+import { translate } from "../i18n";
 
 /**
  * Markdown, read.
@@ -177,7 +179,7 @@ function Span({ span }: { span: Inline }) {
       return (
         <button
           onClick={() => {
-            openUrl(span.href).catch(console.error);
+            openUrl(span.href).catch(failedTo(translate("notice.openLink", { url: span.href })));
           }}
           title={span.href}
           className="text-accent hover:underline"

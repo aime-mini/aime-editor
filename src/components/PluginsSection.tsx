@@ -1,9 +1,10 @@
 import { useEffect } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { CircleDot, FolderOpen, Loader2, Play, Puzzle, Square } from "lucide-react";
-import { useT } from "../i18n";
+import { translate, useT } from "../i18n";
 import { PLUGIN_API_VERSION } from "../lib/plugins/protocol";
 import { usePlugins, type InstalledPlugin, type PluginState } from "../stores/plugins";
+import { failedTo } from "../stores/notices";
 
 /**
  * The plugins this machine has, what each one may reach, and a way to stop one.
@@ -40,7 +41,7 @@ export function PluginsSection() {
               .getState()
               .openFolder()
               .then((path) => revealItemInDir(path))
-              .catch(console.error);
+              .catch(failedTo(translate("notice.reveal", { name: "plugins" })));
           }}
           className="flex shrink-0 items-center gap-1.5 rounded-md border border-line px-2 py-1 text-[11.5px] text-muted hover:border-accent hover:text-fg"
         >

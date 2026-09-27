@@ -45,6 +45,7 @@ import { MemoryModal } from "./components/MemoryModal";
 import { PromptModal } from "./components/PromptModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { StatusBar } from "./components/StatusBar";
+import { Notices } from "./components/Notices";
 import { UpdateNotice } from "./components/UpdateNotice";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { useWorkspaceTabs } from "./stores/workspaceTabs";
@@ -54,6 +55,7 @@ import { useLayout } from "./stores/layout";
 import { usePlugins } from "./stores/plugins";
 import { useRecent } from "./stores/recent";
 import { useWorkspace } from "./stores/workspace";
+import { loggedAs } from "./stores/notices";
 
 const openNewWindow = () => invoke("open_new_window");
 
@@ -321,13 +323,13 @@ export default function App() {
 
     const warmUp = async () => {
       const folder = await invoke<string | null>("initial_folder").catch((error: unknown) => {
-        console.error(error);
+        loggedAs("initial-folder")(error);
         return null;
       });
       if (folder && useWorkspace.getState().rootPath === null) {
         await useWorkspace.getState().adoptFolder(folder);
       }
-      await loadWorkbench().catch(console.error);
+      await loadWorkbench().catch(loggedAs("workbench-load"));
     };
 
     // The greeting waits for the warm-up, but never on it: under `tauri dev`
@@ -338,7 +340,7 @@ export default function App() {
       if (cancelled) return;
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          invoke("app_ready").catch(console.error);
+          invoke("app_ready").catch(loggedAs("app-ready"));
         });
       });
     });
@@ -443,6 +445,7 @@ export default function App() {
         )}
       </main>
       <StatusBar />
+      <Notices />
       {helpOpen && (
         <HelpModal
           onClose={() => {

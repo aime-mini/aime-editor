@@ -17,7 +17,7 @@ import {
   Unplug,
   X,
 } from "lucide-react";
-import { useT } from "../i18n";
+import { translate, useT } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
 import { fillTemplate, type Fields } from "../lib/trackerForm";
 import {
@@ -47,6 +47,7 @@ import { useWorkspace } from "../stores/workspace";
 import { ContextMenu, SEPARATOR, type MenuItem } from "./ContextMenu";
 import { PromptModal } from "./PromptModal";
 import { Waiting } from "./Waiting";
+import { failedTo } from "../stores/notices";
 
 /**
  * The work assigned to whoever is sitting here, and the two moves that tie it to
@@ -653,7 +654,7 @@ function ItemRow({
           <button
             onClick={(event) => {
               event.stopPropagation();
-              openUrl(item.webUrl).catch(console.error);
+              openUrl(item.webUrl).catch(failedTo(translate("notice.openLink", { url: item.webUrl })));
             }}
             title={t("tracker.openInBrowser")}
             className="rounded p-0.5 text-muted hover:text-accent"
@@ -853,7 +854,7 @@ function ConnectForm({ initial, onConnected }: { initial: Fields; onConnected: (
             {" "}
             <button
               onClick={() => {
-                openUrl(helpUrl).catch(console.error);
+                openUrl(helpUrl).catch(failedTo(translate("notice.openLink", { url: helpUrl })));
               }}
               className="text-accent hover:underline"
             >

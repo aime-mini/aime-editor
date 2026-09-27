@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { useI18n, useT } from "../i18n";
+import { translate, useI18n, useT } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
 import { whenText } from "../lib/workItems";
 import type { SavedRun } from "../lib/runFile";
@@ -31,6 +31,7 @@ import {
   type Run,
 } from "../lib/runPlan";
 import { PHASE_LABELS, useRun } from "../stores/run";
+import { failedTo } from "../stores/notices";
 
 /**
  * A Task Run while it runs, and after.
@@ -263,7 +264,7 @@ export function RunView() {
                   </span>
                   <button
                     onClick={() => {
-                      revealItemInDir(file).catch(console.error);
+                      revealItemInDir(file).catch(failedTo(translate("notice.reveal", { name: file })));
                     }}
                     className="shrink-0 rounded border border-line px-1.5 py-0.5 text-[11px] text-muted hover:border-accent hover:text-fg"
                   >

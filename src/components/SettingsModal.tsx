@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Check, Cpu, Eye, Monitor, Settings2, Shield, ShieldOff, Sparkles, X } from "lucide-react";
-import { useI18n, useT } from "../i18n";
+import { translate, useI18n, useT } from "../i18n";
 import { errorLogPath } from "../lib/diagnostics";
 import { buildAddProviderPrompt } from "../lib/aiProvider";
 import { capabilitiesOf, effortsOf } from "../lib/providers";
@@ -12,6 +12,7 @@ import { INLINE_AI_MODES, UPDATE_CHANNELS, useSettings } from "../stores/setting
 import { useSetup } from "../stores/setup";
 import { useTheme } from "../stores/theme";
 import { useWorkspace } from "../stores/workspace";
+import { failedTo } from "../stores/notices";
 
 /** One labelled row, so every setting reads the same way. */
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -511,7 +512,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                 void invoke<string>("providers_config_path")
                   .then((path) => openFile(path))
                   .then(onClose)
-                  .catch(console.error);
+                  .catch(failedTo(translate("notice.openFile", { name: "providers.json" })));
               }}
               disabled={!rootPath}
               title={rootPath ? undefined : t("settings.needsProject")}
@@ -527,7 +528,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                 void errorLogPath()
                   .then((path) => openFile(path))
                   .then(onClose)
-                  .catch(console.error);
+                  .catch(failedTo(translate("notice.openFile", { name: t("settings.errorLog") })));
               }}
               className="rounded-md border border-line px-2 py-1 text-[11.5px] text-muted hover:border-accent hover:text-fg"
             >

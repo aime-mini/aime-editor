@@ -14,7 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useT } from "../i18n";
+import { translate, useT } from "../i18n";
 import { commandLine, readLine, type DeployNote, type DeployPlan, type Survey } from "../lib/deploy";
 import { recipeOf } from "../lib/deployDialect";
 import { shortKind } from "../lib/cloudIcons";
@@ -23,6 +23,7 @@ import { BillingOffNote } from "./CloudBilling";
 import { slotOf, useCloud, type CloudAccount } from "../stores/cloud";
 import { useDeploy, type DeployLogLine, type StepRun } from "../stores/deploy";
 import { CopyButton, Note } from "./CloudDetail";
+import { failedTo } from "../stores/notices";
 
 /**
  * The deploy in front of an account's resources: what the AI found, the plan
@@ -121,7 +122,7 @@ export function DeployPane({ slot }: { slot: string }) {
               </p>
               <button
                 onClick={() => {
-                  openUrl(stage.url).catch(console.error);
+                  openUrl(stage.url).catch(failedTo(translate("notice.openLink", { url: stage.url })));
                 }}
                 className="mt-1 flex items-center gap-1.5 font-mono text-[12px] text-accent hover:underline"
                 title={t("deploy.openUrl")}

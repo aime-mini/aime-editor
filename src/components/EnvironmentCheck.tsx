@@ -5,6 +5,7 @@ import { useT } from "../i18n";
 import { supportedLanguageCount } from "../lib/languages";
 import { useLayout } from "../stores/layout";
 import { useLsp } from "../stores/lsp";
+import { loggedAs } from "../stores/notices";
 
 /** TypeScript, JavaScript, HTML, CSS and JSON: Monaco brings their services. */
 const BUILT_IN_INTELLISENSE = 5;
@@ -131,7 +132,7 @@ function useLanguageCount(): number {
       .then(() => {
         if (!stale) setCount(supportedLanguageCount());
       })
-      .catch(console.error);
+      .catch(loggedAs("monaco-load"));
     return () => {
       stale = true;
     };

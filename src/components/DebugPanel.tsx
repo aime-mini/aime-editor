@@ -18,7 +18,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { useT } from "../i18n";
+import { translate, useT } from "../i18n";
 import { teachableLanguage } from "../lib/dap/availability";
 import { displayLine, hasRule, type EditorBreakpoint } from "../lib/dap/launch";
 import { fileNameOf, relativeTo } from "../lib/dap/paths";
@@ -29,6 +29,7 @@ import { useDebug } from "../stores/debug";
 import { useSetup } from "../stores/setup";
 import { useWorkspace } from "../stores/workspace";
 import { ContextMenu } from "./ContextMenu";
+import { failedTo } from "../stores/notices";
 
 /**
  * Languages Aime means to debug, and the tool each one is waiting on.
@@ -382,7 +383,9 @@ function StartRow() {
                 this panel ends in a working debugger, and these do not yet. */}
             <button
               onClick={() => {
-                openUrl(waitingFor.page).catch(console.error);
+                openUrl(waitingFor.page).catch(
+                  failedTo(translate("notice.openLink", { url: waitingFor.page })),
+                );
               }}
               className="flex items-center gap-1.5 text-accent hover:underline"
             >

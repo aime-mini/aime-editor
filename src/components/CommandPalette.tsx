@@ -24,7 +24,7 @@ import {
   SquareTerminal,
   Sun,
 } from "lucide-react";
-import { useI18n, useT } from "../i18n";
+import { translate, useI18n, useT } from "../i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { fuzzyFilter } from "../lib/fuzzy";
 import { projectFiles } from "../lib/projectFiles";
@@ -36,6 +36,7 @@ import { useTasks } from "../stores/tasks";
 import { useTerminals } from "../stores/terminals";
 import { useTheme } from "../stores/theme";
 import { useWorkspace } from "../stores/workspace";
+import { failedTo, loggedAs } from "../stores/notices";
 
 const MAX_COMMANDS = 8;
 const MAX_FILES = 12;
@@ -93,7 +94,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       .then((list) => {
         if (!stale) setFiles(list);
       })
-      .catch(console.error);
+      .catch(loggedAs("file-index"));
     return () => {
       stale = true;
     };
@@ -166,7 +167,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         run: () => {
           void invoke<string>("providers_config_path")
             .then((path) => openFile(path))
-            .catch(console.error);
+            .catch(failedTo(translate("notice.openFile", { name: "providers.json" })));
         },
       },
       {
@@ -269,7 +270,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         title: t("cmd.revealCurrent"),
         icon: <ExternalLink size={14} />,
         run: () => {
-          revealItemInDir(openFilePath).catch(console.error);
+          revealItemInDir(openFilePath).catch(failedTo(translate("notice.reveal", { name: openFilePath })));
         },
       });
       // Starting and stopping are mutually exclusive, and offering the one

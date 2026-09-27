@@ -27,7 +27,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useT } from "../i18n";
+import { translate, useT } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
 import { GROUPINGS, iconOfGrouping, shortKind, type Grouping } from "../lib/cloudIcons";
 import {
@@ -60,6 +60,7 @@ import { useDeploy } from "../stores/deploy";
 import { useLayout } from "../stores/layout";
 import { runInTerminal } from "../stores/terminals";
 import { useWorkspace } from "../stores/workspace";
+import { failedTo } from "../stores/notices";
 
 /**
  * The cloud panel: a console, not a settings page.
@@ -808,7 +809,7 @@ function SignInProgress({ cloudId }: { cloudId: string }) {
         <div className="flex flex-wrap items-center gap-2 text-[11px]">
           <button
             onClick={() => {
-              openUrl(progress.url).catch(console.error);
+              openUrl(progress.url).catch(failedTo(translate("notice.openLink", { url: progress.url })));
             }}
             className="flex items-center gap-1 text-accent hover:underline"
           >
@@ -839,7 +840,7 @@ function SignInProgress({ cloudId }: { cloudId: string }) {
         <div className="flex flex-wrap items-center gap-2 text-[11px]">
           <button
             onClick={() => {
-              openUrl(progress.url).catch(console.error);
+              openUrl(progress.url).catch(failedTo(translate("notice.openLink", { url: progress.url })));
             }}
             className="flex items-center gap-1 text-accent hover:underline"
           >
