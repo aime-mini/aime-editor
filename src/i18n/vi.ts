@@ -212,6 +212,9 @@ export const vi: Record<TranslationKey, string> = {
   "setup.cancelled": "Đã huỷ - phần nào cài rồi thì vẫn còn.",
   "setup.failed": "AI dừng với mã {code}. Chưa có gì được kiểm chứng.",
   "setup.succeeded": "Xong - Aime đã dò lại thứ nó còn thiếu.",
+  "lsp.loading":
+    "Đang nạp project {language} - gợi ý code và tìm tham chiếu phủ cả project khi nạp xong. Solution lớn mất vài phút.",
+  "lsp.starting": "Đang khởi động language server cho {language}…",
   "lsp.running": "Code intelligence đang chạy cho {language}",
   "lsp.restoring":
     "Đang tải package cho {language} (dotnet restore) - xong thì gợi ý mới đầy đủ. Lần đầu có thể mất vài phút.",

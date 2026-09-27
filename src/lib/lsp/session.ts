@@ -175,18 +175,36 @@ async function openProject(
   client: LspClient,
   root: string,
   methods: ProjectOpenMethods,
-): Promise<string | null> {
+): Promise<OpenedProject> {
   const files = await invoke<ProjectFiles>("lsp_project_files", { root });
   if (files.solutions.length > 0) {
     const [solution] = files.solutions;
     client.notify(methods.solutionMethod, { solution: pathToUri(solution) });
-    return solution;
+    return { solution, opened: true };
   }
   if (files.projects.length > 0) {
     client.notify(methods.projectMethod, { projects: files.projects.map(pathToUri) });
+    return { solution: null, opened: true };
   }
-  return null;
+  return { solution: null, opened: false };
 }
+
+/** What `openProject` handed the server: a solution, some projects, or nothing. */
+interface OpenedProject {
+  solution: string | null;
+  opened: boolean;
+}
+
+/**
+ * What a server that is handed its project says once it has loaded it.
+ *
+ * Measured 2026-09-27 against Roslyn 5.0 on a one-project solution: after
+ * `project/open` it answers nothing for 3.7 s, sends this with `[]` as its
+ * params, and never reports a work-done progress for the load at all. On the
+ * user's own 791-project solution that silence lasts two to three and a half
+ * minutes, during which answers cover only what has loaded so far.
+ */
+const PROJECT_LOADED_METHOD = "workspace/projectInitializationComplete";
 
 /**
  * The one server-to-client request that needs real work before it is answered:
@@ -249,6 +267,9 @@ export class LanguageSession {
   /** Whether the server has ever announced background work at all. */
   private announcesWork = false;
 
+  /** Handed its project and not yet done loading it (`PROJECT_LOADED_METHOD`). */
+  private loadingProject = false;
+
   /** Restores in flight by target list, so a repeated ask joins the running one. */
   private readonly restores = new Map<string, Promise<null>>();
 
@@ -261,6 +282,13 @@ export class LanguageSession {
    */
   onRestore: (running: boolean) => void = () => undefined;
 
+  /**
+   * Fires whenever `loading` changes, so the UI can say the answers are not
+   * yet the whole project's. Set by the lsp store, which reads `loading` once
+   * when it attaches - a fast server may have finished before it does.
+   */
+  onLoading: (loading: boolean) => void = () => undefined;
+
   private constructor(
     readonly languageId: string,
     private readonly client: LspClient,
@@ -268,6 +296,21 @@ export class LanguageSession {
 
   get providesOutline(): boolean {
     return this.outline;
+  }
+
+  /**
+   * Whether the server is still loading the project or indexing: until it is
+   * done, an answer covers only what it has read so far.
+   */
+  get loading(): boolean {
+    return this.loadingProject || this.working.size > 0;
+  }
+
+  /** Runs a change to what `loading` reads, and tells the listener if it moved. */
+  private changingLoad(change: () => void): void {
+    const before = this.loading;
+    change();
+    if (this.loading !== before) this.onLoading(this.loading);
   }
 
   static async start(
@@ -282,6 +325,11 @@ export class LanguageSession {
     client.onNotification = (method, params) => {
       if (method === "textDocument/publishDiagnostics") session.publishDiagnostics(params);
       if (method === "$/progress") session.trackProgress(params);
+      if (method === PROJECT_LOADED_METHOD) {
+        session.changingLoad(() => {
+          session.loadingProject = false;
+        });
+      }
     };
     client.onRequest = (method, params) =>
       method === NEEDS_RESTORE_METHOD ? session.restore(params) : undefined;
@@ -322,7 +370,13 @@ export class LanguageSession {
     // Some servers do nothing at all until they are told which project this is.
     // Measured against Roslyn: without it every completion answers nothing, and
     // the server never says why.
-    if (projectOpen) session.solution = await openProject(client, root, projectOpen);
+    if (projectOpen) {
+      // Loading from before the call: the server may answer it at once.
+      session.loadingProject = true;
+      const { solution, opened } = await openProject(client, root, projectOpen);
+      session.solution = solution;
+      if (!opened) session.loadingProject = false;
+    }
     return session;
   }
 
@@ -414,11 +468,13 @@ export class LanguageSession {
   private trackProgress(params: unknown): void {
     const { token, value } = (params ?? {}) as { token?: string | number; value?: { kind?: string } };
     if (token === undefined) return;
-    if (value?.kind === "begin") {
-      this.announcesWork = true;
-      this.working.add(String(token));
-    }
-    if (value?.kind === "end") this.working.delete(String(token));
+    this.changingLoad(() => {
+      if (value?.kind === "begin") {
+        this.announcesWork = true;
+        this.working.add(String(token));
+      }
+      if (value?.kind === "end") this.working.delete(String(token));
+    });
   }
 
   /**

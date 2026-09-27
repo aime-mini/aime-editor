@@ -33,7 +33,7 @@ import { repositoryLabel } from "../lib/repositories";
 import { useAi } from "../stores/ai";
 import { useGit } from "../stores/git";
 import { useLayout } from "../stores/layout";
-import { useLsp } from "../stores/lsp";
+import { useLsp, type LanguageState } from "../stores/lsp";
 import { useSetup } from "../stores/setup";
 import { TASK_KINDS, useTasks, type TaskKind } from "../stores/tasks";
 import { useInlineAi } from "../stores/inlineAi";
@@ -66,6 +66,33 @@ const TASK_LABELS: Record<TaskKind, TranslationKey> = {
  * a suggestion that takes two seconds needs to say it is coming, and a
  * provider that is signed out needs to say that instead of showing nothing.
  */
+/**
+ * What the language chip says about its server. Only a server that is up and
+ * done loading is "active": one still starting, fetching packages or loading
+ * its project answers for part of the code at most, and saying active through
+ * that is what made a slow first completion look like a broken one.
+ */
+function languageChipTitle(
+  t: ReturnType<typeof useT>,
+  lsp: LanguageState,
+  language: string,
+  busy: { restoring: boolean; loading: boolean },
+): string {
+  switch (lsp.kind) {
+    case "missing":
+      return t("lsp.missing", { command: lsp.command, install: lsp.installHint });
+    case "failed":
+      return t("lsp.failed", { reason: lsp.reason });
+    case "starting":
+      return t("lsp.starting", { language });
+    case "unsupported":
+    case "running":
+      if (busy.restoring) return t("lsp.restoring", { language });
+      if (busy.loading) return t("lsp.loading", { language });
+      return t("lsp.running", { language });
+  }
+}
+
 function InlineAiChip() {
   const mode = useSettings((s) => s.inlineAi);
   const update = useSettings((s) => s.update);
@@ -127,6 +154,7 @@ export function StatusBar() {
   const openLanguage = openFilePath ? languageOf(openFilePath) : null;
   const lsp = openLanguage ? lspLanguages[openLanguage] : undefined;
   const lspRestoring = useLsp((s) => (openLanguage !== null ? (s.restoring[openLanguage] ?? false) : false));
+  const lspLoading = useLsp((s) => (openLanguage !== null ? (s.loading[openLanguage] ?? false) : false));
 
   // The menu offers the five OUTCOMES. Aime detects the common stacks itself;
   // for everything else - Maven, CMake, a team's own script - the outcome is
@@ -282,17 +310,13 @@ export function StatusBar() {
               if (lsp.kind === "missing") setInstallerTools([openLanguage]);
             }}
             className={`flex items-center gap-1 ${lsp.kind === "running" ? "text-ok" : lsp.kind === "missing" ? "text-warn" : ""}`}
-            title={
-              lsp.kind === "missing"
-                ? t("lsp.missing", { command: lsp.command, install: lsp.installHint })
-                : lsp.kind === "failed"
-                  ? t("lsp.failed", { reason: lsp.reason })
-                  : lspRestoring
-                    ? t("lsp.restoring", { language: openLanguage })
-                    : t("lsp.running", { language: openLanguage })
-            }
+            title={languageChipTitle(t, lsp, openLanguage, { restoring: lspRestoring, loading: lspLoading })}
           >
-            {lspRestoring ? <Loader2 size={11} className="animate-spin" /> : <Braces size={11} />}
+            {lsp.kind === "starting" || lspRestoring || lspLoading ? (
+              <Loader2 size={11} className="animate-spin" />
+            ) : (
+              <Braces size={11} />
+            )}
             {openLanguage}
           </button>
         )}

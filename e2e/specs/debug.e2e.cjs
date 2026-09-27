@@ -1227,10 +1227,27 @@ describe("Debugging", () => {
       console.log("[debug.e2e] SKIPPED: the C# language server is not downloaded on this machine.");
       return;
     }
-    await browser.waitUntil(async () => (await chip.getAttribute("title")).toLowerCase().includes("active"), {
-      timeout: 120_000,
-      timeoutMsg: `the C# server never came up: ${await chip.getAttribute("title")}`,
-    });
+    // Loading first: Roslyn is handed the project and answers nothing about it
+    // until it says it has loaded it (`workspace/projectInitializationComplete`,
+    // 3.7 s for this one project, minutes for a big solution) - the chip must
+    // not read "active" through that.
+    const seen = new Set();
+    await browser.waitUntil(
+      async () => {
+        const title = (await chip.getAttribute("title")).toLowerCase();
+        seen.add(title);
+        return title.includes("active");
+      },
+      {
+        timeout: 120_000,
+        interval: 100,
+        timeoutMsg: `the C# server never came up: ${[...seen].join(" | ")}`,
+      },
+    );
+    assert.ok(
+      [...seen].some((title) => title.includes("loading the csharp project")),
+      `the chip never said the project was loading: ${[...seen].join(" | ")}`,
+    );
   });
 
   /**

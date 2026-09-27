@@ -111,6 +111,11 @@ interface LspStoreState {
    * which is exactly what the status bar owes the user an explanation for.
    */
   restoring: Record<string, boolean | undefined>;
+  /**
+   * Languages whose server is still loading its project or indexing - the same
+   * kind of layer: it answers, but only for what it has read so far.
+   */
+  loading: Record<string, boolean | undefined>;
   /** Starts the server for a language if it is installed and not running yet. */
   ensure: (languageId: string) => Promise<void>;
   /** Stops every server (workspace closed or app shutting down). */
@@ -122,6 +127,7 @@ interface LspStoreState {
 export const useLsp = create<LspStoreState>((set, get) => ({
   languages: {},
   restoring: {},
+  loading: {},
 
   ensure: async (languageId) => {
     const { rootPath } = useWorkspace.getState();
@@ -175,6 +181,11 @@ export const useLsp = create<LspStoreState>((set, get) => ({
       session.onRestore = (running) => {
         set((s) => ({ restoring: { ...s.restoring, [languageId]: running } }));
       };
+      const showLoading = (loading: boolean) => {
+        set((s) => ({ loading: { ...s.loading, [languageId]: loading } }));
+      };
+      session.onLoading = showLoading;
+      showLoading(session.loading);
       set((s) => ({
         languages: {
           ...s.languages,
@@ -199,13 +210,14 @@ export const useLsp = create<LspStoreState>((set, get) => ({
     set((s) => ({
       languages: { ...s.languages, [languageId]: undefined },
       restoring: { ...s.restoring, [languageId]: undefined },
+      loading: { ...s.loading, [languageId]: undefined },
     }));
   },
 
   stopAll: async () => {
     const running = [...sessions.values()];
     sessions.clear();
-    set({ languages: {}, restoring: {} });
+    set({ languages: {}, restoring: {}, loading: {} });
     await Promise.all(running.map((session) => session.dispose()));
   },
 }));
