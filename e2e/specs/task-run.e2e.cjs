@@ -1216,9 +1216,10 @@ ${suite.output}`,
     }
   });
 
-  it("puts a second run's worktree beside the product folder, never inside it", async () => {
-    // Inside it, the worktree would show in the user's tree and as one more
-    // repository in the Git panel - a workplace the user never asked to see.
+  it("gives a second run a copy of every repository of the product, beside it and never inside it", async () => {
+    // Inside it, the copies would show in the user's tree and as more
+    // repositories in the Git panel - a workplace the user never asked to see.
+    // Of every repository, because the second ticket may reach the api too.
     fs.writeFileSync(MODE_FILE, "sound");
     const { product, shop, api } = freshProduct();
     await startRun(product, { repository: "shop" });
@@ -1233,33 +1234,50 @@ ${suite.output}`,
     const row = await rowFor(13);
     await row.moveTo();
     await (await row.$('button[title="Work on this with AI"]')).click();
-    await waitForPhase("Hand over", "Ready on bugfix/13-", "the worktree run never finished", 300_000);
+    await waitForPhase("Hand over", "Ready on bugfix/13-", "the second run never finished", 300_000);
 
     // Compared as the disk spells them: git answers with long names, the temp
     // folder is handed out by its 8.3 short one.
     const real = (dir) => fs.realpathSync.native(dir);
-    const worktrees = gitIn(shop, "worktree", "list", "--porcelain")
-      .split("\n")
-      .filter((line) => line.startsWith("worktree "))
-      .map((line) => real(line.slice("worktree ".length)));
-    assert.equal(worktrees.length, 2, `the second run left no worktree: ${worktrees.join(" | ")}`);
-    const beside = worktrees.find((tree) => tree !== real(shop));
+    const worktreesOf = (repository) =>
+      gitIn(repository, "worktree", "list", "--porcelain")
+        .split("\n")
+        .filter((line) => line.startsWith("worktree "))
+        .map((line) => real(line.slice("worktree ".length)))
+        .filter((tree) => tree !== real(repository));
+    const [shopCopy] = worktreesOf(shop);
+    const [apiCopy] = worktreesOf(api);
+    assert.ok(shopCopy && apiCopy, `a repository got no copy: shop ${shopCopy}, api ${apiCopy}`);
+    const copy = path.dirname(shopCopy);
+    assert.equal(path.dirname(apiCopy), copy, "the two copies are not one workspace");
     assert.equal(
-      path.dirname(beside),
+      path.dirname(copy),
       path.dirname(real(product)),
-      `the worktree is not beside the product: ${beside}`,
+      `the copy is not beside the product: ${copy}`,
     );
+    assert.equal(path.basename(shopCopy), "shop");
     assert.deepEqual(
       fs.readdirSync(product).sort(),
       [".aime", "api", "shop"],
       "the run left something in the product folder",
     );
-    assert.equal(gitIn(api, "status", "--porcelain"), "", "the run changed the other repository");
+    assert.equal(gitIn(api, "status", "--porcelain"), "", "the run changed the user's api");
+    // The change is on the second run's branch, in the copy of the repository it touched.
+    assert.match(
+      gitIn(shopCopy, "log", "-1", "--format=%s"),
+      /show the currency/i,
+      "the change was not committed",
+    );
 
-    try {
-      gitIn(shop, "worktree", "remove", "--force", beside);
-    } catch {
-      // Windows may still hold a handle; the temp sweep gets it.
+    for (const [repository, tree] of [
+      [shop, shopCopy],
+      [api, apiCopy],
+    ]) {
+      try {
+        gitIn(repository, "worktree", "remove", "--force", tree);
+      } catch {
+        // Windows may still hold a handle; the temp sweep gets it.
+      }
     }
   });
 });

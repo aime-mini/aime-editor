@@ -101,7 +101,7 @@ import {
   type PhaseResult,
   type Run,
 } from "../lib/runPlan";
-import { isWithin, relativeTo, repositoryLabel } from "../lib/repositories";
+import { inRepository, isWithin, relativeTo, repositoryLabel } from "../lib/repositories";
 import { statusLine, tasksOfTree, treesReached, type JoinedTree, type TreeStatus } from "../lib/runTrees";
 import { branchNameFor } from "../lib/workItems";
 import { useGit, type GitStatus } from "./git";
@@ -255,6 +255,13 @@ export interface RunSlot extends Artifacts {
    * overwrite each other's files and measure each other's damage.
    */
   workRoot: string;
+  /**
+   * The workspace a run's copy was made from, for a run beside another in a
+   * workspace of several repositories: it works in a folder beside that one
+   * holding a worktree of each of them (`prepareWorkspaceCopy`), and `tree` is
+   * the copy of the repository it started in. Null for every other run.
+   */
+  copiedFrom: string | null;
 }
 
 interface RunState {
@@ -403,6 +410,7 @@ export const useRun = create<RunState>((set, get) => ({
       log: [],
       tree,
       workRoot: ownTree,
+      copiedFrom: null,
       ...NOTHING_YET,
     };
     set((state) => ({
@@ -416,11 +424,16 @@ export const useRun = create<RunState>((set, get) => ({
     useWorkspace.getState().openRun();
 
     const ops = opsFor(id);
-    let workRoot = ownTree;
+    let place: Workplace = { workRoot: ownTree, tree, copiedFrom: null };
     if (sharedTreeTaken) {
-      // Another run holds the user's tree, so this one gets a worktree of its
-      // own — the price of parallelism, paid only when it buys something.
-      const made = await prepareWorktree(home, tree, id, ops.set);
+      // Another run holds the user's tree, so this one gets a place of its own
+      // — the price of parallelism, paid only when it buys something. A run
+      // that spans the workspace's repositories gets a copy of all of them, so
+      // a change reaching the api can still take it along.
+      const made =
+        ownTree === home && tree !== home
+          ? await prepareWorkspaceCopy(home, tree, id, ops.set)
+          : await prepareWorktree(home, tree, id, ops.set);
       if (made === null) {
         engine.driving = false;
         ops.set((current) => ({
@@ -435,10 +448,10 @@ export const useRun = create<RunState>((set, get) => ({
         }));
         return;
       }
-      workRoot = made;
-      ops.set({ workRoot });
+      place = made;
+      ops.set(place);
     }
-    await drive(id, "understand", { item, home, tree, workRoot, id }, ops.set, ops.get);
+    await drive(id, "understand", { item, home, ...place, id }, ops.set, ops.get);
   },
 
   approvePlan: async () => {
@@ -456,7 +469,7 @@ export const useRun = create<RunState>((set, get) => ({
     await drive(
       id,
       "implement",
-      { item, home, tree: shown.tree, workRoot: shown.workRoot, id },
+      { item, home, tree: shown.tree, workRoot: shown.workRoot, copiedFrom: shown.copiedFrom, id },
       ops.set,
       ops.get,
     );
@@ -491,7 +504,7 @@ export const useRun = create<RunState>((set, get) => ({
     await drive(
       id,
       shown.run.current ?? "understand",
-      { item, home, tree: shown.tree, workRoot: shown.workRoot, id },
+      { item, home, tree: shown.tree, workRoot: shown.workRoot, copiedFrom: shown.copiedFrom, id },
       ops.set,
       ops.get,
     );
@@ -609,15 +622,15 @@ export const useRun = create<RunState>((set, get) => ({
     const trashResult = await emptyTrash(files);
     if (worktreeTicked) {
       try {
-        await invoke("git_worktree_remove", { root: shown.tree, path: shown.workRoot });
+        await removeWorkplace(shown);
         trashResult.deleted += 1;
-      } catch {
-        trashResult.failed.push(shown.workRoot);
+      } catch (error: unknown) {
+        trashResult.failed.push(`${shown.workRoot}: ${String(error)}`);
       }
     }
     // Listed again from disk rather than subtracted in memory, so what the
     // panel shows afterwards is what is actually still there.
-    const gone = worktreeTicked && !trashResult.failed.includes(shown.workRoot);
+    const gone = worktreeTicked && !trashResult.failed.some((line) => line.startsWith(shown.workRoot));
     set({
       trashResult,
       trash: gone ? [] : await trashOf(shown.workRoot, treesOf(shown), shown.run.startedAt),
@@ -744,7 +757,12 @@ function shownSlot(state: RunState): RunSlot | null {
  * project that declares none. A failed install is noted and not fatal — the
  * baseline's own suites will say precisely what is missing.
  */
-async function prepareWorktree(home: string, tree: string, id: string, set: Setter): Promise<string | null> {
+async function prepareWorktree(
+  home: string,
+  tree: string,
+  id: string,
+  set: Setter,
+): Promise<Workplace | null> {
   const base = home.replace(/[\\/]+$/, "");
   // Named by the run's id, which is unique by construction - a timestamp alone
   // could collide when two runs start in the same millisecond. Beside the
@@ -758,6 +776,79 @@ async function prepareWorktree(home: string, tree: string, id: string, set: Sett
     note(set, "understand", String(error), "problem");
     return null;
   }
+  await makeRunnable(path, id, set);
+  return { workRoot: path, tree, copiedFrom: null };
+}
+
+/**
+ * The place a run beside another works when the workspace holds several
+ * repositories: a folder beside the workspace, named by the run, holding a
+ * worktree of each repository at the place it has in the workspace - so the
+ * run works from that folder exactly as the first works from the workspace,
+ * and a change that reaches another repository can still take it along.
+ *
+ * Every copy or none: one that cannot be made takes the ones already made
+ * with it, since a run in half a product would measure the wrong thing.
+ */
+async function prepareWorkspaceCopy(
+  home: string,
+  tree: string,
+  id: string,
+  set: Setter,
+): Promise<Workplace | null> {
+  const base = `${home.replace(/[\\/]+$/, "")}-${id}`;
+  note(set, "understand", translate("run.worktreeCreating", { path: base }));
+  const repositories = await invoke<string[]>("git_repositories", { root: home });
+  const made: Workplace = {
+    workRoot: base,
+    tree: inRepository(base, relativeTo(home, tree)),
+    copiedFrom: home,
+  };
+  for (const repository of repositories) {
+    const copy = inRepository(base, relativeTo(home, repository));
+    try {
+      await invoke("git_worktree_add", { root: repository, path: copy });
+    } catch (error: unknown) {
+      note(set, "understand", String(error), "problem");
+      await removeWorkplace(made).catch((cleanup: unknown) => {
+        note(set, "understand", String(cleanup), "problem");
+      });
+      return null;
+    }
+    await makeRunnable(copy, id, set);
+  }
+  return made;
+}
+
+/**
+ * Removes a run's place of its own and what it still holds: its worktree, or
+ * every worktree of its workspace copy - each through the repository it was
+ * made from - and then the folder that held them.
+ */
+async function removeWorkplace(run: Pick<RunSlot, "tree" | "workRoot" | "copiedFrom">): Promise<void> {
+  if (run.copiedFrom === null) {
+    await invoke("git_worktree_remove", { root: run.tree, path: run.workRoot });
+    return;
+  }
+  const from = run.copiedFrom;
+  for (const copy of await invoke<string[]>("git_repositories", { root: run.workRoot })) {
+    await invoke("git_worktree_remove", {
+      root: inRepository(from, relativeTo(run.workRoot, copy)),
+      path: copy,
+    });
+  }
+  await invoke("delete_path", { path: run.workRoot });
+}
+
+/**
+ * Runs a fresh checkout's install the way the project itself says to.
+ *
+ * Deterministic, not a guess: the install verb of the package manager the
+ * manifest or lockfile names, and nothing at all for a project that declares
+ * none. A failed install is noted and not fatal — the baseline's own suites
+ * will say precisely what is missing.
+ */
+async function makeRunnable(path: string, id: string, set: Setter): Promise<void> {
   try {
     const install = await invoke<string | null>("worktree_setup_command", { rootPath: path });
     if (install !== null) {
@@ -773,7 +864,13 @@ async function prepareWorktree(home: string, tree: string, id: string, set: Sett
     // tell, with their own output as the evidence.
     note(set, "understand", String(error), "problem");
   }
-  return path;
+}
+
+/** Where a run works, and which repository its own branch lives in (`RunSlot`). */
+interface Workplace {
+  workRoot: string;
+  tree: string;
+  copiedFrom: string | null;
 }
 
 /** The last segment of a path: `Front end` for `C:/IODM/Frontend/Front end`. */
@@ -816,6 +913,7 @@ function slotFrom(saved: SavedRun, home: string, interrupted: boolean): RunSlot 
     log: [],
     tree: saved.tree ?? home,
     workRoot: saved.workRoot ?? saved.tree ?? home,
+    copiedFrom: saved.copiedFrom ?? null,
     brief: saved.brief,
     survey: saved.survey,
     radius: saved.radius,
@@ -904,6 +1002,8 @@ interface Context {
   tree: string;
   /** Where this run works: `tree`, or this run's own worktree of it. */
   workRoot: string;
+  /** The workspace this run's copy was made from, when it works in one (`RunSlot`). */
+  copiedFrom: string | null;
   /** The run's id, which is also its engine's key. */
   id: string;
 }
@@ -998,6 +1098,7 @@ function journalSlot(home: string, slot: RunSlot): void {
     ...artifactsOf(slot),
     tree: slot.tree === home ? undefined : slot.tree,
     workRoot: slot.workRoot === slot.tree ? undefined : slot.workRoot,
+    copiedFrom: slot.copiedFrom ?? undefined,
   });
 }
 
@@ -2044,18 +2145,7 @@ async function report(context: Context, set: Setter, get: Getter): Promise<Phase
   // is a workplace, not a place the user visits, and the branch is how the
   // work reaches them at home. A run in the user's tree commits nothing - the
   // uncommitted diff is theirs to review, exactly as before.
-  let committed = "";
-  if (inWorktree(context)) {
-    try {
-      await invoke("git_commit_all", {
-        root: context.workRoot,
-        message: `${state.run.itemTitle}\n\nBy an Aime task run (${state.run.id}).`,
-      });
-      committed = translate("run.workCommitted", { branch: state.run.branch ?? "" });
-    } catch (error: unknown) {
-      committed = translate("run.workCommitFailed", { detail: String(error) });
-    }
-  }
+  const committed = inWorktree(context) ? await commitWorkplace(context, get) : "";
 
   const written = await existingFiles(context.workRoot);
   const proof =
@@ -2206,9 +2296,34 @@ function spansWorkspace(run: Pick<RunSlot, "tree" | "workRoot">): boolean {
   return run.workRoot !== run.tree && isWithin(run.tree, run.workRoot);
 }
 
-/** Whether a run works in a git worktree of its own, beside the user's tree. */
-function inWorktree(run: Pick<RunSlot, "tree" | "workRoot">): boolean {
-  return run.workRoot !== run.tree && !spansWorkspace(run);
+/**
+ * Commits a run's change onto its branch in every repository it changed, for
+ * a run in a place of its own - the branch is how that work reaches home.
+ * Answers the line the hand-over reports.
+ */
+async function commitWorkplace(context: Context, get: Getter): Promise<string> {
+  const state = get();
+  const message = `${state.run.itemTitle}\n\nBy an Aime task run (${state.run.id}).`;
+  const refused: string[] = [];
+  for (const { tree } of treesOf(state)) {
+    if ((await invoke<string>("git_pending_diff", { root: tree })).trim() === "") continue;
+    try {
+      await invoke("git_commit_all", { root: tree, message });
+    } catch (error: unknown) {
+      refused.push(`${repositoryLabel(tree, context.workRoot)}: ${String(error)}`);
+    }
+  }
+  return refused.length === 0
+    ? translate("run.workCommitted", { branch: state.run.branch ?? "" })
+    : translate("run.workCommitFailed", { detail: refused.join("; ") });
+}
+
+/**
+ * Whether a run works in a place of its own beside the user's tree: a git
+ * worktree of its repository, or a copy of the whole workspace.
+ */
+function inWorktree(run: Pick<RunSlot, "tree" | "workRoot" | "copiedFrom">): boolean {
+  return run.copiedFrom !== null || (run.workRoot !== run.tree && !spansWorkspace(run));
 }
 
 /** The repository a run's own branch and baseline live in. */
