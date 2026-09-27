@@ -1,9 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use tauri::{LogicalSize, PhysicalPosition, WebviewWindow};
-
-use crate::window_show;
-
-static WINDOW_COUNTER: AtomicU64 = AtomicU64::new(1);
+use tauri::{LogicalSize, PhysicalPosition, Window};
 
 /// Preferred restore size (logical px) when the monitor is large enough.
 pub const IDEAL_RESTORE: (f64, f64) = (1280.0, 800.0);
@@ -31,7 +26,7 @@ pub fn unattended() -> bool {
 /// excluded), then shows it maximized. Fixed logical sizes overflow on scaled
 /// displays (125–150 %), which pushed the restored window's bottom under the
 /// taskbar — so the size is computed from the actual monitor instead.
-pub fn fit_and_maximize(window: &WebviewWindow) {
+pub fn fit_and_maximize(window: &Window) {
     if unattended() {
         park_offscreen(window);
         return;
@@ -53,7 +48,7 @@ pub fn fit_and_maximize(window: &WebviewWindow) {
         Ok(None) => eprintln!("[window] no monitor detected — keeping configured size"),
         Err(err) => eprintln!("[window] current_monitor failed: {err}"),
     }
-    if let Err(err) = window_show::maximized(window) {
+    if let Err(err) = show_maximized(window) {
         eprintln!("[window] showing maximized failed: {err}");
     }
     if let Err(err) = window.set_focus() {
@@ -62,7 +57,7 @@ pub fn fit_and_maximize(window: &WebviewWindow) {
 }
 
 /// Shows the window where nobody can see it, and leaves the keyboard alone.
-fn park_offscreen(window: &WebviewWindow) {
+fn park_offscreen(window: &Window) {
     let size = LogicalSize::new(IDEAL_RESTORE.0, IDEAL_RESTORE.1);
     if let Err(err) = window.set_size(size) {
         eprintln!("[window] set_size failed: {err}");
@@ -77,16 +72,30 @@ fn park_offscreen(window: &WebviewWindow) {
     }
 }
 
-/// A label no window has had yet.
-pub fn next_label() -> String {
-    format!("editor-{}", WINDOW_COUNTER.fetch_add(1, Ordering::Relaxed))
+/// Shows a hidden window maximized, in one step.
+///
+/// On Windows this goes around tao's `maximize`: tao applies a window's state
+/// by replaying it, and a maximized window's replay starts with
+/// `ShowWindow(SW_MAXIMIZE)`, so maximizing a hidden window showed it and hid
+/// it again before `show` put it up for good - measured 2026-09-26 with a Win32
+/// event hook, show-hide-show on every window that appeared.
+#[cfg(windows)]
+fn show_maximized(window: &Window) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWMAXIMIZED};
+
+    let handle = window.hwnd().map_err(|e| e.to_string())?;
+    // SAFETY: the handle belongs to a live window of this process, just
+    // handed over by Tauri. The answer is whether it was visible before.
+    let _ = unsafe { ShowWindow(handle, SW_SHOWMAXIMIZED) };
+    // tao learns a window is visible only through its own `show`. On a window
+    // already on screen it changes nothing there, and without it tao would
+    // hide the window again at its next change of state.
+    window.show().map_err(|e| e.to_string())
 }
 
-/// Shows `to` exactly where `from` stands, then hides `from` (`window_show`).
-pub fn take_place(from: &WebviewWindow, to: &WebviewWindow) -> Result<(), String> {
-    if unattended() {
-        park_offscreen(to);
-        return from.hide().map_err(|e| e.to_string());
-    }
-    window_show::take_place(from, to)
+/// Elsewhere through Tauri's own calls.
+#[cfg(not(windows))]
+fn show_maximized(window: &Window) -> Result<(), String> {
+    window.maximize().map_err(|e| e.to_string())?;
+    window.show().map_err(|e| e.to_string())
 }

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listenHere } from "../lib/workspaceEvents";
 import { open } from "@tauri-apps/plugin-dialog";
 import { translate } from "../i18n";
 import type { DiskState } from "../lib/workspaceSession";
@@ -199,7 +199,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
   const ensureFsListener = async () => {
     if (fsListenerReady) return;
     fsListenerReady = true;
-    await listen<string[]>("fs:changed", ({ payload: changedPaths }) => {
+    await listenHere<string[]>("fs:changed", ({ payload: changedPaths }) => {
       get().refreshTree();
       const { openFilePath, dirty } = get();
       if (openFilePath && !dirty && changedPaths.includes(openFilePath)) {

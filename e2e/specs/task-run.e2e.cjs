@@ -585,7 +585,9 @@ async function startRun(repo, { repository = null } = {}) {
     await fill(await $('input[type="password"]'), TOKEN);
     await browser.keys("Enter");
   } else {
-    await (await $(`button*=${ORGANIZATION}`)).click();
+    // By its title: the workspace's own tab is named after the folder, which
+    // starts with the organization's name too, and comes first on the page.
+    await (await $(`button[title="Use ${ORGANIZATION} / ${PROJECT} for this project"]`)).click();
   }
   await waitForText("round the total", "the board's item never reached the panel");
 

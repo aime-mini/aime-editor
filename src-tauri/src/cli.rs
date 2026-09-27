@@ -1,15 +1,12 @@
 use std::path::PathBuf;
-use tauri::{State, Window};
+use tauri::{State, Webview};
 
 use crate::workspaces::Workspaces;
 
-/// Workspace folder passed on the command line (`aime <folder>`), resolved once at startup.
-pub struct InitialFolder(Option<String>);
-
-impl InitialFolder {
-    pub fn from_args() -> Self {
-        Self(std::env::args().nth(1).and_then(resolve_folder_arg))
-    }
+/// Workspace folder passed on the command line (`aime <folder>`), resolved
+/// once at startup; it opens in the app's first workspace.
+pub fn folder_from_args() -> Option<String> {
+    std::env::args().nth(1).and_then(resolve_folder_arg)
 }
 
 /// Resolves a CLI argument to an absolute existing directory, or None.
@@ -29,19 +26,12 @@ fn resolve_folder_arg(arg: String) -> Option<String> {
         .then(|| canonical.to_string_lossy().to_string())
 }
 
-/// The folder a window opens with: the one the app was launched with, for the
-/// first window; the one a new workspace tab was opened on, for that tab's
-/// window; none - the welcome screen - for any other.
+/// The folder a workspace's page opens with: the one the app was launched
+/// with, for the first; the one a tab was opened on, for that tab; none - the
+/// welcome screen - for any other.
 #[tauri::command]
-pub fn initial_folder(
-    window: Window,
-    state: State<'_, InitialFolder>,
-    workspaces: State<'_, Workspaces>,
-) -> Option<String> {
-    if window.label() == "main" {
-        return state.0.clone();
-    }
-    workspaces.take_pending(window.label())
+pub fn initial_folder(webview: Webview, workspaces: State<'_, Workspaces>) -> Option<String> {
+    workspaces.initial_folder(webview.label())
 }
 
 #[cfg(test)]

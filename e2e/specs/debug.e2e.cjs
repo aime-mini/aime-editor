@@ -487,7 +487,13 @@ function projectThatTeachesADeviceAdapter() {
   const dir = project("device");
   fs.writeFileSync(path.join(dir, "main.dart"), "void main() {\n  print(1);\n}\n");
   fs.mkdirSync(path.join(dir, ".aime"), { recursive: true });
-  const devices = JSON.stringify([{ id: "emulator-5554", name: "Pixel 7 API 34" }]);
+  // Two, so picking one is a choice: a lone device is taken without asking
+  // (`loadDevices`), and a test that clicked before that happened only passed
+  // while the query was slower than the click.
+  const devices = JSON.stringify([
+    { id: "emulator-5554", name: "Pixel 7 API 34" },
+    { id: "chrome", name: "Chrome" },
+  ]);
   fs.writeFileSync(
     path.join(dir, ".aime", "debug-adapters.json"),
     JSON.stringify(
@@ -934,7 +940,10 @@ describe("Debugging", () => {
     await waitForText("debug main.dart", "the device adapter was never verified", 60_000);
     await (await $("button*=Pick a device")).click();
     await waitForText("pixel 7 api 34", "the adapter's own device query never reached the picker", 30_000);
-    await (await $("div*=Pixel 7 API 34")).click();
+    // The menu item itself: with two devices listed, a div matching the text
+    // is the menu around both of them, and a click in its middle can land on
+    // the other device.
+    await (await $('[role="menuitem"]*=Pixel 7 API 34')).click();
 
     await browser.keys(["F5"]);
     // The fixture prints the launch request it received, so this is the device id

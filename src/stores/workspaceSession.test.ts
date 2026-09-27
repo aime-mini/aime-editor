@@ -31,8 +31,9 @@ vi.mock("@tauri-apps/api/core", () => ({
     }
   },
 }));
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: (event: string, handler: () => void) => {
+vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => undefined) }));
+vi.mock("../lib/workspaceEvents", () => ({
+  listenHere: (event: string, handler: () => void) => {
     if (event === "window:closing") closingHandlers.push(handler);
     return Promise.resolve(() => undefined);
   },

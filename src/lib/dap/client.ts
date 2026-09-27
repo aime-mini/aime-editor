@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { listenHere } from "../workspaceEvents";
 import type { DapMessage, DapRequest, DapResponse } from "./protocol";
 
 /** Mirrors the Rust payloads of `dap:message` / `dap:closed` (dap/mod.rs). */
@@ -69,7 +70,7 @@ export async function stopAdapter(adapterId: number): Promise<void> {
 
 /** Notifies when the adapter process itself is gone. */
 export function onAdapterExit(adapterId: number, handler: () => void): Promise<UnlistenFn> {
-  return listen<ExitPayload>("dap:exit", ({ payload }) => {
+  return listenHere<ExitPayload>("dap:exit", ({ payload }) => {
     if (payload.adapterId === adapterId) handler();
   });
 }
@@ -82,7 +83,7 @@ export function onAdapterExit(adapterId: number, handler: () => void): Promise<U
  * it printed nothing at all.
  */
 export function onAdapterStdout(adapterId: number, handler: (text: string) => void): Promise<UnlistenFn> {
-  return listen<StdoutPayload>("dap:stdout", ({ payload }) => {
+  return listenHere<StdoutPayload>("dap:stdout", ({ payload }) => {
     if (payload.adapterId === adapterId) handler(payload.text);
   });
 }
@@ -112,10 +113,10 @@ export class DapConnection {
   static async attach(connectionId: number, handlers: ConnectionHandlers): Promise<DapConnection> {
     const connection = new DapConnection(connectionId, handlers);
     connection.unlisteners.push(
-      await listen<MessagePayload>("dap:message", ({ payload }) => {
+      await listenHere<MessagePayload>("dap:message", ({ payload }) => {
         if (payload.connectionId === connectionId) connection.receive(payload.message);
       }),
-      await listen<ConnectionPayload>("dap:closed", ({ payload }) => {
+      await listenHere<ConnectionPayload>("dap:closed", ({ payload }) => {
         if (payload.connectionId === connectionId) connection.handleClosed();
       }),
     );

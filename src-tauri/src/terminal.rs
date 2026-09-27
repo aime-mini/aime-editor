@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State, Window};
+use tauri::{AppHandle, Emitter, EventTarget, Manager, State, Webview};
 
 static TERM_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -18,7 +18,7 @@ struct Session {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
-    window_label: String,
+    workspace: String,
 }
 
 /// Live PTY sessions keyed by terminal id.
@@ -56,12 +56,12 @@ fn default_shell() -> CommandBuilder {
     }
 }
 
-/// Spawns a shell in a new PTY and streams its output to the calling window
+/// Spawns a shell in a new PTY and streams its output to the calling workspace
 /// as `term:data` events; `term:exit` follows when the shell ends.
 #[tauri::command]
 pub fn term_create(
     app: AppHandle,
-    window: Window,
+    webview: Webview,
     state: State<'_, TerminalState>,
     cwd: String,
     cols: u16,
@@ -85,9 +85,9 @@ pub fn term_create(
     let killer = child.clone_killer();
     let mut reader = pty.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pty.master.take_writer().map_err(|e| e.to_string())?;
-    let label = window.label().to_string();
+    let label = webview.label().to_string();
 
-    // Reader thread: pump PTY output to the owning window until the shell exits.
+    // Reader thread: pump PTY output to the owning workspace until the shell exits.
     {
         let app = app.clone();
         let label = label.clone();
@@ -101,7 +101,10 @@ pub fn term_create(
                             term_id,
                             data: buf[..n].to_vec(),
                         };
-                        if app.emit_to(&label, DATA_EVENT, payload).is_err() {
+                        if app
+                            .emit_to(EventTarget::webview(label.as_str()), DATA_EVENT, payload)
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -111,7 +114,11 @@ pub fn term_create(
             if let Some(state) = app.try_state::<TerminalState>() {
                 state.sessions().remove(&term_id);
             }
-            let _ = app.emit_to(&label, EXIT_EVENT, ExitPayload { term_id });
+            let _ = app.emit_to(
+                EventTarget::webview(label.as_str()),
+                EXIT_EVENT,
+                ExitPayload { term_id },
+            );
         });
     }
 
@@ -121,7 +128,7 @@ pub fn term_create(
             master: pty.master,
             writer,
             killer,
-            window_label: label,
+            workspace: label,
         },
     );
     Ok(term_id)
@@ -186,12 +193,12 @@ pub fn term_kill(state: State<'_, TerminalState>, term_id: u64) -> Result<(), St
     }
 }
 
-/// Stops every terminal owned by a window; called when that window is destroyed.
-pub fn kill_for_window(window: &Window) {
-    let state = window.state::<TerminalState>();
+/// Stops every terminal a workspace started; called when that workspace closes.
+pub fn kill_for_workspace(app: &AppHandle, workspace: &str) {
+    let state = app.state::<TerminalState>();
     let mut sessions = state.sessions();
     sessions.retain(|_, session| {
-        if session.window_label == window.label() {
+        if session.workspace == workspace {
             let _ = session.killer.kill();
             false
         } else {

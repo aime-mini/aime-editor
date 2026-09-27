@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listenHere } from "../lib/workspaceEvents";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -232,14 +232,14 @@ export function TerminalPane({
         onOutputRef.current?.(decoder.decode(bytes, { stream: true }));
       };
       cleanups.push(
-        await listen<TermDataPayload>("term:data", ({ payload }) => {
+        await listenHere<TermDataPayload>("term:data", ({ payload }) => {
           if (id === null) {
             backlog.push(payload);
             return;
           }
           if (payload.term_id === id) deliver(payload);
         }),
-        await listen<TermExitPayload>("term:exit", ({ payload }) => {
+        await listenHere<TermExitPayload>("term:exit", ({ payload }) => {
           if (payload.term_id === id) term.write("\r\n\x1b[2m[process exited]\x1b[0m\r\n");
         }),
       );

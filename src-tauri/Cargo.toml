@@ -22,7 +22,7 @@ unwrap_used = "warn"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -54,7 +54,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 async-trait = "0.1"
 
 
-# The same `windows` Tauri itself builds (0.61, same features): switching
-# workspace tabs places windows through Win32 directly (window_show.rs).
+# The same `windows` Tauri itself builds (0.61, same features): a window
+# appears maximized through Win32 directly (window_cmds.rs).
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

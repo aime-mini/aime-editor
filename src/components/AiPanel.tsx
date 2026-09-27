@@ -24,7 +24,7 @@ import {
   Undo2,
   Wrench,
 } from "lucide-react";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useT } from "../i18n";
 import { usePathDrag } from "../stores/pathDrag";
@@ -648,8 +648,7 @@ export function AiPanel() {
    * means what it means there.
    */
   useEffect(() => {
-    const window = getCurrentWebviewWindow();
-    const stop = window.onDragDropEvent((event) => {
+    const stop = getCurrentWebview().onDragDropEvent((event) => {
       if (event.payload.type === "over") {
         setDropping(isOverBox(boxRef.current, event.payload.position));
         return;

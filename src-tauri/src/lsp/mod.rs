@@ -1,7 +1,7 @@
 //! Language servers (ARCHITECTURE.md §5). Aime speaks LSP to the same servers
 //! VS Code uses, so code intelligence is as good as theirs without us writing
 //! a single language analyzer. This module is only the transport: it spawns a
-//! server, frames messages both ways, and relays JSON to the window that owns
+//! server, frames messages both ways, and relays JSON to the workspace that owns
 //! it — protocol semantics live on the frontend, next to Monaco.
 
 pub mod edits;
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
-use tauri::{AppHandle, Emitter, Manager, State, Window};
+use tauri::{AppHandle, Emitter, EventTarget, Manager, State, Webview};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
@@ -410,7 +410,7 @@ struct Session {
     outgoing: UnboundedSender<String>,
     /// Ends the driver task, which kills the process.
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
-    window_label: String,
+    workspace: String,
 }
 
 /// Live language servers keyed by server id.
@@ -801,12 +801,12 @@ async fn resolves_on_path(command: &str) -> bool {
 }
 
 /// Starts the language server for `language_id` in `root` and streams its
-/// messages to the calling window as `lsp:message`. Returns the server id used
+/// messages to the calling workspace as `lsp:message`. Returns the server id used
 /// by `lsp_send` / `lsp_stop`.
 #[tauri::command]
 pub async fn lsp_start(
     app: AppHandle,
-    window: Window,
+    webview: Webview,
     state: State<'_, LspState>,
     language_id: String,
     root: String,
@@ -835,7 +835,7 @@ pub async fn lsp_start(
     let mut stdin = child.stdin.take().ok_or("Failed to capture stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
     let server_id = SERVER_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let label = window.label().to_string();
+    let label = webview.label().to_string();
 
     // Writer task: owns stdin, so senders never block on the pipe.
     let (outgoing, mut queue) = unbounded_channel::<String>();
@@ -861,7 +861,7 @@ pub async fn lsp_start(
                     message = read_message(&mut reader) => match message {
                         Ok(Some(message)) => {
                             let payload = MessagePayload { server_id, message };
-                            if app.emit_to(&label, MESSAGE_EVENT, payload).is_err() {
+                            if app.emit_to(EventTarget::webview(label.as_str()), MESSAGE_EVENT, payload).is_err() {
                                 break;
                             }
                         }
@@ -873,7 +873,11 @@ pub async fn lsp_start(
             if let Some(state) = app.try_state::<LspState>() {
                 state.sessions().remove(&server_id);
             }
-            let _ = app.emit_to(&label, EXIT_EVENT, ExitPayload { server_id });
+            let _ = app.emit_to(
+                EventTarget::webview(label.as_str()),
+                EXIT_EVENT,
+                ExitPayload { server_id },
+            );
         });
     }
 
@@ -882,7 +886,7 @@ pub async fn lsp_start(
         Session {
             outgoing,
             shutdown: Some(shutdown),
-            window_label: label,
+            workspace: label,
         },
     );
     Ok(server_id)
@@ -912,12 +916,12 @@ pub fn lsp_stop(state: State<'_, LspState>, server_id: u64) -> Result<(), String
     Ok(())
 }
 
-/// Stops every server owned by a window; called when that window is destroyed.
-pub fn stop_for_window(window: &Window) {
-    let state = window.state::<LspState>();
+/// Stops every server a workspace started; called when that workspace closes.
+pub fn stop_for_workspace(app: &AppHandle, workspace: &str) {
+    let state = app.state::<LspState>();
     let mut sessions = state.sessions();
     sessions.retain(|_, session| {
-        if session.window_label == window.label() {
+        if session.workspace == workspace {
             if let Some(shutdown) = session.shutdown.take() {
                 let _ = shutdown.send(());
             }

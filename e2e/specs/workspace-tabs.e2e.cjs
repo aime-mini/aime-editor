@@ -4,8 +4,10 @@
  * Opening a second folder must not replace the first: it becomes a tab of its
  * own, the first keeps running behind it, and switching back brings the first
  * back exactly where it stood. A new tab appears only once its page has
- * painted - never as a blank window. Each tab is a window of its own, so the checks
- * go through the backend's own record of the group and the page's own strip.
+ * painted - never as a blank window. Each tab is a webview of its own in the
+ * window, so the checks go through the backend's own record of the window's
+ * tabs, the page's own strip, and - for what must not leak between tabs - each
+ * webview in turn.
  */
 const { strict: assert } = require("node:assert");
 const fs = require("node:fs");
@@ -48,6 +50,61 @@ async function openTab(folder) {
   return (await tabsNow()).active;
 }
 
+/** Runs the next commands in the webview of workspace `label`. */
+async function inWorkspace(label) {
+  for (const handle of await browser.getWindowHandles()) {
+    await browser.switchToWindow(handle);
+    const here = await browser.execute(() => window.__TAURI_INTERNALS__.metadata.currentWebview.label);
+    if (here === label) return;
+  }
+  throw new Error(`no webview ${label} among the window handles`);
+}
+
+/**
+ * Starts hearing, in the current webview, what the backend sends to one
+ * workspace - with the app's own `listenHere`, so what is tested is what the
+ * terminal, the file tree and the rest listen through.
+ */
+const hearHere = () =>
+  browser.executeAsync((done) => {
+    import("/src/lib/workspaceEvents.ts").then(
+      async ({ listenHere }) => {
+        const heard = { term: "", files: [] };
+        window.__heard = heard;
+        await listenHere("term:data", ({ payload }) => {
+          heard.term += new TextDecoder().decode(new Uint8Array(payload.data));
+        });
+        await listenHere("fs:changed", ({ payload }) => {
+          heard.files.push(...payload);
+        });
+        done(true);
+      },
+      (error) => done(String(error)),
+    );
+  });
+
+/** A shell in `cwd` for the current workspace, told to print `marker`. */
+const echoInTerminal = (cwd, marker) =>
+  browser.executeAsync(
+    (folder, text, done) => {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      invoke("term_create", { cwd: folder, cols: 80, rows: 24 }).then(
+        async (termId) => {
+          // ConPTY asks where the cursor is and waits for the answer xterm.js
+          // would give; nothing prints until it gets one.
+          await invoke("term_write", { termId, data: "\u001b[1;1R" });
+          await invoke("term_write", { termId, data: `echo ${text}\r` });
+          done(termId);
+        },
+        (error) => done(String(error)),
+      );
+    },
+    cwd,
+    marker,
+  );
+
+const heardHere = () => browser.execute(() => window.__heard);
+
 const tabsNow = () =>
   browser.executeAsync((done) => {
     window.__TAURI_INTERNALS__.invoke("workspace_tabs").then(done, (error) => done({ error: String(error) }));
@@ -56,9 +113,11 @@ const tabsNow = () =>
 describe("Workspace tabs", () => {
   const first = project("first");
   const second = project("second");
+  const third = project("third");
+  const fourth = project("fourth");
 
   after(() => {
-    for (const dir of [first, second]) {
+    for (const dir of [first, second, third, fourth]) {
       try {
         fs.rmSync(dir, { recursive: true, force: true });
       } catch {
@@ -165,6 +224,73 @@ describe("Workspace tabs", () => {
     await browser.waitUntil(async () => (await tabsNow()).tabs.length === 1, {
       timeout: 20_000,
       timeoutMsg: "closing the brought-back tab left it in the strip",
+    });
+  });
+
+  it("keeps what one tab's terminal prints and one tab's folder does to that tab", async () => {
+    await openFromRecent(third);
+    const one = (await tabsNow()).active;
+    const two = await openTab(fourth);
+
+    await inWorkspace(one);
+    assert.equal(await hearHere(), true);
+    await inWorkspace(two);
+    assert.equal(await hearHere(), true);
+
+    await inWorkspace(one);
+    const termOne = await echoInTerminal(third, "PRINTED_IN_ONE");
+    await inWorkspace(two);
+    const termTwo = await echoInTerminal(fourth, "PRINTED_IN_TWO");
+    fs.writeFileSync(path.join(third, "written-in-one.txt"), "x\n");
+
+    await inWorkspace(one);
+    await browser.waitUntil(
+      async () => {
+        const heard = await heardHere();
+        return (
+          heard.term.includes("PRINTED_IN_ONE") &&
+          heard.files.some((file) => file.endsWith("written-in-one.txt"))
+        );
+      },
+      { timeout: 30_000, interval: 250, timeoutMsg: "the first tab never heard its own terminal and folder" },
+    );
+    await inWorkspace(two);
+    await browser.waitUntil(async () => (await heardHere()).term.includes("PRINTED_IN_TWO"), {
+      timeout: 30_000,
+      interval: 250,
+      timeoutMsg: "the second tab never heard its own terminal",
+    });
+
+    // Each heard only its own.
+    const heardByTwo = await heardHere();
+    assert.ok(!heardByTwo.term.includes("PRINTED_IN_ONE"), "the first tab's terminal reached the second tab");
+    assert.deepEqual(
+      heardByTwo.files.filter((file) => file.endsWith("written-in-one.txt")),
+      [],
+      "a file changed in the first tab's folder was announced to the second tab",
+    );
+    await inWorkspace(one);
+    assert.ok(
+      !(await heardHere()).term.includes("PRINTED_IN_TWO"),
+      "the second tab's terminal reached the first tab",
+    );
+
+    for (const [label, termId] of [
+      [one, termOne],
+      [two, termTwo],
+    ]) {
+      await inWorkspace(label);
+      await browser.executeAsync((id, done) => {
+        window.__TAURI_INTERNALS__.invoke("term_kill", { termId: id }).then(done, done);
+      }, termId);
+    }
+    await inWorkspace(one);
+    await browser.execute((label) => {
+      void window.__TAURI_INTERNALS__.invoke("workspace_close", { label });
+    }, two);
+    await browser.waitUntil(async () => (await tabsNow()).tabs.length === 1, {
+      timeout: 20_000,
+      timeoutMsg: "closing the second tab left it in the strip",
     });
   });
 });

@@ -14,14 +14,13 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, Window};
+use tauri::{AppHandle, Manager, Webview, WebviewUrl, WebviewWindowBuilder};
 
-use crate::{window_cmds, workspaces};
+use crate::window_cmds;
+use crate::workspaces::{self, Workspaces};
 
 /// The splash window's label - the same one `capabilities/splash.json` names.
 const LABEL: &str = "splash";
-/// The first editor window, the one the splash hands over to.
-const EDITOR_LABEL: &str = "main";
 
 /// Logical size of the card: wide rather than tall, because the words sit on
 /// the left and the character portrait, when there is one, stands on the right.
@@ -243,13 +242,13 @@ pub fn splash_skip(app: AppHandle) {
     hand_over(&app);
 }
 
-/// A page has painted its first screen. The first window's hands over from the
-/// splash once the greeting has had its minimum time on screen; any other
-/// window was built hidden for this moment (`workspaces::painted`).
+/// A workspace's page has painted its first screen. The first workspace's
+/// hands over from the splash once the greeting has had its minimum time on
+/// screen; any other was waiting for this moment (`workspaces::painted`).
 #[tauri::command]
-pub async fn app_ready(app: AppHandle, window: Window) -> Result<(), String> {
-    if window.label() != EDITOR_LABEL {
-        return workspaces::painted(&app, window.label());
+pub async fn app_ready(app: AppHandle, webview: Webview) -> Result<(), String> {
+    if !app.state::<Workspaces>().is_first(webview.label()) {
+        return workspaces::painted(&app, webview.label());
     }
     // Asked again after every wait, not once before the first.
     //
@@ -286,12 +285,11 @@ fn hand_over(app: &AppHandle) {
     show_editor(app);
 }
 
+/// Built hidden; this sizes it to the real monitor work area, maximizes and
+/// shows it (`workspaces::show_window`).
 fn show_editor(app: &AppHandle) {
-    match app.get_webview_window(EDITOR_LABEL) {
-        // Configured hidden; this sizes it to the real monitor work area,
-        // maximizes and shows it (see window_cmds::fit_and_maximize).
-        Some(window) => window_cmds::fit_and_maximize(&window),
-        None => eprintln!("[splash] no main window to hand over to"),
+    if let Err(err) = workspaces::show_window(app, workspaces::FIRST_WINDOW) {
+        eprintln!("[splash] no editor window to hand over to: {err}");
     }
 }
 

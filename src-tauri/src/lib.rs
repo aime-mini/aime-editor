@@ -24,7 +24,6 @@ mod terminal;
 mod trackers;
 mod updates;
 mod window_cmds;
-mod window_show;
 mod wire;
 mod workspaces;
 
@@ -40,7 +39,6 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(providers::ProviderState::default())
         .manage(fs_watch::WatcherState::default())
-        .manage(cli::InitialFolder::from_args())
         .manage(terminal::TerminalState::default())
         .manage(lsp::LspState::default())
         .manage(dap::DapState::default())
@@ -51,13 +49,14 @@ pub fn run() {
         .manage(cloud::sign_in::SignInState::default())
         .manage(cloud::credentials::CredentialWatch::default())
         .setup(|app| {
-            // The editor stays hidden behind the splash window until the
-            // frontend reports its first screen painted; splash.rs owns that
-            // handover, and shows the editor straight away when there is no
-            // splash to show (see splash::start).
-            splash::start(app.handle());
             app.state::<workspaces::Workspaces>()
                 .load_remembered(app.handle());
+            // The editor is built hidden and stays behind the splash window
+            // until its first workspace reports its first screen painted;
+            // splash.rs owns that handover, and shows the editor straight away
+            // when there is no splash to show (see splash::start).
+            workspaces::open_first(app.handle(), cli::folder_from_args())?;
+            splash::start(app.handle());
             // User-defined AI CLIs: a bad file costs its own providers, never
             // the built-in ones. Watched from here on, so a CLI added while
             // Aime runs - by the user or by the agent doing it for them -
@@ -70,13 +69,8 @@ pub fn run() {
         })
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => session::closing::hold_close(window, api),
-            tauri::WindowEvent::Destroyed => {
-                fs_watch::drop_watcher_for(window);
-                terminal::kill_for_window(window);
-                lsp::stop_for_window(window);
-                dap::stop_for_window(window);
-                workspaces::forget_window(window.app_handle(), window.label());
-            }
+            tauri::WindowEvent::Resized(_) => workspaces::layout(window),
+            tauri::WindowEvent::Destroyed => workspaces::window_gone(window.app_handle(), window.label()),
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
@@ -250,7 +244,6 @@ pub fn run() {
             plugins::plugin_source,
             plugins::plugins_folder,
             workspaces::open_new_window,
-            workspaces::workspace_staged,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

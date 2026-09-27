@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
-use tauri::{AppHandle, Emitter, Manager, State, Window};
+use tauri::{AppHandle, Emitter, EventTarget, Manager, State, Webview};
 
 use crate::fs_cmds::IGNORED_DIRS;
 
@@ -15,7 +15,7 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 /// Event delivered to the frontend: the deduplicated list of changed paths.
 const CHANGED_EVENT: &str = "fs:changed";
 
-/// One workspace watcher per window, keyed by window label.
+/// One watcher per workspace, keyed by the workspace's webview label.
 /// Inserting a new watcher for a label drops (and thereby stops) the old one.
 #[derive(Default)]
 pub struct WatcherState(Mutex<HashMap<String, Debouncer<RecommendedWatcher>>>);
@@ -27,18 +27,18 @@ fn is_relevant(path: &Path) -> bool {
         .any(|c| IGNORED_DIRS.contains(&c.as_os_str().to_string_lossy().as_ref()))
 }
 
-/// Watches `path` recursively for the calling window and emits debounced
-/// `fs:changed` events (with the affected paths) back to that window only.
+/// Watches `path` recursively for the calling workspace and emits debounced
+/// `fs:changed` events (with the affected paths) back to that workspace only.
 /// Called again — e.g. when the user opens another folder — it replaces the
-/// window's previous watcher.
+/// workspace's previous watcher.
 #[tauri::command]
 pub fn watch_workspace(
     app: AppHandle,
-    window: Window,
+    webview: Webview,
     state: State<'_, WatcherState>,
     path: String,
 ) -> Result<(), String> {
-    let label = window.label().to_string();
+    let label = webview.label().to_string();
     let emit_label = label.clone();
 
     let mut debouncer = new_debouncer(DEBOUNCE, move |result: DebounceEventResult| match result {
@@ -52,7 +52,7 @@ pub fn watch_workspace(
                 return;
             }
             let paths: Vec<String> = changed.into_iter().collect();
-            if let Err(err) = app.emit_to(&emit_label, CHANGED_EVENT, &paths) {
+            if let Err(err) = app.emit_to(EventTarget::webview(emit_label.as_str()), CHANGED_EVENT, &paths) {
                 eprintln!("[fs_watch] failed to emit {CHANGED_EVENT} to '{emit_label}': {err}");
             }
         }
@@ -117,24 +117,24 @@ pub fn watch_providers_config(app: &AppHandle, config_dir: &Path) {
     }
 }
 
-/// Stops watching the calling window's workspace (user closed the folder).
+/// Stops watching the calling workspace's folder (user closed the folder).
 #[tauri::command]
-pub fn unwatch_workspace(window: Window, state: State<'_, WatcherState>) -> Result<(), String> {
+pub fn unwatch_workspace(webview: Webview, state: State<'_, WatcherState>) -> Result<(), String> {
     let mut watchers = state
         .0
         .lock()
         .map_err(|_| "watcher state lock poisoned".to_string())?;
-    watchers.remove(window.label());
+    watchers.remove(webview.label());
     Ok(())
 }
 
-/// Stops the watcher owned by a window; called when that window is destroyed.
-pub fn drop_watcher_for(window: &Window) {
-    let state = window.state::<WatcherState>();
+/// Stops the watcher a workspace owns; called when that workspace closes.
+pub fn drop_watcher_for(app: &AppHandle, workspace: &str) {
+    let state = app.state::<WatcherState>();
     let mut watchers = match state.0.lock() {
         Ok(guard) => guard,
         // A poisoned lock still holds valid data — recover it so the watcher is freed.
         Err(poisoned) => poisoned.into_inner(),
     };
-    watchers.remove(window.label());
+    watchers.remove(workspace);
 }

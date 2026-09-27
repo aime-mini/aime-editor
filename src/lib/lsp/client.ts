@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { listenHere } from "../workspaceEvents";
 import { answerToServerRequest } from "./convert";
 
 /** Mirrors the Rust payloads of `lsp:message` / `lsp:exit` (lsp/mod.rs). */
@@ -72,10 +73,10 @@ export class LspClient {
     const serverId = await invoke<number>("lsp_start", { languageId, root });
     const client = new LspClient(serverId, onExit);
     client.unlisteners.push(
-      await listen<MessagePayload>("lsp:message", ({ payload }) => {
+      await listenHere<MessagePayload>("lsp:message", ({ payload }) => {
         if (payload.serverId === serverId) client.receive(payload.message);
       }),
-      await listen<ExitPayload>("lsp:exit", ({ payload }) => {
+      await listenHere<ExitPayload>("lsp:exit", ({ payload }) => {
         if (payload.serverId === serverId) client.handleExit();
       }),
     );

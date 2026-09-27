@@ -1,7 +1,7 @@
 //! Debug adapters (ARCHITECTURE.md §5). Aime speaks DAP to the same adapters
 //! VS Code uses, so it can debug real programs without implementing a single
 //! debugger. Like `lsp`, this module is only the transport: it starts an
-//! adapter, frames messages both ways and relays JSON to the window that owns
+//! adapter, frames messages both ways and relays JSON to the workspace that owns
 //! it — protocol semantics live on the frontend, next to Monaco.
 //!
 //! Two measured facts about DAP make this more than a copy of `lsp`
@@ -30,7 +30,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, State, Window};
+use tauri::{AppHandle, Emitter, EventTarget, Manager, State, Webview};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
@@ -60,7 +60,7 @@ struct AdapterProcess {
     /// Where further connections go; `None` for stdio adapters, which have
     /// exactly one connection and no way to accept another.
     address: Option<SocketAddr>,
-    window_label: String,
+    workspace: String,
 }
 
 /// One DAP conversation with an adapter.
@@ -246,7 +246,7 @@ async fn wait_for_address(child: &mut Child) -> Result<(SocketAddr, AdapterOutpu
 #[tauri::command]
 pub async fn dap_start(
     app: AppHandle,
-    window: Window,
+    webview: Webview,
     state: State<'_, DapState>,
     language_id: String,
     cwd: String,
@@ -267,7 +267,7 @@ pub async fn dap_start(
         .map_err(|e| format!("DAP_MISSING::{}::{e}", spec.id()))?;
 
     let adapter_id = ADAPTER_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let label = window.label().to_string();
+    let label = webview.label().to_string();
 
     // Until the reaper below is armed, nothing else would ever kill this
     // process — so a failure while reaching it has to clean up after itself.
@@ -306,7 +306,11 @@ pub async fn dap_start(
                     .connections()
                     .retain(|_, connection| connection.adapter_id != adapter_id);
             }
-            let _ = app.emit_to(&label, EXIT_EVENT, AdapterPayload { adapter_id });
+            let _ = app.emit_to(
+                EventTarget::webview(label.as_str()),
+                EXIT_EVENT,
+                AdapterPayload { adapter_id },
+            );
         });
     }
 
@@ -315,7 +319,7 @@ pub async fn dap_start(
         AdapterProcess {
             shutdown: Some(shutdown),
             address,
-            window_label: label,
+            workspace: label,
         },
     );
 
@@ -339,20 +343,14 @@ pub async fn dap_connect(app: AppHandle, state: State<'_, DapState>, adapter_id:
         let address = adapter
             .address
             .ok_or("this debug adapter serves a single session")?;
-        (address, adapter.window_label.clone())
+        (address, adapter.workspace.clone())
     };
     open_tcp_connection(&app, &label, adapter_id, address).await
 }
 
 /// Wires a connection's two halves to the frontend: a writer task owning the
 /// sink so senders never block, and a reader task relaying framed messages.
-fn register_connection<W, R>(
-    app: &AppHandle,
-    window_label: &str,
-    adapter_id: u64,
-    mut sink: W,
-    source: R,
-) -> u64
+fn register_connection<W, R>(app: &AppHandle, workspace: &str, adapter_id: u64, mut sink: W, source: R) -> u64
 where
     W: AsyncWrite + Unpin + Send + 'static,
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -372,7 +370,7 @@ where
     let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     {
         let app = app.clone();
-        let label = window_label.to_string();
+        let label = workspace.to_string();
         tauri::async_runtime::spawn(async move {
             let mut reader = BufReader::new(source);
             loop {
@@ -381,7 +379,7 @@ where
                     message = read_message(&mut reader) => match message {
                         Ok(Some(message)) => {
                             let payload = MessagePayload { connection_id, message };
-                            if app.emit_to(&label, MESSAGE_EVENT, payload).is_err() {
+                            if app.emit_to(EventTarget::webview(label.as_str()), MESSAGE_EVENT, payload).is_err() {
                                 break;
                             }
                         }
@@ -392,7 +390,11 @@ where
             if let Some(state) = app.try_state::<DapState>() {
                 state.connections().remove(&connection_id);
             }
-            let _ = app.emit_to(&label, CLOSED_EVENT, ConnectionPayload { connection_id });
+            let _ = app.emit_to(
+                EventTarget::webview(label.as_str()),
+                CLOSED_EVENT,
+                ConnectionPayload { connection_id },
+            );
         });
     }
 
@@ -414,7 +416,7 @@ where
 /// opened later, and stdio adapters have none.
 async fn reach(
     app: &AppHandle,
-    window_label: &str,
+    workspace: &str,
     adapter_id: u64,
     transport: Transport,
     language_server_command: Option<&str>,
@@ -422,11 +424,11 @@ async fn reach(
     child: &mut Child,
 ) -> Result<(Option<SocketAddr>, u64), String> {
     match transport {
-        Transport::Stdio => Ok((None, open_stdio_connection(app, window_label, adapter_id, child)?)),
+        Transport::Stdio => Ok((None, open_stdio_connection(app, workspace, adapter_id, child)?)),
         Transport::TcpServer => {
             let (address, remaining) = wait_for_address(child).await?;
-            let connection_id = open_tcp_connection(app, window_label, adapter_id, address).await?;
-            relay_stdout(app, window_label, adapter_id, remaining);
+            let connection_id = open_tcp_connection(app, workspace, adapter_id, address).await?;
+            relay_stdout(app, workspace, adapter_id, remaining);
             Ok((Some(address), connection_id))
         }
         Transport::LanguageServer => {
@@ -434,7 +436,7 @@ async fn reach(
                 "This adapter is hosted by a language server but names no command to start a session",
             )?;
             let address = ask_language_server_for_a_port(command, cwd, child).await?;
-            let connection_id = open_tcp_connection(app, window_label, adapter_id, address).await?;
+            let connection_id = open_tcp_connection(app, workspace, adapter_id, address).await?;
             Ok((Some(address), connection_id))
         }
     }
@@ -564,13 +566,13 @@ async fn wait_for_result(
     }
 }
 
-/// Forwards whatever the adapter keeps printing to the window that owns it.
+/// Forwards whatever the adapter keeps printing to the workspace that owns it.
 ///
 /// Not protocol traffic — this is the process's own stdout, and for delve it is
 /// the only place the debugged program's output appears at all.
-fn relay_stdout(app: &AppHandle, window_label: &str, adapter_id: u64, mut lines: AdapterOutput) {
+fn relay_stdout(app: &AppHandle, workspace: &str, adapter_id: u64, mut lines: AdapterOutput) {
     let app = app.clone();
-    let label = window_label.to_string();
+    let label = workspace.to_string();
     tauri::async_runtime::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
             let payload = StdoutPayload {
@@ -578,7 +580,10 @@ fn relay_stdout(app: &AppHandle, window_label: &str, adapter_id: u64, mut lines:
                 // The reader ate the newline; the console renders text, not rows.
                 text: format!("{line}\n"),
             };
-            if app.emit_to(&label, STDOUT_EVENT, payload).is_err() {
+            if app
+                .emit_to(EventTarget::webview(label.as_str()), STDOUT_EVENT, payload)
+                .is_err()
+            {
                 break;
             }
         }
@@ -587,7 +592,7 @@ fn relay_stdout(app: &AppHandle, window_label: &str, adapter_id: u64, mut lines:
 
 async fn open_tcp_connection(
     app: &AppHandle,
-    window_label: &str,
+    workspace: &str,
     adapter_id: u64,
     address: SocketAddr,
 ) -> Result<u64, String> {
@@ -598,12 +603,12 @@ async fn open_tcp_connection(
     // add a delay to every single step.
     let _ = stream.set_nodelay(true);
     let (source, sink) = stream.into_split();
-    Ok(register_connection(app, window_label, adapter_id, sink, source))
+    Ok(register_connection(app, workspace, adapter_id, sink, source))
 }
 
 fn open_stdio_connection(
     app: &AppHandle,
-    window_label: &str,
+    workspace: &str,
     adapter_id: u64,
     child: &mut Child,
 ) -> Result<u64, String> {
@@ -615,7 +620,7 @@ fn open_stdio_connection(
         .stdout
         .take()
         .ok_or("Failed to capture the adapter's output")?;
-    Ok(register_connection(app, window_label, adapter_id, sink, source))
+    Ok(register_connection(app, workspace, adapter_id, sink, source))
 }
 
 /// Forwards one DAP message to a connection.
@@ -660,16 +665,16 @@ fn close_connections_of(state: &DapState, matches: impl Fn(&Connection) -> bool)
     });
 }
 
-/// Stops every adapter owned by a window; called when that window is destroyed.
-/// A debuggee outliving the window that started it would be invisible and
+/// Stops every adapter a workspace started; called when that workspace closes.
+/// A debuggee outliving the workspace that started it would be invisible and
 /// unstoppable, so this is not optional cleanup.
-pub fn stop_for_window(window: &Window) {
-    let state = window.state::<DapState>();
+pub fn stop_for_workspace(app: &AppHandle, workspace: &str) {
+    let state = app.state::<DapState>();
     let doomed: Vec<u64> = {
         let adapters = state.adapters();
         adapters
             .iter()
-            .filter(|(_, adapter)| adapter.window_label == window.label())
+            .filter(|(_, adapter)| adapter.workspace == workspace)
             .map(|(id, _)| *id)
             .collect()
     };

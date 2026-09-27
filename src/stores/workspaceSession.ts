@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listenHere } from "../lib/workspaceEvents";
 import {
   isWorkspaceSnapshot,
   restoreTab,
@@ -221,6 +221,6 @@ async function answerClosing(): Promise<void> {
   }
 }
 
-void listen("window:closing", () => {
+void listenHere("window:closing", () => {
   void answerClosing();
 });
