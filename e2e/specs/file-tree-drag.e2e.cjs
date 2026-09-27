@@ -34,6 +34,11 @@ const project = fs.mkdtempSync(path.join(os.tmpdir(), "aime-tree-drag-"));
 const at = (...parts) => path.join(project, ...parts);
 
 function writeFixture() {
+  // The app makes this folder in the project a moment after opening it; made
+  // here first, it cannot appear at the top of the tree mid-drag and push
+  // every row under the pointer down by one (measured: a drop meant for
+  // `archive` landed in `.aime`).
+  fs.mkdirSync(at(".aime"));
   fs.writeFileSync(at("moved.js"), "export const moved = true;\n");
   fs.writeFileSync(at("notes.txt"), "a note that is only ever clicked\n");
   fs.writeFileSync(at("mention.txt"), "dragged into the prompt\n");
@@ -145,6 +150,32 @@ async function expand(folder, child) {
   await waitForText(child, `${folder} never showed ${child}`);
 }
 
+/**
+ * The centres of several rows, measured together with the tree scrolled to its
+ * top: measuring one row at a time scrolls each into view and moves the one
+ * measured before it.
+ */
+async function rowCentres(...names) {
+  const centres = await browser.execute((wanted) => {
+    const tree = document.querySelector("div.select-none.overflow-y-auto");
+    if (!tree) return null;
+    tree.scrollTop = 0;
+    const visible = tree.getBoundingClientRect();
+    return wanted.map((name) => {
+      const label = [...tree.querySelectorAll("button span.truncate")].find(
+        (span) => span.textContent === name,
+      );
+      const box = label?.closest("button")?.getBoundingClientRect();
+      if (!box || box.top < visible.top || box.bottom > visible.bottom) return null;
+      return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
+    });
+  }, names);
+  names.forEach((name, index) => {
+    assert.ok(centres?.[index], `${name} is not on screen in the tree`);
+  });
+  return centres;
+}
+
 describe("Dragging in the file tree", () => {
   before(async () => {
     writeFixture();
@@ -237,7 +268,8 @@ describe("Dragging in the file tree", () => {
   it("says in the tree why a move was refused, and leaves both files as they were", async () => {
     // archive already has a clash.txt: the backend refuses to overwrite it, and
     // that refusal used to go to a console nobody has open.
-    await drag(await rowCentre("clash.txt"), await rowCentre("archive"));
+    const [from, to] = await rowCentres("clash.txt", "archive");
+    await drag(from, to);
     await browser.waitUntil(async () => (await treeProblem()) !== null, {
       timeout: 10_000,
       timeoutMsg: "a refused move said nothing in the tree",
@@ -255,9 +287,12 @@ describe("Dragging in the file tree", () => {
   });
 
   it("brings a file back to the project's root when it is dropped on the project's name", async () => {
+    // Its own ground rather than what earlier cases left open: moved.js sits in docs.
+    await expand("docs", "moved.js");
+    const from = await rowCentre("moved.js");
     const header = await headerCentre();
     assert.ok(header, "the tree has no header to drop onto");
-    await drag(await rowCentre("moved.js"), header);
+    await drag(from, header);
     await waitForDisk(() => fs.existsSync(at("moved.js")), "the file never came back to the root");
     assert.ok(!fs.existsSync(at("docs", "moved.js")), "the file was copied back, not moved");
   });
