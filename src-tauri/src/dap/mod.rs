@@ -19,7 +19,6 @@
 pub mod catalog;
 pub mod learned;
 pub mod options;
-pub mod session_dir;
 pub mod targets;
 
 use crate::wire::{frame, read_message};
@@ -77,8 +76,6 @@ struct Connection {
 pub struct DapState {
     adapters: Mutex<HashMap<u64, AdapterProcess>>,
     connections: Mutex<HashMap<u64, Connection>>,
-    /// The folders running sessions hold (`session_dir`).
-    session_slots: session_dir::SessionSlots,
 }
 
 impl DapState {
@@ -260,36 +257,14 @@ pub async fn dap_start(
     let spec = catalog::resolve_spec(&app, root.as_ref().map(std::path::Path::new), &language_id)
         .ok_or_else(|| format!("No debug adapter for {language_id}"))?;
     let command = spec.resolved_command(&app).await?;
-    let slot = session_dir::wanted(&command.args).then(|| state.session_slots.take(spec.id()));
-    let give_back = || {
-        if let Some(held) = &slot {
-            state.session_slots.release(held);
-        }
-    };
-    let args = match &slot {
-        Some(held) => match session_dir::folder_for(&app, held) {
-            Ok(folder) => session_dir::fill(&command.args, &folder),
-            Err(error) => {
-                give_back();
-                return Err(error);
-            }
-        },
-        None => command.args.clone(),
-    };
 
-    let spawned = adapter_command(&command.program, &args)
+    let mut child = adapter_command(&command.program, &command.args)
         .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null()) // adapters log verbosely; their DAP traffic is what matters
-        .spawn();
-    let mut child = match spawned {
-        Ok(child) => child,
-        Err(error) => {
-            give_back();
-            return Err(format!("DAP_MISSING::{}::{error}", spec.id()));
-        }
-    };
+        .spawn()
+        .map_err(|e| format!("DAP_MISSING::{}::{e}", spec.id()))?;
 
     let adapter_id = ADAPTER_COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = webview.label().to_string();
@@ -310,7 +285,6 @@ pub async fn dap_start(
         Ok(reached) => reached,
         Err(error) => {
             let _ = child.kill().await;
-            give_back();
             return Err(error);
         }
     };
@@ -331,9 +305,6 @@ pub async fn dap_start(
                 state
                     .connections()
                     .retain(|_, connection| connection.adapter_id != adapter_id);
-                if let Some(held) = &slot {
-                    state.session_slots.release(held);
-                }
             }
             let _ = app.emit_to(
                 EventTarget::webview(label.as_str()),

@@ -295,10 +295,8 @@ function javaAttachProject(jdtls, port) {
               jdtls.launcher,
               "-configuration",
               path.join(jdtls.home, "config_win"),
-              // A folder per running session, so two Java sessions never
-              // fight over JDT LS's lock on one (`dap/session_dir.rs`).
               "-data",
-              "{sessionDir}",
+              path.join(jdtls.home, "..", "jdtls-workspace"),
             ],
             probeArgs: ["-version"],
             // Attach needs no classpath — the program is already running. What
@@ -617,10 +615,8 @@ function javaProject(jdtls) {
               jdtls.launcher,
               "-configuration",
               path.join(jdtls.home, "config_win"),
-              // A folder per running session, so two Java sessions never
-              // fight over JDT LS's lock on one (`dap/session_dir.rs`).
               "-data",
-              "{sessionDir}",
+              path.join(jdtls.home, "..", "jdtls-workspace"),
             ],
             probeArgs: ["-version"],
             prepare: { command: "javac -g -d out App.java" },
