@@ -3,6 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <title>Aime</title>
+    <script>
+      // Switched off in Settings (`splash`, src/stores/settings.ts): gone before
+      // a pixel is drawn. Rust closes this window and owes the greeting no time,
+      // so the editor appears the moment it has painted (`splash_decline`).
+      try {
+        if (JSON.parse(localStorage.getItem("aime.settings") ?? "{}").splash === false) {
+          document.documentElement.style.display = "none";
+          void window.__TAURI_INTERNALS__?.invoke("splash_decline");
+        }
+      } catch {
+        // Storage refused: the greeting shows, as it would by default.
+      }
+    </script>
     <!--
       The window Aime shows while it starts.
 

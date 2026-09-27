@@ -354,14 +354,25 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               onChange={setLocale}
             />
           </Row>
-          <Row label={t("settings.splashVoice")} hint={t("settings.splashVoiceHint")}>
+          <Row label={t("settings.splash")} hint={t("settings.splashHint")}>
             <Toggle
-              on={settings.splashVoice}
-              onChange={(splashVoice) => {
-                settings.update({ splashVoice });
+              on={settings.splash}
+              onChange={(splash) => {
+                settings.update({ splash });
               }}
             />
           </Row>
+          {/* The voice belongs to the greeting: with no greeting it has nowhere to speak. */}
+          {settings.splash && (
+            <Row label={t("settings.splashVoice")} hint={t("settings.splashVoiceHint")}>
+              <Toggle
+                on={settings.splashVoice}
+                onChange={(splashVoice) => {
+                  settings.update({ splashVoice });
+                }}
+              />
+            </Row>
+          )}
 
           <p className={section}>
             <Eye size={12} /> {t("settings.editor")}

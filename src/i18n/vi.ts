@@ -560,6 +560,9 @@ export const vi: Record<TranslationKey, string> = {
   "settings.dark": "Tối",
   "settings.light": "Sáng",
   "settings.language": "Ngôn ngữ",
+  "settings.splash": "Lời chào lúc khởi động",
+  "settings.splashHint":
+    "Mặc định bật - tắt đi thì editor mở ngay khi sẵn sàng, không có tấm thẻ chào phía trước.",
   "settings.splashVoice": "Giọng nói lúc khởi động",
   "settings.splashVoiceHint": "Mặc định tắt - bật lên thì Aime chào bằng giọng nói trong lúc khởi động.",
   "settings.fontSize": "Cỡ chữ",

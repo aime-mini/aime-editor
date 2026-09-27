@@ -104,6 +104,9 @@ struct Handover {
     shown_at: Option<Instant>,
     /// The page asked to stay up until here - see `splash_hold`.
     hold_until: Option<Instant>,
+    /// Switched off in Settings: nothing is owed, and the page is not listened
+    /// to any more - see `splash_decline`.
+    declined: bool,
     done: bool,
 }
 
@@ -122,6 +125,9 @@ impl Handover {
     /// asked for on top of that is owed either way - it is talking, and it is the
     /// only side that knows how long the sentence is.
     fn remaining(&self, now: Instant, minimum: Duration) -> Duration {
+        if self.declined {
+            return Duration::ZERO;
+        }
         let floor = match self.shown_at {
             None => Duration::ZERO,
             Some(shown_at) => minimum.saturating_sub(now.saturating_duration_since(shown_at)),
@@ -208,6 +214,9 @@ pub fn start(app: &AppHandle) {
 /// "the card was up for 1.4 seconds" and "the window was".
 #[tauri::command]
 pub fn splash_shown(app: AppHandle) {
+    if app.state::<SplashState>().locked().declined {
+        return;
+    }
     let Some(window) = app.get_webview_window(LABEL) else {
         return; // already handed over - there is nothing left to time
     };
@@ -231,8 +240,28 @@ pub fn splash_hold(app: AppHandle, ms: u64) {
     let until = Instant::now() + Duration::from_millis(ms.min(MAX_HOLD.as_millis() as u64));
     let state = app.state::<SplashState>();
     let mut handover = state.locked();
+    if handover.declined {
+        return;
+    }
     if handover.hold_until.is_none_or(|current| current < until) {
         handover.hold_until = Some(until);
+    }
+}
+
+/// The greeting is switched off (Settings → Appearance): the page says so
+/// before it draws anything, and goes. Unlike a skip, the editor is not shown
+/// now - it appears the moment its first workspace has painted, as it would
+/// after a greeting, only owing the greeting no time.
+///
+/// Decided by the page because the setting lives in the page's storage, which
+/// the backend cannot read before a webview exists to hold it.
+#[tauri::command]
+pub fn splash_decline(app: AppHandle) {
+    app.state::<SplashState>().locked().declined = true;
+    if let Some(splash) = app.get_webview_window(LABEL) {
+        if let Err(err) = splash.close() {
+            eprintln!("[splash] close failed: {err}");
+        }
     }
 }
 
@@ -328,6 +357,7 @@ mod tests {
         let handover = Handover {
             shown_at: Some(now),
             hold_until: Some(now + Duration::from_millis(4500)),
+            declined: false,
             done: false,
         };
         // The floor alone would let go at 3s; the greeting has 4.5s to say.
@@ -339,12 +369,25 @@ mod tests {
         let quiet = Handover {
             shown_at: Some(now),
             hold_until: Some(now + Duration::from_millis(500)),
+            declined: false,
             done: false,
         };
         assert_eq!(
             quiet.remaining(now, Duration::from_secs(3)),
             Duration::from_secs(3)
         );
+    }
+
+    #[test]
+    fn a_greeting_switched_off_is_owed_nothing_whatever_the_page_asked() {
+        let now = Instant::now();
+        let declined = Handover {
+            shown_at: Some(now),
+            hold_until: Some(now + Duration::from_secs(5)),
+            declined: true,
+            done: false,
+        };
+        assert_eq!(declined.remaining(now, Duration::from_secs(4)), Duration::ZERO);
     }
 
     #[test]
@@ -363,6 +406,7 @@ mod tests {
         let handover = Handover {
             shown_at: Some(now - Duration::from_millis(400)),
             hold_until: None,
+            declined: false,
             done: false,
         };
         assert_eq!(
@@ -379,6 +423,7 @@ mod tests {
         let handover = Handover {
             shown_at: Some(now - Duration::from_secs(5)),
             hold_until: None,
+            declined: false,
             done: false,
         };
         assert_eq!(

@@ -101,6 +101,7 @@ pub fn run() {
             splash::splash_shown,
             splash::splash_hold,
             splash::splash_skip,
+            splash::splash_decline,
             splash::app_ready,
             checkpoint::checkpoint_create,
             checkpoint::checkpoint_diff,

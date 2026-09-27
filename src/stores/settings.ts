@@ -48,6 +48,12 @@ export interface EditorSettings {
    * import a store from (`splash.html`).
    */
   splashVoice: boolean;
+  /**
+   * Whether the greeting shows at all while Aime starts. Read by the splash
+   * page itself, before it draws anything (`splash.html`); off, the editor
+   * appears as soon as it has painted instead.
+   */
+  splash: boolean;
 }
 
 /** Where these live. `splash.html` reads this key itself - keep both in step. */
@@ -62,6 +68,7 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   inlineAi: "manual",
   updateChannel: "stable",
   splashVoice: false,
+  splash: true,
 };
 
 /** Bounds that keep the editor readable whatever is in storage. */
@@ -89,6 +96,7 @@ export function sanitize(stored: unknown): EditorSettings {
       ? (raw.updateChannel as UpdateChannel)
       : DEFAULT_SETTINGS.updateChannel,
     splashVoice: typeof raw.splashVoice === "boolean" ? raw.splashVoice : DEFAULT_SETTINGS.splashVoice,
+    splash: typeof raw.splash === "boolean" ? raw.splash : DEFAULT_SETTINGS.splash,
   };
 }
 
