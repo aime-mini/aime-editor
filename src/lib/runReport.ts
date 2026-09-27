@@ -134,6 +134,8 @@ export interface ReportInput {
   evidenceRequired: boolean;
   /** What the suites were run with, when they needed anything running. */
   environment: TestEnvironment | null;
+  /** Files the person saved inside the run's trees while it was working. */
+  yourEdits: readonly string[];
 }
 
 /**
@@ -262,6 +264,15 @@ export function renderReport(input: ReportInput): string {
   if (evidence.length > 0) {
     lines.push("", "## Evidence the suites left behind", "");
     for (const file of evidence) lines.push(`- \`${file}\``);
+  }
+  if (input.yourEdits.length > 0) {
+    lines.push(
+      "",
+      "## Saved by you while the run worked",
+      "",
+      "Every check after these saves measured your edit together with the run's:",
+    );
+    for (const file of input.yourEdits) lines.push(`- \`${file}\``);
   }
   return `${lines.join("\n")}\n`;
 }

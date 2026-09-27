@@ -47,6 +47,7 @@ function reportOf(
   evidence: string[] = [],
   evidenceRequired = true,
   environment: TestEnvironment | null = null,
+  yourEdits: string[] = [],
 ): string {
   return renderReport({
     run: RUN,
@@ -60,6 +61,7 @@ function reportOf(
     evidence,
     evidenceRequired,
     environment,
+    yourEdits,
   });
 }
 
@@ -133,6 +135,13 @@ describe("renderReport", () => {
     expect(reportOf(PASSED)).not.toContain("needed something running");
   });
 
+  it("names the files the person saved while the run worked, since every later check measured them", () => {
+    const page = reportOf(PASSED, [], true, null, ["src/i18n/index.ts"]);
+    expect(page).toContain("## Saved by you while the run worked");
+    expect(page).toContain("- `src/i18n/index.ts`");
+    expect(reportOf(PASSED)).not.toContain("Saved by you");
+  });
+
   it("renders a run that got nowhere without inventing sections", () => {
     const bare = renderReport({
       run: RUN,
@@ -146,6 +155,7 @@ describe("renderReport", () => {
       evidence: [],
       evidenceRequired: true,
       environment: null,
+      yourEdits: [],
     });
 
     expect(bare).toContain("# Task run — Login forgets the language");

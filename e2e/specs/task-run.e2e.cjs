@@ -876,6 +876,77 @@ ${suite.output}`,
     await waitForText("round the total", "the finished run was not kept on file");
   });
 
+  it("says so when you save a file it holds, and undoes the whole run in one click", async () => {
+    fs.writeFileSync(MODE_FILE, "sound");
+    repo = freshRepo(repo);
+    const checkout = path.join(repo, "src", "checkout.js");
+    const cartBefore = fs.readFileSync(path.join(repo, "src", "cart.js"), "utf8");
+    const checkoutBefore = fs.readFileSync(checkout, "utf8");
+    await startRun(repo);
+    await waitForText("read the approach", "the run never stopped for approval", 240_000);
+
+    // Saved the way the editor saves - its own store, its own write - while the
+    // run waits at its gate and holds the tree.
+    const saved = await browser.executeAsync((file, done) => {
+      import("/src/stores/workspace.ts").then(
+        async ({ useWorkspace }) => {
+          const workspace = useWorkspace.getState();
+          await workspace.openFile(file);
+          useWorkspace
+            .getState()
+            .setContent(`${useWorkspace.getState().fileContent}// the person was here\n`);
+          await useWorkspace.getState().saveFile();
+          done(true);
+        },
+        (error) => done(String(error)),
+      );
+    }, checkout);
+    assert.equal(saved, true, `the editor could not save: ${saved}`);
+    assert.match(fs.readFileSync(checkout, "utf8"), /the person was here/, "the save never reached the disk");
+    await waitForText("while the run was working on this tree", "the run never said the person saved a file");
+
+    await approve(repo);
+    await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
+    const [report] = reportsIn(repo);
+    assert.match(
+      report,
+      /## Saved by you while the run worked[\s\S]*checkout\.js/,
+      `the report forgot the save: ${report}`,
+    );
+    assert.match(
+      fs.readFileSync(path.join(repo, "src", "cart.js"), "utf8"),
+      /Math\.round/,
+      "the run changed nothing",
+    );
+    const runBranch = currentBranch(repo);
+
+    // First click lists, second click undoes.
+    await (await $("button*=Undo the whole run")).click();
+    await waitForText(
+      "go back to how they stood before the run began",
+      "the undo never listed what it would do",
+    );
+    await (await $("button*=Undo the run")).click();
+    await waitForText("Undone - the tree is back", "the undo never said it was done");
+
+    // Put back by git, so in the line endings this machine's git checks files
+    // out with (`core.autocrlf`) - the same bytes any checkout would write.
+    const text = (file) => fs.readFileSync(file, "utf8").replaceAll("\r\n", "\n");
+    assert.equal(text(path.join(repo, "src", "cart.js")), cartBefore, "the change is still there");
+    assert.equal(text(checkout), checkoutBefore, "a file changed since the checkpoint was kept");
+    assert.ok(
+      !fs.existsSync(path.join(repo, "debug-scratch.log")),
+      "a file the run created survived the undo",
+    );
+    assert.equal(currentBranch(repo), "main", "the tree did not go back to the branch it was on");
+    assert.ok(
+      !gitIn(repo, "branch", "--list", runBranch).includes(runBranch),
+      `the run's branch ${runBranch} was kept`,
+    );
+    const journal = journalsIn(repo).find((run) => run.run.branch === runBranch);
+    assert.ok(journal?.undo?.undoneAt > 0, "the journal does not know the run was undone");
+  });
+
   it("finds how a script-less project is tested, runs it, and still proves the case", async () => {
     // The Gradle/Makefile world: the tests exist but no manifest script names
     // them. The model is asked how this project is really tested, and Aime

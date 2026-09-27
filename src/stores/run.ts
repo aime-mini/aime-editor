@@ -69,6 +69,9 @@ import {
 } from "../lib/testEnvironment";
 import { caseEvidence, deployProof, DEPLOY_PROOF_DIR, EVIDENCE_DIR } from "../lib/evidenceFile";
 import { emptyTrash, trashOf, untrackedNow, type TrashItem } from "../lib/runTrash";
+import type { RepositoryBranch, RunUndo, UndoOutcome } from "../lib/runUndo";
+import { onFileSaved } from "../lib/savedFiles";
+import type { Checkpoint } from "../lib/types";
 import {
   caseOutcomes,
   loadTestCases,
@@ -98,7 +101,7 @@ import {
   type PhaseResult,
   type Run,
 } from "../lib/runPlan";
-import { isWithin, repositoryLabel } from "../lib/repositories";
+import { isWithin, relativeTo, repositoryLabel } from "../lib/repositories";
 import { statusLine, tasksOfTree, treesReached, type JoinedTree, type TreeStatus } from "../lib/runTrees";
 import { branchNameFor } from "../lib/workItems";
 import { useGit, type GitStatus } from "./git";
@@ -199,6 +202,16 @@ interface Artifacts {
    * so a change that strays into one the run never joined is caught.
    */
   othersAtStart: TreeStatus[];
+  /**
+   * What puts the person's tree back as it stood before the run - taken
+   * before its branch, and only for a run in their own tree (`lib/runUndo.ts`).
+   */
+  undo: RunUndo | null;
+  /**
+   * Files the person saved from the editor inside the run's trees while it
+   * was working: every check from then on measured their edit too.
+   */
+  yourEdits: string[];
 }
 
 const NOTHING_YET: Artifacts = {
@@ -219,6 +232,8 @@ const NOTHING_YET: Artifacts = {
   environment: null,
   joined: [],
   othersAtStart: [],
+  undo: null,
+  yourEdits: [],
 };
 
 /**
@@ -256,6 +271,10 @@ interface RunState {
   trash: TrashItem[] | null;
   /** What the last sweep did, so the panel can say it. */
   trashResult: { deleted: number; failed: string[] } | null;
+  /** The files undoing the shown run would put back, once the reader asked. */
+  undoPreview: string[] | null;
+  /** What undoing the shown run did not manage, once it has been undone. */
+  undoResult: UndoOutcome | null;
 
   setAutonomy: (autonomy: Autonomy) => void;
   /** Shows one live run. */
@@ -280,6 +299,12 @@ interface RunState {
   previewTrash: () => Promise<void>;
   /** Deletes exactly the ticked paths, then lists what is still there. */
   sweepTrash: (paths: readonly string[]) => Promise<void>;
+  /** Lists what undoing the shown run would put back, without touching anything. */
+  previewUndo: () => Promise<void>;
+  /** Puts the tree back as it stood before the shown run, and its branch back too. */
+  undoRun: () => Promise<void>;
+  /** Closes the undo question without undoing anything. */
+  keepRun: () => void;
 }
 
 /**
@@ -320,6 +345,9 @@ async function stopEngine(id: string): Promise<void> {
   engine.driving = false;
 }
 
+/** The undo panel closed: nothing listed, nothing reported. */
+const NO_UNDO_VIEW = { undoPreview: null, undoResult: null } as const;
+
 export const useRun = create<RunState>((set, get) => ({
   slots: {},
   shownId: null,
@@ -328,6 +356,8 @@ export const useRun = create<RunState>((set, get) => ({
   history: [],
   trash: null,
   trashResult: null,
+  undoPreview: null,
+  undoResult: null,
 
   setAutonomy: (autonomy) => {
     set({ autonomy });
@@ -335,7 +365,7 @@ export const useRun = create<RunState>((set, get) => ({
 
   show: (id) => {
     if (!Object.hasOwn(get().slots, id)) return;
-    set({ shownId: id, past: null, trash: null, trashResult: null });
+    set({ shownId: id, past: null, trash: null, trashResult: null, ...NO_UNDO_VIEW });
   },
 
   start: async (item) => {
@@ -381,6 +411,7 @@ export const useRun = create<RunState>((set, get) => ({
       past: null,
       trash: null,
       trashResult: null,
+      ...NO_UNDO_VIEW,
     }));
     useWorkspace.getState().openRun();
 
@@ -481,6 +512,7 @@ export const useRun = create<RunState>((set, get) => ({
       history,
       trash: null,
       trashResult: null,
+      ...NO_UNDO_VIEW,
     });
   },
 
@@ -503,9 +535,10 @@ export const useRun = create<RunState>((set, get) => ({
         past: null,
         trash: null,
         trashResult: null,
+        ...NO_UNDO_VIEW,
       }));
     } else {
-      set({ past: slotFrom(saved, rootPath, false), trash: null, trashResult: null });
+      set({ past: slotFrom(saved, rootPath, false), trash: null, trashResult: null, ...NO_UNDO_VIEW });
     }
     useWorkspace.getState().openRun();
   },
@@ -532,7 +565,7 @@ export const useRun = create<RunState>((set, get) => ({
     // away is not a record.
     const state = get();
     if (state.past !== null) {
-      set({ past: null, trash: null, trashResult: null });
+      set({ past: null, trash: null, trashResult: null, ...NO_UNDO_VIEW });
       if (state.shownId === null) useWorkspace.getState().closeRun();
       return;
     }
@@ -545,6 +578,7 @@ export const useRun = create<RunState>((set, get) => ({
         shownId: Object.keys(slots)[0] ?? null,
         trash: null,
         trashResult: null,
+        ...NO_UNDO_VIEW,
       };
     });
     if (get().shownId === null) useWorkspace.getState().closeRun();
@@ -589,7 +623,86 @@ export const useRun = create<RunState>((set, get) => ({
       trash: gone ? [] : await trashOf(shown.workRoot, treesOf(shown), shown.run.startedAt),
     });
   },
+
+  previewUndo: async () => {
+    const shown = shownSlot(get());
+    const undo = shown?.undo ?? null;
+    if (shown === null || undo === null || undo.undoneAt !== undefined) return;
+    const files = await invoke<string[]>("checkpoint_diff", {
+      root: shown.workRoot,
+      checkpoint: undo.checkpoint,
+    });
+    set({ undoPreview: files, undoResult: null });
+  },
+
+  undoRun: async () => {
+    const shown = shownSlot(get());
+    const home = useWorkspace.getState().rootPath;
+    if (shown === null || home === null || shown.undo === null || shown.undo.undoneAt !== undefined) return;
+    if (engines.get(shown.run.id)?.driving === true) return;
+    const outcome = await putBack(shown, shown.undo);
+    // Marked undone only once the files are back: a restore that refused
+    // leaves the run standing, and the button with it.
+    const slot = outcome.restored ? { ...shown, undo: { ...shown.undo, undoneAt: Date.now() } } : shown;
+    set((state) =>
+      state.past?.run.id === slot.run.id
+        ? { past: slot, undoPreview: null, undoResult: outcome }
+        : {
+            slots: Object.hasOwn(state.slots, slot.run.id)
+              ? { ...state.slots, [slot.run.id]: slot }
+              : state.slots,
+            undoPreview: null,
+            undoResult: outcome,
+          },
+    );
+    journalSlot(home, slot);
+    // The tree, the editor and the Git panel all read from disk.
+    useWorkspace.getState().refreshTree();
+    void useGit.getState().refresh();
+  },
+
+  keepRun: () => {
+    set(NO_UNDO_VIEW);
+  },
 }));
+
+/**
+ * Undoes a run in the person's tree: every file back as the checkpoint holds
+ * it, then each repository back on the branch it was on, and the run's own
+ * branch deleted - safely, so a branch someone committed to is kept. Each step
+ * that refuses is said and the rest still happen: half an undo is worse
+ * reported than it is silently.
+ */
+async function putBack(slot: RunSlot, undo: RunUndo): Promise<UndoOutcome> {
+  const failed: string[] = [];
+  try {
+    await invoke<number>("checkpoint_restore", { root: slot.workRoot, checkpoint: undo.checkpoint });
+  } catch (error: unknown) {
+    // Nothing else is touched: switching branches over files that were not
+    // put back would carry the run's change onto the person's branch.
+    return { restored: false, failed: [translate("run.undoRestoreFailed", { detail: String(error) })] };
+  }
+  const runBranch = slot.run.branch;
+  for (const { tree, branch } of undo.branches) {
+    const repository = repositoryLabel(tree, slot.workRoot);
+    if (branch === null || branch === runBranch) continue;
+    try {
+      await invoke("git_checkout", { root: tree, name: branch });
+    } catch (error: unknown) {
+      failed.push(translate("run.undoBranchFailed", { repository, branch, detail: String(error) }));
+      continue;
+    }
+    if (runBranch === null) continue;
+    try {
+      await invoke("git_delete_branch", { root: tree, name: runBranch, force: false });
+    } catch (error: unknown) {
+      failed.push(
+        translate("run.undoDeleteFailed", { repository, branch: runBranch, detail: String(error) }),
+      );
+    }
+  }
+  return { restored: true, failed };
+}
 
 /** The same map without one slot — spelled out because `delete` mutates. */
 function withoutSlot(slots: Record<string, RunSlot>, id: string): Record<string, RunSlot> {
@@ -720,6 +833,8 @@ function slotFrom(saved: SavedRun, home: string, interrupted: boolean): RunSlot 
     environment: saved.environment ?? null,
     joined: saved.joined ?? [],
     othersAtStart: saved.othersAtStart ?? [],
+    undo: saved.undo ?? null,
+    yourEdits: saved.yourEdits ?? [],
   };
 }
 
@@ -739,8 +854,27 @@ useWorkspace.subscribe((state, previous) => {
     history: [],
     trash: null,
     trashResult: null,
+    ...NO_UNDO_VIEW,
   });
   if (state.rootPath !== null) void useRun.getState().reopen(state.rootPath);
+});
+
+/**
+ * A file the person saves inside the trees of a run that holds them: said in
+ * that run's log the moment it happens, and kept for its report, because every
+ * check from then on measures the person's edit together with the agent's.
+ */
+onFileSaved((path) => {
+  for (const [id, slot] of Object.entries(useRun.getState().slots)) {
+    // Waiting at its gate or cut off, a run still holds its tree (`isOver`).
+    if (isOver(slot.run)) continue;
+    const trees = [slot.workRoot, ...treesOf(slot).map(({ tree }) => tree)];
+    if (!trees.some((tree) => isWithin(path, tree))) continue;
+    const { set } = opsFor(id);
+    const file = relativeTo(slot.workRoot, path);
+    if (!slot.yourEdits.includes(file)) set({ yourEdits: [...slot.yourEdits, file] });
+    note(set, slot.run.current ?? "understand", translate("run.yourEdit", { file }), "problem");
+  }
 });
 
 /**
@@ -854,12 +988,16 @@ async function drive(id: string, start: PhaseId, context: Context, set: Setter, 
  * the path that matters for a benefit on the path that rarely happens.
  */
 function journal(context: Context, get: Getter): void {
-  const slot = get();
-  void saveRun(context.home, {
+  journalSlot(context.home, get());
+}
+
+/** Writes one slot to the journal of the project `home`. */
+function journalSlot(home: string, slot: RunSlot): void {
+  void saveRun(home, {
     run: slot.run,
     ...artifactsOf(slot),
-    tree: context.tree === context.home ? undefined : context.tree,
-    workRoot: context.workRoot === context.tree ? undefined : context.workRoot,
+    tree: slot.tree === home ? undefined : slot.tree,
+    workRoot: slot.workRoot === slot.tree ? undefined : slot.workRoot,
   });
 }
 
@@ -883,6 +1021,8 @@ function artifactsOf(slot: RunSlot): Artifacts {
     environment: slot.environment,
     joined: slot.joined,
     othersAtStart: slot.othersAtStart,
+    undo: slot.undo,
+    yourEdits: slot.yourEdits,
   };
 }
 
@@ -946,6 +1086,11 @@ async function takeBaseline(context: Context, set: Setter, get: Getter): Promise
   // A branch left over from an earlier run is the common case, and it is not a
   // reason to hand the task back: the run takes the next free name instead.
   // Only a git that refuses every name has genuinely stopped anything.
+  // Before the branch: undoing the run puts the tree back as it stands now. A
+  // run picked up again keeps the point it took the first time.
+  if (get().undo === null && !inWorktree(context)) {
+    set({ undo: await undoPoint(context.workRoot, [gitRootOf(context)]) });
+  }
   const wanted = branchNameFor(context.item);
   let branch = wanted;
   let refused: string | null = null;
@@ -1940,6 +2085,7 @@ async function report(context: Context, set: Setter, get: Getter): Promise<Phase
     evidence,
     evidenceRequired,
     environment: state.environment,
+    yourEdits: state.yourEdits,
   });
   await writeReport(context.home, state.run.id, markdown);
 
@@ -1955,6 +2101,9 @@ async function report(context: Context, set: Setter, get: Getter): Promise<Phase
             count: state.review.findings.filter((finding) => finding.severity === "issue").length,
           }),
       evidence.length === 0 ? "" : translate("run.reportEvidence", { count: evidence.length }),
+      state.yourEdits.length === 0
+        ? ""
+        : translate("run.reportYourEdits", { files: state.yourEdits.join(", ") }),
       committed,
       translate("run.reportSaved", { file: `${RUNS_DIR}/${state.run.id}.md` }),
     ]
@@ -2024,6 +2173,23 @@ async function tryUntil<T>(times: number, attempt: () => Promise<T | null>): Pro
     if (answer !== null) return answer;
   }
   return null;
+}
+
+/**
+ * The point a run in the person's tree can be undone to: a checkpoint of every
+ * repository under where it works, and the branch each of `trees` is on. None
+ * where git keeps nothing to put back.
+ */
+async function undoPoint(workRoot: string, trees: readonly string[]): Promise<RunUndo | null> {
+  const checkpoint = await invoke<Checkpoint | null>("checkpoint_create", { root: workRoot });
+  if (checkpoint === null) return null;
+  return { checkpoint, branches: await Promise.all(trees.map(branchOf)) };
+}
+
+/** The branch a repository is on right now. */
+async function branchOf(tree: string): Promise<RepositoryBranch> {
+  const status = await invoke<GitStatus>("git_status", { root: tree });
+  return { tree, branch: status.branch };
 }
 
 /** The tasks this project declares, asked of the backend each time it matters. */
@@ -2178,6 +2344,7 @@ async function joinReachedTrees(
   const lines: string[] = [];
   for (const tree of reached) {
     const repository = repositoryLabel(tree, context.workRoot);
+    const before = await branchOf(tree);
     try {
       await invoke("git_create_branch", { root: tree, name: branch });
     } catch (error: unknown) {
@@ -2185,7 +2352,10 @@ async function joinReachedTrees(
       continue;
     }
     const untrackedBefore = await untrackedNow(tree);
-    set((slot) => ({ joined: [...slot.joined, { tree, untrackedBefore }] }));
+    set((slot) => ({
+      joined: [...slot.joined, { tree, untrackedBefore }],
+      undo: slot.undo === null ? null : { ...slot.undo, branches: [...slot.undo.branches, before] },
+    }));
     const tasks = tasksOfTree(await tasksOf(tree), tree, context.workRoot);
     const suites = await settleEnvironment(
       tasks,

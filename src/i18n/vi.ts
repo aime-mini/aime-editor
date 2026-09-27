@@ -824,6 +824,22 @@ export const vi: Record<TranslationKey, string> = {
   "run.workCommitted": "Đã commit trên {branch} - worktree chỉ là chỗ làm, nhánh mới là thứ bàn giao",
   "run.workCommitFailed": "Không commit được thay đổi trong worktree: {detail}",
   "run.trashDelete": "Xoá {count} file",
+  "run.undoHeading": "Hoàn tác",
+  "run.undoPreview": "Hoàn tác cả lượt chạy…",
+  "run.undoWhy":
+    "{count} file này trở về như trước khi lượt chạy bắt đầu, cây làm việc về lại nhánh cũ, và nhánh {branch} của lượt chạy bị xoá. Những gì anh sửa trong các file này từ đó tới giờ cũng mất theo.",
+  "run.undoConfirm": "Hoàn tác lượt chạy",
+  "run.undoKeep": "Giữ lượt chạy",
+  "run.undoNothing":
+    "Không file nào khác so với trước lượt chạy: hoàn tác chỉ đưa cây làm việc về lại nhánh cũ và xoá nhánh {branch} của lượt chạy.",
+  "run.undoDone": "Đã hoàn tác - cây làm việc về như trước khi lượt chạy bắt đầu.",
+  "run.undoneAt": "Lượt chạy này đã được hoàn tác {when}.",
+  "run.undoRestoreFailed": "Không trả được các file về, nên không đụng gì thêm: {detail}",
+  "run.undoBranchFailed": "{repository} không về lại được nhánh {branch}: {detail}",
+  "run.undoDeleteFailed": "{repository} giữ lại nhánh {branch} của lượt chạy: {detail}",
+  "run.yourEdit":
+    "Anh lưu {file} trong lúc lượt chạy đang làm trên cây này - mọi phép kiểm từ đây trở đi đo cả phần anh sửa",
+  "run.reportYourEdits": "Anh lưu trong lúc lượt chạy làm: {files}",
   "run.trashDone": "Đã xoá {count} file",
   "run.trashFailed": "{count} file không xoá được",
 

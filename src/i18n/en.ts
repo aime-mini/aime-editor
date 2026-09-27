@@ -830,6 +830,22 @@ export const en = {
   "run.workCommitted": "Committed on {branch} - the worktree was its workplace, the branch is the delivery",
   "run.workCommitFailed": "The worktree's change could not be committed: {detail}",
   "run.trashDelete": "Delete {count} file(s)",
+  "run.undoHeading": "Undo",
+  "run.undoPreview": "Undo the whole run…",
+  "run.undoWhy":
+    "These {count} file(s) go back to how they stood before the run began, the tree goes back to the branch it was on, and the run's branch {branch} is deleted. Anything you changed in these files since is undone too.",
+  "run.undoConfirm": "Undo the run",
+  "run.undoKeep": "Keep the run",
+  "run.undoNothing":
+    "No file differs from before the run: undoing it only takes the tree back to the branch it was on and deletes the run's branch {branch}.",
+  "run.undoDone": "Undone - the tree is back as it stood before the run.",
+  "run.undoneAt": "This run was undone {when}.",
+  "run.undoRestoreFailed": "The files could not be put back, so nothing else was touched: {detail}",
+  "run.undoBranchFailed": "{repository} could not go back to {branch}: {detail}",
+  "run.undoDeleteFailed": "{repository} kept the run's branch {branch}: {detail}",
+  "run.yourEdit":
+    "You saved {file} while the run was working on this tree - every check from here on measures your edit too",
+  "run.reportYourEdits": "Saved by you while the run worked: {files}",
   "run.trashDone": "{count} file(s) deleted",
   "run.trashFailed": "{count} would not delete",
 

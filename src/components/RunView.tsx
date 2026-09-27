@@ -10,6 +10,7 @@ import {
   FileText,
   History as HistoryIcon,
   Play,
+  RotateCcw,
   ShieldAlert,
   Trash2,
   SkipForward,
@@ -20,6 +21,7 @@ import { useI18n, useT } from "../i18n";
 import type { TranslationKey } from "../i18n/en";
 import { whenText } from "../lib/workItems";
 import type { SavedRun } from "../lib/runFile";
+import type { RunUndo } from "../lib/runUndo";
 import {
   PHASES,
   progressOf,
@@ -277,6 +279,10 @@ export function RunView() {
 
         {run.current === null && ending?.kind !== "waiting" && ending?.kind !== "interrupted" && <Trash />}
 
+        {run.current === null && slot !== null && slot.undo !== null && (
+          <Undo undo={slot.undo} runBranch={run.branch} />
+        )}
+
         <section className="mt-6">
           <h2 className="mb-2 text-[11px] tracking-wide text-muted uppercase">{t("run.autonomy")}</h2>
           <div className="flex gap-1.5">
@@ -345,6 +351,84 @@ function Trash() {
           {trashResult.failed.length > 0 &&
             ` · ${t("run.trashFailed", { count: trashResult.failed.length })}`}
         </p>
+      )}
+    </section>
+  );
+}
+
+/**
+ * The one button that takes the whole run back.
+ *
+ * Two clicks, like the sweep: the first lists the files that would change -
+ * measured against the checkpoint the run took before its branch, not taken
+ * from the run's own account - and the second puts them back and returns the
+ * tree to the branch it was on. Offered only for a run in the person's own
+ * tree; a worktree run never touched it.
+ */
+function Undo({ undo, runBranch }: { undo: RunUndo; runBranch: string | null }) {
+  const { undoPreview, undoResult, previewUndo, undoRun, keepRun } = useRun();
+  const { locale } = useI18n();
+  const t = useT();
+  const branch = runBranch ?? "";
+
+  return (
+    <section className="mt-6">
+      <h2 className="mb-2 text-[11px] tracking-wide text-muted uppercase">{t("run.undoHeading")}</h2>
+      {undo.undoneAt !== undefined ? (
+        <p className="text-[12.5px] text-muted">
+          {undoResult === null
+            ? t("run.undoneAt", { when: whenText(String(undo.undoneAt), locale) })
+            : t("run.undoDone")}
+        </p>
+      ) : undoPreview === null ? (
+        <button
+          onClick={() => void previewUndo()}
+          className="flex items-center gap-1.5 rounded border border-line px-2 py-1 text-[11.5px] text-muted hover:border-danger hover:text-danger"
+        >
+          <RotateCcw size={11} /> {t("run.undoPreview")}
+        </button>
+      ) : (
+        <>
+          <p className="mb-2 text-[12.5px] text-muted">
+            {undoPreview.length === 0
+              ? t("run.undoNothing", { branch })
+              : t("run.undoWhy", { count: undoPreview.length, branch })}
+          </p>
+          {undoPreview.length > 0 && (
+            <ul className="max-h-48 overflow-auto rounded-md border border-line">
+              {undoPreview.map((file) => (
+                <li
+                  key={file}
+                  className="truncate border-b border-line px-3 py-1 font-mono text-[11.5px] last:border-0"
+                  title={file}
+                >
+                  {file}
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="mt-2 flex gap-1.5">
+            <button
+              onClick={() => void undoRun()}
+              className="rounded border border-danger/60 px-2 py-1 text-[11.5px] text-danger hover:bg-danger/10"
+            >
+              {t("run.undoConfirm")}
+            </button>
+            <button
+              onClick={keepRun}
+              className="rounded border border-line px-2 py-1 text-[11.5px] text-muted hover:border-accent hover:text-fg"
+            >
+              {t("run.undoKeep")}
+            </button>
+          </div>
+        </>
+      )}
+      {undoResult !== null && undoResult.failed.length > 0 && (
+        <ul className="mt-2 text-[12.5px] text-danger">
+          {undoResult.failed.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
       )}
     </section>
   );

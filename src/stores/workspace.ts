@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listenHere } from "../lib/workspaceEvents";
+import { announceFileSaved } from "../lib/savedFiles";
 import { open } from "@tauri-apps/plugin-dialog";
 import { translate } from "../i18n";
 import type { DiskState } from "../lib/workspaceSession";
@@ -475,6 +476,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       const content = state.openFilePath === path ? state.fileContent : state.buffers[path]?.content;
       if (content === undefined) return; // the tab was closed while the save waited
       await invoke("write_file", { path, content });
+      announceFileSaved(path);
       set((s) => {
         // Comparing against the text that reached the disk, not clearing a flag:
         // anything typed while the write was in flight is still unsaved.

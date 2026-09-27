@@ -7,6 +7,7 @@ import type { CheckPass } from "./qualityGate";
 import type { Baseline, GateVerdict, SuiteRun } from "./regressionGate";
 import type { Run } from "./runPlan";
 import type { JoinedTree, TreeStatus } from "./runTrees";
+import type { RunUndo } from "./runUndo";
 import type { TestEnvironment } from "./testEnvironment";
 
 /**
@@ -98,6 +99,13 @@ export interface SavedRun {
   joined?: JoinedTree[];
   /** The other repositories of that workspace as they stood when the run began. */
   othersAtStart?: TreeStatus[];
+  /**
+   * What undoes the run, for a run in the person's own tree. Optional: a run
+   * journaled before this could not be undone, and still cannot.
+   */
+  undo?: RunUndo | null;
+  /** Files the person saved inside the run's trees while it worked. */
+  yourEdits?: string[];
   /**
    * The repository the run belonged to, when the project holds several and it
    * was not the project itself. Optional like `workRoot`, for the same reason.
