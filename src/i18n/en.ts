@@ -602,6 +602,15 @@ export const en = {
   "settings.footer": "Changes apply immediately and are remembered on this machine. Ctrl+, opens this page.",
 
   "tree.ignored": "Ignored by git (.gitignore) - it is not part of the repository",
+  "tree.listFailed": "Could not read this folder: {reason}",
+  "tree.rootFailed": "Could not read {name}",
+  "tree.moveFailed": "Could not move {name}",
+  "tree.createFailed": "Could not create {name}",
+  "tree.renameFailed": "Could not rename {name}",
+  "tree.deleteFailed": "Could not delete {name}",
+  "tree.untrackFailed": "Could not stop tracking {name}",
+  "tree.revealFailed": "Could not show {name} in the file manager",
+  "tree.dismiss": "Dismiss",
 
   "menu.filter": "Filter…",
   "menu.noMatch": "Nothing matches",

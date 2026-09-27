@@ -39,6 +39,9 @@ function writeFixture() {
   fs.writeFileSync(at("mention.txt"), "dragged into the prompt\n");
   fs.mkdirSync(at("docs"));
   fs.writeFileSync(at("docs", "guide.md"), "# Guide\n");
+  fs.writeFileSync(at("clash.txt"), "the one being moved\n");
+  fs.mkdirSync(at("archive"));
+  fs.writeFileSync(at("archive", "clash.txt"), "the one already there\n");
   fs.mkdirSync(at("src"));
   fs.writeFileSync(at("src", "main.js"), "console.log('main');\n");
 }
@@ -65,6 +68,9 @@ async function rowCentre(name) {
     );
     const row = label?.closest("button");
     if (!row) return null;
+    // Folders opened by earlier tests push the lower rows below the tree's
+    // fold, where a pointer sent to them lands on whatever covers that spot.
+    row.scrollIntoView({ block: "nearest" });
     const box = row.getBoundingClientRect();
     return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
   }, name);
@@ -80,6 +86,13 @@ async function headerCentre() {
     const box = header?.getBoundingClientRect();
     return box ? { x: Math.round(box.x + 20), y: Math.round(box.y + box.height / 2) } : null;
   });
+}
+
+/** The line the tree shows when something it was asked to do failed, or null. */
+function treeProblem() {
+  return browser.execute(
+    () => document.querySelector("div.select-none.overflow-y-auto [role=alert]")?.textContent ?? null,
+  );
 }
 
 /** What the window shows while a drag is under way. */
@@ -219,6 +232,26 @@ describe("Dragging in the file tree", () => {
     await browser.pause(1_000);
     assert.ok(fs.existsSync(at("src", "main.js")), "the folder was moved into itself");
     assert.ok(!fs.existsSync(at("src", "src")), "the folder was moved into itself");
+  });
+
+  it("says in the tree why a move was refused, and leaves both files as they were", async () => {
+    // archive already has a clash.txt: the backend refuses to overwrite it, and
+    // that refusal used to go to a console nobody has open.
+    await drag(await rowCentre("clash.txt"), await rowCentre("archive"));
+    await browser.waitUntil(async () => (await treeProblem()) !== null, {
+      timeout: 10_000,
+      timeoutMsg: "a refused move said nothing in the tree",
+    });
+    const problem = await treeProblem();
+    assert.match(problem, /Could not move clash\.txt/, `the tree says "${problem}"`);
+    assert.match(problem, /already exists/, `the tree does not say why: "${problem}"`);
+    assert.equal(fs.readFileSync(at("clash.txt"), "utf8"), "the one being moved\n");
+    assert.equal(fs.readFileSync(at("archive", "clash.txt"), "utf8"), "the one already there\n");
+
+    await browser.execute(() => {
+      document.querySelector("div.select-none.overflow-y-auto [role=alert] button")?.click();
+    });
+    assert.equal(await treeProblem(), null, "the line stayed after it was dismissed");
   });
 
   it("brings a file back to the project's root when it is dropped on the project's name", async () => {

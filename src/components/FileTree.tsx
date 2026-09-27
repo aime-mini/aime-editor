@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { useT } from "../i18n";
+import type { TranslationKey } from "../i18n/en";
 import { foldersUpTo, inRepository, relativeTo, repositoryOf } from "../lib/repositories";
 import { useGit } from "../stores/git";
 import { usePathDrag } from "../stores/pathDrag";
@@ -32,6 +33,37 @@ type ModalAction =
   | { kind: "rename"; entry: DirEntry }
   | { kind: "delete"; entry: DirEntry }
   | { kind: "untrack"; entry: DirEntry };
+
+/**
+ * A tree action that failed: what was being done, and what the system said.
+ * Shown in the tree, where the action was asked for - a console nobody has
+ * open is not an answer.
+ */
+type TreeProblem = { what: string; reason: string };
+
+/** What went wrong, in the words the backend or the OS used. */
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The words for a modal action that failed, and the name it was acting on. */
+function failureOf(modal: ModalAction, value: string): { key: TranslationKey; name: string } {
+  switch (modal.kind) {
+    case "new-file":
+    case "new-folder":
+      return { key: "tree.createFailed", name: value };
+    case "rename":
+      return { key: "tree.renameFailed", name: modal.entry.name };
+    case "delete":
+      return { key: "tree.deleteFailed", name: modal.entry.name };
+    case "untrack":
+      return { key: "tree.untrackFailed", name: modal.entry.name };
+  }
+}
+
+function nameOf(path: string): string {
+  return path.split(/[\\/]/).pop() ?? path;
+}
 
 /**
  * Moving something in the tree is a pointer gesture, not an HTML5 drag.
@@ -90,6 +122,8 @@ function TreeNode({
   const expanded = useWorkspace((s) => s.expandedDirs.includes(entry.path));
   const setDirExpanded = useWorkspace((s) => s.setDirExpanded);
   const [children, setChildren] = useState<DirEntry[] | null>(null);
+  /** Why the folder could not be listed, the last time it was asked. */
+  const [unreadable, setUnreadable] = useState<string | null>(null);
   const { openFile, openFilePath, treeVersion } = useWorkspace();
   const t = useT();
 
@@ -100,9 +134,13 @@ function TreeNode({
     let stale = false;
     invoke<DirEntry[]>("list_dir", { path: entry.path })
       .then((list) => {
-        if (!stale) setChildren(list);
+        if (stale) return;
+        setChildren(list);
+        setUnreadable(null);
       })
-      .catch(console.error);
+      .catch((error: unknown) => {
+        if (!stale) setUnreadable(reasonOf(error));
+      });
     return () => {
       stale = true;
     };
@@ -183,6 +221,16 @@ function TreeNode({
           ) : null;
         })()}
       </button>
+      {expanded && unreadable !== null && (
+        <div
+          role="alert"
+          title={unreadable}
+          className="truncate py-0.5 pr-1 text-[11px] text-danger"
+          style={{ paddingLeft: (depth + 1) * 12 + 6 + 13 }}
+        >
+          {t("tree.listFailed", { reason: unreadable })}
+        </div>
+      )}
       {expanded &&
         children?.map((c) => (
           <TreeNode
@@ -216,7 +264,7 @@ function DragGhost() {
       className="pointer-events-none fixed z-50 rounded border border-accent bg-panel px-1.5 py-0.5 text-[11px] text-fg shadow-lg"
       style={{ left: x + 10, top: y + 10 }}
     >
-      {path.split(/[\\/]/).pop()}
+      {nameOf(path)}
     </span>
   );
 }
@@ -244,6 +292,7 @@ export function FileTree() {
   const [menu, setMenu] = useState<MenuTarget | null>(null);
   const [modal, setModal] = useState<ModalAction | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [problem, setProblem] = useState<TreeProblem | null>(null);
   const dragging = usePathDrag((s) => s.path);
   const cancelDrag = usePathDrag((s) => s.cancel);
   const t = useT();
@@ -251,7 +300,7 @@ export function FileTree() {
   /** Moves `sourcePath` into `targetDir` (same-name, VS Code semantics). */
   const moveInto = useCallback(
     async (sourcePath: string, targetDir: string) => {
-      const name = sourcePath.split(/[\\/]/).pop();
+      const name = nameOf(sourcePath);
       if (!name) return;
       const invalid =
         targetDir === sourcePath ||
@@ -259,16 +308,17 @@ export function FileTree() {
         targetDir.startsWith(`${sourcePath}\\`) || // can't move a folder into itself
         targetDir.startsWith(`${sourcePath}/`);
       if (invalid) return;
+      setProblem(null);
       try {
         const to = `${targetDir}/${name}`;
         await invoke("rename_path", { from: sourcePath, to });
         handlePathRenamed(sourcePath, to);
         refreshTree();
-      } catch (err: unknown) {
-        console.error("move failed:", err);
+      } catch (error: unknown) {
+        setProblem({ what: t("tree.moveFailed", { name }), reason: reasonOf(error) });
       }
     },
-    [handlePathRenamed, refreshTree],
+    [handlePathRenamed, refreshTree, t],
   );
 
   const dnd: TreeDnd = {
@@ -346,12 +396,24 @@ export function FileTree() {
 
   useEffect(() => {
     if (!rootPath) return;
-    invoke<DirEntry[]>("list_dir", { path: rootPath }).then(setEntries).catch(console.error);
-  }, [rootPath, treeVersion]);
+    let stale = false;
+    invoke<DirEntry[]>("list_dir", { path: rootPath })
+      .then((list) => {
+        if (!stale) setEntries(list);
+      })
+      .catch((error: unknown) => {
+        if (stale) return;
+        setProblem({ what: t("tree.rootFailed", { name: nameOf(rootPath) }), reason: reasonOf(error) });
+      });
+    return () => {
+      stale = true;
+    };
+  }, [rootPath, treeVersion, t]);
 
   const runModalAction = useCallback(
     async (value: string) => {
       if (!modal) return;
+      setProblem(null);
       try {
         switch (modal.kind) {
           case "new-file":
@@ -379,13 +441,14 @@ export function FileTree() {
           }
         }
         refreshTree();
-      } catch (err) {
-        console.error(err);
+      } catch (error: unknown) {
+        const { key, name } = failureOf(modal, value);
+        setProblem({ what: t(key, { name }), reason: reasonOf(error) });
       } finally {
         setModal(null);
       }
     },
-    [modal, refreshTree, handlePathDeleted, handlePathRenamed],
+    [modal, refreshTree, handlePathDeleted, handlePathRenamed, t],
   );
 
   if (!rootPath) return null;
@@ -449,8 +512,12 @@ export function FileTree() {
       label: t("menu.revealExplorer"),
       icon: <ExternalLink size={14} />,
       onClick: () => {
-        revealItemInDir(target.entry.path).catch((err: unknown) => {
-          console.error("reveal in explorer failed:", err);
+        setProblem(null);
+        revealItemInDir(target.entry.path).catch((error: unknown) => {
+          setProblem({
+            what: t("tree.revealFailed", { name: nameOf(target.entry.path) }),
+            reason: reasonOf(error),
+          });
         });
       },
     });
@@ -564,7 +631,7 @@ export function FileTree() {
           setDropTarget(null);
         }}
       >
-        <span className="min-w-0 flex-1 truncate">{rootPath.split(/[\\/]/).pop()}</span>
+        <span className="min-w-0 flex-1 truncate">{nameOf(rootPath)}</span>
         <button
           onClick={() => void openFolder()}
           title={t("welcome.openFolder")}
@@ -580,6 +647,26 @@ export function FileTree() {
           <X size={12} />
         </button>
       </div>
+      {problem !== null && (
+        <div
+          role="alert"
+          className="mx-1 mb-1 flex items-start gap-1 rounded bg-danger/10 px-1.5 py-1 text-[11px]"
+        >
+          <span className="min-w-0 flex-1 break-words">
+            <span className="text-danger">{problem.what}</span>
+            <span className="text-muted"> - {problem.reason}</span>
+          </span>
+          <button
+            onClick={() => {
+              setProblem(null);
+            }}
+            title={t("tree.dismiss")}
+            className="shrink-0 rounded p-0.5 text-muted hover:bg-elevated hover:text-fg"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
       {entries.map((e) => (
         <TreeNode
           key={e.path}

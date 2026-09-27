@@ -62,8 +62,8 @@ const EN: HelpTopic[] = [
     id: "file-tree",
     section: "Workspace",
     title: "File tree",
-    body: "Click opens a file; right-click offers Open, Reveal in File Explorer, Git Blame (per-line authors - click a commit to see its patch), New File, New Folder, Rename, and Delete. Drag & drop moves items: drop onto a folder to move inside it, onto another file to move next to it, onto the project name to move to the root.",
-    keywords: "drag drop move create rename delete context menu reveal explorer blame",
+    body: "Click opens a file; right-click offers Open, Reveal in File Explorer, Git Blame (per-line authors - click a commit to see its patch), New File, New Folder, Rename, and Delete. Drag & drop moves items: drop onto a folder to move inside it, onto another file to move next to it, onto the project name to move to the root. When something cannot be done - a move onto a name that is already taken, a file the system will not delete - a line at the top of the tree says what and why; a folder that cannot be read says so where its contents would be.",
+    keywords: "drag drop move create rename delete context menu reveal explorer blame error failed",
   },
   {
     id: "live-updates",
@@ -455,8 +455,8 @@ const VI: HelpTopic[] = [
     id: "file-tree",
     section: "Workspace",
     title: "Cây file",
-    body: "Click mở file; chuột phải có Mở, Mở trong File Explorer, Git Blame (tác giả từng dòng - bấm commit để xem patch), Tạo file, Tạo thư mục, Đổi tên, Xóa. Kéo-thả để di chuyển: thả vào thư mục để đưa vào trong, thả vào file khác để nằm cạnh nó, thả vào tên dự án để đưa ra gốc.",
-    keywords: "kéo thả di chuyển tạo xóa đổi tên drag drop reveal explorer blame",
+    body: "Click mở file; chuột phải có Mở, Mở trong File Explorer, Git Blame (tác giả từng dòng - bấm commit để xem patch), Tạo file, Tạo thư mục, Đổi tên, Xóa. Kéo-thả để di chuyển: thả vào thư mục để đưa vào trong, thả vào file khác để nằm cạnh nó, thả vào tên dự án để đưa ra gốc. Việc nào không làm được - di chuyển vào chỗ đã có file trùng tên, file hệ thống không cho xoá - thì một dòng ở đầu cây nói việc gì và vì sao; thư mục không đọc được thì báo ngay chỗ lẽ ra hiện nội dung của nó.",
+    keywords: "kéo thả di chuyển tạo xóa đổi tên drag drop reveal explorer blame lỗi",
   },
   {
     id: "live-updates",

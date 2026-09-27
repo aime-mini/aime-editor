@@ -602,6 +602,15 @@ export const vi: Record<TranslationKey, string> = {
   "settings.footer": "Thay đổi có hiệu lực ngay và được nhớ trên máy này. Ctrl+, mở lại trang này.",
 
   "tree.ignored": "Git bỏ qua file này (.gitignore) - nó không nằm trong repo",
+  "tree.listFailed": "Không đọc được thư mục này: {reason}",
+  "tree.rootFailed": "Không đọc được {name}",
+  "tree.moveFailed": "Không di chuyển được {name}",
+  "tree.createFailed": "Không tạo được {name}",
+  "tree.renameFailed": "Không đổi tên được {name}",
+  "tree.deleteFailed": "Không xoá được {name}",
+  "tree.untrackFailed": "Không bỏ theo dõi được {name}",
+  "tree.revealFailed": "Không mở được {name} trong trình quản lý file",
+  "tree.dismiss": "Ẩn",
 
   "menu.filter": "Lọc…",
   "menu.noMatch": "Không có gì khớp",
