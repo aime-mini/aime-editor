@@ -34,8 +34,13 @@ const VERIFY_TIMEOUT_MS = 90_000;
 
 export interface VerifyRequest {
   adapter: AdapterAvailability;
-  /** The program to run, and where — built from the entry's `verifyWith`. */
+  /**
+   * What to launch, and where - the entry's `verifyWith` program once built,
+   * which for a compiled language is the build's output rather than the source.
+   */
   target: DebugTarget;
+  /** The source file the breakpoint goes in, and the stop has to land in. */
+  source: string;
   /** The line the entry says execution will reach. */
   line: number;
   root: string;
@@ -48,7 +53,7 @@ export interface VerifyRequest {
  * an exception here would just become a stack trace in a log nobody reads.
  */
 export async function verifyAdapter(request: VerifyRequest): Promise<Verdict> {
-  const { adapter, target, line, root } = request;
+  const { adapter, target, source, line, root } = request;
   const { DebugSession } = await import("./session");
 
   // A holder rather than a `let`: the session is assigned inside a callback, and
@@ -74,7 +79,7 @@ export async function verifyAdapter(request: VerifyRequest): Promise<Verdict> {
         cwd: target.cwd,
         root,
         configuration: launchConfig(adapter.configType, target.program, target.cwd, adapter.launchExtra),
-        breakpoints: new Map([[target.program, [newBreakpoint(line)]]]),
+        breakpoints: new Map([[source, [newBreakpoint(line)]]]),
         // A check proves one breakpoint; stopping on exceptions would only add
         // ways for it to stop somewhere else.
         exceptionFilters: [],
@@ -89,7 +94,7 @@ export async function verifyAdapter(request: VerifyRequest): Promise<Verdict> {
             clearTimeout(timer);
             // The frame has to be in the program that was launched: an adapter
             // that stops in its own bootstrap has not proven anything.
-            if (top?.source?.path && !samePath(top.source.path, target.program)) {
+            if (top?.source?.path && !samePath(top.source.path, source)) {
               reject(new Error(`stopped in ${top.source.path}, not in the program it was given`));
               return;
             }
@@ -132,7 +137,7 @@ export async function verifyAdapter(request: VerifyRequest): Promise<Verdict> {
     // the entry named the wrong place.
     return {
       ok: true,
-      detail: `stopped on line ${String(stoppedAt)} of ${relative(root, target.program)}`,
+      detail: `stopped on line ${String(stoppedAt)} of ${relative(root, source)}`,
       stoppedAt,
     };
   } catch (err: unknown) {

@@ -95,10 +95,14 @@ const TEACH_ADAPTER = [
   "  it bound to and I dial in. Getting this wrong looks exactly like a hung adapter.",
   "- `probeArgs` are arguments that make it print something and exit - I run them to tell whether it",
   "  is installed. Leave them out and I only look for the program on PATH, which is weaker.",
+  "- `{sessionDir}` anywhere in `args` becomes a folder no other running session of this adapter holds,",
+  "  kept between sessions. Use it for any workspace or data folder the adapter locks (JDT LS `-data`),",
+  "  or two sessions at once fight over one.",
   "- `launch` is for fields the adapter itself requires (`mainClass`, `classPaths`, and so on). I add",
   "  `type`, `request`, `program` and `cwd` myself; do not repeat them.",
   "- `verifyWith` has to point at a program in this project and a line that really executes. I then",
-  "  start the adapter, set a breakpoint there, launch, and only believe the entry if it stops.",
+  "  build it the way F5 does (the project's build command, else `prepare`), start the adapter, set a",
+  "  breakpoint there, launch, and only believe the entry if it stops.",
   "- Never write the `verified` field. I write that, and only after I have seen the stop myself.",
 ].join("\n");
 

@@ -295,8 +295,10 @@ function javaAttachProject(jdtls, port) {
               jdtls.launcher,
               "-configuration",
               path.join(jdtls.home, "config_win"),
+              // A folder per running session, so two Java sessions never
+              // fight over JDT LS's lock on one (`dap/session_dir.rs`).
               "-data",
-              path.join(jdtls.home, "..", "jdtls-workspace"),
+              "{sessionDir}",
             ],
             probeArgs: ["-version"],
             // Attach needs no classpath — the program is already running. What
@@ -562,9 +564,9 @@ function jdtlsInstall() {
 /**
  * A Java project taught to Aime the way an agent would write it: the adapter is
  * java-debug living inside JDT LS (the `languageServer` transport), and the
- * launch fields are this project's own. Compiled here because verification
- * launches what already exists — `prepare` belongs to a run, and the test
- * proves that separately by deleting `out` and pressing F5.
+ * launch fields are this project's own. Compiled here so the project starts out
+ * built; the test then deletes `out` before the check and again before F5,
+ * because both have to build through the entry's `prepare`.
  */
 function javaProject(jdtls) {
   const dir = project("java");
@@ -615,8 +617,10 @@ function javaProject(jdtls) {
               jdtls.launcher,
               "-configuration",
               path.join(jdtls.home, "config_win"),
+              // A folder per running session, so two Java sessions never
+              // fight over JDT LS's lock on one (`dap/session_dir.rs`).
               "-data",
-              path.join(jdtls.home, "..", "jdtls-workspace"),
+              "{sessionDir}",
             ],
             probeArgs: ["-version"],
             prepare: { command: "javac -g -d out App.java" },
@@ -997,8 +1001,12 @@ describe("Debugging", () => {
     await waitForText("java-debug", "the taught java adapter was not picked up");
     await waitForText("has not seen it stop", "an unproven adapter must not be offered as working");
 
+    // The check builds the way F5 does: with `out` gone, only the entry's
+    // `prepare` (javac) can give it a class to stop in.
+    fs.rmSync(path.join(dir, "out"), { recursive: true, force: true });
     await (await $("button*=Check it on a real breakpoint")).click();
     await waitForText("debug app.java", "JDT LS never handed over a working session", 120_000);
+    assert.ok(fs.existsSync(path.join(dir, "out", "App.class")), "the check stopped without building");
     const entry = learnedEntry(dir);
     assert.ok(entry.verified, "Aime did not record what it saw");
     assert.equal(entry.verified.line, 3, "Aime stamped a different line than the one it was told");

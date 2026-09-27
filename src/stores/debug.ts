@@ -655,25 +655,31 @@ export const useDebug = create<DebugState>((set, get) => ({
 
     // The entry names a program relative to the project, because that is the
     // only path an agent can write without knowing where the project lives.
-    const program = adapter.verifyWith.program.match(/^([a-zA-Z]:[\\/]|\/)/)
-      ? adapter.verifyWith.program
-      : `${rootPath}\\${adapter.verifyWith.program}`.replaceAll("/", "\\");
+    const named = adapter.verifyWith.program;
+    const source = /^([a-zA-Z]:[\\/]|\/)/.test(named) ? named : `${rootPath.replace(/[\\/]+$/, "")}/${named}`;
+    const target: DebugTarget = {
+      id: `verify:${languageId}`,
+      label: named,
+      languageId,
+      program: source,
+      cwd: rootPath,
+    };
 
     set((s) => ({ verifying: [...s.verifying, languageId] }));
     // The check runs a program: the console is where a debugger explains itself,
     // so it comes forward for this too.
     useLayout.getState().showDebugConsole();
     try {
+      // Built the way F5 builds it - the project's own command, or the entry's
+      // `prepare` - so a compiled language is checked against what it runs,
+      // not against a stale build or none at all.
+      if (adapter.buildsFirst) writeConsole(set, { category: "console", output: BUILDING });
+      const program = await invoke<string>("dap_program", { target, root: rootPath });
       const { verifyAdapter: runCheck } = await import("../lib/dap/verify");
       const verdict = await runCheck({
         adapter,
-        target: {
-          id: `verify:${languageId}`,
-          label: adapter.verifyWith.program,
-          languageId,
-          program,
-          cwd: rootPath,
-        },
+        target: { ...target, program },
+        source,
         line: adapter.verifyWith.line,
         root: rootPath,
       });
