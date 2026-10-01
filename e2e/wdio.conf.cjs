@@ -139,85 +139,100 @@ const DRIVER_PROFILE_PREFIX = "scoped_dir";
 /** The profile is only released once the WebView2 process behind it has exited. */
 const PROFILE_ATTEMPTS = 3;
 const PROFILE_RETRY_MS = 400;
+/** Node backs off linearly: these give the app that was just killed a few seconds to release its workspace. */
+const WORKSPACE_RELEASE_ATTEMPTS = 5;
+const WORKSPACE_RETRY_MS = 500;
 
-/** A throwaway project, so the tests never depend on what is on this machine. */
-const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "aime-e2e-"));
-fs.writeFileSync(path.join(workspace, "hello.ts"), 'export const greeting = "hello";\n');
-fs.writeFileSync(path.join(workspace, "notes.md"), "# Notes\n\nsecond file\n");
-// A repository that builds nothing at its own root: the project lives one folder
-// down, which is the shape that makes task detection look past the root and
-// carry a `cwd` on what it finds. The script prints a marker precisely so a task
-// started in the wrong folder is a failure rather than a shrug - npm run from
-// the root would find no package.json at all.
-fs.mkdirSync(path.join(workspace, "api"));
-fs.writeFileSync(
-  path.join(workspace, "api", "package.json"),
-  JSON.stringify(
-    {
-      name: "api",
-      private: true,
-      scripts: { test: "node -e \"console.log('the api suite ran here')\"" },
-    },
-    null,
-    2,
-  ),
-);
-// A file carrying a UTF-8 byte order mark, the way Visual Studio writes C#:
-// 3373 of the 4071 .cs files in the solution this was found on have one.
-fs.writeFileSync(path.join(workspace, "marked.cs"), "\ufeffusing Nop.Core.Caching;\n\nclass Marked { }\n");
-// A file long enough to scroll whose braces sit on their own line - the shape
-// that made Monaco's sticky scroll pin five rows of bare "{" over the code,
-// because without an outline it reads indentation instead.
-fs.writeFileSync(
-  path.join(workspace, "nested.ts"),
-  [
-    "export function deep(): number",
-    "{",
-    "  let total = 0;",
-    "  for (let i = 0; i < 40; i += 1)",
-    "  {",
-    "    if (i % 2 === 0)",
-    "    {",
-    ...Array.from({ length: 40 }, (_, line) => `      total += ${line};`),
-    "    }",
-    "  }",
-    "  return total;",
-    "}",
-    "",
-  ].join("\n"),
-);
+/**
+ * A throwaway project, so the tests never depend on what is on this machine.
+ *
+ * Made once, by the launcher. Every worker loads this file again and inherits
+ * the launcher's environment, so all of them name the same folder - the one the
+ * app opens, and the one `onComplete` removes. Until 2026-10-01 each load made
+ * its own, and every run left the worker's behind.
+ */
+function createWorkspace() {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "aime-e2e-"));
+  fs.writeFileSync(path.join(folder, "hello.ts"), 'export const greeting = "hello";\n');
+  fs.writeFileSync(path.join(folder, "notes.md"), "# Notes\n\nsecond file\n");
+  // A repository that builds nothing at its own root: the project lives one folder
+  // down, which is the shape that makes task detection look past the root and
+  // carry a `cwd` on what it finds. The script prints a marker precisely so a task
+  // started in the wrong folder is a failure rather than a shrug - npm run from
+  // the root would find no package.json at all.
+  fs.mkdirSync(path.join(folder, "api"));
+  fs.writeFileSync(
+    path.join(folder, "api", "package.json"),
+    JSON.stringify(
+      {
+        name: "api",
+        private: true,
+        scripts: { test: "node -e \"console.log('the api suite ran here')\"" },
+      },
+      null,
+      2,
+    ),
+  );
+  // A file carrying a UTF-8 byte order mark, the way Visual Studio writes C#:
+  // 3373 of the 4071 .cs files in the solution this was found on have one.
+  fs.writeFileSync(path.join(folder, "marked.cs"), "\ufeffusing Nop.Core.Caching;\n\nclass Marked { }\n");
+  // A file long enough to scroll whose braces sit on their own line - the shape
+  // that made Monaco's sticky scroll pin five rows of bare "{" over the code,
+  // because without an outline it reads indentation instead.
+  fs.writeFileSync(
+    path.join(folder, "nested.ts"),
+    [
+      "export function deep(): number",
+      "{",
+      "  let total = 0;",
+      "  for (let i = 0; i < 40; i += 1)",
+      "  {",
+      "    if (i % 2 === 0)",
+      "    {",
+      ...Array.from({ length: 40 }, (_, line) => `      total += ${line};`),
+      "    }",
+      "  }",
+      "  return total;",
+      "}",
+      "",
+    ].join("\n"),
+  );
 
-// Java, for the code intelligence test: a plain folder with no Maven and no
-// Gradle, which is the case JDT LS has to build an "invisible project" for before
-// it can answer anything about `greeting`.
-fs.writeFileSync(
-  path.join(workspace, "App.java"),
-  [
-    "public class App {",
-    "    public static void main(String[] args) {",
-    '        String greeting = "hello";',
-    "        System.out.println(greeting.length());",
-    "    }",
-    "}",
-    "",
-  ].join("\n"),
-);
+  // Java, for the code intelligence test: a plain folder with no Maven and no
+  // Gradle, which is the case JDT LS has to build an "invisible project" for before
+  // it can answer anything about `greeting`.
+  fs.writeFileSync(
+    path.join(folder, "App.java"),
+    [
+      "public class App {",
+      "    public static void main(String[] args) {",
+      '        String greeting = "hello";',
+      "        System.out.println(greeting.length());",
+      "    }",
+      "}",
+      "",
+    ].join("\n"),
+  );
 
-// The same shape in a language Monaco has no outline of its own for, so anything
-// sticky scroll pins here came from a real language server answering
-// textDocument/documentSymbol.
-fs.writeFileSync(
-  path.join(workspace, "nested.py"),
-  [
-    "def outer():",
-    "    total = 0",
-    "    for index in range(40):",
-    "        if index % 2 == 0:",
-    ...Array.from({ length: 40 }, (_, line) => `            total += ${line}`),
-    "    return total",
-    "",
-  ].join("\n"),
-);
+  // The same shape in a language Monaco has no outline of its own for, so anything
+  // sticky scroll pins here came from a real language server answering
+  // textDocument/documentSymbol.
+  fs.writeFileSync(
+    path.join(folder, "nested.py"),
+    [
+      "def outer():",
+      "    total = 0",
+      "    for index in range(40):",
+      "        if index % 2 == 0:",
+      ...Array.from({ length: 40 }, (_, line) => `            total += ${line}`),
+      "    return total",
+      "",
+    ].join("\n"),
+  );
+  return folder;
+}
+process.env.AIME_E2E_WORKSPACE ??= createWorkspace();
+const workspace = process.env.AIME_E2E_WORKSPACE;
 
 /** cargo installs it here; the extension matters when spawning on Windows. */
 function tauriDriverPath() {
@@ -411,7 +426,13 @@ exports.config = {
 
   onComplete: async () => {
     tauriDriver?.kill();
-    fs.rmSync(workspace, { recursive: true, force: true });
+    // The app goes down with the driver, and lets go of the folder a moment later.
+    fs.rmSync(workspace, {
+      recursive: true,
+      force: true,
+      maxRetries: WORKSPACE_RELEASE_ATTEMPTS,
+      retryDelay: WORKSPACE_RETRY_MS,
+    });
     removeThrowawayStores();
     await removeDriverProfiles();
   },
