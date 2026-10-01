@@ -218,6 +218,42 @@ describe("A chat turn that is more than one answer, or did not finish", () => {
     assert.equal(resumed.errors.length, 0, "the old error outstayed the turn that recovered");
   });
 
+  it("hands the turn what the project remembers about it, without showing it", async () => {
+    const memoryDir = path.join(workspace, ".aime", "memory");
+    fs.mkdirSync(memoryDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(memoryDir, "prices-are-integer-cents.md"),
+      [
+        "---",
+        "name: prices-are-integer-cents",
+        "kind: decision",
+        "scope: .",
+        "summary: Prices are integer cents, never floats",
+        "files: ",
+        "updated: 2026-10-01",
+        "---",
+        "",
+      ].join("\n"),
+    );
+    try {
+      playNext("resume");
+      await send("change how prices are rounded");
+      await browser.waitUntil(() => lastCall().prompt.includes("change how prices are rounded"), {
+        timeoutMsg: "the turn never reached the CLI",
+      });
+      const done = await until((p) => !p.running, "the turn never ended");
+      const { prompt } = lastCall();
+      assert.match(
+        prompt,
+        /<aime_memory>[\s\S]*Prices are integer cents, never floats[\s\S]*<\/aime_memory>/,
+        prompt,
+      );
+      assert.ok(!done.answerText.includes("memor"), `the memory was put on screen: ${done.answerText}`);
+    } finally {
+      fs.rmSync(path.join(workspace, ".aime", "memory"), { recursive: true, force: true });
+    }
+  });
+
   it("offers to continue a turn the app was closed in the middle of", async () => {
     playNext("agent");
     await send("review it again");

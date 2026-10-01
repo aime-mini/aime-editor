@@ -106,7 +106,9 @@ import {
 } from "../lib/testCaseFile";
 import { readProjectRules, rulesBlock, type RuleFile } from "../lib/projectRules";
 import { SECURITY_RULES } from "../lib/securityRules";
-import { knowledgeBlock, learnFrom, readKnowledge, writeKnowledge } from "../lib/projectKnowledge";
+import { memoryFor, rememberAll, today } from "../lib/knowledgeStore";
+import type { Focus, Memory } from "../lib/knowledge";
+import { conventionsLearned, lessonsLearned } from "../lib/runLearning";
 import {
   forgetRun,
   interruptedRun,
@@ -1219,13 +1221,15 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
   set({ rules });
 
   const description = await useTrackers.getState().detailOf(context.item);
-  // What earlier runs read is a head start, not an answer: the reading below
-  // is asked to confirm it in the code.
-  const known = await readKnowledge(context.home);
-  const learnedBefore = knowledgeBlock(known);
+  // What the project already knows about the ground this ticket lands on - a
+  // head start, not an answer: the reading below confirms it in the code.
+  const remembered = await projectMemory(context, {
+    files: [],
+    text: `${context.item.title} ${description?.description ?? ""}`,
+  });
   const asking = [
     UNDERSTAND_PROMPT,
-    ...(learnedBefore.length === 0 ? [] : [learnedBefore.join("\n")]),
+    ...(remembered === null ? [] : [remembered]),
     ...(await workspaceBrief(context)),
     `# ${context.item.title}`,
     `Type: ${context.item.itemType} · State: ${context.item.state}`,
@@ -1245,12 +1249,7 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
   const { brief, found } = answer;
   const files = found.files.slice(0, SURVEY_FILE_LIMIT);
   set({ brief, survey: { ...found, files } });
-  try {
-    await writeKnowledge(context.home, learnFrom(known, found, new Date().toISOString().slice(0, 10)));
-  } catch (error: unknown) {
-    // The run does not need it; the next one and the chat lose a head start.
-    note(set, "understand", translate("run.knowledgeUnsaved", { detail: String(error) }), "problem");
-  }
+  await remember(context, "understand", conventionsLearned(found, today()));
   const trees = spansWorkspace(context) ? await joinReachedTrees(context, files, set, get) : NONE_JOINED;
 
   // A project whose manifest declares no test script may still have suites -
@@ -1516,9 +1515,14 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
   const cases = await agreedCases(context.workRoot, get, set);
   if (brief === null || plan === null) return { state: "skipped", summary: translate("run.noPlan") };
 
+  const remembered = await projectMemory(context, {
+    files: get().radius?.changing ?? [],
+    text: brief.goal,
+  });
   const prompt = [
     IMPLEMENT_PROMPT,
     SECURITY_RULES,
+    ...(remembered === null ? [] : [remembered]),
     `Goal: ${brief.goal}`,
     "Acceptance criteria:",
     ...brief.criteria.map((one) => `${one.id}: ${one.text}`),
@@ -2000,6 +2004,8 @@ async function reviewPhase(context: Context, set: Setter, get: Getter): Promise<
   const tried: string[] = [];
   let earlier = "";
   let latest: Review | null = null;
+  // What the reviewer caught and the fixing closed: the lessons this run teaches.
+  const closed: Finding[] = [];
   for (let round = 1; round <= REVIEW_ROUNDS; round += 1) {
     const diff = await pendingDiff(context, get);
     if (diff.trim() === "") return { state: "skipped", summary: translate("run.nothingChanged") };
@@ -2020,6 +2026,7 @@ async function reviewPhase(context: Context, set: Setter, get: Getter): Promise<
     // A function, not a value: the fixing below adds to what was tried.
     const soFar = () => [describeReview(review), "", ...tried].join("\n");
     if (issues.length === 0) {
+      await remember(context, "review", lessonsLearned(closed, today()));
       return {
         state: "passed",
         summary: round === 1 ? found : [found, translate("run.reviewCleared", { rounds: round })].join(" · "),
@@ -2041,6 +2048,7 @@ async function reviewPhase(context: Context, set: Setter, get: Getter): Promise<
       };
     }
     tried.push(translate("run.polishFixed", { count: issues.length, attempts: fixed.attempts }));
+    closed.push(...issues);
     earlier = earlierReview(issues, fixed.reply);
   }
   // Only reached when the last reading still found what may not ship.
@@ -2759,12 +2767,29 @@ async function allSuiteTasks(context: Context, get: Getter): Promise<TaskDef[]> 
 }
 
 /**
- * The test cases as they stand on disk, falling back to what the phase produced.
- *
- * Read at every phase that acts on them, because between the confirmation gate
- * and the first line of code there is a person with an editor - and if they
- * changed what proof looks like, that is the definition the run must work to.
+ * The memories of the project that bear on a step (`lib/knowledge`), as the
+ * block its prompt carries; null when none do. A memory that cannot be read
+ * costs the step its head start, never the step.
  */
+async function projectMemory(context: Context, focus: Focus): Promise<string | null> {
+  try {
+    return await memoryFor(context.home, focus);
+  } catch (error: unknown) {
+    console.warn("the project's memory could not be read:", error);
+    return null;
+  }
+}
+
+/** Keeps what a step learned, for the next turn and the next run. */
+async function remember(context: Context, phase: PhaseId, learned: Memory[]): Promise<void> {
+  if (learned.length === 0) return;
+  try {
+    await rememberAll(context.home, learned);
+  } catch (error: unknown) {
+    console.warn(`what ${phase} learned could not be kept:`, error);
+  }
+}
+
 /** What timing the registered benchmark found, or why it could not be timed. */
 type PerfCheck = { bench: Bench; outcome: PerfOutcome } | { bench: Bench; unmeasured: string };
 
@@ -2875,6 +2900,13 @@ async function readScreens(root: string): Promise<Screens | null> {
   }
 }
 
+/**
+ * The test cases as they stand on disk, falling back to what the phase produced.
+ *
+ * Read at every phase that acts on them, because between the confirmation gate
+ * and the first line of code there is a person with an editor - and if they
+ * changed what proof looks like, that is the definition the run must work to.
+ */
 async function agreedCases(root: string, get: Getter, set: Setter): Promise<TestCases | null> {
   const onDisk = await loadTestCases(root);
   if (onDisk === null) return get().cases;

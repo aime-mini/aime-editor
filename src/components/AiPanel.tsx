@@ -30,7 +30,8 @@ import { usePathDrag } from "../stores/pathDrag";
 import { hasReadme, startersFor } from "../lib/aiStarters";
 import { fuzzyFilter } from "../lib/fuzzy";
 import { activeMention, applyMention } from "../lib/mentions";
-import { currentView, describeView } from "../lib/viewContext";
+import { currentView, describeView, focusOf } from "../lib/viewContext";
+import { memoryFor } from "../lib/knowledgeStore";
 import { projectFiles } from "../lib/projectFiles";
 import { changedFileCount, useGit } from "../stores/git";
 import { useTasks } from "../stores/tasks";
@@ -714,11 +715,23 @@ export function AiPanel() {
     hasReadme: hasReadme(files),
   });
 
-  /** The prompt plus what the editor is showing - the file, the selection, the cloud panel. */
+  /**
+   * The prompt plus what the editor is showing - the file, the selection, the
+   * cloud panel - and the memories of this project that bear on it.
+   */
   const send = (prompt: string) => {
     if (!rootPath) return;
     const view = currentView();
-    void sendPrompt(prompt, rootPath, view === null ? null : describeView(view));
+    void memoryFor(rootPath, focusOf(view, prompt))
+      .catch((error: unknown) => {
+        // The turn goes on without them; the error log says why it had none.
+        loggedAs("memory")(error);
+        return null;
+      })
+      .then((block) => {
+        const context = [view === null ? null : describeView(view), block].filter(Boolean).join("\n\n");
+        return sendPrompt(prompt, rootPath, context === "" ? null : context);
+      });
   };
 
   const submit = () => {

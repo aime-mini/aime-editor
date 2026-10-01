@@ -1,6 +1,6 @@
 //! Aime's per-project folder. `.aime/` holds what Aime and the agent keep
-//! *about* a project — the progress journal every turn is told to maintain
-//! (`providers::adapter::PROGRESS_MEMORY_PROMPT`) and task overrides — never
+//! *about* a project — the memories every turn is told to keep
+//! (`providers::adapter::MEMORY_PROMPT`) and task overrides — never
 //! the project's own source. It therefore appears in every repository Aime is
 //! pointed at, and has to stay out of the user's commits by itself.
 

@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 use super::adapter::{
-    explicit, Adapter, ApiKeyRoute, Invocation, Permission, ToolSet, TurnRequest, PROGRESS_MEMORY_PROMPT,
+    explicit, Adapter, ApiKeyRoute, Invocation, Permission, ToolSet, TurnRequest, MEMORY_PROMPT,
 };
 use crate::mcp::{tokenize_command, McpServer, McpServerSpec};
 
@@ -28,7 +28,7 @@ const NETWORK_OFF: &str = "sandbox_workspace_write.network_access=false";
 /// file would replace them wholesale — so the journal rule rides along with the
 /// prompt itself (the "prompt-inject" memory strategy of ARCHITECTURE.md §4).
 fn prompt_with_progress_rule(prompt: &str) -> String {
-    format!("{PROGRESS_MEMORY_PROMPT}\n\n---\n\n{prompt}")
+    format!("{MEMORY_PROMPT}\n\n---\n\n{prompt}")
 }
 
 /// The answer of a one-shot run: the text of the last completed agent message.
@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(call.args.first().map(String::as_str), Some("exec"));
         assert!(!call.args.contains(&"resume".to_string()));
         let prompt = call.stdin.expect("prompt on stdin");
-        assert!(prompt.contains(".aime/PROGRESS.md"));
+        assert!(prompt.contains(".aime/memory/"));
         assert!(prompt.ends_with("hello"));
     }
 

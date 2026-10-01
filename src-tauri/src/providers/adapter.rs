@@ -178,15 +178,23 @@ pub trait Adapter: Send + Sync {
 }
 
 /// Injected into every turn, by every adapter. Chat context can be compacted or
-/// lost (limits, restarts, new sessions) — a progress file that the agent
-/// re-reads each turn cannot. One journal per project, shared by all providers.
-pub const PROGRESS_MEMORY_PROMPT: &str = "You maintain the file .aime/PROGRESS.md as this project's \
-working memory. Before starting a task, read it if it exists. Whenever you complete meaningful \
-work or make a decision, update it concisely: goal, done, in progress, next steps, open issues — \
-newest first. It must always allow a fresh session with no chat history to resume the work. \
-Keep it under 150 lines by compacting older entries. Read .aime/PROJECT.md too if it exists: what \
-Aime's task runs read about this project's architecture and conventions, each line citing where it was \
-seen. Follow it, check it against the code where it matters, and never edit it - Aime rewrites it.";
+/// lost (limits, restarts, new sessions) - memories kept as files cannot, and
+/// Aime hands each turn the ones that bear on it (`lib/knowledge.ts`). One
+/// memory per fact, shared by every provider.
+pub const MEMORY_PROMPT: &str = "This project keeps its memory in .aime/memory/, one fact per file. \
+Aime attaches the memories that bear on each turn in an <aime_memory> block, and .aime/memory/INDEX.md \
+lists every one - open any you need. Write a memory, without being asked, when the user states a \
+decision or a preference (kind: decision), when you learn how this codebase does something \
+(convention), when you hit a trap or fix a bug whose cause was not obvious (pitfall), and when you \
+stop with work unfinished (work). Each file is .aime/memory/<name>.md and starts with this header, \
+one field per line: ---, name: <kebab-case>, kind: <decision|convention|pitfall|work>, scope: <the \
+folder it applies to, / for the whole project>, summary: <one sentence>, files: <comma-separated \
+paths it can be checked against>, updated: <YYYY-MM-DD>, --- and then a few lines of detail. \
+One fact per file. Change the existing memory rather than writing a second one about the same \
+thing; delete a work memory when the work is done and any memory that proved wrong. A memory \
+marked STALE: check it against the code, then update or delete it. Never write a secret into a \
+memory. If .aime/PROGRESS.md or .aime/PROJECT.md exist from before, move what still matters into \
+memories and delete them.";
 
 /// Resolves a provider id to its adapter.
 ///

@@ -1,3 +1,4 @@
+import type { Focus } from "./knowledge";
 import { activeEditor } from "./monacoAccess";
 import { shortCliError } from "./cloudErrors";
 import { commandOf, type PlannedRead } from "./cloudReads";
@@ -145,6 +146,16 @@ function describeCloud(cloud: CloudFocus): string[] {
     lines.push(`  $ ${read.command}`, clip(read.json, allowed));
   }
   return lines;
+}
+
+/**
+ * What a turn is about, for choosing the memories it carries (`lib/knowledge`):
+ * the file in front first, then the other open tabs, and the words asked.
+ */
+export function focusOf(view: ViewSnapshot | null, prompt: string): Focus {
+  if (view === null) return { files: [], text: prompt };
+  const files = [view.activeFile, ...view.otherFiles].filter((file): file is string => file !== null);
+  return { files: files.map((file) => relative(file, view.rootPath)), text: prompt };
 }
 
 /** Repo-relative with forward slashes, the shape an `@` mention takes; absolute when outside. */

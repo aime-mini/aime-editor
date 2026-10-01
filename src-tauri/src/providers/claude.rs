@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 use super::adapter::{
-    explicit, Adapter, ApiKeyRoute, Invocation, Permission, ToolSet, TurnRequest, PROGRESS_MEMORY_PROMPT,
+    explicit, Adapter, ApiKeyRoute, Invocation, Permission, ToolSet, TurnRequest, MEMORY_PROMPT,
 };
 use crate::mcp::{tokenize_command, McpServer, McpServerSpec};
 
@@ -61,7 +61,7 @@ pub fn build_args(
         "--permission-mode".into(),
         permission_mode.into(),
         "--append-system-prompt".into(),
-        PROGRESS_MEMORY_PROMPT.into(),
+        MEMORY_PROMPT.into(),
     ];
     if tools == ToolSet::FilesOnly {
         args.push("--tools".into());
