@@ -54,8 +54,9 @@ const keysFile = path.join(configDir, "api-keys.json");
  * Where the fake CLI reads its orders: "sound", "repairs", "breaks", "sloppy",
  * "crossRepo" (the change reaches the api as well), "strays" (it reaches the
  * api without saying so), "insecure" (it writes a secret into the source),
- * "reviewSecurity" (the first reviewer finds a security issue) or "cramped"
- * (it adds a screen that does not fit a phone).
+ * "reviewSecurity" (the first reviewer finds a security issue), "cramped"
+ * (it adds a screen that does not fit a phone) or "slow" (it makes subtotal
+ * quadratic).
  */
 const MODE_FILE = path.join(os.tmpdir(), "aime-run-probe-mode.txt");
 const PROBE_SCRIPT = path.join(os.tmpdir(), "aime-run-probe.cjs");
@@ -134,6 +135,22 @@ const screen = (bar) =>
   '<!doctype html><html><head><meta name="viewport" content="width=device-width"></head>' +
   '<body style="margin:0"><div class="totals" style="' + bar + '">Total 27.50</div></body></html>';
 const CRAMPED = screen("width:700px");
+
+// Right for every line, and quadratic in them: each line counts its own
+// duplicates. The suite cannot tell; a benchmark with 5,000 lines can.
+const QUADRATIC =
+  "  return lines.reduce((sum, line) => sum + lines.filter((other) => other === line).length * line.price * line.quantity, 0);\n";
+const SLOW = cart(QUADRATIC, ROUNDS);
+// The benchmark the implementing phase registers: subtotal over 5,000 lines,
+// timed on its own - the path the change touched.
+const BENCH =
+  'const { pathToFileURL } = require("node:url");\n' +
+  'const lines = Array.from({ length: 5000 }, (_, i) => ({ price: i % 7, quantity: 1 + (i % 3) }));\n' +
+  'import(pathToFileURL(require("node:path").join(__dirname, "src", "cart.js")).href).then((cart) => {\n' +
+  "  const started = performance.now();\n" +
+  "  cart.subtotal(lines);\n" +
+  '  console.log("AIME_BENCH_MS=" + (performance.now() - started).toFixed(2));\n' +
+  "});\n";
 const FITTING = screen("max-width:100%");
 const SCREEN_SERVER =
   'const fs = require("node:fs");\n' +
@@ -244,7 +261,9 @@ if (prompt.includes("Set up security scanning for this repository")) {
   // user works in. "repairs" and "breaks" both break something here; they
   // differ in what the repair rounds do about it afterwards.
   const breaks = mode === "breaks" || mode === "repairs";
-  const source = breaks ? BREAKS : mode === "sloppy" ? SLOPPY : mode === "insecure" ? INSECURE : SOUND;
+  const source = breaks
+    ? BREAKS
+    : { sloppy: SLOPPY, insecure: INSECURE, slow: SLOW }[mode] ?? SOUND;
   fs.writeFileSync(shop("src", "cart.js"), source);
   // The file the plan named. Aime checks it exists before the phase may pass,
   // which is the mechanical half of "the tests were actually written".
@@ -253,6 +272,14 @@ if (prompt.includes("Set up security scanning for this repository")) {
   // file, which the cleanup button must offer and the baseline snapshot must
   // not blame on anything that was already there.
   fs.writeFileSync(shop("debug-scratch.log"), "temporary notes\n");
+  if (mode === "slow") {
+    fs.writeFileSync(shop("bench.cjs"), BENCH);
+    fs.mkdirSync(here(".aime", "perf"), { recursive: true });
+    fs.writeFileSync(
+      here(".aime", "perf", "bench.json"),
+      JSON.stringify({ label: "subtotal over 5,000 lines", command: "node bench.cjs", dir: ".", files: ["bench.cjs"] }),
+    );
+  }
   if (mode === "cramped") {
     fs.writeFileSync(shop("screen.html"), CRAMPED);
     fs.writeFileSync(shop("screen-server.cjs"), SCREEN_SERVER);
@@ -266,6 +293,10 @@ if (prompt.includes("Set up security scanning for this repository")) {
   // The secret goes back where it belongs - out of the source.
   fs.writeFileSync(shop("src", "cart.js"), SOUND);
   process.stdout.write("read it from the environment instead\n");
+} else if (prompt.includes("Your change made a path slower.")) {
+  // Linear again, and still right.
+  fs.writeFileSync(shop("src", "cart.js"), SOUND);
+  process.stdout.write("summed in one pass\n");
 } else if (prompt.includes("broke this project's own checks")) {
   // The linter caught the stray console.log. Take it out - which is what
   // "fixed and re-run until they pass" has to mean in practice.
@@ -1037,6 +1068,32 @@ ${suite.output}`,
     );
     await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
     assert.equal(await portOpen(SCREEN_PORT), false, "the app Aime brought up to measure was left running");
+  });
+
+  it("times the changed path before and after, and makes it fast again", async () => {
+    // The change is correct and quadratic. The suite passes either way; the
+    // benchmark it registered, run by Aime on a checkout of the code before the
+    // change and on the change, interleaved, is what catches it.
+    fs.writeFileSync(MODE_FILE, "slow");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+
+    const verified = await waitForPhase(
+      "Test it until the bugs are out",
+      "no slower",
+      "the change was never timed, or never fast again",
+      300_000,
+    );
+    assert.match(verified, /measured again: the speed of subtotal over 5,000 lines/, verified);
+    assert.match(verified, /no slower: subtotal over 5,000 lines: [\d.]+ ms before the change/, verified);
+    assert.ok(
+      !fs.readFileSync(path.join(repo, "src", "cart.js"), "utf8").includes("filter"),
+      "the quadratic subtotal is still there",
+    );
+    const leftovers = fs.readdirSync(path.dirname(repo)).filter((name) => name.startsWith(`${path.basename(repo)}-before-`));
+    assert.deepEqual(leftovers, [], "the checkout of the old code was left behind");
+    await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
   });
 
   it("keeps the run on file, so it can be read again after a reload", async () => {

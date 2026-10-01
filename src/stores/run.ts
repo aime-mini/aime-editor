@@ -74,6 +74,15 @@ import {
   screenshotsIn,
 } from "../lib/evidenceFile";
 import {
+  compare,
+  describePerf,
+  readBench,
+  withOldCode,
+  BENCH_FILE,
+  type Bench,
+  type PerfOutcome,
+} from "../lib/perfGate";
+import {
   layoutProblems,
   PAGE_TIMEOUT_MS,
   parseScreens,
@@ -1674,6 +1683,10 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
   // One signature per round, so a round that leaves exactly what the last one
   // left ends the loop instead of burning the whole ceiling.
   const rounds: string[] = [];
+  // Rounds spent on speed, counted on their own: timings are never equal twice,
+  // so a stall cannot be told from their signatures, and every one costs a
+  // checkout of the old code.
+  let perfRounds = 0;
   for (let round = 1; round <= MAX_ROUNDS; round += 1) {
     // The checks first: they are the cheap ones, and a tree that does not
     // typecheck has nothing to tell a suite that takes nine minutes.
@@ -1780,6 +1793,33 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
       verdict = full;
     }
     if (!verdict.blocks) {
+      // The speed last: it only means something on code that already works.
+      const perf = await performanceNow(context, set);
+      if (perf !== null && "outcome" in perf && owesSpeed(perf.outcome)) {
+        const found = describePerf(perf.bench, perf.outcome);
+        perfRounds += 1;
+        if (perfRounds > ATTEMPTS || round === MAX_ROUNDS) {
+          return {
+            state: "blocked",
+            summary: translate(perf.outcome.kind === "broken" ? "run.perfBroken" : "run.perfSlower", {
+              detail: found,
+            }),
+            detail: [...tried, found].join("\n"),
+          };
+        }
+        tried.push(translate("run.perfFixing", { attempt: round, detail: found }));
+        mended.push(translate("run.perfMended", { label: perf.bench.label }));
+        note(set, "verify", tried[tried.length - 1]);
+        const prompt =
+          perf.outcome.kind === "broken"
+            ? [BENCH_BROKEN_PROMPT, perf.outcome.output].join("\n\n")
+            : [FIX_PERF_PROMPT, found].join("\n");
+        const code = await runAgent(context, prompt, set, "verify");
+        if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+        // A faster path is a changed one: every suite answers again.
+        focus = null;
+        continue;
+      }
       return {
         state: "passed",
         summary: [
@@ -1787,6 +1827,7 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
             ? summarise(verdict)
             : translate("run.repaired", { attempts: round - 1, detail: mended.join("; ") }),
           securityHeld(get),
+          perf === null ? "" : perfLine(perf),
         ]
           .filter(Boolean)
           .join(" · "),
@@ -2925,6 +2966,48 @@ function securityHeld(get: Getter): string {
     : translate("run.securityHeld", { scanners: scanners.map((one) => one.label).join(", ") });
 }
 
+/** What timing the registered benchmark found, or why it could not be timed. */
+type PerfCheck = { bench: Bench; outcome: PerfOutcome } | { bench: Bench; unmeasured: string };
+
+/**
+ * The registered benchmark, timed on the code before the change and after it;
+ * null when the change registered none.
+ *
+ * Not for a run that spans several repositories: the old code would have to
+ * be checked out in each of them, and the benchmark run across the lot.
+ */
+async function performanceNow(context: Context, set: Setter): Promise<PerfCheck | null> {
+  const bench = await readBench(context.workRoot);
+  if (bench === null || spansWorkspace(context)) return null;
+  note(set, "verify", translate("run.perfMeasuring", { label: bench.label }));
+  const run = (command: string, cwd: string) =>
+    runCommand(set, "verify")(commandIdFor(context.id)(), command, cwd, SUITE_TIMEOUT_MS);
+  try {
+    const outcome = await withOldCode(gitRootOf(context), context.workRoot, bench, run, (oldRoot) =>
+      compare(bench, oldRoot, context.workRoot, run),
+    );
+    return { bench, outcome };
+  } catch (error: unknown) {
+    // The old code could not be checked out or set up: a fact for the reader,
+    // not a fault of the change.
+    note(set, "verify", String(error), "problem");
+    return { bench, unmeasured: String(error) };
+  }
+}
+
+/** Whether the change owes work on speed: it is slower, or its benchmark printed no timing. */
+function owesSpeed(outcome: PerfOutcome): boolean {
+  return outcome.kind === "broken" || (outcome.kind === "measured" && outcome.slower);
+}
+
+/** The speed line of a passing summary. */
+function perfLine(perf: PerfCheck): string {
+  if ("unmeasured" in perf) return translate("run.perfUnmeasured", { label: perf.bench.label });
+  return translate(perf.outcome.kind === "noBaseline" ? "run.perfNoBaseline" : "run.perfHeld", {
+    detail: describePerf(perf.bench, perf.outcome),
+  });
+}
+
 /** What measuring the changed screens found. */
 interface ScreenCheck {
   /** How many pages were measured; 0 when the change shows on no screen. */
@@ -3208,6 +3291,15 @@ Write it the way a senior engineer on THIS project would, which means:
   from a caller you do not control, and no permission widened to get something working.
 - Comments explain why, never what. The code says what.
 
+If the change touches a path whose speed matters at scale - a loop over records, a query, a list a
+screen renders, a parser - write a benchmark for it beside your tests. It builds realistic large data
+itself (tens of thousands of rows, not ten), runs that path, and prints one line,
+AIME_BENCH_MS=<milliseconds>, timing the path alone. Register it in ${BENCH_FILE}:
+{"label": "withTax over 50,000 lines", "command": "node bench/cart.bench.mjs", "dir": ".", "files": ["bench/cart.bench.mjs"]}
+Aime runs it on the code before your change and after it, and a change that is slower is sent back -
+so call what already existed where you can, and list in "files" everything the benchmark needs that
+your change adds.
+
 Do not commit anything.`;
 
 const FIX_BUILD_PROMPT = `This project's own build fails on the current tree. Read the output below,
@@ -3265,6 +3357,15 @@ turn - and "pages" are the addresses that show the change. Save a screenshot of 
 
 Every artifact must be non-empty and written now, during this run. An empty file, a stale file or a
 missing one reads as "unproven" in the report, never as a pass. Do not commit anything.`;
+
+const FIX_PERF_PROMPT = `Your change made a path slower. Aime ran the benchmark you registered on the code
+before the change and after it, interleaved. Find what made it slower and fix it without changing what
+the code does - the suites still have to pass. Do not change the benchmark or its data to get there.
+
+The timing:`;
+
+const BENCH_BROKEN_PROMPT = `The benchmark registered in ${BENCH_FILE} printed no AIME_BENCH_MS=<milliseconds>
+line on the changed code. Make it run and print that line - the output it gave instead is below.`;
 
 const LAYOUT_PROMPT = `Aime opened the screens you listed at a phone's, a tablet's and a desktop's width and
 measured them, and these do not hold. Fix the layout so every page holds at every width, with the
