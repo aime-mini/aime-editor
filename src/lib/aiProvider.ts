@@ -47,7 +47,6 @@ const SCHEMA = [
     '"native" = it reads a context file of its own; "config-pointer" = its context filename is ' +
     'configurable; "prompt-inject" = it has no such convention, so Aime prepends AGENTS.md to prompts. ' +
     'When unsure, "prompt-inject" always works.',
-  '- `memoryFile` (string): for the first two, that file relative to the home directory, e.g. ".gemini/GEMINI.md".',
 ].join("\n");
 
 /**

@@ -2,7 +2,6 @@ import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   Bot,
-  Brain,
   Check,
   ChevronDown,
   CircleStop,
@@ -809,15 +808,6 @@ export function AiPanel() {
             title={t("ai.effort")}
             onChange={setEffort}
           />
-          <button
-            onClick={() => {
-              useLayout.getState().setMemoryOpen(true);
-            }}
-            title={t("cmd.editMemory")}
-            className="flex h-[22px] items-center rounded-md px-1.5 text-muted hover:bg-elevated hover:text-fg"
-          >
-            <Brain size={13} className="shrink-0" />
-          </button>
           <button
             onClick={() => {
               useLayout.getState().setMcpOpen(true);

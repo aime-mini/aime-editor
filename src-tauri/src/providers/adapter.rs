@@ -1,7 +1,6 @@
 use super::{claude, codex, generic};
 use crate::mcp::{McpServer, McpServerSpec};
 use serde::Serialize;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// How much the agent may do on its own. This is a setting rather than a
@@ -163,10 +162,6 @@ pub trait Adapter: Send + Sync {
     /// ownership of the credentials (user rule, session 3).
     fn login_command(&self) -> String;
 
-    /// The CLI's own user-level memory file — the one it reads for every
-    /// project of this user.
-    fn global_memory_path(&self, home: &Path) -> PathBuf;
-
     // --- MCP: every CLI already manages its own servers, health checks and
     // OAuth, so Aime drives those commands instead of editing config files.
     fn mcp_list_args(&self) -> Vec<String>;
@@ -192,9 +187,17 @@ file is .aime/memory/<name>.md and starts with this header, one field per line: 
 whole project>, summary: <the fact itself in one sentence - it is the line every later turn reads in \
 the index>, files: <comma-separated paths it can be checked against>, updated: <YYYY-MM-DD>, --- and \
 then a few lines of detail: why, and how to apply it. \
-One fact per file. Change the existing memory rather than writing a second one about the same \
-thing; delete a work memory when the work is done and any memory that proved wrong. A memory \
-marked STALE: check it against the code, then update or delete it. Never write a secret into a \
+Write only what the user said or what you saw in the code yourself - never a guess, an assumption \
+or something a tool did not show you - and cite the files that prove it. A memory is a claim, not \
+a fact: where it matters, confirm it in the code before relying on it, and when the code says \
+otherwise, fix or delete the memory instead of following it. \
+One fact per file, named after it. Change the existing memory rather than writing a second one \
+about the same thing, and merge two that say the same; delete a work memory when the work is done \
+and any memory that proved wrong. To delete a memory, overwrite its file with nothing - Aime removes \
+it; when a fact changes so much that its name no longer fits, write it under a new name and empty \
+the old file. A memory marked STALE: check it against the code, then update or delete it. Memory \
+is yours to keep: never ask the user to touch these files, and do not report keeping them in your \
+answer. Never write a secret into a \
 memory. If .aime/PROGRESS.md or .aime/PROJECT.md exist from before, move what still matters into \
 memories and delete them.";
 

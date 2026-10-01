@@ -235,6 +235,9 @@ describe("A chat turn that is more than one answer, or did not finish", () => {
         "",
       ].join("\n"),
     );
+    // How an AI deletes a memory: it empties the file, and Aime removes it.
+    const emptied = path.join(memoryDir, "prices-are-float-dollars.md");
+    fs.writeFileSync(emptied, "");
     try {
       playNext("resume");
       await send("change how prices are rounded");
@@ -249,6 +252,7 @@ describe("A chat turn that is more than one answer, or did not finish", () => {
         prompt,
       );
       assert.ok(!done.answerText.includes("memor"), `the memory was put on screen: ${done.answerText}`);
+      assert.ok(!fs.existsSync(emptied), "an emptied memory was left behind");
     } finally {
       fs.rmSync(path.join(workspace, ".aime", "memory"), { recursive: true, force: true });
     }

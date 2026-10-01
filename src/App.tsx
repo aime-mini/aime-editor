@@ -41,7 +41,6 @@ import { SetupProgressModal } from "./components/SetupProgressModal";
 import { BreakpointRuleModal } from "./components/BreakpointRuleModal";
 import { LaunchArgumentsModal } from "./components/LaunchArgumentsModal";
 import { McpModal } from "./components/McpModal";
-import { MemoryModal } from "./components/MemoryModal";
 import { PromptModal } from "./components/PromptModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { StatusBar } from "./components/StatusBar";
@@ -303,7 +302,7 @@ export default function App() {
   const showTabs = useWorkspaceTabs((s) => rootPath !== null || s.tabs.length > 1);
   const { toggleSidebar, toggleAiPanel, toggleBottomPanel, helpOpen, toggleHelp, setHelpOpen } = useLayout();
   const { paletteOpen, togglePalette, setPaletteOpen } = useLayout();
-  const { memoryOpen, setMemoryOpen, mcpOpen, setMcpOpen } = useLayout();
+  const { mcpOpen, setMcpOpen } = useLayout();
   const { installerTools, setInstallerTools } = useLayout();
   const { settingsOpen, setSettingsOpen } = useLayout();
 
@@ -457,13 +456,6 @@ export default function App() {
         <CommandPalette
           onClose={() => {
             setPaletteOpen(false);
-          }}
-        />
-      )}
-      {memoryOpen && (
-        <MemoryModal
-          onClose={() => {
-            setMemoryOpen(false);
           }}
         />
       )}

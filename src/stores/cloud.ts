@@ -72,9 +72,9 @@ export interface CloudStatus {
   installable: boolean;
 }
 
-/** Mirror of the Rust `MemoryPaths` (memory.rs), as far as a project needs it. */
+/** Mirror of the Rust `MemoryPaths` (memory.rs). */
 interface MemoryPaths {
-  projectPath: string | null;
+  projectPath: string;
 }
 
 /** Mirror of the Rust `CloudAccount` (cloud/mod.rs). */
@@ -1429,17 +1429,12 @@ function afterSignIn(cloudId: string, get: Get, set: Set): Promise<void> {
  *
  * Read, splice, write - rather than append - so a second discovery replaces the
  * first and a person's own notes in that file are never touched. Claude's
- * pointer file is refreshed the same way `MemoryModal` does it, or the note
+ * pointer file is refreshed with it, or the note
  * would be invisible to whichever CLI the reader switches to next.
  */
 async function writeMemory(rootPath: string, notes: Record<string, CloudNote>): Promise<boolean> {
   try {
-    // `project_memory_paths`, not `memory_paths`: the latter resolves a global
-    // path through the selected provider's adapter and fails outright for a CLI
-    // the user added themselves, which would have made this feature quietly
-    // write nothing for exactly those users.
     const paths = await invoke<MemoryPaths>("project_memory_paths", { rootPath });
-    if (paths.projectPath === null) return false;
     const existing = await invoke<string>("read_file", { path: paths.projectPath }).catch(() => "");
     const section = renderCloudNote(Object.values(notes));
     await invoke("write_file", {

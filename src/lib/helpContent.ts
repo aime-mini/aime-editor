@@ -167,14 +167,6 @@ const EN: HelpTopic[] = [
     keywords: "resume history restore context progress journal remember gitignore commit",
   },
   {
-    id: "ai-memory-editor",
-    section: "AI",
-    title: "Edit the AI's memory",
-    body: "The brain button above the chat (or 'Edit AI memory' in the command palette) opens the memory editor. The Project tab edits one canonical AGENTS.md in your repo (conventions, architecture - shared via git): Codex reads it natively and Aime keeps an @AGENTS.md import in CLAUDE.md so Claude reads the very same file - no copies to drift apart. The Global tab edits the selected CLI's own user-level file (~/.claude/CLAUDE.md or ~/.codex/AGENTS.md). The AI re-reads them every turn, so saves take effect immediately.",
-    keywords:
-      "memory agents.md claude.md global project knowledge notes brain project.md learned conventions architecture",
-  },
-  {
     id: "cloud",
     section: "AI",
     title: "Connect a cloud, and let the AI know what is already there",
@@ -559,14 +551,6 @@ const VI: HelpTopic[] = [
     title: "Phiên & bộ nhớ",
     body: "Hội thoại được lưu theo từng dự án và khôi phục khi mở lại - AI tiếp tục với đầy đủ ngữ cảnh, kể cả sau khi tắt app. CLI anh chọn cũng nằm trong đó: mở lại dự án là tiếp tục hội thoại mới nhất của đúng CLI đó, không có thì mở phiên mới chứ không tự đổi CLI sau lưng anh - một hội thoại không thể đổi CLI giữa chừng vì mã resume thuộc về CLI đã tạo ra nó. Nút lịch sử chuyển giữa 20 phiên gần nhất, mở lại phiên cũ thì CLI của phiên đó quay lại theo; dấu + tạo phiên mới. Aime giữ ghi chép riêng về dự án trong .aime/; thư mục đó không thuộc dự án, nên nó tự loại mình ra: lần đầu xuất hiện, Aime ghi .aime/.gitignore và git thôi nhìn thấy thư mục này, không cần đụng vào .gitignore của anh. Anh sửa file đó thì nó thuộc về anh - Aime không bao giờ ghi đè.",
     keywords: "resume lịch sử khôi phục ngữ cảnh nhớ tiến độ gitignore commit",
-  },
-  {
-    id: "ai-memory-editor",
-    section: "AI",
-    title: "Sửa bộ nhớ của AI",
-    body: "Nút hình não trên khung chat (hoặc 'Sửa bộ nhớ AI' trong command palette) mở trình sửa memory. Tab Dự án sửa một file AGENTS.md duy nhất trong repo (quy ước, kiến trúc - chia sẻ qua git): Codex đọc thẳng, còn Aime giữ dòng import @AGENTS.md trong CLAUDE.md để Claude đọc đúng file đó - không nhân bản nên không bao giờ lệch nhau. Tab Toàn cục sửa file người dùng của chính CLI đang chọn (~/.claude/CLAUDE.md hoặc ~/.codex/AGENTS.md). AI đọc lại mỗi lượt nên lưu xong là có hiệu lực ngay.",
-    keywords:
-      "memory agents.md claude.md toàn cục dự án kiến thức ghi chú não project.md đã học quy ước kiến trúc",
   },
   {
     id: "cloud",

@@ -4,7 +4,6 @@ import {
   Puzzle,
   AppWindow,
   Bot,
-  Brain,
   Bug,
   History,
   CircleHelp,
@@ -58,8 +57,7 @@ type Row = { kind: "command"; command: Command } | { kind: "file"; path: string 
  */
 export function CommandPalette({ onClose }: { onClose: () => void }) {
   const { rootPath, openFolder, closeFolder, openFile, openFilePath } = useWorkspace();
-  const { toggleSidebar, toggleAiPanel, showTerminal, setSidebarView, toggleHelp, setMemoryOpen } =
-    useLayout();
+  const { toggleSidebar, toggleAiPanel, showTerminal, setSidebarView, toggleHelp } = useLayout();
   const showDebugConsole = useLayout((s) => s.showDebugConsole);
   const startDebug = useDebug((s) => s.start);
   const stopDebug = useDebug((s) => s.stop);
@@ -150,14 +148,6 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         icon: <Languages size={14} />,
         run: () => {
           setLocale(locale === "en" ? "vi" : "en");
-        },
-      },
-      {
-        id: "edit-memory",
-        title: t("cmd.editMemory"),
-        icon: <Brain size={14} />,
-        run: () => {
-          setMemoryOpen(true);
         },
       },
       {
@@ -319,7 +309,6 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
     setLocale,
     toggleHelp,
     setSidebarView,
-    setMemoryOpen,
     setMcpOpen,
     setSettingsOpen,
     showDebugConsole,

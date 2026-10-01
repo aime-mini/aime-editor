@@ -29,7 +29,6 @@ describe("buildAddProviderPrompt", () => {
       "`apiKeyEnv`",
       "`apiKeyLoginArgs`",
       "`memory`",
-      "`memoryFile`",
     ]) {
       expect(prompt).toContain(field);
     }

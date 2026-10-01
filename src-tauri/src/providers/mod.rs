@@ -426,8 +426,7 @@ const PROVIDERS_TEMPLATE: &str = r#"[
     "login": "gemini auth login",
     "apiKeyEnv": "GEMINI_API_KEY",
     "install": "npm install -g @google/gemini-cli",
-    "memory": "config-pointer",
-    "memoryFile": ".gemini/GEMINI.md"
+    "memory": "config-pointer"
   }
 ]
 "#;
@@ -634,7 +633,6 @@ mod tests {
             login: String::new(),
             install: String::new(),
             memory: generic::MemoryStrategy::default(),
-            memory_file: String::new(),
             prompt_stdin: false,
             api_key_env: String::new(),
             api_key_login_args: vec![script.to_string_lossy().to_string()],

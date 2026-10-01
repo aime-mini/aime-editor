@@ -1,5 +1,4 @@
 use serde_json::Value;
-use std::path::{Path, PathBuf};
 
 use super::adapter::{
     explicit, Adapter, ApiKeyRoute, Invocation, Permission, ToolSet, TurnRequest, MEMORY_PROMPT,
@@ -204,10 +203,6 @@ impl Adapter for CodexAdapter {
 
     fn login_command(&self) -> String {
         "codex login".into()
-    }
-
-    fn global_memory_path(&self, home: &Path) -> PathBuf {
-        home.join(".codex").join("AGENTS.md")
     }
 
     fn mcp_list_args(&self) -> Vec<String> {

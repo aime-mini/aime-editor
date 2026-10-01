@@ -13,7 +13,7 @@
 use super::adapter::{explicit, Adapter, ApiKeyRoute, Invocation, Permission, TurnRequest, MEMORY_PROMPT};
 use crate::mcp::{McpServer, McpServerSpec};
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
 /// Placeholders Aime substitutes in the configured argument lists.
@@ -69,9 +69,6 @@ pub struct ProviderConfig {
     pub install: String,
     #[serde(default)]
     pub memory: MemoryStrategy,
-    /// The CLI's own user-level memory file, relative to the home directory.
-    #[serde(default)]
-    pub memory_file: String,
     /// Send the prompt on stdin instead of substituting `{prompt}`. Strongly
     /// preferred where the CLI supports it: on Windows a prompt passed as an
     /// argument loses everything after its first line (see `Invocation`).
@@ -227,14 +224,6 @@ impl Adapter for GenericAdapter {
         self.config.login.clone()
     }
 
-    fn global_memory_path(&self, home: &Path) -> PathBuf {
-        if self.config.memory_file.is_empty() {
-            home.join(".aime").join("AGENTS.md")
-        } else {
-            home.join(&self.config.memory_file)
-        }
-    }
-
     // MCP is a convention of the CLIs that implement it; a configured one is
     // not assumed to. The UI shows an empty list rather than inventing flags.
     fn mcp_list_args(&self) -> Vec<String> {
@@ -325,7 +314,6 @@ mod tests {
                 login: "demo-cli login".into(),
                 install: String::new(),
                 memory: super::MemoryStrategy::default(),
-                memory_file: String::new(),
                 prompt_stdin: false,
                 api_key_env: String::new(),
                 api_key_login_args: Vec::new(),

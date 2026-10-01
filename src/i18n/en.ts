@@ -1251,20 +1251,8 @@ export const en = {
   "cmd.openGit": "Open Git panel",
   "cmd.openExplorer": "Open file explorer",
   "cmd.revealCurrent": "Reveal current file in File Explorer",
-  "cmd.editMemory": "Edit AI memory (AGENTS.md)…",
   "cmd.addProvider": "Add an AI CLI (providers.json)…",
   "cmd.manageMcp": "MCP servers…",
-
-  "memory.global": "Global (all projects)",
-  "memory.project": "This project",
-  "memory.globalHint":
-    "Applies to every project on this machine. Each CLI has its own global file - this one belongs to {provider}.",
-  "memory.projectHint":
-    "One AGENTS.md in the repo, read by every AI CLI (Claude via an @AGENTS.md import Aime maintains). Share it with your team via git.",
-  "memory.placeholder":
-    "# Notes for the AI\n\nWho you are, coding conventions, architecture decisions, things it should always remember…",
-  "memory.save": "Save (Ctrl+S)",
-  "memory.footer": "Saved changes apply from the AI's next turn - no restart needed.",
 
   "help.title": "Help (F1)",
   "help.searchPlaceholder": "Search features, shortcuts…",

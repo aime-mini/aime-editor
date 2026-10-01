@@ -2,10 +2,8 @@
 //! read_file/write_file; this module resolves the well-known paths and keeps
 //! the one canonical project file readable by every CLI.
 
-use crate::providers::adapter::adapter_for;
 use serde::Serialize;
 use std::path::Path;
-use tauri::{AppHandle, Manager};
 
 /// Canonical project memory. Codex reads it natively; Claude reads it through
 /// the import below — one source of truth, so providers cannot desynchronize.
@@ -18,55 +16,17 @@ const CLAUDE_IMPORT_LINE: &str = "@AGENTS.md";
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryPaths {
-    /// Knowledge that applies to all of the user's projects. Per CLI: no
-    /// import mechanism spans both CLIs at the global level.
-    pub global_path: String,
-    /// `<root>/AGENTS.md`; `None` while no folder is open.
-    pub project_path: Option<String>,
-    /// Claude's pointer file, shown so the user knows what the bridge touches.
-    pub bridge_path: Option<String>,
+    /// `<root>/AGENTS.md`.
+    pub project_path: String,
 }
 
-/// One project's memory file, and the pointer file Claude reads it through.
-///
-/// Provider-free on purpose. The canonical project file is `AGENTS.md` for
-/// every CLI, so asking which provider is selected to find it invents a
-/// dependency - and that dependency bites: `memory_paths` resolves a *global*
-/// path through the provider's adapter, so a user on a CLI they added
-/// themselves cannot be given a project path at all. Anything that only needs
-/// the project's own file asks for this instead.
+/// One project's memory file, for whatever writes into it on the user's behalf.
 #[tauri::command]
 pub fn project_memory_paths(root_path: String) -> MemoryPaths {
     let root = Path::new(&root_path);
     MemoryPaths {
-        global_path: String::new(),
-        project_path: Some(root.join(PROJECT_MEMORY_FILE).to_string_lossy().to_string()),
-        bridge_path: Some(root.join(CLAUDE_PROJECT_FILE).to_string_lossy().to_string()),
+        project_path: root.join(PROJECT_MEMORY_FILE).to_string_lossy().to_string(),
     }
-}
-
-/// Resolves where the selected provider reads its memory from.
-#[tauri::command]
-pub fn memory_paths(
-    app: AppHandle,
-    provider_id: String,
-    root_path: Option<String>,
-) -> Result<MemoryPaths, String> {
-    let home = app.path().home_dir().map_err(|e| e.to_string())?;
-    let global_path = adapter_for(&provider_id)?
-        .global_memory_path(&home)
-        .to_string_lossy()
-        .to_string();
-    let project_root = root_path.map(|root| Path::new(&root).to_path_buf());
-    Ok(MemoryPaths {
-        global_path,
-        project_path: project_root
-            .as_ref()
-            .map(|root| root.join(PROJECT_MEMORY_FILE).to_string_lossy().to_string()),
-        bridge_path: project_root
-            .as_ref()
-            .map(|root| root.join(CLAUDE_PROJECT_FILE).to_string_lossy().to_string()),
-    })
 }
 
 /// Returns the new content of Claude's project file when the import is

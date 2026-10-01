@@ -1244,20 +1244,8 @@ export const vi: Record<TranslationKey, string> = {
   "cmd.openGit": "Mở panel Git",
   "cmd.openExplorer": "Mở cây file",
   "cmd.revealCurrent": "Mở file hiện tại trong File Explorer",
-  "cmd.editMemory": "Sửa bộ nhớ AI (AGENTS.md)…",
   "cmd.addProvider": "Thêm AI CLI (providers.json)…",
   "cmd.manageMcp": "MCP server…",
-
-  "memory.global": "Toàn cục (mọi dự án)",
-  "memory.project": "Dự án này",
-  "memory.globalHint":
-    "Áp dụng cho mọi dự án trên máy. Mỗi CLI có file toàn cục riêng - đây là file của {provider}.",
-  "memory.projectHint":
-    "Một file AGENTS.md duy nhất trong repo, mọi AI CLI đều đọc (Claude đọc qua dòng import @AGENTS.md do Aime tự duy trì). Chia sẻ với team qua git.",
-  "memory.placeholder":
-    "# Ghi chú cho AI\n\nBạn là ai, quy ước code, quyết định kiến trúc, những điều AI phải luôn nhớ…",
-  "memory.save": "Lưu (Ctrl+S)",
-  "memory.footer": "Lưu xong áp dụng từ lượt AI kế tiếp - không cần khởi động lại.",
 
   "help.title": "Trợ giúp (F1)",
   "help.searchPlaceholder": "Tìm tính năng, phím tắt…",

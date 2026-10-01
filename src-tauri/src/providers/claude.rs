@@ -1,5 +1,4 @@
 use serde_json::Value;
-use std::path::{Path, PathBuf};
 
 use super::adapter::{
     explicit, Adapter, ApiKeyRoute, Invocation, Permission, ToolSet, TurnRequest, MEMORY_PROMPT,
@@ -189,10 +188,6 @@ impl Adapter for ClaudeAdapter {
 
     fn login_command(&self) -> String {
         "claude auth login".into()
-    }
-
-    fn global_memory_path(&self, home: &Path) -> PathBuf {
-        home.join(".claude").join("CLAUDE.md")
     }
 
     fn mcp_list_args(&self) -> Vec<String> {

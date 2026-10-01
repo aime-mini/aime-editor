@@ -189,7 +189,6 @@ pub fn run() {
             session::load_workspace_state,
             session::save_workspace_state,
             session::closing::window_flushed,
-            memory::memory_paths,
             memory::project_memory_paths,
             memory::ensure_memory_bridge,
             tasks::detect_tasks,

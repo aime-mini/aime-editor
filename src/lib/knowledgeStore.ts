@@ -144,9 +144,16 @@ async function changeTimes(root: string, memories: readonly Memory[]): Promise<F
   return (file) => times.get(file) ?? null;
 }
 
+/**
+ * An emptied file is how an AI deletes a memory: every CLI can write a file,
+ * not every one may delete it, so Aime removes it here.
+ */
 async function readMemory(path: string, name: string): Promise<Memory | null> {
   try {
-    return parseMemory(await invoke<string>("read_file", { path }), name);
+    const text = await invoke<string>("read_file", { path });
+    if (text.trim() !== "") return parseMemory(text, name);
+    await invoke("delete_path", { path });
+    return null;
   } catch (error: unknown) {
     console.warn(`memory ${name} could not be read:`, error);
     return null;

@@ -35,8 +35,6 @@ interface LayoutState {
   paletteOpen: boolean;
   setPaletteOpen: (open: boolean) => void;
   togglePalette: () => void;
-  memoryOpen: boolean;
-  setMemoryOpen: (open: boolean) => void;
   mcpOpen: boolean;
   setMcpOpen: (open: boolean) => void;
   /** Tools the installer is working through; empty = no installer open. */
@@ -87,10 +85,6 @@ export const useLayout = create<LayoutState>((set) => ({
   },
   togglePalette: () => {
     set((s) => ({ paletteOpen: !s.paletteOpen }));
-  },
-  memoryOpen: false,
-  setMemoryOpen: (open) => {
-    set({ memoryOpen: open });
   },
   mcpOpen: false,
   setMcpOpen: (open) => {
