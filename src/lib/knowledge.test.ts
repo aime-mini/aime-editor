@@ -4,14 +4,11 @@ import {
   memoryBlock,
   nameFor,
   parseMemory,
-  recall,
   renderIndex,
   renderMemory,
   treeOf,
   type Memory,
 } from "./knowledge";
-
-const TODAY = "2026-10-01";
 
 const memory = (patch: Partial<Memory> & Pick<Memory, "name">): Memory => ({
   kind: "convention",
@@ -60,63 +57,48 @@ describe("a memory file", () => {
   });
 });
 
-describe("recall", () => {
+describe("what a turn carries", () => {
   const decision = memory({
     name: "no-installs",
     kind: "decision",
     summary: "Aime never makes the user install",
   });
-  const cart = memory({ name: "cart-cents", scope: "src/cart", summary: "Totals are cents" });
-  const src = memory({ name: "api-errors", scope: "src", summary: "Every API error is an ApiError" });
-  const auth = memory({ name: "auth-tokens", scope: "src/auth", summary: "Tokens expire after an hour" });
-  const all = [decision, cart, src, auth];
-  const names = (focus: Parameters<typeof recall>[1]) =>
-    recall(all, focus, untouched, TODAY).map(({ memory: chosen }) => chosen.name);
-
-  it("carries the person's project-wide decisions on every turn", () => {
-    expect(names({ files: [], text: "" })).toEqual(["no-installs"]);
+  const cents = memory({
+    name: "cart-cents",
+    scope: "src/cart",
+    summary: "Prices are integer cents, never floats",
   });
+  const tokens = memory({ name: "auth-tokens", scope: "src/auth", summary: "Tokens expire after an hour" });
 
-  it("climbs the tree from the file in view: its folder, then the folders above it", () => {
-    expect(names({ files: ["src/cart/totals.ts"], text: "" })).toEqual([
-      "no-installs",
-      "cart-cents",
-      "api-errors",
-    ]);
-  });
-
-  it("finds a memory by the rarer words of the request", () => {
-    expect(names({ files: [], text: "why do tokens expire so fast?" })).toEqual([
-      "no-installs",
-      "auth-tokens",
-    ]);
-  });
-
-  it("puts a memory about the very file above one about its folder", () => {
-    const exact = memory({ name: "totals-rounding", scope: "src", files: ["src/cart/totals.ts"] });
-    const chosen = recall([cart, exact], { files: ["src/cart/totals.ts"], text: "" }, untouched, TODAY);
-    expect(chosen.map(({ memory: one }) => one.name)).toEqual(["totals-rounding", "cart-cents"]);
-  });
-
-  it("stops at the budget rather than cutting a memory in half", () => {
-    const big = memory({ name: "big", scope: "src/cart", body: "x".repeat(500) });
-    const chosen = recall([cart, big], { files: ["src/cart/a.ts"], text: "" }, untouched, TODAY, 200);
-    expect(chosen.map(({ memory: one }) => one.name)).toEqual(["cart-cents"]);
-  });
-
-  it("marks a memory whose evidence changed or vanished since it was written", () => {
-    const cited = memory({
-      name: "cited",
-      scope: "src/cart",
-      files: ["src/money.ts", "src/gone.ts"],
-      updated: "2026-09-01",
-    });
-    const changed = (file: string) => (file === "src/money.ts" ? Date.parse("2026-09-20T10:00:00Z") : null);
-    const [recalled] = recall([cited], { files: ["src/cart/a.ts"], text: "" }, changed, TODAY);
-    expect(recalled.stale).toEqual(["src/money.ts", "src/gone.ts"]);
-    expect(memoryBlock([recalled], 1)).toContain(
-      "STALE - changed or gone since 2026-09-01: src/money.ts, src/gone.ts",
+  it("is every memory, one line each, so the AI picks by meaning rather than Aime by words", () => {
+    const block = memoryBlock([decision, cents, tokens], [], untouched) ?? "";
+    expect(block).toContain("## /\n- decision `no-installs` - Aime never makes the user install");
+    expect(block).toContain(
+      "## src/cart\n- convention `cart-cents` - Prices are integer cents, never floats",
     );
+    expect(block).toContain("## src/auth\n- convention `auth-tokens`");
+  });
+
+  it("is nothing for a project that remembers nothing yet", () => {
+    expect(memoryBlock([], ["src/a.ts"], untouched)).toBeNull();
+  });
+
+  it("marks a line whose evidence changed or vanished since it was written", () => {
+    const cited = memory({ name: "cited", files: ["src/money.ts", "src/gone.ts"], updated: "2026-09-01" });
+    const changed = (file: string) => (file === "src/money.ts" ? Date.parse("2026-09-20T10:00:00Z") : null);
+    expect(memoryBlock([cited], [], changed)).toContain("STALE since 2026-09-01: src/money.ts, src/gone.ts");
+  });
+
+  it("past what a turn should carry, opens the whole project and the folders in view, and pages the rest", () => {
+    const many = Array.from({ length: 300 }, (_, index) =>
+      memory({ name: `m${String(index)}`, scope: ["src/cart", "src/auth", "docs"][index % 3] }),
+    );
+    const block = memoryBlock([decision, ...many], ["src/cart/totals.ts"], untouched) ?? "";
+    expect(block).toContain("- decision `no-installs`");
+    expect(block).toContain("## src/cart\n");
+    expect(block).not.toContain("## src/auth\n");
+    expect(block).toContain("- src/auth: 100 · .aime/memory/index/src_auth.md");
+    expect(block).toContain("- docs: 100 · .aime/memory/index/docs.md");
   });
 });
 

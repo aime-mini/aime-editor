@@ -148,14 +148,12 @@ function describeCloud(cloud: CloudFocus): string[] {
   return lines;
 }
 
-/**
- * What a turn is about, for choosing the memories it carries (`lib/knowledge`):
- * the file in front first, then the other open tabs, and the words asked.
- */
-export function focusOf(view: ViewSnapshot | null, prompt: string): Focus {
-  if (view === null) return { files: [], text: prompt };
-  const files = [view.activeFile, ...view.otherFiles].filter((file): file is string => file !== null);
-  return { files: files.map((file) => relative(file, view.rootPath)), text: prompt };
+/** The files a turn is about, for the memory index it carries (`lib/knowledge`): the one in front first. */
+export function focusOf(view: ViewSnapshot | null): Focus {
+  if (view === null) return [];
+  return [view.activeFile, ...view.otherFiles]
+    .filter((file): file is string => file !== null)
+    .map((file) => relative(file, view.rootPath));
 }
 
 /** Repo-relative with forward slashes, the shape an `@` mention takes; absolute when outside. */

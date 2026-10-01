@@ -9,13 +9,15 @@
  * inherited by every file under it, the way a stylesheet or `.gitignore` is,
  * and one scoped to `/` holds for the whole project.
  *
- * A turn gets only what bears on it: the person's project-wide decisions
- * always, then what lies on the path from the files in view up to the root,
- * then what shares the rarer words of the request - weighted by rarity, so a
- * memory about "cents" outranks one that merely says "the". Nothing is
- * summarised and nothing is thrown away: a memory not chosen is still in the
- * index the AI can open, and one whose evidence changed since it was written
- * is handed over marked for checking rather than trusted.
+ * Which memories a turn needs is the AI's call, not Aime's: matching words
+ * cannot see that "how prices are rounded" is about "money is integer cents",
+ * and the model can. So every turn carries the index - one line per memory,
+ * the summary being the fact itself - and the AI opens the files that bear on
+ * the request, the way a person reads a table of contents. Past what one turn
+ * should carry, the index is the whole project's lines, the folders in view,
+ * and a page per folder for the rest. Nothing is summarised and nothing is
+ * thrown away, and a memory whose evidence changed since it was written is
+ * marked for checking rather than trusted.
  *
  * Pure: reading the files is `knowledgeStore.ts`.
  */
@@ -43,35 +45,17 @@ export interface Memory {
   body: string;
 }
 
-/** What a turn is about: the files in view, and the words of the request. */
-export interface Focus {
-  /** Relative to the project root; the first is the file in front. */
-  files: string[];
-  text: string;
-}
-
-/** A memory chosen for a turn, and why it may no longer hold. */
-export interface Recalled {
-  memory: Memory;
-  /** Files it cites that are gone or changed after it was written; empty when it stands. */
-  stale: string[];
-}
+/** The files a turn works on, relative to the project root: which folders' pages a large index opens on. */
+export type Focus = readonly string[];
 
 /** When each cited file was last changed, or null for one that no longer exists. */
 export type FileChanged = (file: string) => number | null;
 
-/** Characters of memory a turn carries. About two thousand tokens: room for what bears on it, no more. */
-export const TURN_BUDGET = 8_000;
-/** Project-wide decisions carried on every turn, newest first, before the budget has a say. */
-const PINNED_DECISIONS = 20;
-/** Below this score a memory has too little to do with the turn to spend its room on. */
-const RELEVANT = 1.5;
-/** How much of one memory's body a turn carries; the rest is a file the AI can open. */
-const BODY_KEPT = 600;
-const RECENT_DAYS = 14;
-/** A memory citing the very file in view: above any folder it sits in, however deep. */
-const FILE_MATCH = 12;
-const DAY_MS = 86_400_000;
+/**
+ * Index lines a turn carries whole. About five thousand tokens at the most -
+ * a fraction of any provider's context - and past it the index goes by folder.
+ */
+const INDEX_LINES = 200;
 
 /** Reads one memory file; null when it is not a memory. */
 export function parseMemory(text: string, fileName: string): Memory | null {
@@ -127,49 +111,39 @@ export function nameFor(text: string): string {
 }
 
 /**
- * The memories a turn carries: project-wide decisions first, then the most
- * relevant of the rest, as many as the budget holds.
+ * What every turn carries: the index, and how to use it. Null for a project
+ * that remembers nothing yet - the standing instructions already say where
+ * memories go.
  */
-export function recall(
-  memories: readonly Memory[],
-  focus: Focus,
-  changed: FileChanged,
-  today: string,
-  budget = TURN_BUDGET,
-): Recalled[] {
-  const pinned = memories
-    .filter((memory) => memory.kind === "decision" && memory.scope === ROOT_SCOPE)
-    .sort(newestFirst)
-    .slice(0, PINNED_DECISIONS);
-  const weights = rarity(memories);
-  const words = wordsOf(focus.text);
-  const ranked = memories
-    .filter((memory) => !pinned.includes(memory))
-    .map((memory) => ({ memory, score: scoreOf(memory, focus, words, weights, today) }))
-    .filter(({ score }) => score >= RELEVANT)
-    .sort((a, b) => b.score - a.score || newestFirst(a.memory, b.memory))
-    .map(({ memory }) => memory);
-
-  const chosen: Recalled[] = [];
-  let room = budget;
-  for (const memory of [...pinned, ...ranked]) {
-    const size = entryOf(memory, []).length;
-    if (size > room) continue;
-    room -= size;
-    chosen.push({ memory, stale: staleFiles(memory, changed) });
-  }
-  return chosen;
-}
-
-/** The block a turn carries, or null when nothing bears on it. */
-export function memoryBlock(recalled: readonly Recalled[], total: number): string | null {
-  if (recalled.length === 0) return null;
+export function memoryBlock(memories: readonly Memory[], focus: Focus, changed: FileChanged): string | null {
+  if (memories.length === 0) return null;
+  const listed = (held: readonly Memory[]) => held.map((memory) => turnLine(memory, changed));
+  const tree = treeOf(memories);
+  const lines =
+    memories.length <= INDEX_LINES
+      ? tree.flatMap(({ scope, memories: held }) => [`## ${scope}`, ...listed(held)])
+      : largeIndex(tree, focus, listed);
   return [
     "<aime_memory>",
-    `What Aime knows about this project that bears on this turn, chosen from ${String(total)} memories in ${MEMORY_DIR}/ - ${INDEX_FILE} lists every one; open any you need. The user's decisions outrank your defaults. Check a memory marked stale against the code before relying on it, then update or delete it.`,
-    ...recalled.map(({ memory, stale }) => entryOf(memory, stale)),
+    `The index of what Aime remembers about this project, ${String(memories.length)} memories in ${MEMORY_DIR}/, one line each. Before you act, decide by meaning - not by matching words - which of them bear on this request, and open those files for the detail. The user's decisions outrank your defaults. A line marked STALE cites code that changed since it was written: check it before relying on it, then update or delete it.`,
+    ...lines,
     "</aime_memory>",
   ].join("\n");
+}
+
+/** The whole project's lines, every folder on the path to the files in view, and the rest by page. */
+function largeIndex(
+  tree: readonly { scope: string; memories: Memory[] }[],
+  focus: Focus,
+  listed: (held: readonly Memory[]) => string[],
+): string[] {
+  const open = tree.filter(({ scope }) => scope === ROOT_SCOPE || focus.some((file) => covers(scope, file)));
+  const shut = tree.filter((node) => !open.includes(node));
+  return [
+    ...open.flatMap(({ scope, memories: held }) => [`## ${scope}`, ...listed(held)]),
+    "## Other folders - open the page of any that bears on the request",
+    ...shut.map(({ scope, memories: held }) => `- ${scope}: ${String(held.length)} · ${pagePath(scope)}`),
+  ];
 }
 
 /** One page of the index: where it is written, and what it says. */
@@ -206,7 +180,7 @@ export function renderIndex(memories: readonly Memory[]): IndexPage[] {
     ];
   }
   const pages = tree.map(({ scope, memories: held }) => ({
-    path: `${INDEX_DIR}/${pageName(scope)}.md`,
+    path: pagePath(scope),
     content: [`# Memories for ${scope}`, "", ...held.map(line), ""].join("\n"),
   }));
   return [
@@ -226,8 +200,6 @@ export function renderIndex(memories: readonly Memory[]): IndexPage[] {
   ];
 }
 
-/** Memories an index lists on one page before it splits into a page per folder. */
-const INDEX_LINES = 200;
 /** Where the per-folder pages of a split index live. */
 export const INDEX_DIR = `${MEMORY_DIR}/index`;
 
@@ -235,8 +207,8 @@ function line(memory: Memory): string {
   return `- ${memory.kind} \`${memory.name}\` - ${memory.summary}`;
 }
 
-function pageName(scope: string): string {
-  return scope === ROOT_SCOPE ? "_root" : scope.replace(/[^\w.-]+/g, "_");
+function pagePath(scope: string): string {
+  return `${INDEX_DIR}/${scope === ROOT_SCOPE ? "_root" : scope.replace(/[^\w.-]+/g, "_")}.md`;
 }
 
 /** Every folder that has memories, with its own, the whole project first. */
@@ -249,41 +221,6 @@ export function treeOf(memories: readonly Memory[]): { scope: string; memories: 
     }));
 }
 
-function scoreOf(
-  memory: Memory,
-  focus: Focus,
-  words: ReadonlySet<string>,
-  weights: ReadonlyMap<string, number>,
-  today: string,
-): number {
-  let score = 0;
-  focus.files.forEach((file, index) => {
-    // The file in front counts in full, the other open ones by half.
-    const weight = index === 0 ? 1 : 0.5;
-    if (memory.files.includes(file)) score += FILE_MATCH * weight;
-    else if (covers(memory.scope, file)) score += (2 + depthOf(memory.scope)) * weight;
-  });
-  for (const word of wordsOf(`${memory.name} ${memory.summary} ${memory.body}`)) {
-    if (words.has(word)) score += weights.get(word) ?? 0;
-  }
-  if (memory.kind === "work") score += 1;
-  if (daysBetween(memory.updated, today) <= RECENT_DAYS) score += 0.5;
-  return score;
-}
-
-/** How telling each word is: words most memories share say little about any one of them. */
-function rarity(memories: readonly Memory[]): Map<string, number> {
-  const holding = new Map<string, number>();
-  for (const memory of memories) {
-    for (const word of wordsOf(`${memory.name} ${memory.summary} ${memory.body}`)) {
-      holding.set(word, (holding.get(word) ?? 0) + 1);
-    }
-  }
-  const weights = new Map<string, number>();
-  for (const [word, count] of holding) weights.set(word, Math.log(1 + memories.length / count));
-  return weights;
-}
-
 /** The cited files that are gone, or changed after the day the memory was written. */
 function staleFiles(memory: Memory, changed: FileChanged): string[] {
   const writtenUntil = Date.parse(`${memory.updated}T23:59:59Z`);
@@ -293,24 +230,16 @@ function staleFiles(memory: Memory, changed: FileChanged): string[] {
   });
 }
 
-function entryOf(memory: Memory, stale: readonly string[]): string {
-  const body =
-    memory.body.length > BODY_KEPT
-      ? `${memory.body.slice(0, BODY_KEPT)}… (the rest: ${MEMORY_DIR}/${memory.name}.md)`
-      : memory.body;
-  return [
-    `- [${memory.kind} · ${memory.scope}] ${memory.name}: ${memory.summary}`,
-    ...(body === "" ? [] : [`  ${body.replace(/\n/g, "\n  ")}`]),
-    ...(stale.length === 0 ? [] : [`  STALE - changed or gone since ${memory.updated}: ${stale.join(", ")}`]),
-  ].join("\n");
+/** An index line as a turn reads it: the same line, and why it may no longer hold. */
+function turnLine(memory: Memory, changed: FileChanged): string {
+  const stale = staleFiles(memory, changed);
+  return stale.length === 0
+    ? line(memory)
+    : `${line(memory)} - STALE since ${memory.updated}: ${stale.join(", ")}`;
 }
 
 function covers(scope: string, file: string): boolean {
   return scope === ROOT_SCOPE || file === scope || file.startsWith(`${scope}/`);
-}
-
-function depthOf(scope: string): number {
-  return scope === ROOT_SCOPE ? 0 : scope.split("/").length;
 }
 
 function normalizeScope(scope: string): string {
@@ -318,28 +247,6 @@ function normalizeScope(scope: string): string {
   return clean === "" || clean === "." ? ROOT_SCOPE : clean;
 }
 
-/** Common words that say nothing about which memory a turn needs. */
-const STOP_WORDS = new Set(
-  "the a an and or of to in on for with is are be this that it as at by from not no can will use when what how why".split(
-    " ",
-  ),
-);
-
-function wordsOf(text: string): Set<string> {
-  return new Set(
-    text
-      .toLowerCase()
-      .split(/[^\p{L}\p{N}]+/u)
-      .filter((word) => word.length > 2 && !STOP_WORDS.has(word)),
-  );
-}
-
 function newestFirst(a: Memory, b: Memory): number {
   return b.updated.localeCompare(a.updated);
-}
-
-function daysBetween(from: string, to: string): number {
-  const start = Date.parse(from);
-  const end = Date.parse(to);
-  return Number.isFinite(start) && Number.isFinite(end) ? (end - start) / DAY_MS : Number.POSITIVE_INFINITY;
 }

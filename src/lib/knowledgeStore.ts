@@ -4,13 +4,11 @@ import {
   MEMORY_DIR,
   memoryBlock,
   parseMemory,
-  recall,
   renderIndex,
   renderMemory,
   type FileChanged,
   type Focus,
   type Memory,
-  type Recalled,
 } from "./knowledge";
 import { conventionsLearned } from "./runLearning";
 
@@ -64,13 +62,11 @@ export async function loadMemories(root: string): Promise<Memory[]> {
   return memories;
 }
 
-/** The memory block a turn about `focus` should carry, or null when the project has none. */
+/** The memory block a turn on the files of `focus` carries, or null when the project has none. */
 export async function memoryFor(root: string, focus: Focus): Promise<string | null> {
   const memories = await loadMemories(root);
   if (memories.length === 0) return null;
-  const changed = await changeTimes(root, memories);
-  const recalled: Recalled[] = recall(memories, focus, changed, today());
-  return memoryBlock(recalled, memories.length);
+  return memoryBlock(memories, focus, await changeTimes(root, memories));
 }
 
 /**

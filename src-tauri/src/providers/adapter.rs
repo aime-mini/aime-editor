@@ -179,17 +179,19 @@ pub trait Adapter: Send + Sync {
 
 /// Injected into every turn, by every adapter. Chat context can be compacted or
 /// lost (limits, restarts, new sessions) - memories kept as files cannot, and
-/// Aime hands each turn the ones that bear on it (`lib/knowledge.ts`). One
+/// Aime hands each turn their index to choose from (`lib/knowledge.ts`). One
 /// memory per fact, shared by every provider.
 pub const MEMORY_PROMPT: &str = "This project keeps its memory in .aime/memory/, one fact per file. \
-Aime attaches the memories that bear on each turn in an <aime_memory> block, and .aime/memory/INDEX.md \
-lists every one - open any you need. Write a memory, without being asked, when the user states a \
-decision or a preference (kind: decision), when you learn how this codebase does something \
-(convention), when you hit a trap or fix a bug whose cause was not obvious (pitfall), and when you \
-stop with work unfinished (work). Each file is .aime/memory/<name>.md and starts with this header, \
-one field per line: ---, name: <kebab-case>, kind: <decision|convention|pitfall|work>, scope: <the \
-folder it applies to, / for the whole project>, summary: <one sentence>, files: <comma-separated \
-paths it can be checked against>, updated: <YYYY-MM-DD>, --- and then a few lines of detail. \
+Aime attaches the index of every memory to each turn in an <aime_memory> block; open the ones that \
+bear on the request before you act. Write a memory, without being asked, when the user states a \
+decision or a preference, and when the user corrects you - a correction is a decision (kind: \
+decision); when you learn how this codebase does something (convention), when you hit a trap or fix \
+a bug whose cause was not obvious (pitfall), and when you stop with work unfinished (work). Each \
+file is .aime/memory/<name>.md and starts with this header, one field per line: ---, name: \
+<kebab-case>, kind: <decision|convention|pitfall|work>, scope: <the folder it applies to, / for the \
+whole project>, summary: <the fact itself in one sentence - it is the line every later turn reads in \
+the index>, files: <comma-separated paths it can be checked against>, updated: <YYYY-MM-DD>, --- and \
+then a few lines of detail: why, and how to apply it. \
 One fact per file. Change the existing memory rather than writing a second one about the same \
 thing; delete a work memory when the work is done and any memory that proved wrong. A memory \
 marked STALE: check it against the code, then update or delete it. Never write a secret into a \

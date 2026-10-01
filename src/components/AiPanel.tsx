@@ -722,7 +722,7 @@ export function AiPanel() {
   const send = (prompt: string) => {
     if (!rootPath) return;
     const view = currentView();
-    void memoryFor(rootPath, focusOf(view, prompt))
+    void memoryFor(rootPath, focusOf(view))
       .catch((error: unknown) => {
         // The turn goes on without them; the error log says why it had none.
         loggedAs("memory")(error);

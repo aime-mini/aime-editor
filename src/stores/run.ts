@@ -1223,10 +1223,7 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
   const description = await useTrackers.getState().detailOf(context.item);
   // What the project already knows about the ground this ticket lands on - a
   // head start, not an answer: the reading below confirms it in the code.
-  const remembered = await projectMemory(context, {
-    files: [],
-    text: `${context.item.title} ${description?.description ?? ""}`,
-  });
+  const remembered = await projectMemory(context, []);
   const asking = [
     UNDERSTAND_PROMPT,
     ...(remembered === null ? [] : [remembered]),
@@ -1515,10 +1512,7 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
   const cases = await agreedCases(context.workRoot, get, set);
   if (brief === null || plan === null) return { state: "skipped", summary: translate("run.noPlan") };
 
-  const remembered = await projectMemory(context, {
-    files: get().radius?.changing ?? [],
-    text: brief.goal,
-  });
+  const remembered = await projectMemory(context, get().radius?.changing ?? []);
   const prompt = [
     IMPLEMENT_PROMPT,
     SECURITY_RULES,
