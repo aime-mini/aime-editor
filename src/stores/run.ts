@@ -66,7 +66,23 @@ import {
   type EnvironmentFailure,
   type TestEnvironment,
 } from "../lib/testEnvironment";
-import { caseEvidence, deployProof, DEPLOY_PROOF_DIR, EVIDENCE_DIR } from "../lib/evidenceFile";
+import {
+  caseEvidence,
+  deployProof,
+  DEPLOY_PROOF_DIR,
+  EVIDENCE_DIR,
+  screenshotsIn,
+} from "../lib/evidenceFile";
+import {
+  layoutProblems,
+  PAGE_TIMEOUT_MS,
+  parseScreens,
+  probeScript,
+  readProbe,
+  SCREENS_FILE,
+  VIEWPORTS,
+  type Screens,
+} from "../lib/layoutGate";
 import { emptyTrash, trashOf, untrackedNow, type TrashItem } from "../lib/runTrash";
 import type { RepositoryBranch, RunUndo, UndoOutcome } from "../lib/runUndo";
 import { onFileSaved } from "../lib/savedFiles";
@@ -1895,13 +1911,22 @@ async function buildAndProve(context: Context, set: Setter, get: Getter): Promis
     const evidence = await caseEvidence(context.workRoot, caseIds, since);
     const missing = (cases?.cases ?? []).filter((one) => (evidence.get(one.id) ?? []).length === 0);
     const proofs = await deployProof(context.workRoot, since);
-    if (proofs.length > 0 && missing.length === 0) {
+    // The screens are measured once there is something deployed to measure,
+    // and only then: a layout fix on top of an unproved deployment is noise.
+    const layout = proofs.length > 0 && missing.length === 0 ? await measureScreens(context, set) : null;
+    if (layout !== null && layout.problems.length === 0) {
       return {
         state: "passed",
-        summary: translate("run.delivered", { proved: caseIds.length, total: caseIds.length }),
+        summary: [
+          translate("run.delivered", { proved: caseIds.length, total: caseIds.length }),
+          layout.pages === 0 ? "" : translate("run.layoutHeld", { count: layout.pages }),
+        ]
+          .filter(Boolean)
+          .join(" · "),
         detail: [...tried, ...proofs.map((path) => `- ${path}`)].join("\n"),
       };
     }
+    const unfit = layout?.problems ?? [];
 
     // Nothing is waved through here. A case with no artifact is a requirement
     // this change never proved, and the page the reader agreed to gave every
@@ -1911,23 +1936,30 @@ async function buildAndProve(context: Context, set: Setter, get: Getter): Promis
     const short = [
       proofs.length === 0 ? translate("run.deliverNoProofShort") : "",
       missing.map((one) => one.id).join(", "),
+      unfit.length === 0 ? "" : translate("run.layoutShort", { count: unfit.length }),
     ]
       .filter(Boolean)
       .join("; ");
-    if (stalled(proofRounds, short) || round === MAX_ROUNDS) {
+    // The problems themselves, not their count: a round that fixed one screen
+    // and broke another is movement, not a stall.
+    const signature = [short, ...unfit].join("|");
+    if (stalled(proofRounds, signature) || round === MAX_ROUNDS) {
       return {
         state: "blocked",
         summary:
           proofs.length === 0
             ? translate("run.deliverNoProof")
-            : translate("run.casesUnproven", { count: missing.length, rounds: round }),
-        detail: [...tried, ...missing.map(oneLine)].join("\n"),
+            : missing.length > 0
+              ? translate("run.casesUnproven", { count: missing.length, rounds: round })
+              : translate("run.layoutFailed", { count: unfit.length }),
+        detail: [...tried, ...missing.map(oneLine), ...unfit].join("\n"),
       };
     }
-    proofRounds.push(short);
+    proofRounds.push(signature);
     owed = [
       ...(proofs.length === 0 ? [NO_DEPLOY_PROOF] : []),
       ...(missing.length > 0 ? [EVIDENCE_MISSING, ...missing.map(oneLine)] : []),
+      ...(unfit.length > 0 ? [LAYOUT_PROMPT, ...unfit] : []),
     ].join("\n");
     tried.push(translate("run.deliverOwedAttempt", { attempt: round, detail: short }));
   }
@@ -2067,6 +2099,7 @@ async function reviewOnce(
     content: diff,
   });
   const { survey, rules, solution } = get();
+  const screenshots = await screenshotsIn(context.workRoot);
   const asking = [
     REVIEW_PROMPT,
     REVIEW_READS_THE_DIFF,
@@ -2075,6 +2108,9 @@ async function reviewOnce(
     ...(solution === null
       ? []
       : ["", "What the change was supposed to lock in:", ...solution.decisions.map((d) => `- ${d}`)]),
+    ...(screenshots.length === 0
+      ? []
+      : ["", REVIEW_LOOKS_AT_SCREENS, ...screenshots.map((path) => `- ${path}`)]),
     ...(earlier === "" ? [] : ["", earlier]),
   ].join("\n");
   return tryUntil(ATTEMPTS, async () => readReview(await readRepository(context, asking, set, "review")));
@@ -2889,6 +2925,74 @@ function securityHeld(get: Getter): string {
     : translate("run.securityHeld", { scanners: scanners.map((one) => one.label).join(", ") });
 }
 
+/** What measuring the changed screens found. */
+interface ScreenCheck {
+  /** How many pages were measured; 0 when the change shows on no screen. */
+  pages: number;
+  /** One line per problem, already naming the page and the width. */
+  problems: string[];
+}
+
+/**
+ * The screens the change shows on, opened at every width and measured.
+ *
+ * Aime brings the app up itself from what `screens.json` says, because the
+ * agent's own processes end with its turn - measured: the CLI kills its
+ * background shells when it exits - and takes it down again afterwards. An app
+ * that will not come up, or a page that never answers, is a problem for the
+ * agent like any other: it named the command and the address.
+ */
+async function measureScreens(context: Context, set: Setter): Promise<ScreenCheck> {
+  const screens = await readScreens(context.workRoot);
+  if (screens === null || screens.pages.length === 0) return { pages: 0, problems: [] };
+  note(set, "verify", translate("run.layoutMeasuring", { count: screens.pages.length }));
+  const outcome = await withServices(
+    screens.serve,
+    context.workRoot,
+    machineLauncher(serviceIdFor(context.id)),
+    () => probeScreens(screens.pages),
+  );
+  return {
+    pages: screens.pages.length,
+    problems: "result" in outcome ? outcome.result : [serviceFailure(outcome.failure)],
+  };
+}
+
+async function probeScreens(pages: readonly string[]): Promise<string[]> {
+  const problems: string[] = [];
+  for (const page of pages) {
+    const script = probeScript(new URL(page).origin);
+    for (const viewport of VIEWPORTS) {
+      try {
+        const answer = await invoke<string>("page_probe", {
+          url: page,
+          width: viewport.width,
+          height: viewport.height,
+          script,
+          timeoutMs: PAGE_TIMEOUT_MS,
+        });
+        const report = readProbe(answer);
+        problems.push(
+          ...(report === null
+            ? [`${viewport.name} ${String(viewport.width)}px · ${page}: ${translate("run.layoutUnreadable")}`]
+            : layoutProblems(page, viewport, report)),
+        );
+      } catch (error: unknown) {
+        problems.push(`${viewport.name} ${String(viewport.width)}px · ${page}: ${String(error)}`);
+      }
+    }
+  }
+  return problems;
+}
+
+async function readScreens(root: string): Promise<Screens | null> {
+  try {
+    return parseScreens(await invoke<string>("read_file", { path: `${root}/${SCREENS_FILE}` }));
+  } catch {
+    return null; // not written: the change shows on no screen
+  }
+}
+
 async function agreedCases(root: string, get: Getter, set: Setter): Promise<TestCases | null> {
   const onDisk = await loadTestCases(root);
   if (onDisk === null) return get().cases;
@@ -3151,8 +3255,24 @@ Then prove it, and leave the proof on disk - Aime believes files, not reports:
 - Install what you need to drive things - a headless browser, a driver - preferring what the project
   already uses. Show progress, do not ask permission.
 
+If the change shows on a screen, say where, so Aime can open it at a phone's, a tablet's and a
+desktop's width and measure it itself. Write ${SCREENS_FILE}:
+{"serve": [{"command": "npm run preview -- --port 4173", "dir": ".", "ready": "http://127.0.0.1:4173"}],
+ "pages": ["http://127.0.0.1:4173/cart"]}
+"serve" is how to bring the built app up - Aime starts it, because your own processes end with your
+turn - and "pages" are the addresses that show the change. Save a screenshot of each of those pages at
+375, 768 and 1440 pixels wide under ${EVIDENCE_DIR}/ too, for the reviewer.
+
 Every artifact must be non-empty and written now, during this run. An empty file, a stale file or a
 missing one reads as "unproven" in the report, never as a pass. Do not commit anything.`;
+
+const LAYOUT_PROMPT = `Aime opened the screens you listed at a phone's, a tablet's and a desktop's width and
+measured them, and these do not hold. Fix the layout so every page holds at every width, with the
+responsive tools this project already uses - its breakpoints, its grid, its components - not by hiding
+the content or shrinking the text until it fits. Then build and redeploy as before, and update
+${SCREENS_FILE} if an address changed.
+
+What did not hold:`;
 
 const FIX_CHECKS_PROMPT = `Your change broke this project's own checks - the linter, the type checker
 or the formatter it runs itself.
@@ -3181,6 +3301,10 @@ const REVIEW_READS_THE_DIFF = `
 The change under review is the file ${REVIEW_DIFF_FILE} - all of it, exactly as git reports it. Read
 that file to its end before you answer, however long it is, and open the files it touches wherever
 the diff alone does not show enough to judge them.`;
+
+const REVIEW_LOOKS_AT_SCREENS = `Screenshots of the change running are below. Open them if you can read images, and
+judge whether the changed screens look like the rest of this app - its components, spacing, type and
+colours - and hold at the widths they were taken at. A screen with a look of its own is a finding.`;
 
 const EARLIER_REVIEW = `This change has been reviewed before. The author worked on these findings:`;
 

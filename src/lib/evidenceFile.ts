@@ -81,6 +81,17 @@ export async function deployProof(root: string, since: number): Promise<string[]
   return entries.filter((entry) => isFresh(entry, since)).map((entry) => entry.path);
 }
 
+/** What a screenshot is called, for the reviewer who is pointed at them. */
+const IMAGE = /\.(png|jpe?g|webp)$/i;
+
+/** The screenshots the run left as evidence, relative to the project root. */
+export async function screenshotsIn(root: string): Promise<string[]> {
+  const entries = await filesUnder(`${base(root)}/${EVIDENCE_DIR}`);
+  return entries
+    .filter((entry) => !entry.is_dir && IMAGE.test(entry.name))
+    .map((entry) => `${EVIDENCE_DIR}/${entry.name}`);
+}
+
 /** One directory level of files; a folder that is not there is simply empty. */
 async function filesUnder(path: string): Promise<DirEntry[]> {
   try {

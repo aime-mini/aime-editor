@@ -14,6 +14,7 @@ mod lsp;
 mod mcp;
 mod memory;
 mod net;
+mod page_probe;
 mod plugins;
 mod program;
 mod providers;
@@ -75,6 +76,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cli::initial_folder,
+            page_probe::page_probe,
             cloud::cloud_report,
             cloud::cloud_status,
             cloud::cloud_accounts,

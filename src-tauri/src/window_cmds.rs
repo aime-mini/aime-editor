@@ -16,7 +16,7 @@ const UNATTENDED_VAR: &str = "AIME_UNATTENDED";
 
 /// Far enough off the desktop to be invisible on any arrangement of monitors,
 /// while staying a real, rendered window — the tests need it to paint.
-const PARKED_AT: (i32, i32) = (-4000, -4000);
+pub const PARKED_AT: (i32, i32) = (-4000, -4000);
 
 pub fn unattended() -> bool {
     std::env::var_os(UNATTENDED_VAR).is_some()

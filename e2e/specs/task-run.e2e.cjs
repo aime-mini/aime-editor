@@ -53,8 +53,9 @@ const keysFile = path.join(configDir, "api-keys.json");
 /**
  * Where the fake CLI reads its orders: "sound", "repairs", "breaks", "sloppy",
  * "crossRepo" (the change reaches the api as well), "strays" (it reaches the
- * api without saying so), "insecure" (it writes a secret into the source) or
- * "reviewSecurity" (the first reviewer finds a security issue).
+ * api without saying so), "insecure" (it writes a secret into the source),
+ * "reviewSecurity" (the first reviewer finds a security issue) or "cramped"
+ * (it adds a screen that does not fit a phone).
  */
 const MODE_FILE = path.join(os.tmpdir(), "aime-run-probe-mode.txt");
 const PROBE_SCRIPT = path.join(os.tmpdir(), "aime-run-probe.cjs");
@@ -92,6 +93,9 @@ process.exit(results.length > 0 ? 1 : 0);
  */
 const SERVICE_PORT = 47813;
 
+/** Where the screen the "cramped" change adds is served - fixed for the same reason. */
+const SCREEN_PORT = 47821;
+
 const ORGANIZATION = "aime-run";
 const PROJECT = "Probe";
 const TOKEN = "pat-run-1";
@@ -123,6 +127,18 @@ const RUINED = "  return 0;\n";
 const SOUND = cart(ADDS_UP, ROUNDS);
 const BREAKS = cart(RUINED, ROUNDS);
 const INSECURE = cart(ADDS_UP, ROUNDS, 'export const apiKey = "SECRET-live-key";\n');
+
+// The screen the "cramped" change adds: a totals bar of a fixed 700px, which a
+// phone cannot hold - and the same bar once it is told so, fitting any width.
+const screen = (bar) =>
+  '<!doctype html><html><head><meta name="viewport" content="width=device-width"></head>' +
+  '<body style="margin:0"><div class="totals" style="' + bar + '">Total 27.50</div></body></html>';
+const CRAMPED = screen("width:700px");
+const FITTING = screen("max-width:100%");
+const SCREEN_SERVER =
+  'const fs = require("node:fs");\n' +
+  'require("node:http").createServer((q, r) => r.end(fs.readFileSync(__dirname + "/screen.html")))' +
+  '.listen(${SCREEN_PORT}, "127.0.0.1");\n';
 const SLOPPY = cart(ADDS_UP, ROUNDS, 'const debug = () => console.log("here");\n');
 
 // The suite as the implementing phase leaves it: rounding now asserted, and
@@ -237,6 +253,10 @@ if (prompt.includes("Set up security scanning for this repository")) {
   // file, which the cleanup button must offer and the baseline snapshot must
   // not blame on anything that was already there.
   fs.writeFileSync(shop("debug-scratch.log"), "temporary notes\n");
+  if (mode === "cramped") {
+    fs.writeFileSync(shop("screen.html"), CRAMPED);
+    fs.writeFileSync(shop("screen-server.cjs"), SCREEN_SERVER);
+  }
   // The api side of the ticket: announced in the survey, or not.
   if (mode === "crossRepo" || mode === "strays") {
     fs.writeFileSync(here("api", "server.js"), "export const port = 8081;\n");
@@ -265,6 +285,17 @@ if (prompt.includes("Set up security scanning for this repository")) {
   fs.mkdirSync(here(".aime", "evidence", "deploy"), { recursive: true });
   fs.writeFileSync(here(".aime", "evidence", "TC1.txt"), "node test.cjs: rounds to two places passed\n");
   fs.writeFileSync(here(".aime", "evidence", "deploy", "health.txt"), "served on 4173, / answered 200\n");
+  if (mode === "cramped") {
+    // Told the screen did not hold: fix it, the way the prompt asks.
+    if (prompt.includes("Aime opened the screens you listed")) fs.writeFileSync(shop("screen.html"), FITTING);
+    fs.writeFileSync(
+      here(".aime", "evidence", "deploy", "screens.json"),
+      JSON.stringify({
+        serve: [{ command: "node screen-server.cjs", dir: inProduct ? "shop" : ".", ready: "http://127.0.0.1:${SCREEN_PORT}" }],
+        pages: ["http://127.0.0.1:${SCREEN_PORT}/"],
+      }),
+    );
+  }
   process.stdout.write("delivered\n");
 } else if (prompt.includes("Review this change")) {
   // An agent with read-only tools now, so its answer arrives as a streamed event.
@@ -981,6 +1012,31 @@ ${suite.output}`,
     );
     assert.match(reviewed, /nothing left on reading 2/, reviewed);
     await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
+  });
+
+  it("opens the screen it changed at phone, tablet and desktop width, and fixes what does not fit", async () => {
+    // Aime brings the app up itself from screens.json, opens the page at three
+    // widths and measures it. The first version runs past a phone's edge; the
+    // run may not finish until it fits.
+    fs.writeFileSync(MODE_FILE, "cramped");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+
+    const verified = await waitForPhase(
+      "Test it until the bugs are out",
+      "hold at 375, 768 and 1440 px",
+      "the screen was never measured, or never held",
+      300_000,
+    );
+    assert.match(verified, /1 screen\(s\) hold at 375, 768 and 1440 px/, verified);
+    assert.match(
+      fs.readFileSync(path.join(repo, "screen.html"), "utf8"),
+      /max-width:100%/,
+      "the run finished without being told the screen did not fit a phone",
+    );
+    await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
+    assert.equal(await portOpen(SCREEN_PORT), false, "the app Aime brought up to measure was left running");
   });
 
   it("keeps the run on file, so it can be read again after a reload", async () => {
