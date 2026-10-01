@@ -3200,7 +3200,8 @@ The findings:`;
 const REVIEW_READS_THE_DIFF = `
 The change under review is the file ${REVIEW_DIFF_FILE} - all of it, exactly as git reports it. Read
 that file to its end before you answer, however long it is, and open the files it touches wherever
-the diff alone does not show enough to judge them.`;
+the diff alone does not show enough to judge them. A finding's "line" is its line in the changed file
+as it stands now - count from the "+N" of the hunk header, or read the file - never its line in the diff.`;
 
 const REVIEW_LOOKS_AT_SCREENS = `Screenshots of the change running are below. Open them if you can read images, and
 judge whether the changed screens look like the rest of this app - its components, spacing, type and
