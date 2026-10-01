@@ -139,3 +139,39 @@ export function asTaskDef(task: DiscoveredTask): TaskDef {
     ...(task.dir === "." ? {} : { cwd: task.dir }),
   };
 }
+
+/** A command that was run here and failed, with what it printed. */
+export interface FailedTask {
+  task: DiscoveredTask;
+  output: string;
+}
+
+/**
+ * The second look, for the commands that failed when Aime ran them.
+ *
+ * A failure is one of two things, and the AI that read the repository is the
+ * one placed to tell them apart: the command is wrong for this project, or the
+ * command is right and the project's own code is what fails - a red test, a
+ * compile error. The second must not cost the person their Test button.
+ */
+export function buildFixTasksPrompt(failed: readonly FailedTask[]): string {
+  return [
+    "These commands, which you read out of this repository, were run here and failed.",
+    "For each one decide which it is, reading the repository again where the output points:",
+    "- the command is wrong for this project - a script that does not exist, the wrong folder, a missing",
+    "  argument: answer the right one;",
+    "- the command is right and what fails is the project's own code - a failing test, a compile error:",
+    "  answer it unchanged.",
+    "Leave out an outcome you cannot answer for. Do not run anything that changes the repository.",
+    "",
+    ...failed.flatMap(({ task, output }) => [
+      `## ${task.kind} in ${task.dir}: ${task.command}`,
+      "```",
+      output,
+      "```",
+      "",
+    ]),
+    "Answer with ONLY this JSON, no prose and no code fence:",
+    '{"tasks":[{"kind":"test","label":"npm test","command":"npm test","dir":".","source":"package.json"}]}',
+  ].join("\n");
+}

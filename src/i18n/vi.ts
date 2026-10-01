@@ -283,6 +283,10 @@ export const vi: Record<TranslationKey, string> = {
   "tasks.aiFoundNothing": "Dự án không nói cách làm - thà không đưa gì hơn là đưa lệnh đoán.",
   "tasks.aiToolMissing": "`{command}` cần `{program}`, mà máy này chưa cài.",
   "tasks.aiFolderMissing": "`{command}` cần thư mục `{folder}`, mà dự án này không có.",
+  "tasks.trying": "Đang chạy thử `{command}`…",
+  "tasks.aiRanAndFailed": "`{command}` chạy thử ở đây thì hỏng: {detail}",
+  "tasks.aiKeptFailing":
+    "`{command}` chạy được nhưng đang đỏ - vẫn giữ, vì AI đọc ra lỗi là của chính dự án: {detail}",
   "tasks.runCommand": "Chạy task: {label}",
   "tasks.failed": "{label} thất bại với mã lỗi {code}",
   "tasks.fixWithAi": "Nhờ AI sửa",

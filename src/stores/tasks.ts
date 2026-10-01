@@ -4,10 +4,14 @@ import { translate } from "../i18n";
 import {
   asTaskDef,
   buildDiscoverTasksPrompt,
+  buildFixTasksPrompt,
   parseDiscoveredTasks,
   type DiscoveredTask,
+  type FailedTask,
 } from "../lib/aiTasks";
 import { agentTurn } from "../lib/agentTurn";
+import { execRun } from "../lib/exec";
+import { lastLine, tryTask, type TrialRunner } from "../lib/taskTrial";
 import { formatProviderError } from "../lib/providerErrors";
 import { readExitCode, stripAnsi } from "../lib/taskOutput";
 import { useAi } from "./ai";
@@ -86,8 +90,13 @@ interface TasksState {
   runs: Record<number, TaskRun | undefined>;
   /** The outcome an AI discovery is working on; null when none is running. */
   discovering: TaskKind | null;
-  /** What the last discovery could not offer, and why - shown, never swallowed. */
-  rejected: string[];
+  /** The command a discovery is running for a trial right now; null when none is. */
+  trying: string | null;
+  /**
+   * What the last discovery could not offer and why, and what it kept although
+   * it fails here - shown, never swallowed.
+   */
+  notices: string[];
   detect: () => Promise<void>;
   run: (task: TaskDef) => Promise<void>;
   /**
@@ -111,11 +120,105 @@ interface TasksState {
   fixWithAi: (tabKey: number) => void;
 }
 
+/** What running the proposed commands once found. */
+interface Trials {
+  /** Ran and ended well, or was not tried at all (see `lib/taskTrial`). */
+  ran: DiscoveredTask[];
+  failed: FailedTask[];
+}
+
+let trialCount = 0;
+
+/** Runs each command in turn, saying which one is running. */
+async function trials(
+  tasks: readonly DiscoveredTask[],
+  rootPath: string,
+  set: (patch: Partial<TasksState>) => void,
+): Promise<Trials> {
+  const run: TrialRunner = (command, cwd, timeoutMs) => {
+    trialCount += 1;
+    return execRun(`task-trial-${String(trialCount)}`, command, cwd, timeoutMs);
+  };
+  const outcome: Trials = { ran: [], failed: [] };
+  for (const task of tasks) {
+    set({ trying: task.command });
+    const trial = await tryTask(task, rootPath, run);
+    if (trial.kind === "failed") outcome.failed.push({ task, output: trial.output });
+    else outcome.ran.push(task);
+  }
+  set({ trying: null });
+  return outcome;
+}
+
+/**
+ * The commands that failed, put back to the AI with what they printed.
+ *
+ * One look, not a loop: an answer that changes the command is checked and run
+ * like the first; one that keeps it says the command is right and the
+ * project's own code is what fails, so it is kept - and said so - rather than
+ * costing the person a Test button over a red test.
+ */
+async function secondLook(
+  failed: readonly FailedTask[],
+  rootPath: string,
+  set: (patch: Partial<TasksState>) => void,
+): Promise<{ kept: DiscoveredTask[]; notices: string[] }> {
+  const ranAndFailed = (one: FailedTask) =>
+    translate("tasks.aiRanAndFailed", { command: one.task.command, detail: lastLine(one.output) });
+  const outcome = await agentTurn({
+    prompt: buildFixTasksPrompt(failed),
+    cwd: rootPath,
+    permission: "readOnly",
+    tools: "filesOnly",
+  });
+  if (outcome.code !== 0) return { kept: [], notices: failed.map(ranAndFailed) };
+  const answers = parseDiscoveredTasks(outcome.text);
+
+  const kept: DiscoveredTask[] = [];
+  const notices: string[] = [];
+  const corrected: { was: FailedTask; now: DiscoveredTask }[] = [];
+  for (const one of failed) {
+    const answer = answers.find(
+      (candidate) => candidate.kind === one.task.kind && candidate.dir === one.task.dir,
+    );
+    if (answer === undefined) notices.push(ranAndFailed(one));
+    else if (answer.command === one.task.command) {
+      kept.push(one.task);
+      notices.push(
+        translate("tasks.aiKeptFailing", { command: one.task.command, detail: lastLine(one.output) }),
+      );
+    } else corrected.push({ was: one, now: answer });
+  }
+  if (corrected.length === 0) return { kept, notices };
+
+  const checks = await invoke<TaskCheck[]>("check_task_commands", {
+    rootPath,
+    commands: corrected.map(({ now }) => now.command),
+    folders: corrected.map(({ now }) => now.dir),
+  });
+  const runnable = corrected.filter((_, index) => {
+    const check: TaskCheck | undefined = checks.at(index);
+    return check?.programFound === true && check.folderFound;
+  });
+  const retried = await trials(
+    runnable.map(({ now }) => now),
+    rootPath,
+    set,
+  );
+  kept.push(...retried.ran);
+  notices.push(
+    ...retried.failed.map(ranAndFailed),
+    ...corrected.filter((one) => !runnable.includes(one)).map(({ was }) => ranAndFailed(was)),
+  );
+  return { kept, notices };
+}
+
 export const useTasks = create<TasksState>((set, get) => ({
   tasks: [],
   runs: {},
   discovering: null,
-  rejected: [],
+  trying: null,
+  notices: [],
 
   detect: async () => {
     const { rootPath } = useWorkspace.getState();
@@ -149,7 +252,7 @@ export const useTasks = create<TasksState>((set, get) => ({
     const { rootPath } = useWorkspace.getState();
     if (!rootPath || get().discovering !== null) return;
     const kind = wantedFirst ?? "build";
-    set({ discovering: kind, rejected: [] });
+    set({ discovering: kind, notices: [] });
     try {
       // Only the outcomes Aime came up empty on are named as wanted, but every
       // one the model can support is taken: a project that had to be read to
@@ -172,7 +275,7 @@ export const useTasks = create<TasksState>((set, get) => ({
       const found = parseDiscoveredTasks(outcome.text);
       if (found.length === 0) {
         await invoke("save_tasks", { rootPath, tasks: [] });
-        set({ rejected: [translate("tasks.aiFoundNothing")] });
+        set({ notices: [translate("tasks.aiFoundNothing")] });
         return;
       }
 
@@ -192,21 +295,35 @@ export const useTasks = create<TasksState>((set, get) => ({
         return check ? [{ task, check }] : [];
       });
       const usable = judged.filter(({ check }) => check.programFound && check.folderFound);
-      set({
-        rejected: judged
-          .filter((entry) => !usable.includes(entry))
-          .map(({ task, check }) => rejectionOf(task, check)),
-      });
-      if (usable.length === 0) return;
+      const notices = judged
+        .filter((entry) => !usable.includes(entry))
+        .map(({ task, check }) => rejectionOf(task, check));
+
+      // Then each command is run once: a program on PATH in a folder that
+      // exists proves very little, and what a failure prints is the evidence
+      // the second look reads.
+      const tried = await trials(
+        usable.map(({ task }) => task),
+        rootPath,
+        set,
+      );
+      const kept = [...tried.ran];
+      if (tried.failed.length > 0) {
+        const second = await secondLook(tried.failed, rootPath, set);
+        kept.push(...second.kept);
+        notices.push(...second.notices);
+      }
+      set({ notices });
+      if (kept.length === 0) return;
 
       // Saved, so the project is only read once: `.aime/tasks.json` is the
       // same channel a person edits by hand, and detection merges it in.
-      await invoke("save_tasks", { rootPath, tasks: usable.map(({ task }) => asTaskDef(task)) });
+      await invoke("save_tasks", { rootPath, tasks: kept.map(asTaskDef) });
       await get().detect();
     } catch (err: unknown) {
-      set({ rejected: [formatProviderError(err)] });
+      set({ notices: [formatProviderError(err)] });
     } finally {
-      set({ discovering: null });
+      set({ discovering: null, trying: null });
     }
   },
 

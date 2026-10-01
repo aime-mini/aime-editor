@@ -124,7 +124,7 @@ function InlineAiChip() {
 export function StatusBar() {
   const rootPath = useWorkspace((s) => s.rootPath);
   const { running, totalCostUsd, sessionId, providerId } = useAi();
-  const { tasks, run: runTask, runKind, discovering, rejected } = useTasks();
+  const { tasks, run: runTask, runKind, discovering, trying, notices } = useTasks();
   const setInstallerTools = useLayout((s) => s.setInstallerTools);
   const setSettingsOpen = useLayout((s) => s.setSettingsOpen);
   const [taskMenu, setTaskMenu] = useState<{ x: number; y: number } | null>(null);
@@ -174,7 +174,11 @@ export function StatusBar() {
     const looking = discovering === kind;
     return [
       {
-        label: looking ? t("tasks.working", { kind: t(TASK_LABELS[kind]) }) : t(TASK_LABELS[kind]),
+        label: looking
+          ? trying === null
+            ? t("tasks.working", { kind: t(TASK_LABELS[kind]) })
+            : t("tasks.trying", { command: trying })
+          : t(TASK_LABELS[kind]),
         icon: looking ? (
           <Loader2 size={13} className="animate-spin text-accent" />
         ) : (
@@ -184,8 +188,8 @@ export function StatusBar() {
       },
     ];
   });
-  if (rejected.length > 0) {
-    taskItems.push(SEPARATOR, ...rejected.map((reason) => ({ label: reason, onClick: () => undefined })));
+  if (notices.length > 0) {
+    taskItems.push(SEPARATOR, ...notices.map((notice) => ({ label: notice, onClick: () => undefined })));
   }
 
   return (

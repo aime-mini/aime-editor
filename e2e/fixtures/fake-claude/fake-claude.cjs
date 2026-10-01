@@ -126,6 +126,20 @@ const SCENARIOS = {
     process.exitCode = 1;
   },
 
+  /**
+   * Reading a repository for its tasks: first a build command the project does
+   * not have, then - shown it failing - the right one. A real CLI puts its
+   * answer in the result, which is where Aime reads it.
+   */
+  async tasks({ say, result }, prompt) {
+    const command = prompt.includes("were run here and failed") ? "node build.cjs" : "node build.cjs --wrong";
+    const answer = JSON.stringify({
+      tasks: [{ kind: "build", label: "node build.cjs", command, dir: ".", source: "README.md" }],
+    });
+    say(answer);
+    result(0, 0, { result: answer });
+  },
+
   /** The turn that picks an interrupted one up. */
   async resume({ say, result }) {
     say(args.includes("--resume") ? "Picked up where it stopped." : "Started over without the session.");
@@ -144,7 +158,7 @@ async function main() {
   const mode = fs.readFileSync(modeFile, "utf8").trim();
   fs.appendFileSync(path.join(state, "calls.jsonl"), `${JSON.stringify({ mode, args, prompt })}\n`);
   const resumeAt = args.indexOf("--resume");
-  await SCENARIOS[mode](turn(resumeAt === -1 ? "fake-session-1" : args[resumeAt + 1]));
+  await SCENARIOS[mode](turn(resumeAt === -1 ? "fake-session-1" : args[resumeAt + 1]), prompt);
 }
 
 void main();

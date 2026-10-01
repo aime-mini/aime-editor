@@ -283,6 +283,10 @@ export const en = {
   "tasks.aiFoundNothing": "The project does not say how - nothing was offered rather than a guess.",
   "tasks.aiToolMissing": "`{command}` needs `{program}`, which is not installed here.",
   "tasks.aiFolderMissing": "`{command}` wants the folder `{folder}`, which this project does not have.",
+  "tasks.trying": "Trying `{command}`…",
+  "tasks.aiRanAndFailed": "`{command}` ran here and failed: {detail}",
+  "tasks.aiKeptFailing":
+    "`{command}` runs here but fails - kept, because the AI read it as the project's own failure: {detail}",
   "tasks.runCommand": "Run task: {label}",
   "tasks.failed": "{label} failed with exit code {code}",
   "tasks.fixWithAi": "Fix with AI",
