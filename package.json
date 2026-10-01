@@ -13,6 +13,7 @@
     "check": "prettier --check \"src/**/*.{ts,tsx,css}\" && eslint src && tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "wdio run e2e/wdio.conf.cjs",
+    "test:e2e:fake-claude": "wdio run e2e/wdio.fake-claude.cjs",
     "render:portrait": "node scripts/render-portrait.mjs",
     "render:greeting": "node scripts/render-greeting.mjs"
   },

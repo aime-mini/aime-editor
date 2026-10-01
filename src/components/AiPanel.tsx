@@ -22,7 +22,6 @@ import {
   ShieldOff,
   SlidersHorizontal,
   Undo2,
-  Wrench,
 } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -44,9 +43,19 @@ import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Markdown } from "./Markdown";
 import { ResizeHandle } from "./ResizeHandle";
 import { capabilitiesOf, effortsOf, type ProviderOption } from "../lib/providers";
-import type { ChatMessage, Permission, TokenUsage } from "../lib/types";
+import type {
+  ApiRetry,
+  BackgroundTask,
+  ChatMessage,
+  MessagePart,
+  Permission,
+  TokenUsage,
+} from "../lib/types";
 import type { TranslationKey } from "../i18n/en";
-import { StreamingCaret, ThinkingDots } from "./Waiting";
+import { StreamingCaret, ThinkingDots, Waiting } from "./Waiting";
+import { BackgroundNotice, ToolRun, type ToolPart } from "./ToolActivity";
+import { TurnRecovery } from "./TurnRecovery";
+import { formatElapsed, useSecondsSince } from "./useSecondsSince";
 import { loggedAs } from "../stores/notices";
 
 /**
@@ -287,48 +296,67 @@ function TurnChanges({ message, index }: { message: ChatMessage; index: number }
 }
 
 /**
- * Whole seconds since `active` last turned true; 0 while it is false.
- *
- * A turn that writes nothing for half a minute is the one moment the panel has
- * nothing to show, and a number that keeps climbing is the difference between
- * "this is slow" and "this is stuck".
+ * What a finished turn cost and how long it was waited for, whichever of the two
+ * the CLI lets Aime know - Codex reports no price, so it shows the time alone.
  */
-function useSecondsSince(active: boolean): number {
-  const [seconds, setSeconds] = useState(0);
-  // Nothing resets the count, and nothing has to: every turn is a new pair of
-  // messages, so the bubble that carries it is a fresh instance starting at 0.
-  useEffect(() => {
-    if (!active) return;
-    const startedAt = Date.now();
-    const ticking = setInterval(() => {
-      setSeconds(Math.floor((Date.now() - startedAt) / 1000));
-    }, 1000);
-    return () => {
-      clearInterval(ticking);
-    };
-  }, [active]);
-  return active ? seconds : 0;
+function TurnFooter({ message }: { message: ChatMessage }) {
+  if (message.role !== "assistant") return null;
+  const facts = [
+    message.costUsd === undefined ? null : `$${message.costUsd.toFixed(4)}`,
+    message.durationMs === undefined ? null : formatElapsed(Math.round(message.durationMs / 1000)),
+  ].filter((fact) => fact !== null);
+  if (facts.length === 0) return null;
+  return <span className="text-[10px] text-muted">{facts.join(" · ")}</span>;
 }
+
+/** What a message is drawn as: its text, and the tool calls between the text folded into runs. */
+type Segment =
+  { kind: "text"; text: string; last: boolean } | { kind: "tools"; tools: ToolPart[]; last: boolean };
+
+function segmentsOf(parts: MessagePart[]): Segment[] {
+  const segments: Segment[] = [];
+  parts.forEach((part, index) => {
+    const last = index === parts.length - 1;
+    const previous = segments.at(-1);
+    if (part.kind === "text") segments.push({ kind: "text", text: part.text, last });
+    else if (previous?.kind === "tools") {
+      previous.tools.push(part);
+      previous.last = last;
+    } else segments.push({ kind: "tools", tools: [part], last });
+  });
+  return segments;
+}
+
+/** Shared by every bubble that is not the live one, so `memo` sees the same value. */
+const NO_TASKS: BackgroundTask[] = [];
 
 /**
  * @param live this is the turn the AI is writing right now, so its tail carries
  *   whichever mark says what is happening: nothing written yet, text still
  *   arriving, or a tool still running.
+ * @param background what the CLI still runs in the background for this turn.
+ * @param retrying the CLI cannot reach the AI service and is trying again - which
+ *   is said instead of "Thinking…", since nothing is being thought about.
  */
 const MessageBubble = memo(function MessageBubble({
   message,
   index,
   live,
+  background,
+  retrying,
 }: {
   message: ChatMessage;
   index: number;
   live: boolean;
+  background: BackgroundTask[];
+  retrying: ApiRetry | null;
 }) {
   const isUser = message.role === "user";
   const t = useT();
   const lastPart = message.parts.at(-1);
   const beforeFirstWord = live && lastPart === undefined;
   const seconds = useSecondsSince(beforeFirstWord);
+  const activeAgents = new Set(background.flatMap((task) => (task.toolUseId ? [task.toolUseId] : [])));
 
   // A turn the CLI ended without writing a word - it failed to start, or it was
   // cancelled before it said anything. The error box under the conversation says
@@ -346,59 +374,43 @@ const MessageBubble = memo(function MessageBubble({
           isUser ? "bg-accent-soft text-fg" : "bg-elevated text-fg"
         }`}
       >
-        {beforeFirstWord && (
+        {beforeFirstWord && !retrying && (
           <span className="flex items-center gap-2 text-muted">
             <ThinkingDots />
             {seconds > 0 ? t("ai.thinkingFor", { seconds }) : t("ai.thinking")}
           </span>
         )}
-        {message.parts.map((part, i) =>
-          part.kind === "text" ? (
+        {segmentsOf(message.parts).map((segment, i) =>
+          segment.kind === "text" ? (
             // The AI writes Markdown - tables, headings, code - and it was shown
             // as the raw characters (reported 2026-09-04). What the person typed
             // stays as typed. The caret rides inside the last block, where the
             // next character will land.
             isUser ? (
-              <span key={i}>{part.text}</span>
+              <span key={i}>{segment.text}</span>
             ) : (
               <Markdown
                 key={i}
-                text={part.text}
-                tail={live && i === message.parts.length - 1 ? <StreamingCaret /> : undefined}
+                text={segment.text}
+                tail={live && segment.last ? <StreamingCaret /> : undefined}
               />
             )
           ) : (
-            // A tool call is one line that must fit the bubble: the tool's
-            // name always, then as much of the command as there is room for.
-            // A fixed cap (it was 13rem) is a width the panel never agreed to
-            // — narrow the panel and the chip kept its size and drew over the
-            // edge, which is how `cd C:\Projects\…` ran off the screen.
-            <span
+            <ToolRun
               key={i}
-              className="my-1 flex w-fit max-w-full items-center gap-1.5 rounded-md border border-line bg-panel px-2 py-0.5 font-mono text-[11px] text-muted"
-              title={part.detail}
-            >
-              {live && i === message.parts.length - 1 ? (
-                // The chip the AI is inside right now: a command that takes a
-                // minute is the other long silence in this panel, and it is the
-                // chip that has to say so, not the empty space under it.
-                <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
-              ) : (
-                <Wrench size={11} className="shrink-0 text-accent" />
-              )}
-              <span className="shrink-0">{part.name}</span>
-              {part.detail && <span className="min-w-0 truncate">· {part.detail}</span>}
-            </span>
+              tools={segment.tools}
+              liveTail={live && segment.last}
+              activeAgents={activeAgents}
+            />
           ),
         )}
+        {retrying && (
+          <Waiting label={t("ai.retrying", { attempt: retrying.attempt, max: retrying.maxAttempts })} />
+        )}
       </div>
+      {live && <BackgroundNotice tasks={background} />}
       <TurnChanges message={message} index={index} />
-      {message.costUsd !== undefined && (
-        <span className="text-[10px] text-muted">
-          ${message.costUsd.toFixed(4)}
-          {message.durationMs !== undefined && ` · ${(message.durationMs / 1000).toFixed(1)}s`}
-        </span>
-      )}
+      {!live && <TurnFooter message={message} />}
     </div>
   );
 });
@@ -423,7 +435,6 @@ export function AiPanel() {
   const {
     messages,
     running,
-    lastError,
     sendPrompt,
     cancel,
     newSession,
@@ -440,6 +451,10 @@ export function AiPanel() {
     cyclePermission,
     sessionUsage,
     totalCostUsd,
+    backgroundTasks,
+    retrying,
+    interrupted,
+    lastError,
     providerHealth,
     signedIn,
     loginCommand,
@@ -524,9 +539,11 @@ export function AiPanel() {
           },
         }));
 
+  // Whatever lands at the end of the conversation has to be seen: a new line of
+  // the answer, the background work it waits on, or why it stopped.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages]);
+  }, [messages, backgroundTasks, retrying, interrupted, lastError]);
 
   // Cheap install + sign-in probe per panel mount and on every provider switch,
   // so the user is guided before the first prompt instead of after a failure.
@@ -907,13 +924,16 @@ export function AiPanel() {
               {messages.map((m, i) => (
                 // Only the last turn can be the one being written, and only
                 // while the CLI is still running.
-                <MessageBubble key={i} message={m} index={i} live={running && i === messages.length - 1} />
+                <MessageBubble
+                  key={i}
+                  message={m}
+                  index={i}
+                  live={running && i === messages.length - 1}
+                  background={running && i === messages.length - 1 ? backgroundTasks : NO_TASKS}
+                  retrying={running && i === messages.length - 1 ? retrying : null}
+                />
               ))}
-              {lastError && (
-                <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-danger">
-                  {lastError}
-                </div>
-              )}
+              <TurnRecovery />
             </div>
           </Panel>
 

@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { parseClaudeEvent } from "./claudeParser";
+import { createClaudeParser } from "./claudeParser";
 
 /**
  * Fixtures mirror real JSONL lines emitted by
  * `claude -p --output-format stream-json --include-partial-messages --verbose`
  * (verified against Claude Code CLI 2.1.220).
  */
-describe("parseClaudeEvent", () => {
+describe("createClaudeParser", () => {
+  const parseClaudeEvent = createClaudeParser();
+
   it("maps system/init to session-info", () => {
     const events = parseClaudeEvent({
       type: "system",
@@ -37,14 +39,130 @@ describe("parseClaudeEvent", () => {
       message: {
         content: [
           { type: "text", text: "ignored - text comes from deltas only" },
-          { type: "tool_use", name: "Edit", input: { file_path: "C:\\p\\a.ts", old_string: "x" } },
+          {
+            type: "tool_use",
+            id: "toolu_1",
+            name: "Edit",
+            input: { file_path: "C:\\p\\a.ts", old_string: "x" },
+          },
         ],
       },
     });
-    expect(events).toEqual([{ kind: "tool-call", name: "Edit", detail: "C:\\p\\a.ts" }]);
+    expect(events).toEqual([
+      { kind: "tool-call", name: "Edit", detail: "C:\\p\\a.ts", id: "toolu_1", parentId: undefined },
+    ]);
   });
 
-  it("maps a successful result to done with cost, duration, and normalized usage", () => {
+  // Lines captured from a real run (2.1.286): an Agent sent to the background,
+  // whose own commands then stream on the same stdout as the main answer.
+  describe("a subagent left running in the background", () => {
+    const agentCall = "toolu_01Am8fTUUHoX52EVgSDQankC";
+    const brief = "Run sequential bash commands and report completion";
+
+    it("names the Agent call by what it was sent to do", () => {
+      const events = createClaudeParser()({
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: agentCall,
+              name: "Agent",
+              input: {
+                description: brief,
+                subagent_type: "general-purpose",
+                prompt:
+                  "Run the Bash command `sleep 20; echo SUB-A` then run the Bash command `echo SUB-B`, then reply DONE.",
+                run_in_background: true,
+              },
+            },
+          ],
+        },
+        parent_tool_use_id: null,
+      });
+      expect(events).toEqual([
+        { kind: "tool-call", name: "Agent", detail: brief, id: agentCall, parentId: undefined },
+      ]);
+    });
+
+    it("marks the subagent's own tool calls with the call that started it", () => {
+      const events = createClaudeParser()({
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_01A9DMZyGH414wddirigb4qk",
+              name: "Bash",
+              input: { command: "sleep 20; echo SUB-A", description: "Sleep for 20 seconds then echo SUB-A" },
+            },
+          ],
+        },
+        parent_tool_use_id: agentCall,
+      });
+      expect(events).toEqual([
+        {
+          kind: "tool-call",
+          name: "Bash",
+          detail: "sleep 20; echo SUB-A",
+          id: "toolu_01A9DMZyGH414wddirigb4qk",
+          parentId: agentCall,
+        },
+      ]);
+    });
+
+    it("reports what is still running, joined to the call that started it", () => {
+      const parse = createClaudeParser();
+      const listed = parse({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "ae11657905e99a9f1", task_type: "local_agent", description: brief }],
+      });
+      // The CLI lists the task before it says which call started it.
+      expect(listed).toEqual([
+        {
+          kind: "background",
+          tasks: [{ id: "ae11657905e99a9f1", description: brief, toolUseId: undefined }],
+        },
+      ]);
+
+      const started = parse({
+        type: "system",
+        subtype: "task_started",
+        task_id: "ae11657905e99a9f1",
+        tool_use_id: agentCall,
+        description: brief,
+        is_backgrounded: true,
+        task_type: "local_agent",
+      });
+      expect(started).toEqual([
+        {
+          kind: "background",
+          tasks: [{ id: "ae11657905e99a9f1", description: brief, toolUseId: agentCall }],
+        },
+      ]);
+
+      const finished = parse({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+      expect(finished).toEqual([{ kind: "background", tasks: [] }]);
+    });
+
+    it("stays quiet about the tasks a subagent's foreground commands start", () => {
+      const parse = createClaudeParser();
+      expect(
+        parse({
+          type: "system",
+          subtype: "task_started",
+          task_id: "bauvitlbm",
+          owned_by_subagent: true,
+          tool_use_id: "toolu_01A9DMZyGH414wddirigb4qk",
+          is_backgrounded: false,
+          task_type: "local_bash",
+        }),
+      ).toEqual([]);
+    });
+  });
+
+  it("maps a successful result to done with the session cost and normalized usage", () => {
     const events = parseClaudeEvent({
       type: "result",
       subtype: "success",
@@ -62,8 +180,7 @@ describe("parseClaudeEvent", () => {
     expect(events).toEqual([
       {
         kind: "done",
-        costUsd: 0.0214,
-        durationMs: 5329,
+        sessionCostUsd: 0.0214,
         sessionId: "abc-123",
         resultText: "Done.",
         usage: { inputTokens: 18, outputTokens: 164, cacheReadTokens: 51007, cacheWriteTokens: 7471 },
@@ -76,6 +193,39 @@ describe("parseClaudeEvent", () => {
     expect(events).toHaveLength(2);
     expect(events[0].kind).toBe("done");
     expect(events[1].kind).toBe("error");
+  });
+
+  // Captured with ANTHROPIC_BASE_URL pointed at a closed port (2.1.286).
+  describe("the AI service cannot be reached", () => {
+    it("says the CLI is retrying, and how far along it is", () => {
+      const events = parseClaudeEvent({
+        type: "system",
+        subtype: "api_retry",
+        attempt: 3,
+        max_retries: 10,
+        retry_delay_ms: 2243,
+        error_status: null,
+        error: "unknown",
+      });
+      expect(events).toEqual([{ kind: "retrying", attempt: 3, maxAttempts: 10 }]);
+    });
+
+    it("reports the CLI's own reason once it gives up, though the subtype says success", () => {
+      const reason = "API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)";
+      const events = parseClaudeEvent({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        terminal_reason: "api_error",
+        api_error_status: null,
+        result: reason,
+        total_cost_usd: 0,
+        duration_ms: 170746,
+        result_index: 0,
+      });
+      expect(events.map((event) => event.kind)).toEqual(["done", "error"]);
+      expect(events[1]).toEqual({ kind: "error", message: reason });
+    });
   });
 
   it("returns an empty list for unknown line types and malformed input", () => {

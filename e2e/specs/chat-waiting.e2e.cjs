@@ -12,12 +12,12 @@
  * long enough to look at. The user's config is restored on the way out,
  * including the case where it did not exist.
  *
- * NOT covered here, and not an oversight: the spinner that marks the tool call
- * the AI is inside. A CLI described in `providers.json` can only declare
- * `plain` or `jsonl` as its parser (`ParserKind` in `providers/generic.rs`), and
- * both of those produce text and nothing else - a configured CLI has no way to
- * emit a tool call at all. Reaching that mark needs a built-in CLI on a real,
- * paid turn, which this suite must never require.
+ * NOT covered here: the spinner that marks the tool call the AI is inside. A
+ * CLI described in `providers.json` can only declare `plain` or `jsonl` as its
+ * parser (`ParserKind` in `providers/generic.rs`), and both of those produce
+ * text and nothing else - a configured CLI has no way to emit a tool call at
+ * all. Tool calls live in `fake-claude/chat-turns.e2e.cjs`, which puts a
+ * stand-in for the built-in CLI on PATH.
  */
 const { strict: assert } = require("node:assert");
 const fs = require("node:fs");

@@ -1,4 +1,4 @@
-import { parseClaudeEvent } from "./claudeParser";
+import { createClaudeParser } from "./claudeParser";
 import { createCodexParser } from "./codexParser";
 import { createGenericParser } from "./genericParser";
 import type { UiAiEvent } from "./types";
@@ -19,7 +19,7 @@ export function createEventParser(provider: {
 }): EventParser {
   switch (provider.parser ?? provider.id) {
     case "claude":
-      return parseClaudeEvent;
+      return createClaudeParser();
     case "codex":
       return createCodexParser();
     case "jsonl":

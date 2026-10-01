@@ -11,10 +11,13 @@ import {
   addUsage,
   EMPTY_USAGE,
   PERMISSION_ORDER,
+  type ApiRetry,
+  type BackgroundTask,
   type ChatMessage,
   type Checkpoint,
   type Permission,
   type TokenUsage,
+  type ToolStep,
   type UiAiEvent,
 } from "../lib/types";
 
@@ -91,6 +94,8 @@ interface SessionFile {
 }
 
 const MAX_SESSIONS_PER_PROJECT = 20;
+/** The name Claude Code gives the tool that starts a subagent. */
+const SUBAGENT_TOOL = "Agent";
 const TITLE_MAX_CHARS = 60;
 const PERMISSION_KEY = "aime.permission";
 /** Key of the boolean this setting replaced; read once, to keep the old choice. */
@@ -137,7 +142,13 @@ function freshSessionIdentity() {
     totalCostUsd: 0,
     messages: [],
     sessionUsage: EMPTY_USAGE,
+    interrupted: false,
   };
+}
+
+/** A session saved while its last turn was still running was closed in the middle of it. */
+function endedMidTurn(messages: ChatMessage[]): boolean {
+  return messages.at(-1)?.unfinished === true;
 }
 
 function titleOf(messages: ChatMessage[]): string {
@@ -162,6 +173,20 @@ interface AiState {
   localId: string;
   createdAt: number;
   totalCostUsd: number;
+  /**
+   * What the CLI is still running in the background for the live turn. While
+   * this is not empty the turn has not ended even if the AI has stopped
+   * talking, and this is what the panel shows instead of looking frozen.
+   */
+  backgroundTasks: BackgroundTask[];
+  /** The CLI cannot reach the AI service and is retrying on its own; null otherwise. */
+  retrying: ApiRetry | null;
+  /**
+   * The last turn stopped before it finished - the CLI or the AI service
+   * failed, or the app was closed while it ran - so the panel offers to pick
+   * it up. A turn the user stopped is not one: that was a decision.
+   */
+  interrupted: boolean;
   lastError: string | null;
   /** Provider overrides for this session; "" = let the CLI decide. */
   model: string;
@@ -202,6 +227,12 @@ interface AiState {
    */
   sendPrompt: (prompt: string, cwd: string, context?: string | null) => Promise<void>;
   cancel: () => Promise<void>;
+  /**
+   * Picks an interrupted turn up again: the CLI's own session carries on from
+   * where it stopped, or - when it never got as far as starting one - the
+   * question is simply asked again.
+   */
+  resumeTurn: (cwd: string) => Promise<void>;
   /** Puts the project back to how it was before that turn. */
   undoTurn: (messageIndex: number) => Promise<void>;
   newSession: () => void;
@@ -223,6 +254,36 @@ function patchLastAssistant(
   return [...messages.slice(0, -1), patch(last)];
 }
 
+/**
+ * Files a subagent's tool call under the Agent call that started it. A
+ * subagent resumed by a later turn answers to a call this message does not
+ * hold, so that call gets a chip of its own, named after its background task
+ * when the CLI has listed one.
+ */
+function appendStep(message: ChatMessage, parentId: string, step: ToolStep, label: string): ChatMessage {
+  const index = message.parts.findIndex((part) => part.kind === "tool" && part.id === parentId);
+  if (index === -1) {
+    return {
+      ...message,
+      parts: [
+        ...message.parts,
+        { kind: "tool", name: SUBAGENT_TOOL, detail: label, id: parentId, steps: [step] },
+      ],
+    };
+  }
+  const parts = message.parts.map((part, i) =>
+    i === index && part.kind === "tool" ? { ...part, steps: [...(part.steps ?? []), step] } : part,
+  );
+  return { ...message, parts };
+}
+
+/** The turn has ended, one way or another. */
+function withoutUnfinished(message: ChatMessage): ChatMessage {
+  const ended = { ...message };
+  delete ended.unfinished;
+  return ended;
+}
+
 function appendText(message: ChatMessage, text: string): ChatMessage {
   const lastPart = message.parts.at(-1);
   const parts =
@@ -237,6 +298,27 @@ let listenersReady = false;
 let lastStderrLine = "";
 /** Parser of the turn in flight; parsers carry per-run state, so it is rebuilt each turn. */
 let activeParser: EventParser = () => [];
+/** When the turn in flight was sent; its duration is the wait the user actually had. */
+let turnStartedAt = 0;
+/** The session's cost before the turn in flight; the CLI only ever reports the running total. */
+let costBeforeTurn = 0;
+
+/**
+ * The turn's own price, from the running total the CLI reports. A session an
+ * older Aime saved added that total up turn after turn, so its stored figure
+ * can be above what the CLI says; the difference is then no price at all, and
+ * none is shown rather than a wrong one - the total itself is corrected.
+ */
+function turnCost(sessionCostUsd: number | undefined): number | undefined {
+  if (sessionCostUsd === undefined) return undefined;
+  const cost = sessionCostUsd - costBeforeTurn;
+  return cost >= 0 ? cost : undefined;
+}
+
+/** What a background task was sent to do, for a subagent whose call this message does not hold. */
+function taskLabel(tasks: BackgroundTask[], toolUseId: string): string {
+  return tasks.find((task) => task.toolUseId === toolUseId)?.description ?? "";
+}
 /** Streamed text waiting to be shown, and the frame that will show the next of it. */
 const typewriter = new Typewriter();
 let revealHandle: number | null = null;
@@ -331,31 +413,46 @@ export const useAi = create<AiState>((set, get) => {
 
   const applyUiEvent = (ev: UiAiEvent) => {
     if (ev.kind !== "message-delta") revealEverything();
+    // Anything the AI says or does means the connection is back.
+    if (ev.kind !== "retrying" && ev.kind !== "background" && get().retrying) set({ retrying: null });
     switch (ev.kind) {
       case "session-info":
         set({ sessionId: ev.sessionId });
+        // Saved now, while the turn is still marked unfinished: if the app is
+        // closed before the turn ends, this id is what lets it be continued.
+        void persist();
+        break;
+      case "retrying":
+        set({ retrying: { attempt: ev.attempt, maxAttempts: ev.maxAttempts } });
         break;
       case "message-delta":
         typewriter.push(ev.text, performance.now());
         scheduleReveal();
         break;
-      case "tool-call":
+      case "tool-call": {
+        const { name, detail, id, parentId } = ev;
         set((s) => ({
-          messages: patchLastAssistant(s.messages, (m) => ({
-            ...m,
-            parts: [...m.parts, { kind: "tool", name: ev.name, detail: ev.detail }],
-          })),
+          messages: patchLastAssistant(s.messages, (m) =>
+            parentId === undefined
+              ? { ...m, parts: [...m.parts, { kind: "tool", name, detail, id }] }
+              : appendStep(m, parentId, { name, detail }, taskLabel(s.backgroundTasks, parentId)),
+          ),
         }));
         break;
+      }
+      case "background":
+        set({ backgroundTasks: ev.tasks });
+        break;
       case "done":
+        // One process can end several answers (a background task finishing
+        // starts another), and every one of them reports the running total.
         set((s) => ({
           messages: patchLastAssistant(s.messages, (m) => ({
             ...m,
-            costUsd: ev.costUsd,
-            durationMs: ev.durationMs,
-            usage: ev.usage,
+            costUsd: turnCost(ev.sessionCostUsd) ?? m.costUsd,
+            usage: ev.usage ? addUsage(m.usage ?? EMPTY_USAGE, ev.usage) : m.usage,
           })),
-          totalCostUsd: s.totalCostUsd + (ev.costUsd ?? 0),
+          totalCostUsd: ev.sessionCostUsd ?? s.totalCostUsd,
           sessionUsage: ev.usage ? addUsage(s.sessionUsage, ev.usage) : s.sessionUsage,
           sessionId: ev.sessionId ?? s.sessionId,
         }));
@@ -364,6 +461,19 @@ export const useAi = create<AiState>((set, get) => {
         set({ lastError: ev.message });
         break;
     }
+  };
+
+  /** Whatever ended the turn - the CLI exiting or the user stopping it - it ends the same way. */
+  const endTurn = () => {
+    revealEverything();
+    const durationMs = Date.now() - turnStartedAt;
+    set((s) => ({
+      running: false,
+      runId: null,
+      backgroundTasks: [],
+      retrying: null,
+      messages: patchLastAssistant(s.messages, (m) => ({ ...withoutUnfinished(m), durationMs })),
+    }));
   };
 
   const ensureListeners = async () => {
@@ -375,14 +485,18 @@ export const useAi = create<AiState>((set, get) => {
     });
     await listen<ExitPayload>("ai:exit", ({ payload }) => {
       if (payload.run_id !== get().runId) return;
-      revealEverything();
-      set({ running: false, runId: null });
+      endTurn();
       void recordChangedFiles();
-      if (payload.code !== null && payload.code !== 0) {
-        // The CLI's own stderr (e.g. "please log in") beats a bare exit code.
+      // Only Stop ends a turn without an exit code, and Stop is not listened
+      // for here - so anything but 0 is the CLI or the AI service giving up.
+      const failed = payload.code !== 0;
+      // What the CLI said about it ("API Error: Connection refused …") beats
+      // its stderr, which beats a bare exit code.
+      if (failed && get().lastError === null) {
         const detail = lastStderrLine ? `\n${lastStderrLine}` : "";
-        set({ lastError: translate("ai.exitWithCode", { code: payload.code }) + detail });
+        set({ lastError: translate("ai.exitWithCode", { code: String(payload.code) }) + detail });
       }
+      set({ interrupted: failed });
       void persist();
     });
     await listen<StreamPayload>("ai:stderr", ({ payload }) => {
@@ -402,6 +516,9 @@ export const useAi = create<AiState>((set, get) => {
     localId: crypto.randomUUID(),
     createdAt: Date.now(),
     totalCostUsd: 0,
+    backgroundTasks: [],
+    retrying: null,
+    interrupted: false,
     lastError: null,
     model: "",
     effort: "",
@@ -433,6 +550,7 @@ export const useAi = create<AiState>((set, get) => {
         lastError: null,
         running: false,
         runId: null,
+        backgroundTasks: [],
         // Continue where the project left off, or start clean.
         ...(latest
           ? {
@@ -441,6 +559,7 @@ export const useAi = create<AiState>((set, get) => {
               createdAt: latest.createdAt,
               totalCostUsd: latest.totalCostUsd,
               messages: latest.messages,
+              interrupted: endedMidTurn(latest.messages),
               providerId,
               model: latest.model ?? "",
               effort: latest.effort ?? "",
@@ -509,6 +628,7 @@ export const useAi = create<AiState>((set, get) => {
         lastError: null,
         running: false,
         runId: null,
+        backgroundTasks: [],
       });
     },
 
@@ -532,13 +652,17 @@ export const useAi = create<AiState>((set, get) => {
         parser: provider?.parser,
         textField: provider?.textField,
       });
+      turnStartedAt = Date.now();
+      costBeforeTurn = get().totalCostUsd;
       set((s) => ({
         lastError: null,
         running: true,
+        backgroundTasks: [],
+        interrupted: false,
         messages: [
           ...s.messages,
           { role: "user", parts: [{ kind: "text", text: prompt }] },
-          { role: "assistant", parts: [], checkpoint: checkpoint ?? undefined },
+          { role: "assistant", parts: [], checkpoint: checkpoint ?? undefined, unfinished: true },
         ],
       }));
       try {
@@ -555,16 +679,37 @@ export const useAi = create<AiState>((set, get) => {
         });
         set({ runId });
       } catch (e) {
-        set({ running: false, lastError: formatProviderError(e) });
+        set((s) => ({
+          running: false,
+          lastError: formatProviderError(e),
+          messages: patchLastAssistant(s.messages, withoutUnfinished),
+        }));
         void persist();
       }
+    },
+
+    resumeTurn: async (cwd) => {
+      const { sessionId, messages, running } = get();
+      if (running) return;
+      if (sessionId !== null) {
+        // The cut-off turn is being dealt with; it must not offer itself again.
+        set({ messages: patchLastAssistant(messages, withoutUnfinished) });
+        await get().sendPrompt(translate("ai.continuePrompt"), cwd);
+        return;
+      }
+      // No session means nothing reached the CLI's memory: the failed turn is
+      // replaced by the same question, asked again.
+      const questionAt = messages.map((m) => m.role).lastIndexOf("user");
+      const question = messages.at(questionAt)?.parts.find((part) => part.kind === "text");
+      if (questionAt === -1 || question?.kind !== "text") return;
+      set({ messages: messages.slice(0, questionAt) });
+      await get().sendPrompt(question.text, cwd);
     },
 
     cancel: async () => {
       const { runId } = get();
       if (runId) await invoke("ai_cancel", { runId });
-      revealEverything();
-      set({ running: false, runId: null });
+      endTurn();
       void persist();
     },
 
@@ -608,6 +753,7 @@ export const useAi = create<AiState>((set, get) => {
         createdAt: target.createdAt,
         totalCostUsd: target.totalCostUsd,
         messages: target.messages,
+        interrupted: endedMidTurn(target.messages),
         providerId: target.providerId ?? DEFAULT_PROVIDER,
         model: target.model ?? "",
         effort: target.effort ?? "",

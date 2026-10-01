@@ -22,15 +22,45 @@ export function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
   };
 }
 
+/** Work the CLI keeps going after its own answer: a shell or a subagent left running in the background. */
+export interface BackgroundTask {
+  id: string;
+  description: string;
+  /** The tool call that started it, when the CLI has said which one. */
+  toolUseId?: string;
+}
+
+/** How far the CLI has got retrying an AI service it cannot reach. */
+export interface ApiRetry {
+  attempt: number;
+  maxAttempts: number;
+}
+
 /** Normalized events the UI understands — every provider adapter maps to these (ARCHITECTURE.md §4) */
 export type UiAiEvent =
   | { kind: "session-info"; sessionId: string; model?: string }
   | { kind: "message-delta"; text: string }
-  | { kind: "tool-call"; name: string; detail: string }
+  | {
+      kind: "tool-call";
+      name: string;
+      detail: string;
+      /** The CLI's id for this call, so the steps of a subagent can find the call that started it. */
+      id?: string;
+      /** Set when a subagent made this call: the id of the call that started that subagent. */
+      parentId?: string;
+    }
+  /** The CLI could not reach the AI service and is trying again on its own. */
+  | ({ kind: "retrying" } & ApiRetry)
+  /** Everything the CLI is still running in the background - the whole list, every time it changes. */
+  | { kind: "background"; tasks: BackgroundTask[] }
   | {
       kind: "done";
-      costUsd?: number;
-      durationMs?: number;
+      /**
+       * What the whole conversation has cost so far, as the CLI counts it. Not
+       * this turn's price: Claude Code carries the total across `--resume`, so
+       * a turn's own cost is the difference from where it started.
+       */
+      sessionCostUsd?: number;
       sessionId?: string;
       resultText?: string;
       usage?: TokenUsage;
@@ -50,7 +80,22 @@ export function truncateDetail(text: string, max = 100): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-export type MessagePart = { kind: "text"; text: string } | { kind: "tool"; name: string; detail: string };
+/** One tool call a subagent made, shown under the call that started that subagent. */
+export interface ToolStep {
+  name: string;
+  detail: string;
+}
+
+export type MessagePart =
+  | { kind: "text"; text: string }
+  | {
+      kind: "tool";
+      name: string;
+      detail: string;
+      id?: string;
+      /** What the subagent this call started has done, in order. */
+      steps?: ToolStep[];
+    };
 
 /**
  * Mirror of the Rust `Checkpoint` (checkpoint.rs): one snapshot per repository
@@ -65,6 +110,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   parts: MessagePart[];
   costUsd?: number;
+  /** Wall-clock time from send to the CLI exiting, background work included. */
   durationMs?: number;
   usage?: TokenUsage;
   /** State of the project before this turn, when it could be captured. */
@@ -73,6 +119,11 @@ export interface ChatMessage {
   changedFiles?: string[];
   /** Set once the user has taken this turn back. */
   undone?: boolean;
+  /**
+   * Set while the turn runs and cleared when it ends, so a turn still marked
+   * after a restart is one the app was closed in the middle of.
+   */
+  unfinished?: boolean;
 }
 
 export interface DirEntry {
