@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { Brief, Plan, Solution, TestCases } from "./aiRun";
 import { newRun, type Run } from "./runPlan";
 import { isEvidence, renderReport } from "./runReport";
-import type { SecurityPass } from "./securityGate";
 import type { CaseVerdict } from "./testCaseFile";
 import type { TestEnvironment } from "./testEnvironment";
 
@@ -49,7 +48,6 @@ function reportOf(
   evidenceRequired = true,
   environment: TestEnvironment | null = null,
   yourEdits: string[] = [],
-  security: SecurityPass | null = null,
 ): string {
   return renderReport({
     run: RUN,
@@ -64,7 +62,6 @@ function reportOf(
     evidenceRequired,
     environment,
     yourEdits,
-    security,
   });
 }
 
@@ -145,35 +142,6 @@ describe("renderReport", () => {
     expect(reportOf(PASSED)).not.toContain("Saved by you");
   });
 
-  it("says which scanners measured the change, and what the project already had", () => {
-    const scanners = [
-      { label: "gitleaks", command: "gitleaks dir . --report-path {sarif}", dir: "." },
-      { label: "osv-scanner", command: "osv-scanner scan source --output-file {sarif} .", dir: "." },
-    ];
-    const finding = {
-      scanner: "osv-scanner",
-      rule: "CVE-1",
-      file: "package-lock.json",
-      line: null,
-      message: "m",
-    };
-    const page = reportOf(PASSED, [], true, null, [], {
-      scanners,
-      findings: [finding],
-      unavailable: "semgrep",
-    });
-
-    expect(page).toContain("## Security");
-    expect(page).toContain("by `gitleaks`, `osv-scanner`: 1 finding(s) were the project's own");
-    expect(page).toContain("Could not run on this machine: semgrep");
-    expect(reportOf(PASSED)).not.toContain("## Security");
-  });
-
-  it("says so when no scanner could run at all", () => {
-    const page = reportOf(PASSED, [], true, null, [], { scanners: [], findings: [], unavailable: "offline" });
-    expect(page).toContain("No security scanner could run on this machine: offline");
-  });
-
   it("renders a run that got nowhere without inventing sections", () => {
     const bare = renderReport({
       run: RUN,
@@ -188,7 +156,6 @@ describe("renderReport", () => {
       evidenceRequired: true,
       environment: null,
       yourEdits: [],
-      security: null,
     });
 
     expect(bare).toContain("# Task run — Login forgets the language");
