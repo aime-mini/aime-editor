@@ -473,11 +473,18 @@ fn forget(state: &ExecState, id: &str) {
 /// `dotnet test "Some Project.csproj"` and `npm test`, where the quoting and
 /// the `.cmd` shims are the shell's job. `cmd /C` on Windows for the same
 /// reason `providers::cli_command` uses it, `sh -c` elsewhere.
+///
+/// On Windows the line reaches cmd.exe as written. Handing it over as an
+/// argument made Rust quote it and escape every `"` inside as `\"`, which
+/// cmd.exe does not read - measured: `node -e "…" "C:/Front end/a.sarif"`
+/// arrived with no arguments at all. `/S` makes cmd strip exactly the one pair
+/// of quotes put around the line here, so a line that itself starts with a
+/// quoted program keeps its quotes.
 fn shell_command(command: &str) -> Command {
     #[cfg(target_os = "windows")]
     {
         let mut shell = Command::new("cmd");
-        shell.arg("/C").arg(command);
+        shell.raw_arg(format!("/S /C \"{command}\""));
         shell.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         shell
     }
@@ -525,6 +532,33 @@ mod tests {
             "the code must come from the process, not from its output: {:?}",
             failed.stdout
         );
+    }
+
+    /// Prints the arguments node received, one `|` between each.
+    const ECHO_ARGS: &str = r#"-e "console.log(process.argv.slice(1).join('|'))""#;
+
+    #[tokio::test]
+    async fn quoted_arguments_arrive_whole() {
+        // The shape every task, suite and scanner command takes: a path with a
+        // space in it, quoted. Rust's own quoting of the line for cmd.exe used to
+        // turn the quotes into \" - which cmd does not read - and split it.
+        let outcome = run(
+            &format!(r#"node {ECHO_ARGS} "C:/Front end/a.sarif" plain"#),
+            30_000,
+        )
+        .await;
+        assert_eq!(outcome.code, Some(0), "stderr: {:?}", outcome.stderr);
+        assert_eq!(outcome.stdout.trim(), "C:/Front end/a.sarif|plain");
+    }
+
+    #[tokio::test]
+    async fn a_line_that_starts_with_a_quoted_program_runs_it() {
+        // cmd.exe strips the first and last quote of a /C line it thinks is one
+        // quoted program; a line that both starts and ends with a quote is the
+        // case that rule breaks.
+        let outcome = run(&format!(r#""node" {ECHO_ARGS} "last one""#), 30_000).await;
+        assert_eq!(outcome.code, Some(0), "stderr: {:?}", outcome.stderr);
+        assert_eq!(outcome.stdout.trim(), "last one");
     }
 
     #[tokio::test]
