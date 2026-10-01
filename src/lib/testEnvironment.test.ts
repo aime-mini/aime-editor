@@ -142,6 +142,28 @@ describe("withServices", () => {
     expect(machine.stopped).toEqual(["svc-1"]);
   });
 
+  it("waits for a stopped service to let go of its address before it counts as stopped", async () => {
+    // Ending a process tree takes a moment; a next pass that starts the same
+    // server meanwhile finds the port taken while the dying one still answers.
+    const events: string[] = [];
+    let answersAfterStop = 3;
+    let stopped = false;
+    const machine = fakeMachine({ upAfterPolls: 0 });
+    machine.launcher.stop = () => {
+      stopped = true;
+      events.push("stop");
+      return Promise.resolve();
+    };
+    machine.launcher.reachable = () => {
+      if (!stopped) return Promise.resolve(true);
+      events.push("knock");
+      return Promise.resolve(answersAfterStop-- > 0);
+    };
+    await withServices([dev], "/repo", machine.launcher, () => Promise.resolve());
+    events.push("done");
+    expect(events).toEqual(["stop", "knock", "knock", "knock", "knock", "done"]);
+  });
+
   it("stops everything it started when the second service fails, newest first", async () => {
     const api: Service = { command: "npm run api", dir: "api", ready: "http://localhost:4000" };
     const machine = fakeMachine({ upAfterPolls: 0 });

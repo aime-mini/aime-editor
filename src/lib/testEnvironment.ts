@@ -180,6 +180,11 @@ export function addressOf(ready: string): Address | null {
 /** How long a service is given to answer on its address. */
 export const READY_TIMEOUT_MS = 180_000;
 const READY_POLL_MS = 500;
+/**
+ * How long a stopped service may keep answering. Bounded, because the address
+ * may belong to something else as well - the person's own dev server.
+ */
+const GONE_TIMEOUT_MS = 15_000;
 
 /**
  * What starting and stopping processes takes, injected so the lifecycle below
@@ -228,6 +233,11 @@ export interface EnvironmentFailure {
  * resumed after a restart, and a server left running through any of those is a
  * process nobody will stop. Starting it again for each pass costs seconds; a
  * suite pass costs minutes anyway.
+ *
+ * Stopped means its address has stopped answering, not that the stop was
+ * asked for: ending a process tree takes a moment, and measured (2026-10-01)
+ * the next pass's server then found its port taken and exited, the old one
+ * still answered the readiness knock, and died under the first page opened.
  */
 export async function withServices<T>(
   services: Service[],
@@ -235,17 +245,29 @@ export async function withServices<T>(
   launcher: Launcher,
   work: () => Promise<T>,
 ): Promise<{ result: T } | { failure: EnvironmentFailure }> {
-  const running: string[] = [];
+  const running: { id: string; service: Service }[] = [];
   try {
     for (const service of services) {
       const id = launcher.nextId();
-      running.push(id);
+      running.push({ id, service });
       const failure = await startAndWait(service, root, id, launcher);
       if (failure !== null) return { failure };
     }
     return { result: await work() };
   } finally {
-    for (const id of running.reverse()) await launcher.stop(id);
+    for (const { id, service } of running.reverse()) {
+      await launcher.stop(id);
+      await untilGone(service, launcher);
+    }
+  }
+}
+
+async function untilGone(service: Service, launcher: Launcher): Promise<void> {
+  const address = addressOf(service.ready);
+  if (address === null) return;
+  for (let waited = 0; waited < GONE_TIMEOUT_MS; waited += READY_POLL_MS) {
+    if (!(await launcher.reachable(address))) return;
+    await launcher.sleep(READY_POLL_MS);
   }
 }
 
