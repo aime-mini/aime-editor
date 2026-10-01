@@ -827,6 +827,7 @@ export const vi: Record<TranslationKey, string> = {
   "run.perfMended": "tốc độ của {label}",
   "run.perfSlower": "Thay đổi vẫn chậm hơn: {detail}",
   "run.perfBroken": "Benchmark không in ra thời gian đo: {detail}",
+  "run.knowledgeUnsaved": "Không lưu được những gì lượt này đọc về dự án: {detail}",
   "run.reportGoal": "Mục tiêu",
   "run.reportCases": "Chứng minh được {proved}/{total} test case",
   "run.reportFindings": "{count} vấn đề để anh phán",

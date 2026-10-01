@@ -184,7 +184,9 @@ pub const PROGRESS_MEMORY_PROMPT: &str = "You maintain the file .aime/PROGRESS.m
 working memory. Before starting a task, read it if it exists. Whenever you complete meaningful \
 work or make a decision, update it concisely: goal, done, in progress, next steps, open issues — \
 newest first. It must always allow a fresh session with no chat history to resume the work. \
-Keep it under 150 lines by compacting older entries.";
+Keep it under 150 lines by compacting older entries. Read .aime/PROJECT.md too if it exists: what \
+Aime's task runs read about this project's architecture and conventions, each line citing where it was \
+seen. Follow it, check it against the code where it matters, and never edit it - Aime rewrites it.";
 
 /// Resolves a provider id to its adapter.
 ///

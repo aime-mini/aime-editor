@@ -857,6 +857,12 @@ describe("Task run", () => {
       `the language server was not asked what depends on the change: ${ground}`,
     );
 
+    // What the reading found is kept for the next run and for the chat: every
+    // AI CLI is told to read this page.
+    const knowledge = fs.readFileSync(path.join(repo, ".aime", "PROJECT.md"), "utf8");
+    assert.match(knowledge, /- plain ES modules, no framework - src\/checkout\.js \(\d{4}-\d{2}-\d{2}\)/, knowledge);
+    assert.match(knowledge, /## Tests\s+- test\.cjs at the root, run by node/, knowledge);
+
     // One page: the approach, the cases and the plan. The cases exist as a file
     // a person can read and edit, which is the whole difference between "there
     // is a test" and "we agreed what proof is".

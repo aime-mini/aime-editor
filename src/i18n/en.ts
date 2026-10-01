@@ -833,6 +833,7 @@ export const en = {
   "run.perfMended": "the speed of {label}",
   "run.perfSlower": "The change is still slower: {detail}",
   "run.perfBroken": "The benchmark never printed its timing: {detail}",
+  "run.knowledgeUnsaved": "What this run read about the project could not be kept: {detail}",
   "run.reportGoal": "Goal",
   "run.reportCases": "{proved} of {total} test case(s) proved",
   "run.reportFindings": "{count} issue(s) left for you to judge",

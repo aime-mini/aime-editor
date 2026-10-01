@@ -105,6 +105,7 @@ import {
   type CaseVerdict,
 } from "../lib/testCaseFile";
 import { readProjectRules, rulesBlock, type RuleFile } from "../lib/projectRules";
+import { knowledgeBlock, learnFrom, readKnowledge, writeKnowledge } from "../lib/projectKnowledge";
 import {
   commandFor,
   describeFinding,
@@ -1235,8 +1236,13 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
   set({ rules });
 
   const description = await useTrackers.getState().detailOf(context.item);
+  // What earlier runs read is a head start, not an answer: the reading below
+  // is asked to confirm it in the code.
+  const known = await readKnowledge(context.home);
+  const learnedBefore = knowledgeBlock(known);
   const asking = [
     UNDERSTAND_PROMPT,
+    ...(learnedBefore.length === 0 ? [] : [learnedBefore.join("\n")]),
     ...(await workspaceBrief(context)),
     `# ${context.item.title}`,
     `Type: ${context.item.itemType} · State: ${context.item.state}`,
@@ -1256,6 +1262,12 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
   const { brief, found } = answer;
   const files = found.files.slice(0, SURVEY_FILE_LIMIT);
   set({ brief, survey: { ...found, files } });
+  try {
+    await writeKnowledge(context.home, learnFrom(known, found, new Date().toISOString().slice(0, 10)));
+  } catch (error: unknown) {
+    // The run does not need it; the next one and the chat lose a head start.
+    note(set, "understand", translate("run.knowledgeUnsaved", { detail: String(error) }), "problem");
+  }
   const trees = spansWorkspace(context) ? await joinReachedTrees(context, files, set, get) : NONE_JOINED;
 
   // A project whose manifest declares no test script may still have suites -

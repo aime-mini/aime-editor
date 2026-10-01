@@ -170,8 +170,9 @@ const EN: HelpTopic[] = [
     id: "ai-memory-editor",
     section: "AI",
     title: "Edit the AI's memory",
-    body: "The brain button above the chat (or 'Edit AI memory' in the command palette) opens the memory editor. The Project tab edits one canonical AGENTS.md in your repo (conventions, architecture - shared via git): Codex reads it natively and Aime keeps an @AGENTS.md import in CLAUDE.md so Claude reads the very same file - no copies to drift apart. The Global tab edits the selected CLI's own user-level file (~/.claude/CLAUDE.md or ~/.codex/AGENTS.md). The AI re-reads them every turn, so saves take effect immediately.",
-    keywords: "memory agents.md claude.md global project knowledge notes brain",
+    body: "The brain button above the chat (or 'Edit AI memory' in the command palette) opens the memory editor. The Project tab edits one canonical AGENTS.md in your repo (conventions, architecture - shared via git): Codex reads it natively and Aime keeps an @AGENTS.md import in CLAUDE.md so Claude reads the very same file - no copies to drift apart. The Global tab edits the selected CLI's own user-level file (~/.claude/CLAUDE.md or ~/.codex/AGENTS.md). The AI re-reads them every turn, so saves take effect immediately. A third page keeps itself: whenever a task run reads your code it writes down how this repository does things - each rule citing the file it was seen in - into .aime/PROJECT.md, merged with what earlier runs read, newest first. Every chat turn and every later run is told to read it, so the AI starts from what was already learned instead of reading the same code again, and is told to check it against the code where it matters. It lives in .aime/, which git ignores, and Aime rewrites it; rules of your own belong in AGENTS.md.",
+    keywords:
+      "memory agents.md claude.md global project knowledge notes brain project.md learned conventions architecture",
   },
   {
     id: "cloud",
@@ -563,8 +564,9 @@ const VI: HelpTopic[] = [
     id: "ai-memory-editor",
     section: "AI",
     title: "Sửa bộ nhớ của AI",
-    body: "Nút hình não trên khung chat (hoặc 'Sửa bộ nhớ AI' trong command palette) mở trình sửa memory. Tab Dự án sửa một file AGENTS.md duy nhất trong repo (quy ước, kiến trúc - chia sẻ qua git): Codex đọc thẳng, còn Aime giữ dòng import @AGENTS.md trong CLAUDE.md để Claude đọc đúng file đó - không nhân bản nên không bao giờ lệch nhau. Tab Toàn cục sửa file người dùng của chính CLI đang chọn (~/.claude/CLAUDE.md hoặc ~/.codex/AGENTS.md). AI đọc lại mỗi lượt nên lưu xong là có hiệu lực ngay.",
-    keywords: "memory agents.md claude.md toàn cục dự án kiến thức ghi chú não",
+    body: "Nút hình não trên khung chat (hoặc 'Sửa bộ nhớ AI' trong command palette) mở trình sửa memory. Tab Dự án sửa một file AGENTS.md duy nhất trong repo (quy ước, kiến trúc - chia sẻ qua git): Codex đọc thẳng, còn Aime giữ dòng import @AGENTS.md trong CLAUDE.md để Claude đọc đúng file đó - không nhân bản nên không bao giờ lệch nhau. Tab Toàn cục sửa file người dùng của chính CLI đang chọn (~/.claude/CLAUDE.md hoặc ~/.codex/AGENTS.md). AI đọc lại mỗi lượt nên lưu xong là có hiệu lực ngay. Còn một trang tự giữ lấy: mỗi lần một lượt chạy task đọc code của anh, nó ghi lại repo này làm việc theo cách nào - mỗi quy tắc kèm file nơi thấy nó - vào .aime/PROJECT.md, gộp với những gì các lượt trước đã đọc, mới nhất lên đầu. Mọi lượt chat và mọi lượt chạy sau đều được dặn đọc nó, nên AI bắt đầu từ những gì đã biết thay vì đọc lại cùng đống code, và được dặn đối chiếu với code ở chỗ quan trọng. File nằm trong .aime/ nên git bỏ qua, và Aime tự viết lại nó; quy tắc của riêng anh thì để trong AGENTS.md.",
+    keywords:
+      "memory agents.md claude.md toàn cục dự án kiến thức ghi chú não project.md đã học quy ước kiến trúc",
   },
   {
     id: "cloud",
