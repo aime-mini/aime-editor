@@ -52,11 +52,38 @@ const keysFile = path.join(configDir, "api-keys.json");
 
 /**
  * Where the fake CLI reads its orders: "sound", "repairs", "breaks", "sloppy",
- * "crossRepo" (the change reaches the api as well) or "strays" (it reaches the
- * api without saying so).
+ * "crossRepo" (the change reaches the api as well), "strays" (it reaches the
+ * api without saying so), "insecure" (it writes a secret into the source) or
+ * "reviewSecurity" (the first reviewer finds a security issue).
  */
 const MODE_FILE = path.join(os.tmpdir(), "aime-run-probe-mode.txt");
 const PROBE_SCRIPT = path.join(os.tmpdir(), "aime-run-probe.cjs");
+
+/**
+ * The security scanner the fake AI sets up when asked to: a secret scanner in
+ * miniature, reporting every "SECRET-" token under src/ as SARIF 2.1.0 - the
+ * one thing Aime's security gate reads - and exiting non-zero when it found
+ * any, as real scanners do.
+ */
+const SCANNER_SCRIPT = path.join(os.tmpdir(), "aime-run-probe-scanner.cjs");
+const SCANNER_SOURCE = String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+const results = [];
+const src = path.join(process.cwd(), "src");
+for (const name of fs.readdirSync(src)) {
+  fs.readFileSync(path.join(src, name), "utf8").split("\n").forEach((line, index) => {
+    if (!line.includes("SECRET-")) return;
+    results.push({
+      ruleId: "hardcoded-secret",
+      message: { text: "A secret is written into src/" + name },
+      locations: [{ physicalLocation: { artifactLocation: { uri: "src/" + name }, region: { startLine: index + 1 } } }],
+    });
+  });
+}
+fs.writeFileSync(process.argv[2], JSON.stringify({ version: "2.1.0", runs: [{ tool: { driver: { name: "probe" } }, results }] }));
+process.exit(results.length > 0 ? 1 : 0);
+`;
 
 /**
  * Where the sample's own server listens when a test needs it: fixed rather than
@@ -95,6 +122,7 @@ const RUINED = "  return 0;\n";
 // the other trips the project's own linter.
 const SOUND = cart(ADDS_UP, ROUNDS);
 const BREAKS = cart(RUINED, ROUNDS);
+const INSECURE = cart(ADDS_UP, ROUNDS, 'export const apiKey = "SECRET-live-key";\n');
 const SLOPPY = cart(ADDS_UP, ROUNDS, 'const debug = () => console.log("here");\n');
 
 // The suite as the implementing phase leaves it: rounding now asserted, and
@@ -139,7 +167,17 @@ const mode = fs.existsSync(${JSON.stringify(MODE_FILE)})
   ? fs.readFileSync(${JSON.stringify(MODE_FILE)}, "utf8").trim()
   : "sound";
 
-if (prompt.includes("these test suites of this repository failed")) {
+if (prompt.includes("Set up security scanning for this repository")) {
+  // The scanner it "chose and installed": written down where Aime reads it,
+  // with the {sarif} placeholder Aime fills in.
+  const scanner = ${JSON.stringify(SCANNER_SCRIPT)}.replace(/\\/g, "/");
+  fs.mkdirSync(here(".aime", "security"), { recursive: true });
+  fs.writeFileSync(
+    here(".aime", "security", "scanners.json"),
+    JSON.stringify({ scanners: [{ label: "probe-scanner", command: 'node "' + scanner + '" {sarif}', dir: inProduct ? "shop" : "." }] }),
+  );
+  process.stdout.write("scanners ready\n");
+} else if (prompt.includes("these test suites of this repository failed")) {
   // What the suites need running: the sample's own server script, on the port
   // its test reaches. Aime has to start it, wait for the port and stop it.
   stream({
@@ -190,7 +228,7 @@ if (prompt.includes("these test suites of this repository failed")) {
   // user works in. "repairs" and "breaks" both break something here; they
   // differ in what the repair rounds do about it afterwards.
   const breaks = mode === "breaks" || mode === "repairs";
-  const source = breaks ? BREAKS : mode === "sloppy" ? SLOPPY : SOUND;
+  const source = breaks ? BREAKS : mode === "sloppy" ? SLOPPY : mode === "insecure" ? INSECURE : SOUND;
   fs.writeFileSync(shop("src", "cart.js"), source);
   // The file the plan named. Aime checks it exists before the phase may pass,
   // which is the mechanical half of "the tests were actually written".
@@ -204,6 +242,10 @@ if (prompt.includes("these test suites of this repository failed")) {
     fs.writeFileSync(here("api", "server.js"), "export const port = 8081;\n");
   }
   process.stdout.write("done\n");
+} else if (prompt.includes("The security scanners this project is measured by report these in your change")) {
+  // The secret goes back where it belongs - out of the source.
+  fs.writeFileSync(shop("src", "cart.js"), SOUND);
+  process.stdout.write("read it from the environment instead\n");
 } else if (prompt.includes("broke this project's own checks")) {
   // The linter caught the stray console.log. Take it out - which is what
   // "fixed and re-run until they pass" has to mean in practice.
@@ -225,7 +267,16 @@ if (prompt.includes("these test suites of this repository failed")) {
   fs.writeFileSync(here(".aime", "evidence", "deploy", "health.txt"), "served on 4173, / answered 200\n");
   process.stdout.write("delivered\n");
 } else if (prompt.includes("Review this change")) {
-  say({ risks: ["rounding could drift on large totals"], findings: [] });
+  // An agent with read-only tools now, so its answer arrives as a streamed event.
+  const again = prompt.includes("This change has been reviewed before");
+  const flagged = mode === "reviewSecurity" && !again;
+  stream({
+    risks: ["rounding could drift on large totals"],
+    findings: flagged
+      ? [{ file: named("src/cart.js"), line: 4, severity: "issue", kind: "security",
+           message: "the rate is taken from the request unchecked", check: "call withTax with rate=1e308" }]
+      : [],
+  });
 } else {
   process.stdout.write("unrecognised prompt\n");
 }
@@ -402,6 +453,9 @@ function sampleProject({
   fs.writeFileSync(path.join(dir, "check.cjs"), SAMPLE_CHECK);
   fs.writeFileSync(path.join(dir, "src", "cart.js"), SAMPLE_CART);
   fs.writeFileSync(path.join(dir, "src", "checkout.js"), SAMPLE_CHECKOUT);
+  // A secret the project already had: the security baseline must count it as
+  // the project's, and no run may be asked to fix it.
+  fs.writeFileSync(path.join(dir, "src", "legacy.js"), 'export const legacyToken = "SECRET-legacy";\n');
   giveItALanguageService(dir);
 
   const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe" });
@@ -509,11 +563,20 @@ async function phaseRow(heading) {
 
 /** Waits for a phase's row to say something, and hands back what it says. */
 async function waitForPhase(heading, needle, message, timeout = 180_000) {
-  await browser.waitUntil(async () => (await phaseRow(heading)).includes(needle), {
-    timeout,
-    timeoutMsg: `${message} (row "${heading}" never said "${needle}")`,
-  });
-  return phaseRow(heading);
+  let said = "";
+  try {
+    await browser.waitUntil(
+      async () => {
+        said = await phaseRow(heading);
+        return said.includes(needle);
+      },
+      { timeout },
+    );
+  } catch {
+    // What the row did say is the diagnosis; a bare timeout only says it was not this.
+    throw new Error(`${message} (row "${heading}" never said "${needle}"; it said: ${said || "nothing"})`);
+  }
+  return said;
 }
 
 async function waitForText(text, message, timeout = 60_000) {
@@ -674,6 +737,7 @@ describe("Task run", () => {
     fs.rmSync(trackersFile, { force: true });
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(PROBE_SCRIPT, PROBE_SOURCE);
+    fs.writeFileSync(SCANNER_SCRIPT, SCANNER_SOURCE);
     fs.writeFileSync(providersFile, JSON.stringify(PROBE_PROVIDER, null, 2));
     await startBoard();
   });
@@ -683,6 +747,7 @@ describe("Task run", () => {
     restore(trackersFile, saved.trackers);
     restore(keysFile, saved.keys);
     fs.rmSync(PROBE_SCRIPT, { force: true });
+    fs.rmSync(SCANNER_SCRIPT, { force: true });
     fs.rmSync(MODE_FILE, { force: true });
     board.server?.close();
     try {
@@ -855,6 +920,67 @@ ${suite.output}`,
       false,
       "the console.log the project forbids is still there",
     );
+  });
+
+  it("fixes a security finding the change brought in, and leaves the project's own alone", async () => {
+    // The scanner the AI set up runs before and after the change. The project
+    // already holds one secret; the change writes a second. Only the second is
+    // the change's to fix, and the run may not finish while it is there.
+    fs.writeFileSync(MODE_FILE, "insecure");
+    repo = freshRepo(repo);
+    await startRun(repo);
+
+    const ground = await waitForPhase(
+      "Understand the task and the code",
+      "Security scanners",
+      "the security baseline was never taken",
+    );
+    assert.match(
+      ground,
+      /Security scanners: probe-scanner - 1 finding\(s\) before the change/,
+      `the project's own finding was not counted as the baseline: ${ground}`,
+    );
+    await approve(repo);
+
+    const verified = await waitForPhase(
+      "Test it until the bugs are out",
+      "Fixed in",
+      "the security finding was never fixed",
+      240_000,
+    );
+    assert.match(verified, /1 security finding/, `the mended finding was not named: ${verified}`);
+    await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
+    assert.equal(
+      fs.readFileSync(path.join(repo, "src", "cart.js"), "utf8").includes("SECRET-"),
+      false,
+      "the secret the change wrote is still in the source",
+    );
+    assert.ok(
+      fs.readFileSync(path.join(repo, "src", "legacy.js"), "utf8").includes("SECRET-legacy"),
+      "the run touched a finding that was the project's own",
+    );
+    const [report] = reportsIn(repo);
+    assert.match(report, /## Security/, `the report does not say what measured the change: ${report}`);
+    assert.match(report, /`probe-scanner`: 1 finding\(s\) were the project's own/, report);
+  });
+
+  it("reads the change again after fixing what the reviewer found", async () => {
+    // The first reviewer finds a security issue. The author answers it, and it
+    // is a second reader - with the finding and the answer in front of it - who
+    // decides it is closed, not the author.
+    fs.writeFileSync(MODE_FILE, "reviewSecurity");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+
+    const reviewed = await waitForPhase(
+      "Check my own work, and fix what I find",
+      "nothing left on reading 2",
+      "the change was not read again after the fix",
+      240_000,
+    );
+    assert.match(reviewed, /nothing left on reading 2/, reviewed);
+    await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
   });
 
   it("keeps the run on file, so it can be read again after a reload", async () => {

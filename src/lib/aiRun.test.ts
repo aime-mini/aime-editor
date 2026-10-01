@@ -7,6 +7,7 @@ import {
   parsePlan,
   parseReview,
   parseSolution,
+  readReview,
   parseSurvey,
   parseTestCases,
   uncoveredCases,
@@ -214,6 +215,17 @@ describe("casesWithoutProof", () => {
     expect(proved).toBeTruthy();
     if (!proved) return;
     expect(casesWithoutProof(proved)).toEqual([]);
+  });
+});
+
+describe("readReview", () => {
+  it("reads a review, findings or none", () => {
+    expect(readReview('{"risks": [], "findings": []}')?.findings).toEqual([]);
+  });
+
+  it("refuses a reply that holds no review, rather than reading it as a clean one", () => {
+    expect(readReview("I read the diff and it looks fine.")).toBeNull();
+    expect(readReview('{"risks": ["x"]}')).toBeNull();
   });
 });
 

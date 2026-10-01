@@ -469,6 +469,17 @@ export function parseReview(reply: string): Review {
 }
 
 /**
+ * A review, or null when the reply holds none.
+ *
+ * Not the same thing as a review that found nothing: `parseReview` reads a
+ * reply with no JSON in it as an empty review, and an empty review lets a run
+ * through. A reviewer that never answered must be asked again instead.
+ */
+export function readReview(reply: string): Review | null {
+  return Array.isArray(asRecord(extractObject(reply)).findings) ? parseReview(reply) : null;
+}
+
+/**
  * The gate on the test cases: every criterion must have at least one.
  *
  * This is the mechanical half of "the tests cover the requirement". It cannot

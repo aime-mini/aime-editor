@@ -8,6 +8,7 @@ import type { Baseline, GateVerdict, SuiteRun } from "./regressionGate";
 import type { Run } from "./runPlan";
 import type { JoinedTree, TreeStatus } from "./runTrees";
 import type { RunUndo } from "./runUndo";
+import type { SecurityPass } from "./securityGate";
 import type { TestEnvironment } from "./testEnvironment";
 
 /**
@@ -69,6 +70,11 @@ export interface SavedRun {
   baseline: Baseline | null;
   /** The project's own linters as they stood before the change. */
   checks: CheckPass | null;
+  /**
+   * What the security scanners found before the change. Optional rather than
+   * a version bump: a run journaled before this was measured by none.
+   */
+  security?: SecurityPass | null;
   verdict: GateVerdict | null;
   /** Files the suites left behind - screenshots, traces, reports. */
   evidence: string[];

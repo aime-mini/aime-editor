@@ -8,7 +8,7 @@ import {
   fixableFindings,
   parseBrief,
   parsePlan,
-  parseReview,
+  readReview,
   parseSolution,
   parseSurvey,
   parseTestCases,
@@ -27,7 +27,6 @@ import {
   type TestCase,
   type TestCases,
 } from "../lib/aiRun";
-import { aiOneshot } from "../lib/aiOneshot";
 import { agentTurn, cancelAgentTurn } from "../lib/agentTurn";
 import { radiusFrom, radiusIsComplete, type Radius } from "../lib/blastRadius";
 import { allOutput, execCancel, type CommandOutcome } from "../lib/exec";
@@ -81,6 +80,19 @@ import {
   type CaseVerdict,
 } from "../lib/testCaseFile";
 import { readProjectRules, rulesBlock, type RuleFile } from "../lib/projectRules";
+import {
+  commandFor,
+  describeFinding,
+  newFindings,
+  parseSarif,
+  parseScanners,
+  sarifPathFor,
+  SCANNERS_FILE,
+  type Scanner,
+  type ScannerSetup,
+  type SecurityFinding,
+  type SecurityPass,
+} from "../lib/securityGate";
 import {
   forgetRun,
   interruptedRun,
@@ -166,6 +178,8 @@ interface Artifacts {
   baseline: Baseline | null;
   /** The project's own linters as they stood before the change. */
   checks: CheckPass | null;
+  /** What the project's security scanners found before the change (`lib/securityGate`). */
+  security: SecurityPass | null;
   /** What the last comparison with the baseline found; null until one is made. */
   verdict: GateVerdict | null;
   /** Files the suites left behind - screenshots, traces, reports. */
@@ -224,6 +238,7 @@ const NOTHING_YET: Artifacts = {
   review: null,
   baseline: null,
   checks: null,
+  security: null,
   verdict: null,
   evidence: [],
   discovered: [],
@@ -825,6 +840,7 @@ function slotFrom(saved: SavedRun, home: string, interrupted: boolean): RunSlot 
     review: saved.review,
     baseline: saved.baseline,
     checks: saved.checks,
+    security: saved.security ?? null,
     verdict: saved.verdict,
     evidence: saved.evidence,
     discovered: saved.discovered,
@@ -1013,6 +1029,7 @@ function artifactsOf(slot: RunSlot): Artifacts {
     review: slot.review,
     baseline: slot.baseline,
     checks: slot.checks,
+    security: slot.security,
     verdict: slot.verdict,
     evidence: slot.evidence,
     discovered: slot.discovered,
@@ -1254,6 +1271,11 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
     );
   }
 
+  // Part of the groundwork like the suites, but taken after the reading: which
+  // scanners fit is a question about the stack, and an AI sets them up.
+  const security = get().security ?? (await setUpSecurity(context, set));
+  set({ security });
+
   // Imported here rather than at the top: the probe speaks to Monaco, and this
   // store is loaded long before an editor exists. The probe is pointed at the
   // user's own tree even for a worktree run: the language servers run in the
@@ -1289,6 +1311,9 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
       ground.note,
       trees.joined.length > 0 ? translate("run.treesJoined", { repositories: trees.joined.join(", ") }) : "",
       read,
+      // Beside the suites' line, for the same reason: it is what every later
+      // scan is measured against.
+      describeSecurity(security),
     ]
       .filter(Boolean)
       .join(" · "),
@@ -1617,7 +1642,8 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
   const checksBefore = get().checks ?? { checks: [] };
   const hasChecks = checkTasksOf(tasks).length > 0;
   const hasSuites = before !== null && measured(before).length > 0;
-  if (!hasChecks && !hasSuites) {
+  const hasScanners = (get().security?.scanners.length ?? 0) > 0;
+  if (!hasChecks && !hasSuites && !hasScanners) {
     return { state: "skipped", summary: translate("run.nothingToMeasure") };
   }
 
@@ -1669,10 +1695,47 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
       }
     }
 
+    // Then the scanners, still before the suites: a finding is cheaper to learn
+    // about than a nine-minute browser run, and the fix may change what the
+    // suites have to say anyway.
+    const scan = await securityNow(context, set, get, "verify");
+    if (scan !== null && scan.silent.length > 0) {
+      // A scanner that answered at the baseline and not now is a broken
+      // measurement, the way a suite that stops answering is.
+      return {
+        state: "blocked",
+        summary: translate("run.securitySilent", {
+          detail: scan.silent.map((one) => one.scanner.label).join(", "),
+        }),
+        detail: [...tried, ...scan.silent.map(silentEvidence)].join("\n\n"),
+      };
+    }
+    if (scan !== null && scan.introduced.length > 0) {
+      const found = scan.introduced.map(describeFinding);
+      // Without the lines: a fix that only moves a finding has not fixed it.
+      const signature = `security:${scan.introduced.map((one) => `${one.rule} ${one.file}`).join("|")}`;
+      if (stalled(rounds, signature) || round === MAX_ROUNDS) {
+        return {
+          state: "blocked",
+          summary: translate("run.securityFailed", { count: found.length }),
+          detail: [...tried, ...found].join("\n"),
+        };
+      }
+      rounds.push(signature);
+      tried.push(translate("run.securityFixing", { attempt: round, count: found.length }));
+      mended.push(translate("run.securityMended", { count: found.length }));
+      note(set, "verify", tried[tried.length - 1]);
+      const code = await runAgent(context, [FIX_SECURITY_PROMPT, ...found].join("\n"), set, "verify");
+      if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+      continue;
+    }
+
     if (!hasSuites) {
       return {
         state: "passed",
-        summary: translate("run.checksOnly", { count: stale.length }),
+        summary: [translate("run.checksOnly", { count: stale.length }), securityHeld(get)]
+          .filter(Boolean)
+          .join(" · "),
         detail: [...tried, ...stale.map((check) => `- ${check.label}`)].join("\n"),
       };
     }
@@ -1703,10 +1766,14 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
     if (!verdict.blocks) {
       return {
         state: "passed",
-        summary:
+        summary: [
           round === 1
             ? summarise(verdict)
             : translate("run.repaired", { attempts: round - 1, detail: mended.join("; ") }),
+          securityHeld(get),
+        ]
+          .filter(Boolean)
+          .join(" · "),
         detail: [...tried, describeChecks({ checks: stale }), differences(verdict)]
           .filter(Boolean)
           .join("\n"),
@@ -1881,81 +1948,149 @@ function needsDeploy(get: Getter): boolean {
 }
 
 /**
- * Step five: a reader with a clean context finds fault, and then it is fixed.
+ * Step five: a reader with a clean context finds fault, it is fixed, and the
+ * reader looks again.
  *
- * Two calls, one phase. The reviewer must not be the author - that is the whole
- * value of it, and a one-shot call with none of the writing phase's context is
- * how that is arranged - but a review whose findings nobody acts on is a
- * document, not a gate, and giving the acting-on its own phase bought a
- * heading and nothing else.
+ * The reviewer must not be the author - that is the whole value of it - so it
+ * is a turn of its own with none of the writing phases' context, and with
+ * read-only tools: it reads the whole diff from a file and opens the code
+ * around it. It used to be a one-shot call handed the first 12,000 characters
+ * of the diff, so a large change was reviewed in part and a touched file was
+ * judged without its surroundings.
  *
- * Only findings that said how they would be proved are worked on, since those
- * are the ones with something to check afterwards. Every fix is followed by the
- * checks and the suites again, because a fix is a change like any other and the
- * last change of a run is the least examined one.
+ * A review whose findings nobody acts on is a document, not a gate, so the
+ * findings are worked on in the same phase, and every fix is measured again -
+ * the checks, the security scanners, the suites - because a fix is a change like
+ * any other and the last change of a run is the least examined one. Then the
+ * change is read again. The author may argue a finding is wrong, but the author
+ * does not get to close it: the next reader decides, with the argument in front
+ * of it. That is what stopped a security finding from being waved away by the
+ * code it was about.
  *
- * What ends a run here is narrow on purpose: an unfixed finding about
- * architecture or security. Those are not matters of taste - a change in the
- * wrong layer does not belong in the repository however well it works - and
- * before this they went into the report while the run reported success, which
- * made the architecture rule advice. Everything else a reviewer thinks is
- * reported for a person to judge, because a reviewer can simply be wrong.
+ * What ends a run here is narrow on purpose: a finding about architecture or
+ * security that is still there after the last reading. Those are not matters
+ * of taste - a change in the wrong layer does not belong in the repository
+ * however well it works. Everything else is fixed once and reported, because a
+ * reviewer can simply be wrong, and a run kept going round by one reviewer's
+ * taste is a run nobody waits for.
  */
 async function reviewPhase(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
-  const diff = await pendingDiff(context, get);
-  if (diff.trim() === "") return { state: "skipped", summary: translate("run.nothingChanged") };
+  const tried: string[] = [];
+  let earlier = "";
+  let latest: Review | null = null;
+  for (let round = 1; round <= REVIEW_ROUNDS; round += 1) {
+    const diff = await pendingDiff(context, get);
+    if (diff.trim() === "") return { state: "skipped", summary: translate("run.nothingChanged") };
+    if (round > 1) note(set, "review", translate("run.reviewingAgain", { round, of: REVIEW_ROUNDS }));
+    const review = await reviewOnce(context, set, get, diff, earlier);
+    if (review === null) return { state: "blocked", summary: translate("run.reviewUnreadable") };
+    set({ review });
+    latest = review;
 
-  const asking = [
-    REVIEW_PROMPT,
-    ...conventionsOf(get().survey),
-    ...rulesBlock(get().rules),
-    ...(get().solution === null
-      ? []
-      : [
-          "",
-          "What the change was supposed to lock in:",
-          ...(get().solution?.decisions ?? []).map((d) => `- ${d}`),
-        ]),
-    "",
-    diff.slice(0, DIFF_LIMIT),
-  ].join("\n");
-  const review = parseReview(await aiOneshot(asking, context.workRoot));
-  set({ review });
+    const blocking = blockingFindings(review);
+    // The first reading's issues are all worked on; after that, only what may
+    // not ship is - the rest is the reader's to judge from the report.
+    const issues = round === 1 ? fixableFindings(review) : blocking;
+    const found = translate("run.reviewed", {
+      issues: fixableFindings(review).length,
+      total: review.findings.length,
+    });
+    // A function, not a value: the fixing below adds to what was tried.
+    const soFar = () => [describeReview(review), "", ...tried].join("\n");
+    if (issues.length === 0) {
+      return {
+        state: "passed",
+        summary: round === 1 ? found : [found, translate("run.reviewCleared", { rounds: round })].join(" · "),
+        detail: soFar(),
+      };
+    }
+    if (round === REVIEW_ROUNDS) break;
 
-  const issues = fixableFindings(review);
-  const found = translate("run.reviewed", { issues: issues.length, total: review.findings.length });
-  const risks = [
+    const fixed = await fixFindings(context, set, get, issues);
+    tried.push(...fixed.tried);
+    if (!fixed.mended) {
+      if (blocking.length > 0) return reviewBlocked(blocking, soFar());
+      return {
+        state: "passed",
+        summary: [found, translate("run.polishLeft", { count: issues.length, attempts: ATTEMPTS })].join(
+          " · ",
+        ),
+        detail: soFar(),
+      };
+    }
+    tried.push(translate("run.polishFixed", { count: issues.length, attempts: fixed.attempts }));
+    earlier = earlierReview(issues, fixed.reply);
+  }
+  // Only reached when the last reading still found what may not ship.
+  const blocking = latest === null ? [] : blockingFindings(latest);
+  return reviewBlocked(blocking, [latest === null ? "" : describeReview(latest), "", ...tried].join("\n"));
+}
+
+function reviewBlocked(blocking: readonly Finding[], detail: string): PhaseResult {
+  return {
+    state: "blocked",
+    summary: translate("run.reviewBlocked", {
+      count: blocking.length,
+      detail: blocking.map((finding) => finding.kind).join(", "),
+    }),
+    detail: [detail, "", ...blocking.map((one) => `- ${one.file}: ${one.message}`)].join("\n"),
+  };
+}
+
+/** The risks a review derived and everything it found, one line each. */
+function describeReview(review: Review): string {
+  return [
     ...review.risks.map((risk) => `? ${risk}`),
     ...review.findings.map(
       (finding) => `${finding.file}:${String(finding.line)} [${finding.kind}] — ${finding.message}`,
     ),
   ].join("\n");
-  if (issues.length === 0) return { state: "passed", summary: found, detail: risks };
+}
 
-  const fixed = await fixFindings(context, set, get, issues);
-  const blocking = blockingFindings(review);
-  if (!fixed.mended && blocking.length > 0) {
-    return {
-      state: "blocked",
-      summary: translate("run.reviewBlocked", {
-        count: blocking.length,
-        detail: blocking.map((finding) => finding.kind).join(", "),
-      }),
-      detail: [risks, "", ...fixed.tried, ...blocking.map((one) => `- ${one.file}: ${one.message}`)].join(
-        "\n",
-      ),
-    };
-  }
-  return {
-    state: "passed",
-    summary: [
-      found,
-      fixed.mended
-        ? translate("run.polishFixed", { count: issues.length, attempts: fixed.attempts })
-        : translate("run.polishLeft", { count: issues.length, attempts: ATTEMPTS }),
-    ].join(" · "),
-    detail: [risks, "", ...fixed.tried].join("\n"),
-  };
+/**
+ * One reading of the change, by a reviewer that has not seen it before.
+ *
+ * The diff goes into a file rather than into the prompt, whole: a prompt has a
+ * length the diff does not, and the reviewer is told to read the file to its
+ * end. A reply that holds no review is asked again - read as "no findings", it
+ * would wave the change through unreviewed.
+ */
+async function reviewOnce(
+  context: Context,
+  set: Setter,
+  get: Getter,
+  diff: string,
+  earlier: string,
+): Promise<Review | null> {
+  await invoke("write_file", {
+    path: `${context.workRoot.replace(/[\\/]+$/, "")}/${REVIEW_DIFF_FILE}`,
+    content: diff,
+  });
+  const { survey, rules, solution } = get();
+  const asking = [
+    REVIEW_PROMPT,
+    REVIEW_READS_THE_DIFF,
+    ...conventionsOf(survey),
+    ...rulesBlock(rules),
+    ...(solution === null
+      ? []
+      : ["", "What the change was supposed to lock in:", ...solution.decisions.map((d) => `- ${d}`)]),
+    ...(earlier === "" ? [] : ["", earlier]),
+  ].join("\n");
+  return tryUntil(ATTEMPTS, async () => readReview(await readRepository(context, asking, set, "review")));
+}
+
+/** What the next reader is told about the last round: what was found, and what the author said to it. */
+function earlierReview(issues: readonly Finding[], reply: string): string {
+  return [
+    EARLIER_REVIEW,
+    ...issues.map(
+      (finding) => `- ${finding.file}:${String(finding.line)} [${finding.kind}] — ${finding.message}`,
+    ),
+    "",
+    "The author's answer:",
+    reply.trim() === "" ? "(none)" : reply.trim().slice(-AUTHOR_REPLY_LIMIT),
+  ].join("\n");
 }
 
 /** What the fixing rounds ended up doing, for the phase that reports them. */
@@ -1964,14 +2099,17 @@ interface Mending {
   mended: boolean;
   attempts: number;
   tried: string[];
+  /** What the author said last - the case for any finding it left alone. */
+  reply: string;
 }
 
 /**
  * Fixes what the reviewer found, measuring after every round.
  *
  * Nothing is claimed until it is measured again: the checks first, because they
- * are the cheap ones, then every suite against the baseline. A round that fixed
- * the finding and broke a suite has not fixed anything.
+ * are the cheap ones, then the security scanners, then every suite against the
+ * baseline. A round that fixed the finding and broke a suite has not fixed
+ * anything.
  */
 async function fixFindings(
   context: Context,
@@ -1981,9 +2119,10 @@ async function fixFindings(
 ): Promise<Mending> {
   const before = get().baseline;
   const tried: string[] = [];
+  let reply = "";
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     note(set, "review", translate("run.polishing", { attempt, of: ATTEMPTS, count: issues.length }));
-    const code = await runAgent(
+    const turn = await runCli(
       context,
       [
         POLISH_PROMPT,
@@ -1994,8 +2133,10 @@ async function fixFindings(
       ].join("\n"),
       set,
       "review",
+      "full",
     );
-    if (code === null) return { mended: false, attempts: attempt, tried };
+    if (turn.code === null) return { mended: false, attempts: attempt, tried, reply };
+    reply = turn.text;
 
     const tasks = await tasksOfRun(context, get);
     const checksNow = await runChecks(
@@ -2004,18 +2145,21 @@ async function fixFindings(
       commandIdFor(context.id),
       runCommand(set, "review"),
     );
-    const broke = newlyFailing(get().checks ?? { checks: [] }, checksNow);
-    let stillGreen = broke.length === 0;
+    let stillGreen = newlyFailing(get().checks ?? { checks: [] }, checksNow).length === 0;
+    if (stillGreen) {
+      const scan = await securityNow(context, set, get, "review");
+      stillGreen = scan === null || (scan.silent.length === 0 && scan.introduced.length === 0);
+    }
     if (stillGreen && before !== null && measured(before).length > 0) {
       const after = await suitesNow(context, set, get, "review", before);
       const verdict = judge(before, after);
       set({ verdict });
       stillGreen = !verdict.blocks;
     }
-    if (stillGreen) return { mended: true, attempts: attempt, tried };
+    if (stillGreen) return { mended: true, attempts: attempt, tried, reply };
     tried.push(translate("run.polishBroke", { attempt }));
   }
-  return { mended: false, attempts: ATTEMPTS, tried };
+  return { mended: false, attempts: ATTEMPTS, tried, reply };
 }
 
 /**
@@ -2086,6 +2230,7 @@ async function report(context: Context, set: Setter, get: Getter): Promise<Phase
     evidenceRequired,
     environment: state.environment,
     yourEdits: state.yourEdits,
+    security: state.security,
   });
   await writeReport(context.home, state.run.id, markdown);
 
@@ -2122,8 +2267,16 @@ const SURVEY_FILE_LIMIT = 40;
  * a handful of suites declares them properly.
  */
 const DISCOVERED_SUITE_LIMIT = 5;
-/** How much of a diff is worth sending to a reviewer. */
-const DIFF_LIMIT = 12_000;
+/** Where the reviewer reads the whole change, inside the project's `.aime/`. */
+const REVIEW_DIFF_FILE = ".aime/review/change.diff";
+/**
+ * Readings of a change in one review phase: the first, and two more after
+ * fixes. A finding that survives three readers and two rounds of fixing is not
+ * one round from closing.
+ */
+const REVIEW_ROUNDS = 3;
+/** How much of the author's answer to a review the next reader is shown. */
+const AUTHOR_REPLY_LIMIT = 4_000;
 /** How much of a failing suite's output the agent is shown when repairing. */
 const SUITE_OUTPUT_LIMIT = 8_000;
 
@@ -2591,6 +2744,151 @@ async function allSuiteTasks(context: Context, get: Getter): Promise<TaskDef[]> 
  * and the first line of code there is a person with an editor - and if they
  * changed what proof looks like, that is the definition the run must work to.
  */
+/**
+ * The scanners this project is measured by, and what they found before the change.
+ *
+ * Which scanners fit is a question about the project, so the AI answers it -
+ * and installs what is missing, as a developer wiring them into CI would. A
+ * scanner is believed only once Aime has run it here and read a SARIF log out
+ * of what it wrote; one that does not answer goes back to the AI with its own
+ * output, the way a broken build does. A project that kept `scanners.json`
+ * from an earlier run is measured with it straight away, and the AI is only
+ * asked again when that stops working.
+ */
+async function setUpSecurity(context: Context, set: Setter): Promise<SecurityPass> {
+  let setup = await readScannerSetup(context.workRoot);
+  let owed = "";
+  let scan: SecurityScan = { findings: [], silent: [] };
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+    if (setup === null || owed !== "") {
+      note(set, "understand", translate("run.securitySetup"));
+      const code = await runAgent(
+        context,
+        [SECURITY_SETUP_PROMPT, owed].filter(Boolean).join("\n\n"),
+        set,
+        "understand",
+      );
+      if (code === null) break;
+      setup = await readScannerSetup(context.workRoot);
+    }
+    if (setup === null) {
+      owed = SCANNERS_UNREADABLE;
+      continue;
+    }
+    if (setup.scanners.length === 0) {
+      return { scanners: [], findings: [], unavailable: setup.reason || translate("run.securityNoReason") };
+    }
+    scan = await scanSecurity(context, setup.scanners, "before", set, "understand");
+    if (scan.silent.length === 0)
+      return { scanners: setup.scanners, findings: scan.findings, unavailable: "" };
+    owed = [SCANNERS_SILENT, ...scan.silent.map(silentEvidence)].join("\n\n");
+  }
+  // What answered is kept, and what never did is said rather than dropped.
+  const quiet = new Set(scan.silent.map((one) => one.scanner.label));
+  return {
+    scanners: (setup?.scanners ?? []).filter((scanner) => !quiet.has(scanner.label)),
+    findings: scan.findings,
+    unavailable: quiet.size > 0 ? [...quiet].join(", ") : translate("run.securityUnreadable"),
+  };
+}
+
+/** What the scanners said in one pass. */
+interface SecurityScan {
+  findings: SecurityFinding[];
+  /** Scanners that left no SARIF log to read, with what they printed instead. */
+  silent: { scanner: Scanner; output: string }[];
+}
+
+/** Every scanner once, each writing its own log for this pass. */
+async function scanSecurity(
+  context: Context,
+  scanners: readonly Scanner[],
+  pass: "before" | "after",
+  set: Setter,
+  phase: PhaseId,
+): Promise<SecurityScan> {
+  const findings: SecurityFinding[] = [];
+  const silent: SecurityScan["silent"] = [];
+  for (const scanner of scanners) {
+    const log = sarifPathFor(context.workRoot, scanner, pass);
+    // A log left by an earlier round would otherwise be read as this one's
+    // answer when the scanner fails to write.
+    try {
+      await invoke("delete_path", { path: log });
+    } catch {
+      // Not there yet, which is the state this asks for.
+    }
+    const outcome = await runCommand(set, phase)(
+      commandIdFor(context.id)(),
+      commandFor(scanner, log),
+      scanner.dir === "." ? context.workRoot : `${context.workRoot}/${scanner.dir}`,
+      SUITE_TIMEOUT_MS,
+    );
+    const found = await readSarif(log, scanner, context.workRoot);
+    if (found === null) silent.push({ scanner, output: allOutput(outcome).slice(-SUITE_OUTPUT_LIMIT) });
+    else findings.push(...found);
+  }
+  return { findings, silent };
+}
+
+/**
+ * What the change has brought in, by the scanners the baseline was taken
+ * with; null when the project is measured by none.
+ */
+async function securityNow(
+  context: Context,
+  set: Setter,
+  get: Getter,
+  phase: PhaseId,
+): Promise<(SecurityScan & { introduced: SecurityFinding[] }) | null> {
+  const security = get().security;
+  if (security === null || security.scanners.length === 0) return null;
+  const scan = await scanSecurity(context, security.scanners, "after", set, phase);
+  return { ...scan, introduced: newFindings(security.findings, scan.findings) };
+}
+
+async function readScannerSetup(root: string): Promise<ScannerSetup | null> {
+  try {
+    return parseScanners(await invoke<string>("read_file", { path: `${root}/${SCANNERS_FILE}` }));
+  } catch {
+    return null; // never written: the AI has not set any up for this project yet
+  }
+}
+
+async function readSarif(path: string, scanner: Scanner, root: string): Promise<SecurityFinding[] | null> {
+  try {
+    return parseSarif(await invoke<string>("read_file", { path }), scanner, root);
+  } catch {
+    return null; // the scanner wrote nothing, which its output will explain
+  }
+}
+
+function silentEvidence({ scanner, output }: SecurityScan["silent"][number]): string {
+  return [`$ ${scanner.command}`, output || translate("run.securityNoOutput")].join("\n");
+}
+
+/** The security baseline as one line of the first phase's detail. */
+function describeSecurity(security: SecurityPass): string {
+  if (security.scanners.length === 0) {
+    return translate("run.securityUnavailable", { reason: security.unavailable });
+  }
+  const taken = translate("run.securityBaseline", {
+    scanners: security.scanners.map((one) => one.label).join(", "),
+    count: security.findings.length,
+  });
+  return security.unavailable === ""
+    ? taken
+    : `${taken} · ${translate("run.securityPartly", { scanners: security.unavailable })}`;
+}
+
+/** The security line of a passing summary, when the project has scanners. */
+function securityHeld(get: Getter): string {
+  const scanners = get().security?.scanners ?? [];
+  return scanners.length === 0
+    ? ""
+    : translate("run.securityHeld", { scanners: scanners.map((one) => one.label).join(", ") });
+}
+
 async function agreedCases(root: string, get: Getter, set: Setter): Promise<TestCases | null> {
   const onDisk = await loadTestCases(root);
   if (onDisk === null) return get().cases;
@@ -2869,11 +3167,63 @@ Run the failing command again when you are done. Do not commit anything.`;
 const POLISH_PROMPT = `A reviewer with no stake in your work read the change and found these. Each one
 came with a way to prove it, so each one is checkable.
 
-Fix them. If one of them is wrong, leave the code alone and say why in your final message - a
-reviewer can be mistaken, and a change made to please a mistaken reviewer is worse than the finding.
+Fix them. If one of them is wrong, leave the code alone and say why in your final message: your
+reasons go to the next reviewer, who reads the change again and decides - a reviewer can be mistaken,
+and a change made to please a mistaken reviewer is worse than the finding. A security finding is not
+answered by calling the risk acceptable; fix it, or show the path an attacker would need does not exist.
 Keep every test passing and do not weaken one to close a finding.
 
 Do not commit anything.
+
+The findings:`;
+
+const REVIEW_READS_THE_DIFF = `
+The change under review is the file ${REVIEW_DIFF_FILE} - all of it, exactly as git reports it. Read
+that file to its end before you answer, however long it is, and open the files it touches wherever
+the diff alone does not show enough to judge them.`;
+
+const EARLIER_REVIEW = `This change has been reviewed before. The author worked on these findings:`;
+
+const SECURITY_SETUP_PROMPT = `Set up security scanning for this repository, the way a team wires scanners into
+its CI. Aime runs what you set up before and after every change and will not finish a change that
+brings in a new finding, so choose scanners that fit what is actually here.
+
+Cover three things, with whichever scanners suit this repository's languages and package managers:
+- the code: static analysis for injection, broken access control, unsafe deserialisation, weak
+  cryptography and the rest of the OWASP Top Ten that can apply;
+- the dependencies: known vulnerabilities in what the lockfiles pin;
+- secrets written into files.
+
+Every scanner must write SARIF 2.1.0 - Semgrep, OSV-Scanner, Gitleaks, Trivy, Bandit, gosec and most
+others can. Install what is missing on this machine without asking, the usual way for this platform
+and preferring a per-user install, then run each command yourself to see that it works here.
+
+Write .aime/security/scanners.json:
+{"scanners": [{"label": "gitleaks", "command": "gitleaks dir . --report-format sarif --report-path {sarif} --no-banner", "dir": "."}]}
+
+- "command" is one line for the shell Aime runs commands with - cmd.exe on Windows, sh elsewhere.
+  Aime replaces {sarif} with the quoted path of the file it reads, so write it once and unquoted.
+  A scanner that exits non-zero because it found something is fine.
+- "dir" is where the command runs, relative to the repository root.
+- A scanner only reads: no --fix, no autofix, no baseline or ignore file written into the project.
+- If no scanner can be made to run here, write {"scanners": [], "reason": "why"}.
+
+Change nothing else in the project. Do not commit anything.`;
+
+const SCANNERS_UNREADABLE = `Aime could not read .aime/security/scanners.json as {"scanners": [{"label", "command", "dir"}]},
+with {sarif} in every command. Write it again in exactly that shape.`;
+
+const SCANNERS_SILENT = `These scanners ran but left no SARIF log Aime could read at the {sarif} path. Make
+each one work here - install what it needs, fix its command line - and rewrite
+.aime/security/scanners.json. A scanner that cannot be made to work on this machine is taken out of the file.`;
+
+const FIX_SECURITY_PROMPT = `The security scanners this project is measured by report these in your change -
+they were not there before it. Fix each one in the code: validate or encode the input, read the secret
+from the environment or the platform's secret store instead of the source, move to a release of the
+dependency that has the advisory fixed.
+
+Do not silence a scanner: no suppression comments, no changes to its configuration or to
+.aime/security, and no test removed to get there. Do not commit anything.
 
 The findings:`;
 
@@ -2900,10 +3250,15 @@ function runCommand(set: Setter, phase: PhaseId) {
  * Runs the CLI as an agent - with tools, in the project - and waits for it.
  *
  * The permission is the phase's, not the run's: a phase that only has to read
- * the repository is launched read-only, and the two that change it are the only
- * ones ever launched with edits. That is a real constraint at the CLI rather
- * than a sentence in a prompt. The turn itself - listen before spawn, attribute
- * by run id, report the real exit - is `lib/agentTurn`, shared with the deploy.
+ * the repository is launched read-only - a real constraint at the CLI rather
+ * than a sentence in a prompt - and the phases that change it with full
+ * permission. Not "edits": measured with Claude Code 2.1.286, `acceptEdits`
+ * in `-p` runs only the commands on that machine's own allow list, so `node
+ * t.cjs` was refused while `npm install` ran because this machine happened to
+ * allow it. A fresh install could not run its tests, its build or a scanner
+ * install. The run works on a branch of its own with an undo point behind it.
+ * The turn itself - listen before spawn, attribute by run id, report the real
+ * exit - is `lib/agentTurn`, shared with the deploy.
  *
  * Answers the exit code and whatever the agent said, or a null code when it was
  * cancelled - which the backend reports as an exit carrying no code at all.
@@ -2913,7 +3268,7 @@ async function runCli(
   prompt: string,
   set: Setter,
   phase: PhaseId,
-  permission: "readOnly" | "edits",
+  permission: "readOnly" | "full",
 ): Promise<{ code: number | null; text: string }> {
   const engine = engineFor(context.id);
   const outcome = await agentTurn({
@@ -2936,7 +3291,7 @@ async function runCli(
 
 /** The phases that change the project, each in its own run's tree. */
 async function runAgent(context: Context, prompt: string, set: Setter, phase: PhaseId = "implement") {
-  const { code } = await runCli(context, prompt, set, phase, "edits");
+  const { code } = await runCli(context, prompt, set, phase, "full");
   return code;
 }
 

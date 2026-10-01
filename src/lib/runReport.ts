@@ -3,6 +3,7 @@ import type { Brief, Plan, Review, Solution, TestCases } from "./aiRun";
 import type { GateVerdict } from "./regressionGate";
 import type { Run } from "./runPlan";
 import type { CaseGap, CaseVerdict } from "./testCaseFile";
+import type { SecurityPass } from "./securityGate";
 import type { TestEnvironment } from "./testEnvironment";
 
 /**
@@ -136,6 +137,8 @@ export interface ReportInput {
   environment: TestEnvironment | null;
   /** Files the person saved inside the run's trees while it was working. */
   yourEdits: readonly string[];
+  /** The security scanners the change was measured by, and what they found before it. */
+  security: SecurityPass | null;
 }
 
 /**
@@ -246,6 +249,7 @@ export function renderReport(input: ReportInput): string {
     for (const quiet of verdict.silent) lines.push(`| ${cell(quiet.label)} | — | — | stopped answering |`);
   }
   if (input.environment !== null) lines.push(...environmentLines(input.environment));
+  if (input.security !== null) lines.push(...securityLines(input.security));
   if (review !== null && (review.risks.length > 0 || review.findings.length > 0)) {
     lines.push("", "## Review");
     if (review.risks.length > 0) {
@@ -275,6 +279,24 @@ export function renderReport(input: ReportInput): string {
     for (const file of input.yourEdits) lines.push(`- \`${file}\``);
   }
   return `${lines.join("\n")}\n`;
+}
+
+/**
+ * Which scanners measured the change. The run does not get this far while the
+ * change has brought in a finding, so what is left to say is what they were,
+ * what the project already had, and any that could not run here.
+ */
+function securityLines(security: SecurityPass): string[] {
+  const lines = ["", "## Security", ""];
+  if (security.scanners.length === 0) {
+    return [...lines, `No security scanner could run on this machine: ${security.unavailable}`];
+  }
+  const labels = security.scanners.map((scanner) => `\`${scanner.label}\``).join(", ");
+  lines.push(
+    `Measured before and after the change by ${labels}: ${String(security.findings.length)} finding(s) were the project's own before it, and the change brought in none when it was last measured.`,
+  );
+  if (security.unavailable !== "") lines.push("", `Could not run on this machine: ${security.unavailable}`);
+  return lines;
 }
 
 /** One table cell: a pipe inside it would silently split the row in two. */
