@@ -160,6 +160,7 @@ pub fn run() {
             git::git_checkout_tracking,
             git::git_worktree_add,
             git::git_worktree_remove,
+            git::git_worktree_discard,
             git::git_commit_all,
             git::git_checkout,
             git::git_create_branch,

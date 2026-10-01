@@ -914,6 +914,25 @@ pub async fn git_worktree_remove(root: String, path: String) -> Result<String, S
     run_git(&root, &["worktree", "remove", "--force", &path]).await
 }
 
+/// Removes a worktree Aime made for its own use, without going through any
+/// link inside it.
+///
+/// `git worktree remove` deletes recursively and on Windows walks into
+/// junctions as if they were folders - measured: a worktree whose
+/// `node_modules` was a junction took 38 packages of the real one with it. A
+/// package manager can leave links like that in any install. `remove_dir_all`
+/// deletes a link without following it, and `prune` then lets git forget the
+/// worktree whose folder is gone.
+#[tauri::command]
+pub async fn git_worktree_discard(root: String, path: String) -> Result<(), String> {
+    let folder = path.clone();
+    tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&folder))
+        .await
+        .map_err(|err| format!("Could not remove {path}: {err}"))?
+        .map_err(|err| format!("Could not remove {path}: {err}"))?;
+    run_git(&root, &["worktree", "prune"]).await.map(|_| ())
+}
+
 #[tauri::command]
 pub async fn git_checkout(root: String, name: String) -> Result<String, String> {
     run_git(&root, &["checkout", &name]).await
@@ -1675,5 +1694,77 @@ mod tests {
         assert_eq!(status.files[0].path, "new-name.rs");
         assert_eq!(status.files[0].orig_path.as_deref(), Some("old-name.rs"));
         assert_eq!(status.files[0].staged, "R");
+    }
+
+    fn block_on<T>(work: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Runtime::new().expect("runtime").block_on(work)
+    }
+
+    /// A link to `target` at `link`: a junction on Windows - what package
+    /// managers make there, and needs no administrator - a symlink elsewhere.
+    fn link_folder(target: &std::path::Path, link: &std::path::Path) {
+        #[cfg(target_os = "windows")]
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("mklink ran")
+            .status
+            .success();
+        #[cfg(not(target_os = "windows"))]
+        let made = std::os::unix::fs::symlink(target, link).is_ok();
+        assert!(made, "the link could not be made");
+    }
+
+    #[test]
+    fn a_discarded_worktree_takes_nothing_through_its_links() {
+        let base = std::env::temp_dir().join(format!("aime-discard-{}", std::process::id()));
+        let repo = base.join("repo");
+        let kept = base.join("kept");
+        std::fs::create_dir_all(&repo).expect("mkdir");
+        std::fs::create_dir_all(&kept).expect("mkdir");
+        std::fs::write(kept.join("package.json"), "{}").expect("write");
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("git ran")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&[
+            "-c",
+            "user.email=t@aime.test",
+            "-c",
+            "user.name=Aime",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "first",
+        ]);
+        let root = repo.to_string_lossy().to_string();
+        let tree = base.join("repo-perf");
+        let path = tree.to_string_lossy().to_string();
+        block_on(git_worktree_add(root.clone(), path.clone())).expect("worktree added");
+        link_folder(&kept, &tree.join("node_modules"));
+
+        block_on(git_worktree_discard(root.clone(), path)).expect("discarded");
+
+        assert!(!tree.exists(), "the worktree is still there");
+        assert!(
+            kept.join("package.json").exists(),
+            "the discard went through the link"
+        );
+        let listed = block_on(run_git(&root, &["worktree", "list"])).expect("listed");
+        assert!(
+            !listed.contains("repo-perf"),
+            "git still lists the worktree: {listed}"
+        );
+        std::fs::remove_dir_all(&base).ok();
     }
 }
