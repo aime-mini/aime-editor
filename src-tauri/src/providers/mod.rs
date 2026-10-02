@@ -116,7 +116,7 @@ fn config_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// The key Aime stores for a provider, for the one route where Aime stores it.
-fn stored_key(app: &AppHandle, provider_id: &str) -> Option<String> {
+pub(super) fn stored_key(app: &AppHandle, provider_id: &str) -> Option<String> {
     match config_dir(app) {
         Ok(dir) => keys::api_key(&dir, provider_id),
         Err(err) => {
@@ -640,6 +640,7 @@ mod tests {
             api_key_env: String::new(),
             api_key_login_args: vec![script.to_string_lossy().to_string()],
             models_args: Vec::new(),
+            models_url: String::new(),
         };
         (GenericAdapter { config }, sink)
     }

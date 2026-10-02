@@ -135,7 +135,7 @@ const EN: HelpTopic[] = [
     id: "ai-model",
     section: "AI",
     title: "Model & effort",
-    body: "The chips above the chat choose the model and the reasoning effort of the selected CLI. The model list is read from the installed CLI itself each time Aime checks it, so a model that shipped yesterday is there today: Claude Code is read for the model names it carries plus what its service offers your account, Codex for its own catalog, and a CLI you added is asked with the list command recorded in providers.json (modelsArgs). For Claude, aliases like Opus (latest) always mean the newest release; pinned versions (e.g. Opus 5.5) stay fixed. The effort list follows the chosen model - only levels that model accepts are offered. Auto leaves the decision to the CLI's own settings.",
+    body: "The chips above the chat choose the model and the reasoning effort of the selected CLI. The model list is read from the installed CLI itself each time Aime checks it, so a model that shipped yesterday is there today: Claude Code is read for the model names it carries plus what its service offers your account, Codex for its own catalog, and a CLI you added is asked with the list command recorded in providers.json (modelsArgs) or, when it has none, its service's model endpoint (modelsUrl) using the key you gave Aime. For Claude, aliases like Opus (latest) always mean the newest release; pinned versions (e.g. Opus 5.5) stay fixed. The effort list follows the chosen model - only levels that model accepts are offered. Auto leaves the decision to the CLI's own settings.",
     keywords: "opus sonnet haiku fable gpt codex gemini version xhigh ultra effort picker catalog list",
   },
   {
@@ -521,7 +521,7 @@ const VI: HelpTopic[] = [
     id: "ai-model",
     section: "AI",
     title: "Model & effort",
-    body: "Hai chip trên khung chat chọn model và mức suy luận của CLI đang dùng. Danh sách model được đọc từ chính CLI đã cài mỗi lần Aime kiểm tra nó, nên model mới ra hôm qua thì hôm nay đã có: Claude Code được đọc các tên model nó mang theo cộng với những gì dịch vụ mở cho tài khoản của anh, Codex đọc danh mục của nó, còn CLI anh tự thêm thì được hỏi bằng lệnh liệt kê ghi trong providers.json (modelsArgs). Với Claude, alias như Opus (latest) luôn là bản mới nhất; bản pin (vd Opus 5.5) đứng yên. Danh sách effort bám theo model đã chọn - chỉ hiện mức model đó chấp nhận. Auto = để cấu hình của chính CLI quyết định.",
+    body: "Hai chip trên khung chat chọn model và mức suy luận của CLI đang dùng. Danh sách model được đọc từ chính CLI đã cài mỗi lần Aime kiểm tra nó, nên model mới ra hôm qua thì hôm nay đã có: Claude Code được đọc các tên model nó mang theo cộng với những gì dịch vụ mở cho tài khoản của anh, Codex đọc danh mục của nó, còn CLI anh tự thêm thì được hỏi bằng lệnh liệt kê ghi trong providers.json (modelsArgs), hoặc khi nó không có lệnh ấy thì qua endpoint model của dịch vụ (modelsUrl) với key anh đã đưa cho Aime. Với Claude, alias như Opus (latest) luôn là bản mới nhất; bản pin (vd Opus 5.5) đứng yên. Danh sách effort bám theo model đã chọn - chỉ hiện mức model đó chấp nhận. Auto = để cấu hình của chính CLI quyết định.",
     keywords: "opus sonnet haiku fable gpt codex gemini phiên bản effort ultra danh mục liệt kê",
   },
   {

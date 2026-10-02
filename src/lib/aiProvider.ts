@@ -47,6 +47,12 @@ const SCHEMA = [
     'run with `command` - e.g. `["models", "list", "--json"]`. I run it myself and read the output as JSON ' +
     "(an array of names or of objects, or an object holding one) or as lines whose first word is the model " +
     "name, so the picker always shows what the CLI offers today. Leave it out if the CLI has no such command.",
+  "- `modelsUrl` (string): for a CLI with no list command, the URL of its service's model list, with " +
+    "`{apiKey}` where the key goes - I replace it with the key the user gave me for this provider and " +
+    "fetch it myself, reading the JSON the same way. Gemini CLI has no list command (its models are " +
+    "compiled in), so for it this is " +
+    "`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key={apiKey}`. " +
+    "Never put a key itself here.",
   '- `memory` ("native" | "config-pointer" | "prompt-inject"): how the CLI finds project knowledge. ' +
     '"native" = it reads a context file of its own; "config-pointer" = its context filename is ' +
     'configurable; "prompt-inject" = it has no such convention, so Aime prepends AGENTS.md to prompts. ' +
@@ -75,7 +81,8 @@ export function buildAddProviderPrompt(request: AddProviderRequest): string {
       "`parser`, `textField` and `promptStdin` - guessing them does not.",
     "4. Find out how it lists its models without a prompt (its help, a `models` or `list` subcommand). " +
       "If there is such a command, run it, make sure it prints model names, and put its arguments in " +
-      "`modelsArgs`; if there is none, say so and leave the field out.",
+      "`modelsArgs`. If there is none but the CLI's service has a models endpoint that takes an API key, " +
+      "put that URL in `modelsUrl` with `{apiKey}` in place of the key. Say which you chose and why.",
     `5. Write the entry into ${configPath}. That file is a JSON array. **Keep every entry already in it** ` +
       "and add yours, or correct the existing entry if one for this CLI is already there.",
     "",

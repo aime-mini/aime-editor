@@ -91,6 +91,12 @@ pub struct ProviderConfig {
     /// and the picker offers only its default.
     #[serde(default)]
     pub models_args: Vec<String>,
+    /// For a CLI with no list command: the URL of its service's model list,
+    /// `{apiKey}` standing for the key the user gave Aime for this provider
+    /// (e.g. Gemini's `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key={apiKey}`).
+    /// `modelsArgs` wins when both are set; empty = no such endpoint.
+    #[serde(default)]
+    pub models_url: String,
 }
 
 fn default_text_field() -> String {
@@ -324,6 +330,7 @@ mod tests {
                 api_key_env: String::new(),
                 api_key_login_args: Vec::new(),
                 models_args: Vec::new(),
+                models_url: String::new(),
             },
         }
     }

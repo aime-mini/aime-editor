@@ -21,13 +21,18 @@
 //!   the server's extra options come first.
 //!
 //! - **A configured CLI** (`providers.json`) names its own list command in
-//!   `modelsArgs`, filled in by the AI that read the CLI's help when it was
-//!   added; the output is read as JSON or as lines. Without one the picker
-//!   offers the CLI's default only.
+//!   `modelsArgs`, or its service's model endpoint in `modelsUrl`, filled in
+//!   by the AI that read the CLI's help when it was added; the output is read
+//!   as JSON or as lines. Without either the picker offers the CLI's default
+//!   only. Measured on gemini-cli 0.62.0: no list flag, and its bundle holds
+//!   the model names only as variables, so a scan of the program (thirty
+//!   distinct `gemini-*` strings, test fixtures among them) is no catalog -
+//!   Google's `models.list` endpoint is, with the user's key.
 //!
 //! The aliases (`opus`, `sonnet`, …) and the "Auto" choice are the
 //! frontend's: they are not model names and never go stale (`lib/providers.ts`).
 
+use super::generic::ProviderConfig;
 use crate::home::home_dir;
 use crate::program::Program;
 use serde::{Deserialize, Serialize};
@@ -59,7 +64,7 @@ pub async fn provider_models(app: AppHandle, provider_id: String) -> Result<Vec<
             .await
             .map_err(|e| e.to_string())?,
         "codex" => codex_models().await,
-        other => configured_models(other).await,
+        other => configured_models(&app, other).await,
     }
 }
 
@@ -446,14 +451,15 @@ fn parse_codex_catalog(text: &str) -> Result<Vec<ModelChoice>, String> {
 
 // ---- Configured CLIs ---------------------------------------------------------
 
-/// A CLI described in `providers.json`: its own list command, when the entry
-/// names one; nothing, rather than an error, when it does not.
-async fn configured_models(provider_id: &str) -> Result<Vec<ModelChoice>, String> {
+/// A CLI described in `providers.json`: its own list command when the entry
+/// names one, its service's endpoint otherwise; nothing, rather than an
+/// error, when it has neither.
+async fn configured_models(app: &AppHandle, provider_id: &str) -> Result<Vec<ModelChoice>, String> {
     let adapter =
         super::generic::find(provider_id).ok_or_else(|| format!("Unsupported provider: {provider_id}"))?;
     let config = &adapter.config;
     if config.models_args.is_empty() {
-        return Ok(Vec::new());
+        return listed_over_http(app, config).await;
     }
     let command = format!("{} {}", config.command, config.models_args.join(" "));
     let output = tokio::time::timeout(
@@ -470,6 +476,56 @@ async fn configured_models(provider_id: &str) -> Result<Vec<ModelChoice>, String
     Ok(parse_listing(&String::from_utf8_lossy(&output.stdout)))
 }
 
+/// What stands for the user's key in `modelsUrl`.
+const API_KEY_PLACEHOLDER: &str = "{apiKey}";
+/// Google's word for a model that answers a chat; one that only embeds or
+/// renders says otherwise in the same field and is not offered.
+const CHAT_METHOD: &str = "generateContent";
+const METHODS_FIELD: &str = "supportedGenerationMethods";
+
+/// The models a service lists over HTTP. The key is never written anywhere:
+/// errors name the template, not the URL that was fetched.
+async fn listed_over_http(app: &AppHandle, config: &ProviderConfig) -> Result<Vec<ModelChoice>, String> {
+    if config.models_url.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(url) = models_url_for(&config.models_url, || api_key_of(app, config)) else {
+        return Ok(Vec::new()); // no key yet: the list waits for one
+    };
+    let client = crate::trackers::http::client().map_err(|e| e.to_string())?;
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("{}: {e}", config.models_url))?;
+    let status = response.status();
+    let body = response.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        let said: String = body.trim().chars().take(300).collect();
+        return Err(format!("{} answered {status}: {said}", config.models_url));
+    }
+    Ok(parse_listing(&body))
+}
+
+/// The URL to fetch, or None when it needs a key there is none of.
+fn models_url_for(template: &str, key: impl FnOnce() -> Option<String>) -> Option<String> {
+    if !template.contains(API_KEY_PLACEHOLDER) {
+        return Some(template.to_string());
+    }
+    key()
+        .filter(|key| !key.is_empty())
+        .map(|key| template.replace(API_KEY_PLACEHOLDER, &key))
+}
+
+/// The key Aime keeps for the provider, or the one in the variable its CLI reads.
+fn api_key_of(app: &AppHandle, config: &ProviderConfig) -> Option<String> {
+    super::stored_key(app, &config.id).or_else(|| {
+        (!config.api_key_env.is_empty())
+            .then(|| std::env::var(&config.api_key_env).ok())
+            .flatten()
+    })
+}
+
 /// Fields a listing's objects name a model by, and label it by, most specific first.
 const NAME_FIELDS: [&str; 5] = ["id", "slug", "model", "name", "value"];
 const LABEL_FIELDS: [&str; 4] = ["displayName", "display_name", "label", "name"];
@@ -478,12 +534,35 @@ const LABEL_FIELDS: [&str; 4] = ["displayName", "display_name", "label", "name"]
 /// objects, an object holding one such array, or plain lines whose first
 /// word is the name and the rest its description.
 fn parse_listing(text: &str) -> Vec<ModelChoice> {
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
-        if let Some(items) = model_array(&json) {
-            return items.iter().filter_map(model_from_json).collect();
-        }
+    let from_json = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|json| model_array(&json).map(|items| items.iter().filter_map(model_from_json).collect()));
+    without_shared_prefix(from_json.unwrap_or_else(|| text.lines().filter_map(model_from_line).collect()))
+}
+
+/// Google names models `models/gemini-2.5-pro` while its CLI takes
+/// `gemini-2.5-pro`: a path segment every name shares is a resource prefix,
+/// not part of the name. Names that differ in it (`openai/…`, `anthropic/…`)
+/// keep it, since there it tells models apart.
+fn without_shared_prefix(mut models: Vec<ModelChoice>) -> Vec<ModelChoice> {
+    let Some(first) = models.first() else {
+        return models;
+    };
+    let Some(slash) = first.value.find('/') else {
+        return models;
+    };
+    let prefix = first.value[..=slash].to_string();
+    if !models.iter().all(|model| model.value.starts_with(&prefix)) {
+        return models;
     }
-    text.lines().filter_map(model_from_line).collect()
+    for model in &mut models {
+        let bare = model.value[prefix.len()..].to_string();
+        if model.label == model.value {
+            model.label = bare.clone();
+        }
+        model.value = bare;
+    }
+    models
 }
 
 fn model_array(json: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
@@ -505,6 +584,11 @@ fn model_from_json(item: &serde_json::Value) -> Option<ModelChoice> {
             efforts: None,
         }),
         serde_json::Value::Object(fields) => {
+            if let Some(serde_json::Value::Array(methods)) = fields.get(METHODS_FIELD) {
+                if !methods.iter().any(|method| method.as_str() == Some(CHAT_METHOD)) {
+                    return None;
+                }
+            }
             let text_of = |names: &[&str]| {
                 names
                     .iter()
@@ -586,6 +670,46 @@ NAME            DESCRIPTION
             ]
         );
         assert!(parse_listing("").is_empty());
+    }
+
+    #[test]
+    fn googles_model_list_loses_its_resource_prefix_and_its_non_chat_models() {
+        // The shape `GET /v1beta/models` documents (ai.google.dev/api/models, 2026-10-02).
+        let text = r#"{"models":[
+          {"name":"models/gemini-2.5-pro","displayName":"Gemini 2.5 Pro","supportedGenerationMethods":["generateContent","countTokens"]},
+          {"name":"models/gemini-embedding-001","displayName":"Gemini Embedding","supportedGenerationMethods":["embedContent"]},
+          {"name":"models/gemini-3.8-flash","displayName":"Gemini 3.8 Flash","supportedGenerationMethods":["generateContent"]}
+        ],"nextPageToken":""}"#;
+        assert_eq!(
+            parse_listing(text),
+            [
+                choice("gemini-2.5-pro", "Gemini 2.5 Pro"),
+                choice("gemini-3.8-flash", "Gemini 3.8 Flash")
+            ]
+        );
+        // A prefix that tells models apart is part of the name.
+        assert_eq!(
+            parse_listing(r#"["openai/gpt-4o", "anthropic/claude-opus-5"]"#),
+            [
+                choice("openai/gpt-4o", "openai/gpt-4o"),
+                choice("anthropic/claude-opus-5", "anthropic/claude-opus-5")
+            ]
+        );
+    }
+
+    #[test]
+    fn the_endpoint_is_fetched_only_once_there_is_a_key_for_it() {
+        let template = "https://example.test/v1/models?key={apiKey}";
+        assert_eq!(models_url_for(template, || None), None);
+        assert_eq!(models_url_for(template, || Some(String::new())), None);
+        assert_eq!(
+            models_url_for(template, || Some("k-1".to_string())).as_deref(),
+            Some("https://example.test/v1/models?key=k-1")
+        );
+        assert_eq!(
+            models_url_for("https://example.test/models", || None).as_deref(),
+            Some("https://example.test/models")
+        );
     }
 
     fn id(family: &str, major: u32, minor: Option<u32>) -> ModelId {
