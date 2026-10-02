@@ -174,11 +174,13 @@ pub trait Adapter: Send + Sync {
 
 /// Injected into every turn, by every adapter. Chat context can be compacted or
 /// lost (limits, restarts, new sessions) - memories kept as files cannot, and
-/// Aime hands each turn their index to choose from (`lib/knowledge.ts`). One
-/// memory per fact, shared by every provider.
+/// Aime hands a conversation their index to choose from (`lib/knowledge.ts`):
+/// once, and again when a memory changed or the CLI compacted what it had.
+/// One memory per fact, shared by every provider.
 pub const MEMORY_PROMPT: &str = "This project keeps its memory in .aime/memory/, one fact per file. \
-Aime attaches the index of every memory to each turn in an <aime_memory> block; open the ones that \
-bear on the request before you act. Write a memory, without being asked, when the user states a \
+Aime hands you the index of every memory in an <aime_memory> block - at the start of a conversation, \
+and again whenever a memory changed; a turn without the block means the index you already have still \
+holds. Open the memories that bear on the request before you act. Write a memory, without being asked, when the user states a \
 decision or a preference, and when the user corrects you - a correction is a decision (kind: \
 decision); when you learn how this codebase does something (convention), when you hit a trap or fix \
 a bug whose cause was not obvious (pitfall), and when you stop with work unfinished (work). Each \

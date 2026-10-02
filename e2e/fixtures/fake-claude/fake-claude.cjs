@@ -145,6 +145,21 @@ const SCENARIOS = {
     say(args.includes("--resume") ? "Picked up where it stopped." : "Started over without the session.");
     result(0, 0.7);
   },
+
+  /**
+   * A turn the CLI compacted on its way to answering - the line shapes of
+   * `/compact` on 2.1.287: a status, the boundary with what it dropped, then
+   * the answer as usual.
+   */
+  async compact({ say, system, result }) {
+    system("status", { status: "compacting" });
+    system("status", { status: null, compact_result: "success" });
+    system("compact_boundary", {
+      compact_metadata: { trigger: "auto", pre_tokens: 150_000, post_tokens: 2_000 },
+    });
+    say("Compacted, then answered.");
+    result(0, 0.8);
+  },
 };
 
 async function main() {

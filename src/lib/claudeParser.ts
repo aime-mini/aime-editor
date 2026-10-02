@@ -110,6 +110,11 @@ export function createClaudeParser(): (raw: unknown) => UiAiEvent[] {
         // Only news when the task is one of the background ones on screen;
         // a subagent's own foreground commands start tasks too.
         return running.some((task) => task.id === raw.task_id) ? [backgroundEvent()] : [];
+      // Measured on 2.1.287 with `/compact` sent to a resumed session: a
+      // `status: compacting`, then this line with `compact_metadata`
+      // (`trigger` manual or auto, `pre_tokens`, `post_tokens`).
+      case "compact_boundary":
+        return [{ kind: "compacted" }];
       default:
         return [];
     }

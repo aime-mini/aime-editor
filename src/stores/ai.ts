@@ -3,6 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { translate } from "../i18n";
 import { createEventParser, type EventParser } from "../lib/aiParsers";
+import { fingerprint } from "../lib/fingerprint";
+import type { Focus } from "../lib/knowledge";
+import { memoryFor } from "../lib/knowledgeStore";
 import { formatProviderError } from "../lib/providerErrors";
 import { effortsOf } from "../lib/providers";
 import { Typewriter } from "../lib/typewriter";
@@ -86,6 +89,18 @@ export interface StoredSession {
   model?: string;
   effort?: string;
   usage?: TokenUsage;
+  /** Fingerprint of the project memory the CLI's session was last handed; absent when it has none. */
+  memoryIndex?: string;
+}
+
+/**
+ * What travels with a turn besides the prompt, none of it shown as the
+ * user's words: what the editor is showing (`lib/viewContext`), and the files
+ * in view, which decide what a large project memory opens on.
+ */
+export interface TurnContext {
+  view?: string | null;
+  focus?: Focus;
 }
 
 interface SessionFile {
@@ -143,6 +158,7 @@ function freshSessionIdentity() {
     messages: [],
     sessionUsage: EMPTY_USAGE,
     interrupted: false,
+    memoryIndex: null,
   };
 }
 
@@ -173,6 +189,15 @@ interface AiState {
   localId: string;
   createdAt: number;
   totalCostUsd: number;
+  /**
+   * Fingerprint of the project memory this session's CLI was last handed, or
+   * null when it was handed none. The memory index is a few thousand tokens;
+   * handed over on every turn of a resumed session it would sit in the
+   * history as many times as there were turns, and that is what pushes a
+   * long conversation into compaction. So it travels once, and again only
+   * when a memory changed or the CLI compacted what it had.
+   */
+  memoryIndex: string | null;
   /**
    * What the CLI is still running in the background for the live turn. While
    * this is not empty the turn has not ended even if the AI has stopped
@@ -222,10 +247,11 @@ interface AiState {
   /** Unbinds from the workspace (folder closed): flushes, then resets to a clean slate. */
   closeProject: () => void;
   /**
-   * Sends one turn. `context` - what the editor is showing, see `lib/viewContext` -
-   * travels with the prompt but is never shown as the user's words.
+   * Sends one turn. The context travels with the prompt but is never shown
+   * as the user's words; so does the project's memory, which the store adds
+   * itself when this session has not been handed the current one yet.
    */
-  sendPrompt: (prompt: string, cwd: string, context?: string | null) => Promise<void>;
+  sendPrompt: (prompt: string, cwd: string, context?: TurnContext) => Promise<void>;
   cancel: () => Promise<void>;
   /**
    * Picks an interrupted turn up again: the CLI's own session carries on from
@@ -293,6 +319,21 @@ function appendText(message: ChatMessage, text: string): ChatMessage {
   return { ...message, parts };
 }
 
+/**
+ * The project's memory index for this turn, or null when the session's CLI
+ * already holds the current one - or the project remembers nothing, or the
+ * memory could not be read, which costs the turn its memory, never the turn.
+ */
+async function memoryToHand(root: string, focus: Focus, handed: string | null): Promise<string | null> {
+  try {
+    const block = await memoryFor(root, focus);
+    return block !== null && fingerprint(block) !== handed ? block : null;
+  } catch (error: unknown) {
+    console.warn("the project's memory could not be read:", error);
+    return null;
+  }
+}
+
 let listenersReady = false;
 /** Most recent stderr line of the running turn — appended to exit errors. */
 let lastStderrLine = "";
@@ -302,6 +343,8 @@ let activeParser: EventParser = () => [];
 let turnStartedAt = 0;
 /** The session's cost before the turn in flight; the CLI only ever reports the running total. */
 let costBeforeTurn = 0;
+/** Fingerprint of the memory index the live turn carries, until the CLI confirms it took the turn. */
+let memoryHandedThisTurn: string | null = null;
 
 /**
  * The turn's own price, from the running total the CLI reports. A session an
@@ -338,7 +381,7 @@ export const useAi = create<AiState>((set, get) => {
   /** Upserts the live session into history and writes the project's session file. */
   const persist = async () => {
     const { projectRoot, messages, localId, sessionId, createdAt, totalCostUsd, history } = get();
-    const { providerId, model, effort, sessionUsage } = get();
+    const { providerId, model, effort, sessionUsage, memoryIndex } = get();
     if (!projectRoot || messages.length === 0) return;
     const live: StoredSession = {
       localId,
@@ -352,6 +395,7 @@ export const useAi = create<AiState>((set, get) => {
       model,
       effort,
       usage: sessionUsage,
+      memoryIndex: memoryIndex ?? undefined,
     };
     const merged = [live, ...history.filter((s) => s.localId !== localId)]
       .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -417,10 +461,16 @@ export const useAi = create<AiState>((set, get) => {
     if (ev.kind !== "retrying" && ev.kind !== "background" && get().retrying) set({ retrying: null });
     switch (ev.kind) {
       case "session-info":
-        set({ sessionId: ev.sessionId });
+        // The CLI took the turn, memory included: from here the session holds it.
+        set({ sessionId: ev.sessionId, memoryIndex: memoryHandedThisTurn ?? get().memoryIndex });
         // Saved now, while the turn is still marked unfinished: if the app is
         // closed before the turn ends, this id is what lets it be continued.
         void persist();
+        break;
+      case "compacted":
+        // What the CLI summarised may or may not still hold the index; the
+        // next turn hands it over again rather than trusting the summary.
+        set({ memoryIndex: null });
         break;
       case "retrying":
         set({ retrying: { attempt: ev.attempt, maxAttempts: ev.maxAttempts } });
@@ -516,6 +566,7 @@ export const useAi = create<AiState>((set, get) => {
     localId: crypto.randomUUID(),
     createdAt: Date.now(),
     totalCostUsd: 0,
+    memoryIndex: null,
     backgroundTasks: [],
     retrying: null,
     interrupted: false,
@@ -564,6 +615,7 @@ export const useAi = create<AiState>((set, get) => {
               model: latest.model ?? "",
               effort: latest.effort ?? "",
               sessionUsage: latest.usage ?? EMPTY_USAGE,
+              memoryIndex: latest.memoryIndex ?? null,
             }
           : { ...freshSessionIdentity(), createdAt: Date.now(), providerId, model: "", effort: "" }),
       });
@@ -632,10 +684,12 @@ export const useAi = create<AiState>((set, get) => {
       });
     },
 
-    sendPrompt: async (prompt, cwd, context = null) => {
+    sendPrompt: async (prompt, cwd, context = {}) => {
       await ensureListeners();
       lastStderrLine = "";
       const provider = get().providers.find((candidate) => candidate.id === get().providerId);
+      const memory = await memoryToHand(cwd, context.focus ?? [], get().memoryIndex);
+      memoryHandedThisTurn = memory === null ? null : fingerprint(memory);
       // Taken before the CLI runs, so an unwanted turn is always reversible.
       // Costs nothing when the AI changes nothing, covers every repository the
       // workspace holds, and is skipped where it holds none - the UI then
@@ -668,7 +722,7 @@ export const useAi = create<AiState>((set, get) => {
       try {
         const runId = await invoke<string>("ai_send_prompt", {
           providerId: get().providerId,
-          prompt: context === null ? prompt : `${context}\n\n${prompt}`,
+          prompt: [context.view, memory, prompt].filter(Boolean).join("\n\n"),
           cwd,
           sessionId: get().sessionId,
           options: {
@@ -758,6 +812,7 @@ export const useAi = create<AiState>((set, get) => {
         model: target.model ?? "",
         effort: target.effort ?? "",
         sessionUsage: target.usage ?? EMPTY_USAGE,
+        memoryIndex: target.memoryIndex ?? null,
         lastError: null,
       });
     },

@@ -53,6 +53,11 @@ export type UiAiEvent =
   | ({ kind: "retrying" } & ApiRetry)
   /** Everything the CLI is still running in the background - the whole list, every time it changes. */
   | { kind: "background"; tasks: BackgroundTask[] }
+  /**
+   * The CLI compacted the conversation: what the earlier turns were handed may
+   * now be a summary or gone, and has to be handed over again.
+   */
+  | { kind: "compacted" }
   | {
       kind: "done";
       /**

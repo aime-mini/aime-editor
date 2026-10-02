@@ -218,43 +218,71 @@ describe("A chat turn that is more than one answer, or did not finish", () => {
     assert.equal(resumed.errors.length, 0, "the old error outstayed the turn that recovered");
   });
 
-  it("hands the turn what the project remembers about it, without showing it", async () => {
+  it("hands a conversation what the project remembers once, and again when it changes or the CLI compacts", async () => {
     const memoryDir = path.join(workspace, ".aime", "memory");
+    const remember = (name, kind, summary) =>
+      fs.writeFileSync(
+        path.join(memoryDir, `${name}.md`),
+        [
+          "---",
+          `name: ${name}`,
+          `kind: ${kind}`,
+          "scope: .",
+          `summary: ${summary}`,
+          "files: ",
+          "updated: 2026-10-01",
+          "---",
+          "",
+        ].join("\n"),
+      );
+    const turn = async (prompt) => {
+      await send(prompt);
+      await browser.waitUntil(() => lastCall().prompt.includes(prompt), {
+        timeoutMsg: `"${prompt}" never reached the CLI`,
+      });
+      const done = await until((p) => !p.running, `"${prompt}" never ended`);
+      return { prompt: lastCall().prompt, done };
+    };
+    const handed = (prompt) => /<aime_memory>[\s\S]*<\/aime_memory>/.test(prompt);
+
     fs.mkdirSync(memoryDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(memoryDir, "prices-are-integer-cents.md"),
-      [
-        "---",
-        "name: prices-are-integer-cents",
-        "kind: decision",
-        "scope: .",
-        "summary: Prices are integer cents, never floats",
-        "files: ",
-        "updated: 2026-10-01",
-        "---",
-        "",
-      ].join("\n"),
-    );
+    remember("prices-are-integer-cents", "decision", "Prices are integer cents, never floats");
     // How an AI deletes a memory: it empties the file, and Aime removes it.
     const emptied = path.join(memoryDir, "prices-are-float-dollars.md");
     fs.writeFileSync(emptied, "");
     try {
       playNext("resume");
-      await send("change how prices are rounded");
-      await browser.waitUntil(() => lastCall().prompt.includes("change how prices are rounded"), {
-        timeoutMsg: "the turn never reached the CLI",
-      });
-      const done = await until((p) => !p.running, "the turn never ended");
-      const { prompt } = lastCall();
-      assert.match(
-        prompt,
-        /<aime_memory>[\s\S]*Prices are integer cents, never floats[\s\S]*<\/aime_memory>/,
-        prompt,
+      const first = await turn("change how prices are rounded");
+      assert.match(first.prompt, /<aime_memory>[\s\S]*Prices are integer cents, never floats/, first.prompt);
+      assert.ok(
+        !first.done.answerText.includes("memor"),
+        `the memory was put on screen: ${first.done.answerText}`,
       );
-      assert.ok(!done.answerText.includes("memor"), `the memory was put on screen: ${done.answerText}`);
       assert.ok(!fs.existsSync(emptied), "an emptied memory was left behind");
+
+      // The same session already holds the index: handing it over again would
+      // only pile copies into the history.
+      const second = await turn("and the shipping fee");
+      assert.ok(!handed(second.prompt), `the index was handed over twice:\n${second.prompt}`);
+
+      remember("shipping-is-flat", "decision", "Shipping is a flat fee per order");
+      const third = await turn("apply it to the invoice");
+      assert.match(third.prompt, /<aime_memory>[\s\S]*Shipping is a flat fee per order/, third.prompt);
+
+      // Compacted by the CLI: what it kept of the index is its summary's guess.
+      playNext("compact");
+      const compacted = await turn("summarise the cart module");
+      assert.ok(!handed(compacted.prompt), "nothing had changed before the compaction");
+      playNext("resume");
+      const after = await turn("now the refund path");
+      assert.ok(
+        handed(after.prompt),
+        `the index was not handed over again after compaction:\n${after.prompt}`,
+      );
     } finally {
-      fs.rmSync(path.join(workspace, ".aime", "memory"), { recursive: true, force: true });
+      // The files go, the folder stays: a missing folder is what the mirror in
+      // app data restores (`memory_mirror.rs`), an emptied one is a decision.
+      for (const name of fs.readdirSync(memoryDir)) fs.rmSync(path.join(memoryDir, name), { force: true });
     }
   });
 

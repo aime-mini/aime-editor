@@ -195,6 +195,19 @@ describe("createClaudeParser", () => {
     expect(events[1].kind).toBe("error");
   });
 
+  // Captured on 2.1.287 by sending `/compact` to a resumed session.
+  it("says when the CLI compacted the conversation, and nothing about the status lines around it", () => {
+    expect(parseClaudeEvent({ type: "system", subtype: "status", status: "compacting" })).toEqual([]);
+    expect(
+      parseClaudeEvent({
+        type: "system",
+        subtype: "compact_boundary",
+        session_id: "308c8c13-cbfe-4fc3-a119-f6f95b29c19b",
+        compact_metadata: { trigger: "manual", pre_tokens: 5137, post_tokens: 982 },
+      }),
+    ).toEqual([{ kind: "compacted" }]);
+  });
+
   // Captured with ANTHROPIC_BASE_URL pointed at a closed port (2.1.286).
   describe("the AI service cannot be reached", () => {
     it("says the CLI is retrying, and how far along it is", () => {

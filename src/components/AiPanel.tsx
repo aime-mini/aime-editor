@@ -30,7 +30,6 @@ import { hasReadme, startersFor } from "../lib/aiStarters";
 import { fuzzyFilter } from "../lib/fuzzy";
 import { activeMention, applyMention } from "../lib/mentions";
 import { currentView, describeView, focusOf } from "../lib/viewContext";
-import { memoryFor } from "../lib/knowledgeStore";
 import { projectFiles } from "../lib/projectFiles";
 import { changedFileCount, useGit } from "../stores/git";
 import { useTasks } from "../stores/tasks";
@@ -716,21 +715,16 @@ export function AiPanel() {
 
   /**
    * The prompt plus what the editor is showing - the file, the selection, the
-   * cloud panel - and the memories of this project that bear on it.
+   * cloud panel; the files in view also decide what the project's memory
+   * opens on, and the store hands that memory over itself.
    */
   const send = (prompt: string) => {
     if (!rootPath) return;
     const view = currentView();
-    void memoryFor(rootPath, focusOf(view))
-      .catch((error: unknown) => {
-        // The turn goes on without them; the error log says why it had none.
-        loggedAs("memory")(error);
-        return null;
-      })
-      .then((block) => {
-        const context = [view === null ? null : describeView(view), block].filter(Boolean).join("\n\n");
-        return sendPrompt(prompt, rootPath, context === "" ? null : context);
-      });
+    void sendPrompt(prompt, rootPath, {
+      view: view === null ? null : describeView(view),
+      focus: focusOf(view),
+    });
   };
 
   const submit = () => {
