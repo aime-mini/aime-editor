@@ -30,7 +30,8 @@ impl Store {
 
 /// Stable, filesystem-safe file name for a workspace: readable folder name + FNV-1a hash
 /// (FNV is used because it is trivially stable across Rust versions, unlike DefaultHasher).
-fn store_key(root_path: &str) -> String {
+/// Shared with the memory mirror, which keys a repository the same way.
+pub(crate) fn store_key(root_path: &str) -> String {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
     let hash = root_path

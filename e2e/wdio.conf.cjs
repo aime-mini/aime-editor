@@ -312,7 +312,7 @@ function driverProfilesOfThisRun() {
  * a workspace is reopened with (`session/mod.rs`). This is the user's own
  * app data folder: the suite shares it with the Aime they use every day.
  */
-const APP_STORES = ["sessions", "workspaces"].map((kind) =>
+const APP_STORES = ["sessions", "workspaces", "memory-mirror"].map((kind) =>
   path.join(process.env.APPDATA ?? "", "com.iodm.aiminieditor", kind),
 );
 
@@ -320,9 +320,11 @@ const APP_STORES = ["sessions", "workspaces"].map((kind) =>
  * A store written for one of this run's throwaway folders: named after an
  * `mkdtemp` folder (`aime-<name>-<six random characters>`), and created after
  * the run began. Both, so a project of the user's that happens to be called
- * aime-something, or a store written before the run, is never touched.
+ * aime-something, or a store written before the run, is never touched. A
+ * session or workspace store is one `.json` file; a memory mirror
+ * (`memory_mirror.rs`) is a folder of the same name.
  */
-const THROWAWAY_STORE = /^aime-[a-z0-9-]+-[a-z0-9]{6}-[0-9a-f]{16}\.json$/;
+const THROWAWAY_STORE = /^aime-[a-z0-9-]+-[a-z0-9]{6}-[0-9a-f]{16}(\.json)?$/;
 
 function removeThrowawayStores() {
   let removed = 0;
@@ -331,7 +333,7 @@ function removeThrowawayStores() {
       const file = path.join(dir, name);
       const stats = fs.statSync(file, { throwIfNoEntry: false });
       if (!stats || (stats.birthtimeMs || stats.mtimeMs) < startedAt) continue;
-      fs.rmSync(file, { force: true });
+      fs.rmSync(file, { recursive: true, force: true });
       removed += 1;
     }
   }

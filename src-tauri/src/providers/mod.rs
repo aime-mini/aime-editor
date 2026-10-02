@@ -291,6 +291,8 @@ pub async fn ai_send_prompt(
             if let Err(err) = crate::aime_dir::ensure_self_ignored(std::path::Path::new(&cwd)) {
                 eprintln!("[aime_dir] could not write the .aime guard in '{cwd}': {err}");
             }
+            // The turn may have written memories; the mirror is what survives a re-clone.
+            crate::memory_mirror::after_turn(&app, std::path::Path::new(&cwd));
             let _ = app.emit(
                 "ai:exit",
                 ExitPayload {

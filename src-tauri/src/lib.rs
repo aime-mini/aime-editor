@@ -13,6 +13,7 @@ mod git;
 mod lsp;
 mod mcp;
 mod memory;
+mod memory_mirror;
 mod net;
 mod page_probe;
 mod plugins;
@@ -191,6 +192,7 @@ pub fn run() {
             session::closing::window_flushed,
             memory::project_memory_paths,
             memory::ensure_memory_bridge,
+            memory_mirror::memory_mirror_sync,
             tasks::detect_tasks,
             exec::exec_run,
             exec::exec_cancel,

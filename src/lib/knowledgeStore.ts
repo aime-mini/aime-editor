@@ -19,6 +19,13 @@ import { conventionsLearned } from "./runLearning";
  * turn, and a file is read again only when its modified time moved, so a
  * thousand memories cost a thousand reads once and one listing afterwards. The
  * pages a large index refers to are rewritten only when a memory changed.
+ *
+ * The memories live in the repository, where every CLI can read and write
+ * them, and `.aime/` keeps itself out of git - so a fresh clone, or the same
+ * repository on another machine, would start with nothing. Rust mirrors the
+ * folder into Aime's own data, keyed by the repository's remote, and puts it
+ * back when the folder is found missing (`memory_mirror.rs`); that runs here,
+ * before reading, and again when a turn ends.
  */
 
 /** Mirror of the Rust `DirEntry`, for the fields this needs. */
@@ -51,6 +58,7 @@ export async function loadMemories(root: string): Promise<Memory[]> {
 async function loadKept(root: string): Promise<Map<Memory, number>> {
   const base = trim(root);
   if (!cache.has(base)) await carryOverLegacy(base);
+  await restoreFromMirror(base);
   const entries = await listOrEmpty(`${base}/${MEMORY_DIR}`);
   const known = cache.get(base) ?? new Map<string, Cached>();
   const now = new Map<string, Cached>();
@@ -102,6 +110,19 @@ export async function rememberAll(root: string, learned: readonly Memory[]): Pro
       path: `${trim(root)}/${MEMORY_DIR}/${memory.name}.md`,
       content: renderMemory(memory),
     });
+  }
+}
+
+/**
+ * Puts the memories back from Aime's mirror when the folder is missing, and
+ * mirrors it otherwise. A mirror that cannot be reached costs nothing but the
+ * safety net, and says so in the log.
+ */
+async function restoreFromMirror(base: string): Promise<void> {
+  try {
+    await invoke("memory_mirror_sync", { root: base });
+  } catch (error: unknown) {
+    console.warn("the project's memory could not be mirrored:", error);
   }
 }
 
