@@ -85,6 +85,12 @@ pub struct ProviderConfig {
     /// costs nothing and changes nothing the CLI has stored.
     #[serde(default)]
     pub api_key_login_args: Vec<String>,
+    /// Arguments of the CLI's own "list your models" command, run with
+    /// `command` (e.g. `["models", "list", "--json"]`); its output is read as
+    /// JSON or as lines (`catalog.rs`). Empty = the CLI has no such command,
+    /// and the picker offers only its default.
+    #[serde(default)]
+    pub models_args: Vec<String>,
 }
 
 fn default_text_field() -> String {
@@ -317,6 +323,7 @@ mod tests {
                 prompt_stdin: false,
                 api_key_env: String::new(),
                 api_key_login_args: Vec::new(),
+                models_args: Vec::new(),
             },
         }
     }

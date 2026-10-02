@@ -20,6 +20,9 @@ export interface ModelOption extends ProviderOption {
 
 export interface ProviderCapabilities {
   displayName: string;
+  /** Names that always mean the newest release (`opus`, `sonnet`, …): never stale, so always offered. */
+  aliases: ModelOption[];
+  /** The models offered until the installed CLI has been read (`modelsOf`). */
   models: ModelOption[];
   /** Efforts offered while the model is left on "Auto". */
   efforts: ProviderOption[];
@@ -36,6 +39,25 @@ export interface ProviderCapabilities {
 
 const DEFAULT_OPTION: ProviderOption = { value: "", label: "Auto" };
 
+const CLAUDE_ALIASES: ModelOption[] = [
+  { value: "fable", label: "Fable (latest)" },
+  { value: "opus", label: "Opus (latest)" },
+  { value: "sonnet", label: "Sonnet (latest)" },
+  { value: "haiku", label: "Haiku (latest)" },
+];
+
+/**
+ * A model the installed CLI itself reported (Rust `ModelChoice`,
+ * `providers/catalog.rs`): read from Codex's catalog or the names compiled
+ * into Claude Code, so a model that shipped yesterday is in the picker today.
+ */
+export interface DiscoveredModel {
+  value: string;
+  label: string;
+  /** The reasoning levels it accepts, when the catalog says; empty = unknown. */
+  efforts?: string[];
+}
+
 /** Effort pickers show the raw CLI values — there is nothing to translate. */
 function efforts(...levels: string[]): ProviderOption[] {
   return [DEFAULT_OPTION, ...levels.map((value) => ({ value, label: value }))];
@@ -50,21 +72,19 @@ const CODEX_EFFORTS_COMMON = efforts("low", "medium", "high", "xhigh");
 export const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   claude: {
     displayName: "Claude Code",
-    // Aliases first (they always track the newest release), then pinned
-    // versions for users who want a specific one. Availability of a pinned
-    // model depends on the user's plan — the CLI reports an error if not.
+    aliases: CLAUDE_ALIASES,
+    // The fallback while the installed CLI has not been read yet: the aliases,
+    // then the pinned versions its binary carried on 2026-10-02. Availability
+    // of a pinned model depends on the user's plan - the CLI reports an error.
     models: [
       DEFAULT_OPTION,
-      { value: "fable", label: "Fable (latest)" },
-      { value: "opus", label: "Opus (latest)" },
-      { value: "sonnet", label: "Sonnet (latest)" },
-      { value: "haiku", label: "Haiku (latest)" },
+      ...CLAUDE_ALIASES,
+      { value: "claude-fable-5-1", label: "Fable 5.1" },
       { value: "claude-fable-5", label: "Fable 5" },
+      { value: "claude-opus-5-5", label: "Opus 5.5" },
       { value: "claude-opus-5", label: "Opus 5" },
       { value: "claude-opus-4-8", label: "Opus 4.8" },
-      { value: "claude-opus-4-7", label: "Opus 4.7" },
-      { value: "claude-opus-4-6", label: "Opus 4.6" },
-      { value: "claude-sonnet-5", label: "Sonnet 5" },
+      { value: "claude-sonnet-5-5", label: "Sonnet 5.5" },
       { value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
       { value: "claude-haiku-4-5", label: "Haiku 4.5" },
     ],
@@ -75,13 +95,14 @@ export const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   },
   codex: {
     displayName: "Codex",
+    aliases: [],
+    // The fallback while the CLI's catalog has not been read: what
+    // `codex debug models` listed on 2026-10-02 (0.146.0).
     models: [
       DEFAULT_OPTION,
-      { value: "gpt-5.6-sol", label: "GPT-5.6 Sol", efforts: CODEX_EFFORTS_TO_ULTRA },
-      { value: "gpt-5.6-terra", label: "GPT-5.6 Terra", efforts: CODEX_EFFORTS_TO_ULTRA },
-      { value: "gpt-5.6-luna", label: "GPT-5.6 Luna", efforts: CODEX_EFFORTS_TO_MAX },
+      { value: "gpt-5.6-terra", label: "GPT-5.6-Terra", efforts: CODEX_EFFORTS_TO_ULTRA },
+      { value: "gpt-5.6-luna", label: "GPT-5.6-Luna", efforts: CODEX_EFFORTS_TO_MAX },
       { value: "gpt-5.5", label: "GPT-5.5" },
-      { value: "gpt-5.2", label: "GPT-5.2" },
     ],
     efforts: CODEX_EFFORTS_COMMON,
     reportsCost: false,
@@ -95,6 +116,7 @@ export function capabilitiesOf(providerId: string): ProviderCapabilities {
   return (
     PROVIDER_CAPABILITIES[providerId] ?? {
       displayName: providerId,
+      aliases: [],
       models: [DEFAULT_OPTION],
       efforts: [DEFAULT_OPTION],
       reportsCost: false,
@@ -104,8 +126,30 @@ export function capabilitiesOf(providerId: string): ProviderCapabilities {
   );
 }
 
-/** Efforts the chosen model accepts — passing an unsupported one is a CLI error. */
-export function effortsOf(providerId: string, model: string): ProviderOption[] {
+/**
+ * The models the picker offers: Auto, the aliases, then what the installed
+ * CLI reported - or the fallback table while nothing has been reported.
+ */
+export function modelsOf(
+  providerId: string,
+  discovered: readonly DiscoveredModel[] | undefined,
+): ModelOption[] {
   const capabilities = capabilitiesOf(providerId);
-  return capabilities.models.find((m) => m.value === model)?.efforts ?? capabilities.efforts;
+  if (discovered === undefined || discovered.length === 0) return capabilities.models;
+  const reported = discovered.map(({ value, label, efforts: levels }): ModelOption =>
+    levels === undefined || levels.length === 0
+      ? { value, label }
+      : { value, label, efforts: efforts(...levels) },
+  );
+  return [DEFAULT_OPTION, ...capabilities.aliases, ...reported];
+}
+
+/** Efforts the chosen model accepts — passing an unsupported one is a CLI error. */
+export function effortsOf(
+  providerId: string,
+  model: string,
+  discovered?: readonly DiscoveredModel[],
+): ProviderOption[] {
+  const own = modelsOf(providerId, discovered).find((m) => m.value === model)?.efforts;
+  return own ?? capabilitiesOf(providerId).efforts;
 }

@@ -41,7 +41,7 @@ import { Panel, PanelGroup } from "react-resizable-panels";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Markdown } from "./Markdown";
 import { ResizeHandle } from "./ResizeHandle";
-import { capabilitiesOf, effortsOf, type ProviderOption } from "../lib/providers";
+import { capabilitiesOf, effortsOf, modelsOf, type ProviderOption } from "../lib/providers";
 import type {
   ApiRetry,
   BackgroundTask,
@@ -442,6 +442,7 @@ export function AiPanel() {
     localId,
     providerId,
     setProvider,
+    modelCatalog,
     model,
     effort,
     setModel,
@@ -791,14 +792,14 @@ export function AiPanel() {
           <PickerChip
             icon={<Cpu size={12} className="text-accent" />}
             value={model}
-            options={capabilities.models}
+            options={modelsOf(providerId, modelCatalog[providerId])}
             title={t("ai.model")}
             onChange={setModel}
           />
           <PickerChip
             icon={<SlidersHorizontal size={12} className="text-accent" />}
             value={effort}
-            options={effortsOf(providerId, model)}
+            options={effortsOf(providerId, model, modelCatalog[providerId])}
             title={t("ai.effort")}
             onChange={setEffort}
           />

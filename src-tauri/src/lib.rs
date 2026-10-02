@@ -10,6 +10,7 @@ mod exec;
 mod fs_cmds;
 mod fs_watch;
 mod git;
+mod home;
 mod lsp;
 mod mcp;
 mod memory;
@@ -193,6 +194,7 @@ pub fn run() {
             memory::project_memory_paths,
             memory::ensure_memory_bridge,
             memory_mirror::memory_mirror_sync,
+            providers::catalog::provider_models,
             tasks::detect_tasks,
             exec::exec_run,
             exec::exec_cancel,

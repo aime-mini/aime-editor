@@ -4,7 +4,7 @@ import { Check, Cpu, Eye, Monitor, Settings2, Shield, ShieldOff, Sparkles, X } f
 import { translate, useI18n, useT } from "../i18n";
 import { errorLogPath } from "../lib/diagnostics";
 import { buildAddProviderPrompt } from "../lib/aiProvider";
-import { capabilitiesOf, effortsOf } from "../lib/providers";
+import { capabilitiesOf, effortsOf, modelsOf } from "../lib/providers";
 import { PERMISSION_ORDER, type Permission } from "../lib/types";
 import { PluginsSection } from "./PluginsSection";
 import { useAi, type ApiKeyRoute } from "../stores/ai";
@@ -309,6 +309,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   }, [onClose]);
 
   const capabilities = capabilitiesOf(providerId);
+  const modelCatalog = useAi((s) => s.modelCatalog);
   const apiKeyRoute = providers.find((provider) => provider.id === providerId)?.apiKeyRoute ?? null;
   const section =
     "mt-3 mb-1 flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-muted uppercase";
@@ -444,7 +445,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               }}
               className="rounded-md border border-line bg-elevated px-2 py-1 text-[11.5px] outline-none"
             >
-              {capabilities.models.map((option) => (
+              {modelsOf(providerId, modelCatalog[providerId]).map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -459,7 +460,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               }}
               className="rounded-md border border-line bg-elevated px-2 py-1 text-[11.5px] outline-none"
             >
-              {effortsOf(providerId, model).map((option) => (
+              {effortsOf(providerId, model, modelCatalog[providerId]).map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>

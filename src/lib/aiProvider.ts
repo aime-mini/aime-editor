@@ -43,6 +43,10 @@ const SCHEMA = [
     "Aime then offers a key field and passes the key to its own runs only.",
   "- `apiKeyLoginArgs` (string[]): use this **instead** of `apiKeyEnv` when the CLI stores keys itself " +
     'and takes one on stdin, e.g. `["login", "--with-api-key"]`. Leave both out if it takes no key.',
+  "- `modelsArgs` (string[]): the arguments of the CLI's own non-interactive list-your-models command, " +
+    'run with `command` - e.g. `["models", "list", "--json"]`. I run it myself and read the output as JSON ' +
+    "(an array of names or of objects, or an object holding one) or as lines whose first word is the model " +
+    "name, so the picker always shows what the CLI offers today. Leave it out if the CLI has no such command.",
   '- `memory` ("native" | "config-pointer" | "prompt-inject"): how the CLI finds project knowledge. ' +
     '"native" = it reads a context file of its own; "config-pointer" = its context filename is ' +
     'configurable; "prompt-inject" = it has no such convention, so Aime prepends AGENTS.md to prompts. ' +
@@ -69,7 +73,10 @@ export function buildAddProviderPrompt(request: AddProviderRequest): string {
       "flags change between versions, and a wrong flag here fails silently at the user's first prompt.",
     "3. Run it once, non-interactively, with a trivial prompt, and look at what it prints. That answers " +
       "`parser`, `textField` and `promptStdin` - guessing them does not.",
-    `4. Write the entry into ${configPath}. That file is a JSON array. **Keep every entry already in it** ` +
+    "4. Find out how it lists its models without a prompt (its help, a `models` or `list` subcommand). " +
+      "If there is such a command, run it, make sure it prints model names, and put its arguments in " +
+      "`modelsArgs`; if there is none, say so and leave the field out.",
+    `5. Write the entry into ${configPath}. That file is a JSON array. **Keep every entry already in it** ` +
       "and add yours, or correct the existing entry if one for this CLI is already there.",
     "",
     "The schema, exactly:",

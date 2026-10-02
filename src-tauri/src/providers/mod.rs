@@ -1,4 +1,5 @@
 pub mod adapter;
+pub mod catalog;
 pub mod claude;
 pub mod codex;
 pub mod generic;
@@ -638,6 +639,7 @@ mod tests {
             prompt_stdin: false,
             api_key_env: String::new(),
             api_key_login_args: vec![script.to_string_lossy().to_string()],
+            models_args: Vec::new(),
         };
         (GenericAdapter { config }, sink)
     }

@@ -24,6 +24,7 @@
 //! machine that has never run the CLI) is watched through its parent, so the
 //! first `aws configure` on a fresh machine is noticed too.
 
+use crate::home::home_dir;
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
 use serde::Serialize;
@@ -239,16 +240,6 @@ pub(super) fn aws_config_path() -> Option<PathBuf> {
         return Some(PathBuf::from(explicit));
     }
     Some(home_dir()?.join(".aws").join("config"))
-}
-
-/// The user's home, by the variable each platform actually sets.
-fn home_dir() -> Option<PathBuf> {
-    let variable = if cfg!(target_os = "windows") {
-        "USERPROFILE"
-    } else {
-        "HOME"
-    };
-    std::env::var_os(variable).map(PathBuf::from)
 }
 
 #[cfg(test)]

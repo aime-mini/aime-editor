@@ -7,7 +7,7 @@ import { fingerprint } from "../lib/fingerprint";
 import type { Focus } from "../lib/knowledge";
 import { memoryFor } from "../lib/knowledgeStore";
 import { formatProviderError } from "../lib/providerErrors";
-import { effortsOf } from "../lib/providers";
+import { effortsOf, type DiscoveredModel } from "../lib/providers";
 import { Typewriter } from "../lib/typewriter";
 import { useWorkspace } from "./workspace";
 import {
@@ -224,6 +224,12 @@ interface AiState {
   loadProviders: () => Promise<void>;
   /** Result of the startup CLI probe; "missing" shows an install banner. */
   providerHealth: "unknown" | "ok" | "missing";
+  /**
+   * What each installed CLI said it offers (`providers/catalog.rs`), by
+   * provider id; a provider not yet asked, or one that keeps no list, is
+   * absent and the picker falls back to its table (`lib/providers.ts`).
+   */
+  modelCatalog: Record<string, DiscoveredModel[]>;
   /** null = the CLI offers no sign-in probe, so nothing may be claimed. */
   signedIn: boolean | null;
   /** Command that signs the user in, run in a terminal on request. */
@@ -233,6 +239,8 @@ interface AiState {
   /** Stores an API key for the current provider; "" clears it. Write-only. */
   setApiKey: (key: string) => Promise<ApiKeyOutcome>;
   checkHealth: () => Promise<void>;
+  /** Asks the installed CLI which models it offers right now. */
+  loadModels: (providerId: string) => Promise<void>;
   /** Re-probes until the sign-in the user just started lands (or times out). */
   watchSignIn: () => void;
   /** Token totals across the live session's turns. */
@@ -576,6 +584,7 @@ export const useAi = create<AiState>((set, get) => {
     permission: storedPermission(),
     providers: [],
     providerHealth: "unknown",
+    modelCatalog: {},
     signedIn: null,
     loginCommand: "",
     apiKeyConfigured: false,
@@ -651,8 +660,20 @@ export const useAi = create<AiState>((set, get) => {
           apiKeyConfigured: health.apiKey,
         });
         if (health.signedIn === true) stopSignInWatch();
+        // The CLI is there: it is the one source of what it can run today.
+        if (health.installed) void get().loadModels(probed);
       } catch (err: unknown) {
         console.error("provider health check failed:", err);
+      }
+    },
+
+    loadModels: async (providerId) => {
+      try {
+        const models = await invoke<DiscoveredModel[]>("provider_models", { providerId });
+        set((s) => ({ modelCatalog: { ...s.modelCatalog, [providerId]: models } }));
+      } catch (err: unknown) {
+        // The picker keeps its fallback table; the log says why the CLI could not be read.
+        console.warn(`the models of ${providerId} could not be read:`, err);
       }
     },
 
