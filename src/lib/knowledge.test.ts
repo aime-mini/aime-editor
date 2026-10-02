@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  INDEX_FILE,
   memoryBlock,
   nameFor,
   parseMemory,
-  renderIndex,
   renderMemory,
+  renderPages,
   treeOf,
+  type Evidence,
   type Memory,
 } from "./knowledge";
 
@@ -20,7 +20,9 @@ const memory = (patch: Partial<Memory> & Pick<Memory, "name">): Memory => ({
   ...patch,
 });
 
-const untouched = () => 0;
+const at = (iso: string) => Date.parse(iso);
+/** Nothing cited has changed since any memory was written. */
+const untouched: Evidence = { changed: () => 0, written: () => 0 };
 
 describe("a memory file", () => {
   const cents = memory({
@@ -57,7 +59,7 @@ describe("a memory file", () => {
   });
 });
 
-describe("what a turn carries", () => {
+describe("what a conversation is handed", () => {
   const decision = memory({
     name: "no-installs",
     kind: "decision",
@@ -83,45 +85,76 @@ describe("what a turn carries", () => {
     expect(memoryBlock([], ["src/a.ts"], untouched)).toBeNull();
   });
 
-  it("marks a line whose evidence changed or vanished since it was written", () => {
-    const cited = memory({ name: "cited", files: ["src/money.ts", "src/gone.ts"], updated: "2026-09-01" });
-    const changed = (file: string) => (file === "src/money.ts" ? Date.parse("2026-09-20T10:00:00Z") : null);
-    expect(memoryBlock([cited], [], changed)).toContain("STALE since 2026-09-01: src/money.ts, src/gone.ts");
+  describe("a line goes STALE on the file's own time, not the day the header claims", () => {
+    const cited = memory({ name: "cited", files: ["src/money.ts", "src/gone.ts"], updated: "2026-01-01" });
+    const writtenAt = at("2026-09-20T10:00:00Z");
+
+    it("when a cited file changed after the memory was written, or is gone", () => {
+      const evidence: Evidence = {
+        changed: (file) => (file === "src/money.ts" ? at("2026-09-20T10:05:00Z") : null),
+        written: () => writtenAt,
+      };
+      expect(memoryBlock([cited], [], evidence)).toContain("STALE, changed since: src/money.ts, src/gone.ts");
+    });
+
+    it("not when the file changed earlier the same day, however old the header's date", () => {
+      const evidence: Evidence = { changed: () => at("2026-09-20T09:55:00Z"), written: () => writtenAt };
+      expect(memoryBlock([cited], [], evidence)).not.toContain("STALE, changed since");
+    });
   });
 
-  it("past what a turn should carry, opens the whole project and the folders in view, and pages the rest", () => {
+  describe("past what a turn should carry", () => {
     const many = Array.from({ length: 300 }, (_, index) =>
       memory({ name: `m${String(index)}`, scope: ["src/cart", "src/auth", "docs"][index % 3] }),
     );
-    const block = memoryBlock([decision, ...many], ["src/cart/totals.ts"], untouched) ?? "";
-    expect(block).toContain("- decision `no-installs`");
-    expect(block).toContain("## src/cart\n");
-    expect(block).not.toContain("## src/auth\n");
-    expect(block).toContain("- src/auth: 100 · .aime/memory/index/src_auth.md");
-    expect(block).toContain("- docs: 100 · .aime/memory/index/docs.md");
+
+    it("opens the whole project and the folders in view, and pages the rest", () => {
+      const block = memoryBlock([decision, ...many], ["src/cart/totals.ts"], untouched) ?? "";
+      expect(block).toContain("- decision `no-installs`");
+      expect(block).toContain("## src/cart\n");
+      expect(block).not.toContain("## src/auth\n");
+      expect(block).toContain("- src/auth: 100 · .aime/memory/index/src_auth.md");
+      expect(block).toContain("- docs: 100 · .aime/memory/index/docs.md");
+    });
+
+    it("caps what it opens, keeps every decision, and sends the rest to the folder's page", () => {
+      const project = Array.from({ length: 260 }, (_, index) =>
+        memory({
+          name: `p${String(index)}`,
+          kind: index % 20 === 0 ? "decision" : "convention",
+          updated: index % 2 === 0 ? "2026-09-01" : "2026-08-01",
+        }),
+      );
+      const block = memoryBlock([...project, cents], ["src/cart/totals.ts"], untouched) ?? "";
+      const lines = block.split("\n").filter((line) => line.startsWith("- "));
+      expect(lines.filter((line) => line.startsWith("- decision"))).toHaveLength(13);
+      expect(lines.filter((line) => /^- (decision|convention) `/.test(line))).toHaveLength(200);
+      expect(block).toContain("- … 61 more in this folder · .aime/memory/index/_root.md");
+      expect(block).toContain("## src/cart\n- convention `cart-cents`");
+      // The newest of the rest are the ones kept.
+      expect(block).toContain("`p2`");
+      expect(block).not.toContain("`p259`");
+    });
   });
 });
 
-describe("the index", () => {
-  it("is one page while it is small, grouped by folder", () => {
-    const pages = renderIndex([memory({ name: "a", scope: "src" }), memory({ name: "b" })]);
-    expect(pages.map((page) => page.path)).toEqual([INDEX_FILE]);
-    expect(pages[0].content).toContain("## /\n- convention `b`");
-    expect(pages[0].content).toContain("## src\n- convention `a`");
+describe("the pages of a large index", () => {
+  it("are none while the block already lists every memory", () => {
+    expect(renderPages([memory({ name: "a", scope: "src" }), memory({ name: "b" })])).toEqual([]);
   });
 
-  it("splits into a page per folder before it grows too large to read", () => {
+  it("are one per folder past the ceiling, every memory of the folder on it", () => {
     const many = Array.from({ length: 250 }, (_, index) =>
       memory({ name: `m${String(index)}`, scope: index % 2 === 0 ? "src/cart" : "/" }),
     );
-    const pages = renderIndex(many);
+    const pages = renderPages(many);
     expect(pages.map((page) => page.path)).toEqual([
-      INDEX_FILE,
       ".aime/memory/index/_root.md",
       ".aime/memory/index/src_cart.md",
     ]);
-    expect(pages[0].content).toContain("- src/cart: 125 · .aime/memory/index/src_cart.md");
-    expect(pages[0].content).not.toContain("`m0`");
+    expect(pages[0].content).toContain("# Memories for /\n");
+    expect(pages[0].content).toContain("- convention `m1`");
+    expect(pages[1].content).toContain("- convention `m0`");
   });
 
   it("is a tree with the whole project at its root", () => {

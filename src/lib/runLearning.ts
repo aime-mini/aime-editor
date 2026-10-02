@@ -1,15 +1,18 @@
-import type { Finding, Survey } from "./aiRun";
+import type { Survey } from "./aiRun";
 import { nameFor, ROOT_SCOPE, type Memory } from "./knowledge";
 
 /**
- * What a task run teaches the project's memory (`lib/knowledge.ts`).
- *
- * Two lessons a run learns for certain and used to forget the moment it ended:
- * how this codebase does things, read out of it in the first step with the
- * file each rule was seen in, and what a reviewer caught in the change and had
- * fixed - the trap the next change near those files is most likely to fall
- * into again. Both are written as memories scoped to the folder they were
+ * What a task run teaches the project's memory (`lib/knowledge.ts`): how this
+ * codebase does things, read out of it in the first step with the file each
+ * rule was seen in, and written as memories scoped to the folder they were
  * found in, so the next turn about that folder is handed them.
+ *
+ * What a reviewer caught is deliberately not written here. A finding is about
+ * one diff - "line 40 lacks a null check" - and copied into memory it would
+ * be a pitfall for ever about nothing in particular. Whether a finding is the
+ * sign of a trap in this codebase is a judgement of meaning, so the step that
+ * fixes findings is asked to make it and to write the general rule
+ * (`POLISH_PROMPT` in `stores/run.ts`).
  */
 
 /** The conventions a run's reading of the code found. */
@@ -40,19 +43,6 @@ export function conventionsLearned(survey: Survey, day: string): Memory[] {
       body: "",
     },
   ];
-}
-
-/** What the reviewer found and the run had fixed, as traps to avoid next time. */
-export function lessonsLearned(fixed: readonly Finding[], day: string): Memory[] {
-  return fixed.map((finding): Memory => ({
-    name: nameFor(finding.message),
-    kind: "pitfall",
-    scope: folderOf(finding.file),
-    summary: finding.message,
-    files: [finding.file],
-    updated: day,
-    body: `A reviewer found this (${finding.kind}) in a change here, and it was fixed. How it was proved: ${finding.check}`,
-  }));
 }
 
 /** "plain ES modules - src/checkout.js" as the rule and the file it cites, when it cites one. */

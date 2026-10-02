@@ -108,7 +108,7 @@ import { readProjectRules, rulesBlock, type RuleFile } from "../lib/projectRules
 import { SECURITY_RULES } from "../lib/securityRules";
 import { memoryFor, rememberAll, today } from "../lib/knowledgeStore";
 import type { Focus, Memory } from "../lib/knowledge";
-import { conventionsLearned, lessonsLearned } from "../lib/runLearning";
+import { conventionsLearned } from "../lib/runLearning";
 import {
   forgetRun,
   interruptedRun,
@@ -1998,7 +1998,8 @@ async function reviewPhase(context: Context, set: Setter, get: Getter): Promise<
   const tried: string[] = [];
   let earlier = "";
   let latest: Review | null = null;
-  // What the reviewer caught and the fixing closed: the lessons this run teaches.
+  // What earlier rounds caught and had fixed: a later finding of the same kind
+  // in the same file is the sign of a trap, which the fixing step is told.
   const closed: Finding[] = [];
   for (let round = 1; round <= REVIEW_ROUNDS; round += 1) {
     const diff = await pendingDiff(context, get);
@@ -2020,7 +2021,6 @@ async function reviewPhase(context: Context, set: Setter, get: Getter): Promise<
     // A function, not a value: the fixing below adds to what was tried.
     const soFar = () => [describeReview(review), "", ...tried].join("\n");
     if (issues.length === 0) {
-      await remember(context, "review", lessonsLearned(closed, today()));
       return {
         state: "passed",
         summary: round === 1 ? found : [found, translate("run.reviewCleared", { rounds: round })].join(" · "),
@@ -2029,7 +2029,7 @@ async function reviewPhase(context: Context, set: Setter, get: Getter): Promise<
     }
     if (round === REVIEW_ROUNDS) break;
 
-    const fixed = await fixFindings(context, set, get, issues);
+    const fixed = await fixFindings(context, set, get, issues, closed);
     tried.push(...fixed.tried);
     if (!fixed.mended) {
       if (blocking.length > 0) return reviewBlocked(blocking, soFar());
@@ -2144,6 +2144,7 @@ async function fixFindings(
   set: Setter,
   get: Getter,
   issues: readonly Finding[],
+  fixedEarlier: readonly Finding[],
 ): Promise<Mending> {
   const before = get().baseline;
   const tried: string[] = [];
@@ -2158,6 +2159,7 @@ async function fixFindings(
           (finding) =>
             `- ${finding.file}:${String(finding.line)} [${finding.kind}] — ${finding.message} (check: ${finding.check})`,
         ),
+        ...repeatedFindings(issues, fixedEarlier),
       ].join("\n"),
       set,
       "review",
@@ -2184,6 +2186,24 @@ async function fixFindings(
     tried.push(translate("run.polishBroke", { attempt }));
   }
   return { mended: false, attempts: ATTEMPTS, tried, reply };
+}
+
+/**
+ * The findings an earlier round of this review already had fixed in the same
+ * file, for the same kind of problem - what Aime can see of a trap. Whether
+ * it is one, and what the general rule is, the AI judges (`POLISH_PROMPT`).
+ */
+function repeatedFindings(issues: readonly Finding[], fixedEarlier: readonly Finding[]): string[] {
+  const repeated = issues.filter((issue) =>
+    fixedEarlier.some((earlier) => earlier.file === issue.file && earlier.kind === issue.kind),
+  );
+  if (repeated.length === 0) return [];
+  return [
+    "",
+    "An earlier round of this review found and had fixed problems of the same kind in the same file:",
+    ...repeated.map((issue) => `- ${issue.file} [${issue.kind}]: ${issue.message}`),
+    "The same kind of mistake twice in one place is the sign of a trap, not a slip.",
+  ];
 }
 
 /**
@@ -3218,6 +3238,11 @@ reasons go to the next reviewer, who reads the change again and decides - a revi
 and a change made to please a mistaken reviewer is worse than the finding. A security finding is not
 answered by calling the risk acceptable; fix it, or show the path an attacker would need does not exist.
 Keep every test passing and do not weaken one to close a finding.
+
+A finding can be a slip in this change, or the sign of a trap in this codebase that the next change
+here would fall into too - an API that looks safe and is not, a convention nothing enforces. Only the
+second is worth remembering: write it as a pitfall memory stating the general rule, as the memory
+instructions say, never the finding itself. A one-off mistake is not a memory.
 
 Do not commit anything.
 

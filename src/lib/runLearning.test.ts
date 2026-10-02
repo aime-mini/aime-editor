@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Finding, Survey } from "./aiRun";
-import { conventionsLearned, lessonsLearned } from "./runLearning";
+import type { Survey } from "./aiRun";
+import { conventionsLearned } from "./runLearning";
 
 const survey: Survey = {
   files: [],
@@ -33,29 +33,5 @@ describe("conventionsLearned", () => {
       scope: "/",
       summary: "Tests: test.cjs at the root, run by node",
     });
-  });
-});
-
-describe("lessonsLearned", () => {
-  it("keeps what the reviewer had fixed as a trap beside the file it was in", () => {
-    const finding: Finding = {
-      file: "src/api/orders.js",
-      line: 6,
-      severity: "issue",
-      kind: "security",
-      message: "SQL is built by concatenating req.params.id",
-      check: "request /orders/1 OR 1=1",
-    };
-    expect(lessonsLearned([finding], "2026-10-01")).toEqual([
-      {
-        name: "sql-is-built-by-concatenating-req",
-        kind: "pitfall",
-        scope: "src/api",
-        summary: "SQL is built by concatenating req.params.id",
-        files: ["src/api/orders.js"],
-        updated: "2026-10-01",
-        body: "A reviewer found this (security) in a change here, and it was fixed. How it was proved: request /orders/1 OR 1=1",
-      },
-    ]);
   });
 });

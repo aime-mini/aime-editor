@@ -4,9 +4,9 @@ import {
   MEMORY_DIR,
   memoryBlock,
   parseMemory,
-  renderIndex,
   renderMemory,
-  type FileChanged,
+  renderPages,
+  type Evidence,
   type Focus,
   type Memory,
 } from "./knowledge";
@@ -18,7 +18,7 @@ import { conventionsLearned } from "./runLearning";
  * Built for a project that has kept them for years: one directory listing per
  * turn, and a file is read again only when its modified time moved, so a
  * thousand memories cost a thousand reads once and one listing afterwards. The
- * index the AI browses is rewritten only when a memory changed.
+ * pages a large index refers to are rewritten only when a memory changed.
  */
 
 /** Mirror of the Rust `DirEntry`, for the fields this needs. */
@@ -34,20 +34,32 @@ interface Cached {
   memory: Memory | null;
 }
 
+/** The one page an earlier Aime wrote beside the memories (until 2026-10-02); nothing reads it now. */
+const LEGACY_INDEX = "INDEX.md";
+
 /** Per project root: each memory file as last read, by file name. */
 const cache = new Map<string, Map<string, Cached>>();
-/** Per project root: the index as last written, so an unchanged one is not written again. */
-const indexWritten = new Map<string, string>();
+/** Per project root: the pages as last written, so unchanged ones are not written again. */
+const pagesWritten = new Map<string, string>();
 
 /** Every memory of the project; an unreadable file is left out, never guessed at. */
 export async function loadMemories(root: string): Promise<Memory[]> {
+  return [...(await loadKept(root)).keys()];
+}
+
+/** Every memory of the project, with when its file was last written. */
+async function loadKept(root: string): Promise<Map<Memory, number>> {
   const base = trim(root);
   if (!cache.has(base)) await carryOverLegacy(base);
   const entries = await listOrEmpty(`${base}/${MEMORY_DIR}`);
   const known = cache.get(base) ?? new Map<string, Cached>();
   const now = new Map<string, Cached>();
   for (const entry of entries) {
-    if (entry.is_dir || !entry.name.endsWith(".md") || entry.name === "INDEX.md") continue;
+    if (entry.is_dir || !entry.name.endsWith(".md")) continue;
+    if (entry.name === LEGACY_INDEX) {
+      await invoke("delete_path", { path: entry.path });
+      continue;
+    }
     const modified = entry.modified_ms ?? 0;
     const before = known.get(entry.name);
     if (before !== undefined && before.modified === modified) {
@@ -57,23 +69,29 @@ export async function loadMemories(root: string): Promise<Memory[]> {
     now.set(entry.name, { modified, memory: await readMemory(entry.path, entry.name) });
   }
   cache.set(base, now);
-  const memories = [...now.values()].flatMap(({ memory }) => (memory === null ? [] : [memory]));
-  await writeIndex(base, memories);
-  return memories;
+  const kept = new Map<Memory, number>();
+  for (const { memory, modified } of now.values()) if (memory !== null) kept.set(memory, modified);
+  await writePages(base, [...kept.keys()]);
+  return kept;
 }
 
-/** The memory block a turn on the files of `focus` carries, or null when the project has none. */
+/** The memory block a conversation on the files of `focus` is handed, or null when the project has none. */
 export async function memoryFor(root: string, focus: Focus): Promise<string | null> {
-  const memories = await loadMemories(root);
-  if (memories.length === 0) return null;
-  return memoryBlock(memories, focus, await changeTimes(root, memories));
+  const kept = await loadKept(root);
+  if (kept.size === 0) return null;
+  const memories = [...kept.keys()];
+  const evidence: Evidence = {
+    changed: await changeTimes(root, memories),
+    written: (memory) => kept.get(memory) ?? 0,
+  };
+  return memoryBlock(memories, focus, evidence);
 }
 
 /**
- * Writes memories Aime learned itself - from a task run's reading of the code,
- * from what its reviewer had fixed. One with the name of an existing memory
- * replaces it only when it says something new, so a person's own edit to a
- * memory is never overwritten by the same lesson learned again.
+ * Writes memories Aime learned itself from a task run's reading of the code.
+ * One with the name of an existing memory replaces it only when it says
+ * something new, so a person's own edit to a memory is never overwritten by
+ * the same lesson learned again.
  */
 export async function rememberAll(root: string, learned: readonly Memory[]): Promise<void> {
   const existing = new Map((await loadMemories(root)).map((memory) => [memory.name, memory]));
@@ -130,7 +148,7 @@ export function today(): string {
 }
 
 /** When each file a memory cites last changed, read once per folder per turn. */
-async function changeTimes(root: string, memories: readonly Memory[]): Promise<FileChanged> {
+async function changeTimes(root: string, memories: readonly Memory[]): Promise<Evidence["changed"]> {
   const base = trim(root);
   const folders = new Set(memories.flatMap((memory) => memory.files.map(folderOf)));
   const times = new Map<string, number>();
@@ -160,19 +178,18 @@ async function readMemory(path: string, name: string): Promise<Memory | null> {
   }
 }
 
-async function writeIndex(base: string, memories: readonly Memory[]): Promise<void> {
-  if (memories.length === 0) return;
-  const pages = renderIndex(memories);
+/** The per-folder pages of a large index, and no page for a folder that has none left. */
+async function writePages(base: string, memories: readonly Memory[]): Promise<void> {
+  const pages = renderPages(memories);
   const signature = pages.map((page) => `${page.path}\n${page.content}`).join("\n");
-  if (indexWritten.get(base) === signature) return;
+  if (pagesWritten.get(base) === signature) return;
   for (const page of pages)
     await invoke("write_file", { path: `${base}/${page.path}`, content: page.content });
-  // A folder whose memories are all gone keeps no page of its own.
   const current = new Set(pages.map((page) => `${base}/${page.path}`.replace(/\\/g, "/")));
   for (const entry of await listOrEmpty(`${base}/${INDEX_DIR}`)) {
     if (!current.has(entry.path.replace(/\\/g, "/"))) await invoke("delete_path", { path: entry.path });
   }
-  indexWritten.set(base, signature);
+  pagesWritten.set(base, signature);
 }
 
 async function listOrEmpty(path: string): Promise<DirEntry[]> {
