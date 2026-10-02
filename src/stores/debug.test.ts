@@ -95,17 +95,20 @@ const { useDebug } = await import("./debug");
 const { useWorkspace } = await import("./workspace");
 
 /**
- * The console as one string, which is what a person reads - once it has
- * arrived: output reaches the store in batches, a moment after it was written.
+ * The console as one string, which is what a person reads - once it says
+ * `needle`. Output reaches the store in batches a moment after it was
+ * written, so a line can land in a later batch than the one before it:
+ * waiting for "anything" read the first batch alone when the machine was
+ * busy, and the test went red for a line that was still on its way.
  */
-async function console_(): Promise<string> {
+async function consoleSaying(needle: string): Promise<string> {
   const read = () =>
     useDebug
       .getState()
       .output.map((segment) => segment.text)
       .join("");
   await vi.waitFor(() => {
-    expect(read()).not.toBe("");
+    expect(read()).toContain(needle);
   });
   return read();
 }
@@ -141,8 +144,7 @@ describe("the build a project says it needs", () => {
     expect(stored[TARGET.id]?.build).toBe("dotnet build src/Whole.sln");
     // Said out loud: a run that quietly builds something other than what the
     // language usually builds would be worse than one that guessed wrong.
-    expect(await console_()).toContain("dotnet build src/Whole.sln");
-    expect(await console_()).toContain("src/Whole.sln");
+    expect(await consoleSaying("dotnet build src/Whole.sln")).toContain("src/Whole.sln");
   });
 
   it("is read once, not once per run", async () => {
@@ -172,7 +174,7 @@ describe("the build a project says it needs", () => {
     await useDebug.getState().start();
 
     expect(stored[TARGET.id]).toBeUndefined();
-    expect(await console_()).toContain("gradle build");
+    await consoleSaying("gradle build");
   });
 
   it("is not asked for at all when the program needs no build", async () => {

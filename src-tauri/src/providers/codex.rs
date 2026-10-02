@@ -22,12 +22,50 @@ const APPROVAL_NEVER: &str = "approval_policy=never";
 /// closes the network: a command it runs then reaches nothing outside the
 /// working tree - not a cloud, not a package registry.
 const NETWORK_OFF: &str = "sandbox_workspace_write.network_access=false";
+/// Windows has no sandbox unless the config names one, and without it Codex
+/// turns `workspace-write` into read-only without a word: measured on 0.146.0
+/// in a git and a non-git folder, every file edit ended in "patch rejected:
+/// writing is blocked by read-only sandbox". The unelevated sandbox - a
+/// restricted token with ACL boundaries - needs no setup and no
+/// administrator, and with it the same edits and shell writes went through
+/// (`[windows] sandbox` in Codex's own docs). A user who configured a sandbox
+/// themselves keeps theirs.
+const WINDOWS_SANDBOX_UNELEVATED: &str = "windows.sandbox=unelevated";
+/// Codex's config file, in its home.
+const CODEX_CONFIG: &str = "config.toml";
 
 /// Codex has no `--append-system-prompt`, and overriding its base instructions
 /// file would replace them wholesale — so the journal rule rides along with the
 /// prompt itself (the "prompt-inject" memory strategy of ARCHITECTURE.md §4).
 fn prompt_with_progress_rule(prompt: &str) -> String {
     format!("{MEMORY_PROMPT}\n\n---\n\n{prompt}")
+}
+
+/// The Windows sandbox to ask for, when this is Windows and the user's own
+/// config does not choose one.
+fn windows_sandbox_override() -> Option<&'static str> {
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
+    let config = std::fs::read_to_string(super::catalog::codex_home().join(CODEX_CONFIG)).unwrap_or_default();
+    (!chooses_windows_sandbox(&config)).then_some(WINDOWS_SANDBOX_UNELEVATED)
+}
+
+/// Whether a Codex `config.toml` sets `sandbox` in its `[windows]` table.
+fn chooses_windows_sandbox(config: &str) -> bool {
+    let mut in_windows = false;
+    for line in config.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_windows = line == "[windows]";
+        } else if in_windows && !line.starts_with('#') {
+            if let Some((key, _)) = line.split_once('=') {
+                if key.trim() == "sandbox" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// The answer of a one-shot run: the text of the last completed agent message.
@@ -127,6 +165,10 @@ impl Adapter for CodexAdapter {
                 if tools == ToolSet::FilesOnly {
                     args.push("-c".into());
                     args.push(NETWORK_OFF.into());
+                }
+                if let Some(sandbox) = windows_sandbox_override() {
+                    args.push("-c".into());
+                    args.push(sandbox.into());
                 }
             }
         }
@@ -269,6 +311,43 @@ mod tests {
             Some(false)
         );
         assert_eq!(CodexAdapter.probe_sees_api_key("Not logged in"), None);
+    }
+
+    #[test]
+    fn a_config_that_chooses_its_windows_sandbox_is_left_alone() {
+        use super::chooses_windows_sandbox;
+        assert!(chooses_windows_sandbox("[windows]\nsandbox = \"elevated\"\n"));
+        assert!(chooses_windows_sandbox(
+            "[model]\nmodel = \"x\"\n\n[windows]\n# note\n  sandbox=\"unelevated\"\n"
+        ));
+        assert!(!chooses_windows_sandbox(
+            "[windows]\nsandbox_private_desktop = true\n"
+        ));
+        assert!(!chooses_windows_sandbox(
+            "[projects.'c:\\x']\ntrust_level = \"trusted\"\n"
+        ));
+        assert!(!chooses_windows_sandbox(
+            "[windows]\n# sandbox = \"elevated\"\n[other]\nsandbox = \"x\"\n"
+        ));
+        assert!(!chooses_windows_sandbox(""));
+    }
+
+    /// On Windows a guarded turn asks for the sandbox the config lacks; the
+    /// machine's own config decides which case this is, so both are accepted,
+    /// and elsewhere nothing is added.
+    #[test]
+    fn a_guarded_turn_names_a_windows_sandbox_only_on_windows() {
+        let call = CodexAdapter.chat_invocation(&turn(None, Permission::Edits));
+        let named = call.args.iter().any(|arg| arg.starts_with("windows.sandbox="));
+        if cfg!(target_os = "windows") {
+            let configured = super::chooses_windows_sandbox(
+                &std::fs::read_to_string(super::super::catalog::codex_home().join(super::CODEX_CONFIG))
+                    .unwrap_or_default(),
+            );
+            assert_eq!(named, !configured);
+        } else {
+            assert!(!named);
+        }
     }
 
     fn turn(session_id: Option<&'static str>, permission: Permission) -> TurnRequest<'static> {

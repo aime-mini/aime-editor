@@ -422,7 +422,7 @@ async fn codex_models() -> Result<Vec<ModelChoice>, String> {
 }
 
 /// `CODEX_HOME`, or `~/.codex`.
-fn codex_home() -> PathBuf {
+pub(super) fn codex_home() -> PathBuf {
     std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home_dir().unwrap_or_default().join(".codex"))
