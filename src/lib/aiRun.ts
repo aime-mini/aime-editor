@@ -1,3 +1,5 @@
+import { asArray, asRecord, asString, objectIn } from "./replyJson";
+
 /**
  * What a Task Run asks the model, and how the answers are read back.
  *
@@ -283,36 +285,6 @@ Rules:
 - Say nothing about formatting; a formatter already ran.
 `;
 
-/**
- * Pulls the first JSON object out of a reply.
- *
- * Models fence their JSON, apologise before it, and explain after it. This
- * takes the outermost braces and tries them, which is what survives all three.
- */
-function extractObject(reply: string): unknown {
-  const withoutFence = reply.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
-  const start = withoutFence.indexOf("{");
-  const end = withoutFence.lastIndexOf("}");
-  if (start === -1 || end <= start) return null;
-  try {
-    return JSON.parse(withoutFence.slice(start, end + 1));
-  } catch {
-    return null;
-  }
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
-}
-
 const KINDS: FindingKind[] = ["architecture", "security", "correctness", "performance", "style"];
 
 /**
@@ -329,7 +301,7 @@ function asKind(value: unknown): FindingKind {
 
 /** The brief, or null when the reply was not one. */
 export function parseBrief(reply: string): Brief | null {
-  const object = asRecord(extractObject(reply));
+  const object = objectIn(reply);
   const goal = asString(object.goal);
   const criteria = asArray(object.criteria)
     .map((entry, index) => {
@@ -356,7 +328,7 @@ export function parseBrief(reply: string): Brief | null {
 
 /** The survey, or null when the reply named no file to work in. */
 export function parseSurvey(reply: string): Survey | null {
-  const object = asRecord(extractObject(reply));
+  const object = objectIn(reply);
   const files = asArray(object.files)
     .map(asString)
     // A path, not a sentence about a path: a line with a space in it is prose,
@@ -379,7 +351,7 @@ export function parseSurvey(reply: string): Survey | null {
 
 /** The solution, or null when the reply was not a decision. */
 export function parseSolution(reply: string): Solution | null {
-  const object = asRecord(extractObject(reply));
+  const object = objectIn(reply);
   const how = asString(object.how);
   const why = asString(object.why);
   // A way with no reason is an instinct, and a reason with no way is an
@@ -398,7 +370,7 @@ export function parseSolution(reply: string): Solution | null {
 
 /** The test cases, or null when the reply held no complete case. */
 export function parseTestCases(reply: string): TestCases | null {
-  const object = asRecord(extractObject(reply));
+  const object = objectIn(reply);
   const cases = asArray(object.cases)
     .map((entry, index) => {
       const row = asRecord(entry);
@@ -421,7 +393,7 @@ export function parseTestCases(reply: string): TestCases | null {
 
 /** The plan, or null when the reply was not one. */
 export function parsePlan(reply: string): Plan | null {
-  const object = asRecord(extractObject(reply));
+  const object = objectIn(reply);
   const steps = asArray(object.steps)
     .map((entry) => {
       const row = asRecord(entry);
@@ -444,7 +416,7 @@ export function parsePlan(reply: string): Plan | null {
 
 /** The review. Unlike the two above, an empty review is a real answer. */
 export function parseReview(reply: string): Review {
-  const object = asRecord(extractObject(reply));
+  const object = objectIn(reply);
   return {
     risks: asArray(object.risks).map(asString).filter(Boolean),
     findings: asArray(object.findings)
@@ -476,7 +448,7 @@ export function parseReview(reply: string): Review {
  * through. A reviewer that never answered must be asked again instead.
  */
 export function readReview(reply: string): Review | null {
-  return Array.isArray(asRecord(extractObject(reply)).findings) ? parseReview(reply) : null;
+  return Array.isArray(objectIn(reply).findings) ? parseReview(reply) : null;
 }
 
 /**

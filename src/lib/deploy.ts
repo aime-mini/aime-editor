@@ -2,6 +2,7 @@ import type { CloudAccount, CloudResource } from "../stores/cloud";
 import { shortKind } from "./cloudIcons";
 import type { PlannedRead } from "./cloudReads";
 import { dialectOf, recipeOf } from "./deployDialect";
+import { asArray, asRecord, asString, objectIn } from "./replyJson";
 import { withoutSignatures } from "./signedUrls";
 
 export { DEPLOYABLE } from "./deployDialect";
@@ -566,7 +567,7 @@ function inventoryLine(resource: CloudResource): string {
 }
 
 export function parseSurvey(reply: string): Survey | null {
-  const raw = asRecord(extractObject(reply));
+  const raw = objectIn(reply);
   const app = asRecord(raw.app);
   if (asString(app.name) === "" && asString(app.kind) === "") return null;
   const port = typeof app.port === "number" && Number.isFinite(app.port) ? app.port : null;
@@ -592,7 +593,7 @@ export function parseSurvey(reply: string): Survey | null {
 }
 
 export function parsePlan(reply: string, urlFromRead = true): DeployPlan | null {
-  const raw = asRecord(extractObject(reply));
+  const raw = objectIn(reply);
   const steps = asArray(raw.steps).flatMap(asStep);
   if (steps.length === 0) return null;
   const target = asRecord(raw.target);
@@ -621,7 +622,7 @@ export function parsePlan(reply: string, urlFromRead = true): DeployPlan | null 
 }
 
 export function parseRevision(reply: string): Revision | null {
-  const raw = asRecord(extractObject(reply));
+  const raw = objectIn(reply);
   const revision: Revision = {
     steps: asArray(raw.steps).flatMap(asStep),
     files: asArray(raw.files).flatMap(asFile),
@@ -636,7 +637,7 @@ export function parseRevision(reply: string): Revision | null {
 }
 
 export function parseSteer(reply: string): Steer | null {
-  const raw = asRecord(extractObject(reply));
+  const raw = objectIn(reply);
   const steer: Steer = { reply: asString(raw.reply), steps: asArray(raw.steps).flatMap(asStep) };
   return steer.reply === "" && steer.steps.length === 0 ? null : steer;
 }
@@ -848,30 +849,4 @@ function parseJson(text: string): unknown {
   } catch {
     return undefined;
   }
-}
-
-/** The first JSON object in a reply, however much prose or fencing surrounds it. */
-function extractObject(reply: string): unknown {
-  const start = reply.indexOf("{");
-  const end = reply.lastIndexOf("}");
-  if (start === -1 || end <= start) return {};
-  try {
-    return JSON.parse(reply.slice(start, end + 1)) as unknown;
-  } catch {
-    return {};
-  }
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }

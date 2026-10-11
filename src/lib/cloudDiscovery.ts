@@ -1,3 +1,5 @@
+import { asArray, asRecord, asString, objectIn } from "./replyJson";
+
 /**
  * What Aime asks the AI about a cloud it is signed into, and how the answer is
  * read back.
@@ -154,7 +156,7 @@ Answer ONLY with JSON, no prose and no code fence:` + SHARED_SCHEMA;
  * shrug would be worse than writing nothing.
  */
 export function parseArchitecture(reply: string): CloudArchitecture | null {
-  const object = asRecord(extractObject(reply));
+  const object = objectIn(reply);
   const services = asArray(object.services)
     .map((entry) => {
       const row = asRecord(entry);
@@ -171,33 +173,4 @@ export function parseArchitecture(reply: string): CloudArchitecture | null {
   const gaps = asArray(object.gaps).map(asString).filter(Boolean);
   if (services.length === 0 && deploys.length === 0 && gaps.length === 0) return null;
   return { deploys, services, gaps, raw: reply };
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
-}
-
-/**
- * Pulls the first JSON object out of a reply.
- *
- * Models fence their JSON, apologise before it and explain after it. Taking the
- * outermost braces survives all three.
- */
-function extractObject(reply: string): unknown {
-  const start = reply.indexOf("{");
-  const end = reply.lastIndexOf("}");
-  if (start === -1 || end <= start) return null;
-  try {
-    return JSON.parse(reply.slice(start, end + 1));
-  } catch {
-    return null;
-  }
 }
