@@ -653,8 +653,11 @@ pub async fn lsp_restore(paths: Vec<String>) -> Result<(), String> {
 /// project file found near the root is offered, because a repository with two of
 /// them has two, and analysing one is analysing half the code.
 #[tauri::command]
-pub fn lsp_project_files(root: String) -> ProjectFiles {
-    let root = std::path::Path::new(&root);
+pub async fn lsp_project_files(root: String) -> Result<ProjectFiles, String> {
+    crate::background::off_main_thread(move || project_files_near(std::path::Path::new(&root))).await
+}
+
+fn project_files_near(root: &std::path::Path) -> ProjectFiles {
     let mut solutions = Vec::new();
     let mut projects = Vec::new();
     // Two levels: `src/Api/Api.csproj` is normal, deeper is somebody else's tree.

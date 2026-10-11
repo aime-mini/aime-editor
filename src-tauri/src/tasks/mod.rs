@@ -591,8 +591,11 @@ fn custom_tasks(root: &Path) -> Vec<TaskDef> {
 /// Detected tasks merged with the project's `.aime/tasks.json`: an entry
 /// reusing a detected id replaces it, anything else is appended.
 #[tauri::command]
-pub fn detect_tasks(root_path: String) -> Result<Vec<TaskDef>, String> {
-    let root = Path::new(&root_path);
+pub async fn detect_tasks(root_path: String) -> Result<Vec<TaskDef>, String> {
+    crate::background::off_main_thread(move || tasks_of(Path::new(&root_path))).await
+}
+
+fn tasks_of(root: &Path) -> Vec<TaskDef> {
     let facts = gather_facts(root);
     let mut tasks = detect_from(&facts);
     // A root that builds its own source *is* the project, and burying its Test
@@ -610,7 +613,7 @@ pub fn detect_tasks(root_path: String) -> Result<Vec<TaskDef>, String> {
             None => tasks.push(custom),
         }
     }
-    Ok(tasks)
+    tasks
 }
 
 /// Printed by the shell after a task so Aime can read its exit code back from
@@ -695,8 +698,17 @@ fn program_of(command: &str) -> Option<String> {
 /// shell, and telling them apart by matching error text is the kind of guess
 /// this codebase does not make.
 #[tauri::command]
-pub fn check_task_commands(root_path: String, commands: Vec<String>, folders: Vec<String>) -> Vec<TaskCheck> {
-    let root = Path::new(&root_path);
+pub async fn check_task_commands(
+    root_path: String,
+    commands: Vec<String>,
+    folders: Vec<String>,
+) -> Result<Vec<TaskCheck>, String> {
+    // A tool missing from PATH costs a PowerShell start (`program::registered_path`).
+    crate::background::off_main_thread(move || check_commands(Path::new(&root_path), &commands, &folders))
+        .await
+}
+
+fn check_commands(root: &Path, commands: &[String], folders: &[String]) -> Vec<TaskCheck> {
     commands
         .iter()
         .zip(folders.iter().chain(std::iter::repeat(&String::new())))
@@ -770,8 +782,8 @@ pub fn task_profile_exists(root_path: String) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_task_commands, detect_from, manager_of, manifest_of, member_tasks, npm_scripts_of, program_of,
-        save_tasks, task_profile_exists, FolderFacts, PackageManager, TaskDef, TaskKind,
+        check_commands, detect_from, manager_of, manifest_of, member_tasks, npm_scripts_of, program_of,
+        save_tasks, task_profile_exists, tasks_of, FolderFacts, PackageManager, TaskDef, TaskKind,
     };
     use std::path::PathBuf;
 
@@ -796,10 +808,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("temp project");
         root
-    }
-
-    fn detect_tasks_in(root: &std::path::Path) -> Vec<super::TaskDef> {
-        super::detect_tasks(root.to_string_lossy().to_string()).expect("detection")
     }
 
     fn command_of<'a>(tasks: &'a [super::TaskDef], id: &str) -> &'a str {
@@ -1004,7 +1012,7 @@ mod tests {
         let root = project("facts");
         std::fs::write(root.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'").expect("lockfile");
         std::fs::write(root.join("package.json"), r#"{"scripts":{"test":"vitest"}}"#).expect("manifest");
-        assert_eq!(command_of(&detect_tasks_in(&root), "node.test"), "pnpm run test");
+        assert_eq!(command_of(&tasks_of(&root), "node.test"), "pnpm run test");
 
         // The same folder, now declaring a manager: the manifest outranks the lock.
         std::fs::write(
@@ -1012,15 +1020,12 @@ mod tests {
             r#"{"packageManager":"yarn@1.22.22","scripts":{"test":"vitest"}}"#,
         )
         .expect("manifest");
-        assert_eq!(command_of(&detect_tasks_in(&root), "node.test"), "yarn run test");
+        assert_eq!(command_of(&tasks_of(&root), "node.test"), "yarn run test");
 
         // And as a workspace root with no test script of its own.
         std::fs::write(root.join("package.json"), r#"{"private":true}"#).expect("manifest");
         std::fs::write(root.join("pnpm-workspace.yaml"), "packages:\n  - \"packages/*\"").expect("workspace");
-        assert_eq!(
-            command_of(&detect_tasks_in(&root), "node.test"),
-            "pnpm -r run test"
-        );
+        assert_eq!(command_of(&tasks_of(&root), "node.test"), "pnpm -r run test");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1074,7 +1079,7 @@ mod tests {
             .expect("solution");
         }
 
-        let tasks = detect_tasks_in(&root);
+        let tasks = tasks_of(&root);
         let ids: Vec<&str> = tasks.iter().map(|task| task.id.as_str()).collect();
 
         assert!(
@@ -1114,7 +1119,7 @@ mod tests {
         )
         .expect("manifest");
 
-        let ids: Vec<String> = detect_tasks_in(&root).into_iter().map(|task| task.id).collect();
+        let ids: Vec<String> = tasks_of(&root).into_iter().map(|task| task.id).collect();
 
         assert!(ids.contains(&"cargo.build".to_string()), "{ids:?}");
         assert!(
@@ -1165,7 +1170,7 @@ mod tests {
         let root = project("slnx");
         std::fs::write(root.join("Shop.slnx"), "<Solution />").expect("solution");
 
-        let ids: Vec<String> = detect_tasks_in(&root).into_iter().map(|task| task.id).collect();
+        let ids: Vec<String> = tasks_of(&root).into_iter().map(|task| task.id).collect();
 
         assert!(ids.contains(&"dotnet.build".to_string()), "{ids:?}");
         let _ = std::fs::remove_dir_all(&root);
@@ -1228,14 +1233,14 @@ mod tests {
         let root = project("checks");
         std::fs::create_dir_all(root.join("api")).expect("member folder");
 
-        let checks = check_task_commands(
-            root.to_string_lossy().to_string(),
-            vec![
+        let checks = check_commands(
+            &root,
+            &[
                 "git status".into(),
                 "aime-no-such-build-tool package".into(),
                 "git status".into(),
             ],
-            vec!["api".into(), ".".into(), "nowhere".into()],
+            &["api".into(), ".".into(), "nowhere".into()],
         );
 
         assert_eq!(checks.len(), 3);
@@ -1279,7 +1284,7 @@ mod tests {
         )
         .expect("third save");
 
-        let tasks = detect_tasks_in(&root);
+        let tasks = tasks_of(&root);
         let ids: Vec<&str> = tasks.iter().map(|task| task.id.as_str()).collect();
         assert_eq!(
             ids.iter().filter(|id| **id == "ai.build.root").count(),

@@ -43,8 +43,11 @@ pub struct Synced {
 
 /// Before a project's memory is read: puts it back if the folder is gone, mirrors it otherwise.
 #[tauri::command]
-pub fn memory_mirror_sync(app: AppHandle, root: String) -> Result<Synced, String> {
-    sync(&app, Path::new(&root)).map_err(|e| e.to_string())
+pub async fn memory_mirror_sync(app: AppHandle, root: String) -> Result<Synced, String> {
+    // Asks git for the remote and copies files: before every chat turn, so never on the main thread.
+    crate::background::off_main_thread(move || sync(&app, Path::new(&root)))
+        .await?
+        .map_err(|e| e.to_string())
 }
 
 /// After a turn in `cwd`, which may have written memories. A mirror that

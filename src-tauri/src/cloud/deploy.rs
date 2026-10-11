@@ -386,7 +386,12 @@ pub async fn cloud_http_probe(url: String) -> Result<Probe, String> {
 /// a build happens here or in the cloud. The names come from the caller: what
 /// a deployment might need is the AI's knowledge, not this module's.
 #[tauri::command]
-pub fn programs_present(names: Vec<String>) -> Vec<String> {
+pub async fn programs_present(names: Vec<String>) -> Result<Vec<String>, String> {
+    // Each missing program costs a PowerShell start (`program::registered_path`).
+    crate::background::off_main_thread(move || present_programs(names)).await
+}
+
+fn present_programs(names: Vec<String>) -> Vec<String> {
     names
         .into_iter()
         .filter(|name| is_command_word(name) && Program::resolve(name).exists())
@@ -1567,7 +1572,7 @@ Options
     fn only_programs_shaped_like_a_name_are_looked_up() {
         // `git` is on every machine this crate builds on; the odd token is not
         // even asked about, so a caller cannot probe arbitrary paths.
-        let present = programs_present(vec!["git".into(), "../evil".into(), "no-such-tool-here".into()]);
+        let present = present_programs(vec!["git".into(), "../evil".into(), "no-such-tool-here".into()]);
         assert_eq!(present, vec!["git".to_string()]);
     }
 

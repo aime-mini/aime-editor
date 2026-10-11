@@ -98,8 +98,11 @@ const MAX_INDEXED_FILES: usize = 20_000;
 /// Flat list of workspace files (relative paths, forward slashes) for the
 /// command palette's fuzzy quick-open. Ignored directories are skipped.
 #[tauri::command]
-pub fn list_files(root: String) -> Result<Vec<String>, String> {
-    let root_path = Path::new(&root);
+pub async fn list_files(root: String) -> Result<Vec<String>, String> {
+    crate::background::off_main_thread(move || index_files(Path::new(&root))).await
+}
+
+fn index_files(root_path: &Path) -> Vec<String> {
     let mut files = Vec::new();
     let mut stack = vec![root_path.to_path_buf()];
 
@@ -110,7 +113,7 @@ pub fn list_files(root: String) -> Result<Vec<String>, String> {
         };
         for entry in entries.filter_map(Result::ok) {
             if files.len() >= MAX_INDEXED_FILES {
-                return Ok(files);
+                return files;
             }
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
@@ -123,7 +126,7 @@ pub fn list_files(root: String) -> Result<Vec<String>, String> {
             }
         }
     }
-    Ok(files)
+    files
 }
 
 /// The byte order mark, as the character it decodes to. Visual Studio puts one
@@ -185,13 +188,18 @@ pub fn rename_path(from: String, to: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn delete_path(path: String) -> Result<(), String> {
-    let target = Path::new(&path);
-    if target.is_dir() {
-        fs::remove_dir_all(target).map_err(|e| e.to_string())
-    } else {
-        fs::remove_file(target).map_err(|e| e.to_string())
-    }
+pub async fn delete_path(path: String) -> Result<(), String> {
+    // A folder can be a whole `node_modules`: seconds of deleting.
+    crate::background::off_main_thread(move || {
+        let target = Path::new(&path);
+        if target.is_dir() {
+            fs::remove_dir_all(target)
+        } else {
+            fs::remove_file(target)
+        }
+    })
+    .await?
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 mod aime_dir;
 mod archive;
+mod background;
 mod checkpoint;
 mod cli;
 mod cloud;

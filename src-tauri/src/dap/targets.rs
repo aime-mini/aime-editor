@@ -300,8 +300,8 @@ pub fn detect_targets(root: &Path) -> Vec<DebugTarget> {
 /// The programs this project can debug, shallowest first — the outermost
 /// program is the one a project is usually about.
 #[tauri::command]
-pub fn dap_targets(root: String) -> Vec<DebugTarget> {
-    detect_targets(Path::new(&root))
+pub async fn dap_targets(root: String) -> Result<Vec<DebugTarget>, String> {
+    crate::background::off_main_thread(move || detect_targets(Path::new(&root))).await
 }
 
 #[cfg(test)]
