@@ -54,11 +54,23 @@ async function openTab(folder) {
 /** Runs the next commands in the webview of workspace `label`. */
 async function inWorkspace(label) {
   for (const handle of await browser.getWindowHandles()) {
-    await browser.switchToWindow(handle);
-    const here = await browser.execute(() => window.__TAURI_INTERNALS__.metadata.currentWebview.label);
-    if (here === label) return;
+    if ((await labelOf(handle)) === label) return;
   }
   throw new Error(`no webview ${label} among the window handles`);
+}
+
+/**
+ * The workspace a window handle shows, or null for a window that closed after
+ * the handles were listed - a test that has just closed one walks them at once.
+ */
+async function labelOf(handle) {
+  try {
+    await browser.switchToWindow(handle);
+    return await browser.execute(() => window.__TAURI_INTERNALS__.metadata.currentWebview.label);
+  } catch (error) {
+    if (/no such window/i.test(String(error))) return null;
+    throw error;
+  }
 }
 
 /**

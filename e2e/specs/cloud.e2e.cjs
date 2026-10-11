@@ -204,6 +204,7 @@ describe("Cloud", () => {
   after(async () => {
     restore(providersFile, saved.providers);
     fs.rmSync(PROBE_SCRIPT, { force: true });
+    fs.rmSync(PROMPT_SEEN, { force: true });
     // The choice of tabs is a preference of this machine's; leave none behind.
     await browser.execute(() => {
       localStorage.removeItem("aime.cloud.shown");

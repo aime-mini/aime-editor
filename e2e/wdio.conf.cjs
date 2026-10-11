@@ -342,6 +342,65 @@ function removeThrowawayStores() {
   process.stdout.write(`[e2e] removed ${removed} stores the run's throwaway projects left in app data\n`);
 }
 
+/** What the app remembers of the shared workspace: its chat and how its editor was left. */
+const SHARED_WORKSPACE_STORES = ["sessions", "workspaces"].map((kind) =>
+  path.join(process.env.APPDATA ?? "", "com.iodm.aiminieditor", kind),
+);
+
+/**
+ * The shared workspace's stores, by the name `store_key` (`session/mod.rs`)
+ * gives them: the folder's name made filesystem-safe, then a hash. The name
+ * ends in `mkdtemp`'s random characters, so it can only be this run's folder.
+ */
+function forgetSharedWorkspace() {
+  const name = path
+    .basename(workspace)
+    .replace(/[^A-Za-z0-9]/g, "-")
+    .toLowerCase();
+  const ofWorkspace = new RegExp(`^${name}-[0-9a-f]{16}\\.json$`);
+  for (const dir of SHARED_WORKSPACE_STORES.filter((store) => fs.existsSync(store))) {
+    for (const file of fs.readdirSync(dir).filter((entry) => ofWorkspace.test(entry))) {
+      fs.rmSync(path.join(dir, file), { force: true });
+    }
+  }
+}
+
+/** A folder made with `mkdtemp` by the suite or a spec: `aime-<name>-<six random characters>`. */
+const THROWAWAY_FOLDER = /^aime-[A-Za-z0-9-]+-[A-Za-z0-9]{6}$/;
+
+/**
+ * The shared workspace and every folder a spec made and left in the temp
+ * folder during this run - measured 2026-10-11: 49 of them after one sweep.
+ * One the app has not let go of yet is reported, not thrown: a throw here
+ * would leave the stores and the driver profiles behind as well.
+ */
+function removeThrowawayFolders() {
+  const folders = fs
+    .readdirSync(os.tmpdir())
+    .filter((name) => THROWAWAY_FOLDER.test(name))
+    .map((name) => path.join(os.tmpdir(), name))
+    .filter((folder) => {
+      const stats = fs.statSync(folder, { throwIfNoEntry: false });
+      return stats ? (stats.birthtimeMs || stats.mtimeMs) >= startedAt : false;
+    });
+  let removed = 0;
+  for (const folder of folders) {
+    try {
+      // The app goes down with the driver, and lets go of its folders a moment later.
+      fs.rmSync(folder, {
+        recursive: true,
+        force: true,
+        maxRetries: WORKSPACE_RELEASE_ATTEMPTS,
+        retryDelay: WORKSPACE_RETRY_MS,
+      });
+      removed += 1;
+    } catch (error) {
+      process.stdout.write(`[e2e] ${folder} still in use: ${error.message}\n`);
+    }
+  }
+  process.stdout.write(`[e2e] removed ${removed} of ${folders.length} throwaway folders in ${os.tmpdir()}\n`);
+}
+
 async function removeDriverProfiles() {
   const profiles = driverProfilesOfThisRun();
   if (profiles.length === 0) return;
@@ -414,6 +473,18 @@ exports.config = {
    * feature. Waiting here rather than in each spec is the only way it cannot
    * be forgotten by the next spec somebody writes.
    */
+  /**
+   * Every spec opens the shared workspace as if for the first time. The app
+   * reopens a folder the way it was left - its tabs, its sidebar, the cloud
+   * panel, the chat - so without this a spec inherits the one before it:
+   * measured 2026-10-11, the cloud spec left its picker over the AI panel the
+   * composer spec reads, and a git spec left the sidebar on Git, which hides
+   * the file tree that terminal-reopen closes the folder from.
+   */
+  beforeSession: () => {
+    forgetSharedWorkspace();
+  },
+
   before: async () => {
     await browser.waitUntil(
       async () =>
@@ -430,13 +501,7 @@ exports.config = {
 
   onComplete: async () => {
     tauriDriver?.kill();
-    // The app goes down with the driver, and lets go of the folder a moment later.
-    fs.rmSync(workspace, {
-      recursive: true,
-      force: true,
-      maxRetries: WORKSPACE_RELEASE_ATTEMPTS,
-      retryDelay: WORKSPACE_RETRY_MS,
-    });
+    removeThrowawayFolders();
     removeThrowawayStores();
     await removeDriverProfiles();
   },
