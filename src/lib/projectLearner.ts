@@ -80,9 +80,11 @@ async function learn(root: string): Promise<void> {
   const { memories, evidence } = await memoriesWithEvidence(root);
   const queue = studiesDue({ files, memories, evidence, state });
   if (queue.length === 0) return;
+  const lightModel = await lightModelOfProvider();
 
   for (let scope = queue.shift(); scope !== undefined; scope = queue.shift()) {
-    const learned = await study(root, scope, files);
+    // The whole decides what the parts are, so it gets the user's model; a part is mostly reading.
+    const learned = await study(root, scope, files, scope === ROOT_SCOPE ? undefined : lightModel);
     if (learned === null) return;
     if (scope === ROOT_SCOPE) {
       const studied = studiedParts(memories);
@@ -95,7 +97,12 @@ async function learn(root: string): Promise<void> {
 }
 
 /** One study: the turn, then its answer written as memories. Null when the turn gave nothing usable. */
-async function study(root: string, scope: string, files: readonly string[]): Promise<Learned | null> {
+async function study(
+  root: string,
+  scope: string,
+  files: readonly string[],
+  model: string | undefined,
+): Promise<Learned | null> {
   // Read again for every study: the one before may have written memories this one should see.
   const { memories, evidence } = await memoriesWithEvidence(root);
   const shown = memoriesShown(memories, scope);
@@ -106,7 +113,7 @@ async function study(root: string, scope: string, files: readonly string[]): Pro
     evidence,
     studied: studiedParts(memories),
   });
-  const learned = await readableAnswer({ root, scope, prompt });
+  const learned = await readableAnswer({ root, scope, prompt, model });
   if (learned === null) return null;
   const { write, forget } = changesFrom({ learned, existing: memories, shown, evidence, day: today() });
   await writeAll(root, write);
@@ -114,8 +121,13 @@ async function study(root: string, scope: string, files: readonly string[]): Pro
   return learned;
 }
 
-async function readableAnswer(ask: { root: string; scope: string; prompt: string }): Promise<Learned | null> {
-  const { root, scope, prompt } = ask;
+async function readableAnswer(ask: {
+  root: string;
+  scope: string;
+  prompt: string;
+  model: string | undefined;
+}): Promise<Learned | null> {
+  const { root, scope, prompt, model } = ask;
   // Asked once more when the answer could not be used: a model that ignored the format is told so.
   for (const asked of [prompt, askedAgain(prompt, scope)]) {
     const { code, text } = await agentTurn({
@@ -123,6 +135,7 @@ async function readableAnswer(ask: { root: string; scope: string; prompt: string
       cwd: root,
       permission: "readOnly",
       tools: "filesOnly",
+      model,
     });
     if (code !== 0) {
       console.warn(`learning ${scope}: the CLI ended with exit code ${String(code)}`);
@@ -133,6 +146,26 @@ async function readableAnswer(ask: { root: string; scope: string; prompt: string
   }
   console.warn(`learning ${scope}: twice an answer that could not be used`);
   return null;
+}
+
+/**
+ * The current provider's small, fast tier (`provider_light_model`), or
+ * undefined to keep the user's model - for a provider that names none, or
+ * when the catalog cannot be read.
+ */
+async function lightModelOfProvider(): Promise<string | undefined> {
+  try {
+    return (
+      (await invoke<string | null>("provider_light_model", { providerId: useAi.getState().providerId })) ??
+      undefined
+    );
+  } catch (error: unknown) {
+    console.warn(
+      "the provider's light model could not be read; parts are studied on the chosen model:",
+      error,
+    );
+    return undefined;
+  }
 }
 
 async function readState(root: string): Promise<LearningState> {

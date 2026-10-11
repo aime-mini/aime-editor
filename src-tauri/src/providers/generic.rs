@@ -97,6 +97,11 @@ pub struct ProviderConfig {
     /// `modelsArgs` wins when both are set; empty = no such endpoint.
     #[serde(default)]
     pub models_url: String,
+    /// The model of the provider's small, fast tier, for the reading Aime does
+    /// on its own (`catalog::provider_light_model`). Empty = every turn runs on
+    /// the model the user chose.
+    #[serde(default)]
+    pub light_model: String,
 }
 
 fn default_text_field() -> String {
@@ -331,6 +336,7 @@ mod tests {
                 api_key_login_args: Vec::new(),
                 models_args: Vec::new(),
                 models_url: String::new(),
+                light_model: String::new(),
             },
         }
     }

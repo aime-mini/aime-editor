@@ -53,6 +53,9 @@ const SCHEMA = [
     "compiled in), so for it this is " +
     "`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key={apiKey}`. " +
     "Never put a key itself here.",
+  "- `lightModel` (string): the model name of the provider's small, fast tier as the CLI's model flag takes " +
+    "it - what I use for the reading I do on my own, such as studying the parts of a project. Take it from " +
+    "the vendor's own model documentation, and leave it out when the vendor names no such tier.",
   '- `memory` ("native" | "config-pointer" | "prompt-inject"): how the CLI finds project knowledge. ' +
     '"native" = it reads a context file of its own; "config-pointer" = its context filename is ' +
     'configurable; "prompt-inject" = it has no such convention, so Aime prepends AGENTS.md to prompts. ' +
@@ -82,7 +85,8 @@ export function buildAddProviderPrompt(request: AddProviderRequest): string {
     "4. Find out how it lists its models without a prompt (its help, a `models` or `list` subcommand). " +
       "If there is such a command, run it, make sure it prints model names, and put its arguments in " +
       "`modelsArgs`. If there is none but the CLI's service has a models endpoint that takes an API key, " +
-      "put that URL in `modelsUrl` with `{apiKey}` in place of the key. Say which you chose and why.",
+      "put that URL in `modelsUrl` with `{apiKey}` in place of the key. Say which you chose and why. " +
+      "If one of those models is the vendor's small, fast tier, put its name in `lightModel`.",
     `5. Write the entry into ${configPath}. That file is a JSON array. **Keep every entry already in it** ` +
       "and add yours, or correct the existing entry if one for this CLI is already there.",
     "",

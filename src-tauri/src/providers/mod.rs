@@ -651,6 +651,7 @@ mod tests {
             api_key_login_args: vec![script.to_string_lossy().to_string()],
             models_args: Vec::new(),
             models_url: String::new(),
+            light_model: String::new(),
         };
         (GenericAdapter { config }, sink)
     }

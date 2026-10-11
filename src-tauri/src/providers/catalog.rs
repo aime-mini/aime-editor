@@ -68,6 +68,40 @@ pub async fn provider_models(app: AppHandle, provider_id: String) -> Result<Vec<
     }
 }
 
+/// The model of the provider's small, fast tier, for the reading Aime does on
+/// its own - studying the parts of a project. Measured 2026-10-10 on trpc: Haiku
+/// 5.5 read a part accurately for 2 cents where Opus 5.5 spends about 45. None
+/// when the provider names no such tier: Codex's catalog says nothing about
+/// cost, and a configured CLI says it in `lightModel` or not at all.
+#[tauri::command]
+pub async fn provider_light_model(app: AppHandle, provider_id: String) -> Result<Option<String>, String> {
+    match provider_id.as_str() {
+        "claude" => {
+            let models = tauri::async_runtime::spawn_blocking(move || claude_models(&app))
+                .await
+                .map_err(|e| e.to_string())??;
+            Ok(lightest_claude(&models))
+        }
+        "codex" => Ok(None),
+        other => Ok(super::generic::find(other)
+            .map(|adapter| adapter.config.light_model.clone())
+            .filter(|model| !model.is_empty())),
+    }
+}
+
+/// The newest model of the smallest tier this Claude Code offers.
+fn lightest_claude(choices: &[ModelChoice]) -> Option<String> {
+    let ids: Vec<ModelId> = choices
+        .iter()
+        .filter_map(|choice| parse_id(choice.value.strip_prefix("claude-")?.as_bytes()))
+        .collect();
+    let smallest = ids.iter().map(ModelId::family_rank).max()?;
+    ids.into_iter()
+        .filter(|id| id.family_rank() == smallest)
+        .min()
+        .map(|id| id.value())
+}
+
 // ---- Claude Code -----------------------------------------------------------
 
 /// Where the scan of the installed binary is kept, under the app data dir.
@@ -77,6 +111,8 @@ const NPM_BUNDLE: &str = "node_modules/@anthropic-ai/claude-code/cli.js";
 /// A file this small on PATH is a launcher, not the program.
 const LAUNCHER_MAX_BYTES: u64 = 1024 * 1024;
 /// Families in the order the picker shows them; anything else is not a model name.
+/// Claude's tiers, largest first: the order the picker shows them in, and the
+/// last one is the small, fast tier.
 const FAMILIES: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
 const PREFIX: &[u8] = b"claude-";
 /// Read size for the scan; the overlap keeps a name split across two reads whole.
@@ -638,6 +674,25 @@ mod tests {
             label: label.to_string(),
             efforts: None,
         }
+    }
+
+    #[test]
+    fn the_light_model_is_the_newest_of_the_smallest_tier_offered() {
+        let offered = [
+            choice("claude-fable-5-1[1m]", "Fable 5.1 · 1M context"),
+            choice("claude-opus-5-5", "Opus 5.5"),
+            choice("claude-haiku-4-5", "Haiku 4.5"),
+            choice("claude-haiku-5-5", "Haiku 5.5"),
+            choice("claude-sonnet-5-5", "Sonnet 5.5"),
+        ];
+        assert_eq!(lightest_claude(&offered).as_deref(), Some("claude-haiku-5-5"));
+        // An account offered no Haiku still has a smallest tier.
+        assert_eq!(
+            lightest_claude(&offered[..2]).as_deref(),
+            Some("claude-opus-5-5"),
+            "Opus is smaller than Fable"
+        );
+        assert_eq!(lightest_claude(&[choice("default", "Default")]), None);
     }
 
     #[test]

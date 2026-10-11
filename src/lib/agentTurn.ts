@@ -32,6 +32,12 @@ export interface AgentTurnOptions {
   cwd: string;
   permission: TurnPermission;
   tools?: TurnTools;
+  /**
+   * A model other than the user's choice, such as the provider's light model
+   * for reading Aime does on its own. The user's effort level belongs to the
+   * user's model, so a turn on another one runs at that model's default.
+   */
+  model?: string;
   /** A tool the CLI called, as one line for a log. */
   onToolCall?: (line: string) => void;
   /** A line the CLI wrote to stderr. */
@@ -127,8 +133,8 @@ export async function agentTurn(options: AgentTurnOptions): Promise<AgentTurnOut
       // No session id: this must never join or resume the user's chat.
       sessionId: null,
       options: {
-        model: ai.model || null,
-        effort: ai.effort || null,
+        model: options.model ?? (ai.model || null),
+        effort: options.model === undefined ? ai.effort || null : null,
         permission: options.permission,
         tools: options.tools ?? "everything",
       },
