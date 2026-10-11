@@ -376,6 +376,16 @@ pub struct ProviderSummary {
     pub api_key_route: Option<ApiKeyRoute>,
 }
 
+/// Set by automation that drives the person's real CLI - the e2e suite - where
+/// a turn nobody asked for would spend their money on every run.
+const NO_BACKGROUND_TURNS_VAR: &str = "AIME_NO_BACKGROUND_TURNS";
+
+/// Whether Aime may start turns of its own, such as learning a project it was just opened on.
+#[tauri::command]
+pub fn background_turns_allowed() -> bool {
+    std::env::var_os(NO_BACKGROUND_TURNS_VAR).is_none()
+}
+
 /// Every provider Aime can talk to right now.
 #[tauri::command]
 pub fn list_providers() -> Vec<ProviderSummary> {

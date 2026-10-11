@@ -140,6 +140,43 @@ const SCENARIOS = {
     result(0, 0, { result: answer });
   },
 
+  /**
+   * Learning a project in the background: the whole names two parts, `lib`
+   * answers at once, and `api` first answers in prose - the way a model that
+   * ignored the format does - then, told so, with the JSON.
+   */
+  async learn({ say, result }, prompt) {
+    const memory = (name, scope, summary, files) => ({
+      name,
+      kind: "structure",
+      scope,
+      summary,
+      files,
+      body: "",
+    });
+    const studying = (scope) => prompt.includes(`Study one part of this project: \`${scope}\``);
+    let answer;
+    if (prompt.includes("Study the project as a whole")) {
+      answer = {
+        memories: [memory("project-overview", "/", "A greeting library with an api package", ["hello.ts"])],
+        parts: ["lib", "api"],
+      };
+    } else if (studying("lib")) {
+      answer = {
+        memories: [memory("lib-router", "lib", "lib routes requests to handlers", ["lib/router.js"])],
+      };
+    } else if (studying("api") && prompt.includes("could not be used")) {
+      answer = {
+        memories: [memory("api-package", "api", "api is the package its tests run in", ["api/package.json"])],
+      };
+    } else {
+      answer = "The api folder holds a package with one test script.";
+    }
+    const text = typeof answer === "string" ? answer : JSON.stringify(answer);
+    say(text);
+    result(0, 0, { result: text });
+  },
+
   /** The turn that picks an interrupted one up. */
   async resume({ say, result }) {
     say(args.includes("--resume") ? "Picked up where it stopped." : "Started over without the session.");

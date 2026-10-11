@@ -58,7 +58,7 @@ export async function loadMemories(root: string): Promise<Memory[]> {
 async function loadKept(root: string): Promise<Map<Memory, number>> {
   const base = trim(root);
   if (!cache.has(base)) await carryOverLegacy(base);
-  await restoreFromMirror(base);
+  await syncMirror(base);
   const entries = await listOrEmpty(`${base}/${MEMORY_DIR}`);
   const known = cache.get(base) ?? new Map<string, Cached>();
   const now = new Map<string, Cached>();
@@ -85,27 +85,45 @@ async function loadKept(root: string): Promise<Map<Memory, number>> {
 
 /** The memory block a conversation on the files of `focus` is handed, or null when the project has none. */
 export async function memoryFor(root: string, focus: Focus): Promise<string | null> {
+  const { memories, evidence } = await memoriesWithEvidence(root);
+  return memoryBlock(memories, focus, evidence);
+}
+
+/** Every memory of the project, and what each can be checked against. */
+export async function memoriesWithEvidence(
+  root: string,
+): Promise<{ memories: Memory[]; evidence: Evidence }> {
   const kept = await loadKept(root);
-  if (kept.size === 0) return null;
   const memories = [...kept.keys()];
   const evidence: Evidence = {
     changed: await changeTimes(root, memories),
     written: (memory) => kept.get(memory) ?? 0,
   };
-  return memoryBlock(memories, focus, evidence);
+  return { memories, evidence };
 }
 
 /**
- * Writes memories Aime learned itself from a task run's reading of the code.
+ * Writes memories Aime learned itself from reading the code - a task run's
+ * first step, or learning the project in the background (`projectLearner.ts`).
  * One with the name of an existing memory replaces it only when it says
  * something new, so a person's own edit to a memory is never overwritten by
  * the same lesson learned again.
  */
 export async function rememberAll(root: string, learned: readonly Memory[]): Promise<void> {
   const existing = new Map((await loadMemories(root)).map((memory) => [memory.name, memory]));
-  for (const memory of learned) {
-    const before = existing.get(memory.name);
-    if (before !== undefined && before.summary === memory.summary) continue;
+  await writeAll(
+    root,
+    learned.filter((memory) => existing.get(memory.name)?.summary !== memory.summary),
+  );
+}
+
+/**
+ * Writes memories as given, replacing any of the same name. For a study that
+ * re-read the code a memory cites: rewriting it even unchanged is what records
+ * that it was checked, so it is no longer marked STALE.
+ */
+export async function writeAll(root: string, memories: readonly Memory[]): Promise<void> {
+  for (const memory of memories) {
     await invoke("write_file", {
       path: `${trim(root)}/${MEMORY_DIR}/${memory.name}.md`,
       content: renderMemory(memory),
@@ -113,14 +131,19 @@ export async function rememberAll(root: string, learned: readonly Memory[]): Pro
   }
 }
 
+/** Removes memories by name; the caller has checked that each one exists. */
+export async function forgetAll(root: string, names: readonly string[]): Promise<void> {
+  for (const name of names) await invoke("delete_path", { path: `${trim(root)}/${MEMORY_DIR}/${name}.md` });
+}
+
 /**
  * Puts the memories back from Aime's mirror when the folder is missing, and
- * mirrors it otherwise. A mirror that cannot be reached costs nothing but the
- * safety net, and says so in the log.
+ * mirrors it otherwise; either way `.aime/` is kept out of git. A mirror that
+ * cannot be reached costs nothing but the safety net, and says so in the log.
  */
-async function restoreFromMirror(base: string): Promise<void> {
+export async function syncMirror(root: string): Promise<void> {
   try {
-    await invoke("memory_mirror_sync", { root: base });
+    await invoke("memory_mirror_sync", { root: trim(root) });
   } catch (error: unknown) {
     console.warn("the project's memory could not be mirrored:", error);
   }
@@ -168,14 +191,20 @@ export function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-/** When each file a memory cites last changed, read once per folder per turn. */
+/**
+ * When each path a memory cites last changed, read once per folder per turn. A
+ * cited folder counts by its own time - it moves when an entry is added,
+ * removed or renamed in it - since one left out would read as gone, and the
+ * memory as stale for ever (measured: a study cited `www/docs` and was run
+ * again on every open).
+ */
 async function changeTimes(root: string, memories: readonly Memory[]): Promise<Evidence["changed"]> {
   const base = trim(root);
   const folders = new Set(memories.flatMap((memory) => memory.files.map(folderOf)));
   const times = new Map<string, number>();
   for (const folder of folders) {
     for (const entry of await listOrEmpty(folder === "" ? base : `${base}/${folder}`)) {
-      if (!entry.is_dir && entry.modified_ms !== null) {
+      if (entry.modified_ms !== null) {
         times.set(folder === "" ? entry.name : `${folder}/${entry.name}`, entry.modified_ms);
       }
     }

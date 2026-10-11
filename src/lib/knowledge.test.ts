@@ -46,6 +46,15 @@ describe("a memory file", () => {
     expect(parsed).toMatchObject({ name: "x", scope: "src/api", files: [] });
   });
 
+  it("spells a cited folder the way its evidence is looked up", () => {
+    // `www/docs/` would never match the listing's `www/docs`, and the memory would read as stale for ever.
+    const parsed = parseMemory(
+      "---\nkind: structure\nscope: www\nsummary: the docs site\nfiles: www\\docs\\, ./www/sidebars.ts\n---\n",
+      "www.md",
+    );
+    expect(parsed?.files).toEqual(["www/docs", "www/sidebars.ts"]);
+  });
+
   it("is not a memory without a kind or a summary", () => {
     expect(parseMemory("# notes\n", "a.md")).toBeNull();
     expect(parseMemory("---\nkind: idea\nsummary: s\n---\n", "a.md")).toBeNull();

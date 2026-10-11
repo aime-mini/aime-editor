@@ -139,6 +139,7 @@ pub fn run() {
             providers::provider_health,
             providers::provider_set_api_key,
             providers::list_providers,
+            providers::background_turns_allowed,
             providers::providers_reload,
             providers::providers_config_path,
             git::git_status,

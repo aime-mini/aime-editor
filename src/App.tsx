@@ -30,6 +30,7 @@ const STARTUP_BUDGET_MS = 5000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 import { useT } from "./i18n";
 import { startAutoSave } from "./lib/autoSave";
+import { learnInBackground } from "./lib/projectLearner";
 // For its effect: every workspace is reopened the way it was left.
 import "./stores/workspaceSession";
 import { EnvironmentCheck } from "./components/EnvironmentCheck";
@@ -362,6 +363,14 @@ export default function App() {
   useEffect(() => {
     if (rootPath) void useAi.getState().hydrate(rootPath);
   }, [rootPath]);
+
+  // Learn the project in the background, so the first conversation about it
+  // already knows the codebase - again when the CLI becomes able to answer
+  // (installed, signed in), which it may not be when the project opens.
+  const cliReady = useAi((s) => s.providerHealth === "ok" && s.signedIn !== false);
+  useEffect(() => {
+    if (rootPath) void learnInBackground(rootPath);
+  }, [rootPath, cliReady]);
 
   // Suppress the webview's default browser context menu — custom menus and
   // Monaco provide their own; editable fields keep the native one.

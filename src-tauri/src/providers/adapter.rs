@@ -182,10 +182,11 @@ Aime hands you the index of every memory in an <aime_memory> block - at the star
 and again whenever a memory changed; a turn without the block means the index you already have still \
 holds. Open the memories that bear on the request before you act. Write a memory, without being asked, when the user states a \
 decision or a preference, and when the user corrects you - a correction is a decision (kind: \
-decision); when you learn how this codebase does something (convention), when you hit a trap or fix \
-a bug whose cause was not obvious (pitfall), and when you stop with work unfinished (work). Each \
-file is .aime/memory/<name>.md and starts with this header, one field per line: ---, name: \
-<kebab-case>, kind: <decision|convention|pitfall|work>, scope: <the folder it applies to, / for the \
+decision); when you learn how this codebase does something (convention), what a folder or module \
+is for, where it starts and what it depends on (structure), when you hit a trap or fix a bug whose \
+cause was not obvious (pitfall), and when you stop with work unfinished (work). Each file is \
+.aime/memory/<name>.md and starts with this header, one field per line: ---, name: <kebab-case>, \
+kind: <decision|convention|structure|pitfall|work>, scope: <the folder it applies to, / for the \
 whole project>, summary: <the fact itself in one sentence - it is the line every later turn reads in \
 the index>, files: <comma-separated paths it can be checked against>, updated: <YYYY-MM-DD>, --- and \
 then a few lines of detail: why, and how to apply it. \

@@ -3,8 +3,8 @@
  * which ones a turn needs.
  *
  * One file per memory under `.aime/memory/`, each one fact - a decision the
- * person made, how this codebase does something, a trap someone fell into,
- * work left unfinished - with the folder it applies to and the files it can be
+ * person made, how this codebase does something, what a folder is for, a trap
+ * someone fell into, work left unfinished - with the folder it applies to and the files it can be
  * checked against. The folders make the tree: a memory about `src/cart` is
  * inherited by every file under it, the way a stylesheet or `.gitignore` is,
  * and one scoped to `/` holds for the whole project.
@@ -25,8 +25,8 @@
 
 export const MEMORY_DIR = ".aime/memory";
 
-export type MemoryKind = "decision" | "convention" | "pitfall" | "work";
-const KINDS: readonly MemoryKind[] = ["decision", "convention", "pitfall", "work"];
+export type MemoryKind = "decision" | "convention" | "structure" | "pitfall" | "work";
+export const KINDS: readonly MemoryKind[] = ["decision", "convention", "structure", "pitfall", "work"];
 
 /** The whole project, as a scope. */
 export const ROOT_SCOPE = "/";
@@ -85,10 +85,7 @@ export function parseMemory(text: string, fileName: string): Memory | null {
     kind,
     scope: normalizeScope(fields.get("scope") ?? ROOT_SCOPE),
     summary,
-    files: (fields.get("files") ?? "")
-      .split(",")
-      .map((file) => file.trim().replace(/\\/g, "/"))
-      .filter(Boolean),
+    files: (fields.get("files") ?? "").split(",").map(citedPath).filter(Boolean),
     updated: fields.get("updated") ?? "",
     body: match[2].trim(),
   };
@@ -222,6 +219,11 @@ export function treeOf(memories: readonly Memory[]): Node[] {
     }));
 }
 
+/** Whether a memory cites code that is gone, or changed after the memory was written. */
+export function isStale(memory: Memory, evidence: Evidence): boolean {
+  return staleFiles(memory, evidence).length > 0;
+}
+
 /** The cited files that are gone, or changed after the memory's own file was last written. */
 function staleFiles(memory: Memory, evidence: Evidence): string[] {
   const writtenAt = evidence.written(memory);
@@ -241,7 +243,16 @@ function covers(scope: string, file: string): boolean {
   return scope === ROOT_SCOPE || file === scope || file.startsWith(`${scope}/`);
 }
 
-function normalizeScope(scope: string): string {
+/**
+ * A path a memory cites, spelled the way the evidence looks it up: forward
+ * slashes, relative to the root, a folder without its trailing slash.
+ */
+export function citedPath(path: string): string {
+  return path.trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+}
+
+/** A folder as a scope: forward slashes, no leading or trailing slash, `/` for the root. */
+export function normalizeScope(scope: string): string {
   const clean = scope.replace(/\\/g, "/").replace(/^\.?\/+|\/+$/g, "");
   return clean === "" || clean === "." ? ROOT_SCOPE : clean;
 }

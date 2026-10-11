@@ -64,10 +64,9 @@ pub fn after_turn(app: &AppHandle, cwd: &Path) {
 fn sync(app: &AppHandle, root: &Path) -> io::Result<Synced> {
     let data_dir = app.path().app_data_dir().map_err(io::Error::other)?;
     let synced = sync_into(&data_dir.join(MIRROR_DIR), root)?;
-    if synced.restored > 0 {
-        // The folder was just born in someone's repository: keep it out of their commits.
-        crate::aime_dir::ensure_self_ignored(root)?;
-    }
+    // The folder may have just been born in someone's repository - restored here,
+    // or written by Aime between turns: keep it out of their commits either way.
+    crate::aime_dir::ensure_self_ignored(root)?;
     Ok(synced)
 }
 

@@ -272,12 +272,14 @@ function withoutTsxLoader(nodeOptions) {
  * loader was in its `NODE_OPTIONS`, so a program that only runs because tsx
  * compiles it would pass here and fail on every user's machine.
  *
- * `AIME_UNATTENDED` is the one addition, and it is deliberate: the window is
- * parked off the desktop and never takes focus, so a run does not maximize
- * over - and type into - whatever else is open.
+ * Two additions, both deliberate. `AIME_UNATTENDED`: the window is parked off
+ * the desktop and never takes focus, so a run does not maximize over - and type
+ * into - whatever else is open. `AIME_NO_BACKGROUND_TURNS`: the suite drives the
+ * real CLI, and Aime learning every throwaway workspace a spec opens would spend
+ * real money on each run; the learning itself is driven on purpose by its spec.
  */
 function appEnvironment() {
-  const env = { ...process.env, AIME_UNATTENDED: "1" };
+  const env = { ...process.env, AIME_UNATTENDED: "1", AIME_NO_BACKGROUND_TURNS: "1" };
   const nodeOptions = withoutTsxLoader(env.NODE_OPTIONS ?? "");
   if (nodeOptions === "") delete env.NODE_OPTIONS;
   else env.NODE_OPTIONS = nodeOptions;
