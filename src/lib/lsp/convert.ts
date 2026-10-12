@@ -1,4 +1,5 @@
 import type { IPosition, IRange } from "monaco-editor";
+import { normalizePath } from "../dap/paths";
 
 /**
  * Conversions between LSP and Monaco. LSP counts lines and characters from 0,
@@ -170,6 +171,28 @@ export function uriToPath(uri: string): string {
   const decoded = decodeURIComponent(withoutScheme);
   // A Windows path arrives as `/C:/…`; the leading slash is not part of it.
   return /^\/[a-zA-Z]:/.test(decoded) ? decoded.slice(1) : decoded;
+}
+
+/**
+ * A path a server named, spelled the way the workspace spells its own.
+ *
+ * Tabs, buffers and the editor's models are keyed by the path string itself,
+ * and a server writes the same file its own way: forward slashes on Windows,
+ * a drive letter in whichever case it likes. Inside the workspace the root's
+ * own spelling is kept and its separator used throughout; outside it only the
+ * separator is changed - there is no spelling of ours to match.
+ */
+export function inWorkspaceSpelling(path: string, root: string | null): string {
+  const separator = root?.includes("\\") ? "\\" : "/";
+  const slashed = path.replaceAll("\\", "/");
+  if (root !== null) {
+    const base = root.replaceAll("\\", "/").replace(/\/+$/, "");
+    if (normalizePath(slashed).startsWith(`${normalizePath(base)}/`)) {
+      const rest = slashed.slice(base.length + 1);
+      return `${root.replace(/[\\/]+$/, "")}${separator}${rest.replaceAll("/", separator)}`;
+    }
+  }
+  return slashed.replaceAll("/", separator);
 }
 
 /**

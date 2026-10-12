@@ -646,10 +646,11 @@ pub async fn lsp_restore(paths: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-/// The solution or projects a server should be told to open.
+/// The solutions or projects a server should be told to open.
 ///
-/// A solution wins when there is one: it is what the toolchain itself considers
-/// the unit of work, and Roslyn loads every project in it. Otherwise every
+/// Solutions win when there are any: a solution is what the toolchain itself
+/// considers the unit of work, and Roslyn loads every project in each one it is
+/// handed - all of them, since a file of one left out is analysed alone. Otherwise every
 /// project file found near the root is offered, because a repository with two of
 /// them has two, and analysing one is analysing half the code.
 #[tauri::command]

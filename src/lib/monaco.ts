@@ -3,6 +3,7 @@ import * as monaco from "monaco-editor";
 import { loader } from "@monaco-editor/react";
 import { primeLanguages } from "./languages";
 import { attachEditor } from "../stores/lsp";
+import { openJumpsInTabs } from "./editorOpener";
 
 // monaco-editor >= 0.53 uses an exports map — specifiers no longer carry the `esm/vs` prefix
 import editorWorker from "monaco-editor/editor/editor.worker.js?worker";
@@ -20,6 +21,20 @@ self.MonacoEnvironment = {
     return new editorWorker();
   },
 };
+
+/*
+ * Jumps in TypeScript and JavaScript belong to the language server alone.
+ *
+ * Monaco's own service answers from a worker that knows only the files it
+ * holds, so beside a real server it gives a second, different answer: measured
+ * 2026-10-11, F12 on a class imported from a file not open got the import line
+ * from Monaco and the class from the server, and opened a peek of both instead
+ * of the file. Set here because it is read once, when the first file of the
+ * language opens - a change after that registers nothing.
+ */
+for (const defaults of [monaco.typescript.typescriptDefaults, monaco.typescript.javascriptDefaults]) {
+  defaults.setModeConfiguration({ ...defaults.modeConfiguration, definitions: false, references: false });
+}
 
 // Monaco ships no diff/patch grammar — register a small Monarch one for the
 // commit-patch view (git show output).
@@ -80,3 +95,4 @@ export { monaco };
 // module has to import Monaco - which is what keeps it off the welcome screen.
 primeLanguages(monaco);
 attachEditor(monaco);
+openJumpsInTabs(monaco);

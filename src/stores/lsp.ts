@@ -62,6 +62,18 @@ const providersRegistered = new Set<string>();
 const TRIGGER_CHARACTERS = [".", ":", ">", "<", '"', "'", "/", "@", "(", ","];
 
 /**
+ * A jump's places, each with a model for the peek to show it in
+ * (`lib/lsp/locations.ts`). Imported on first use: that module is Monaco's,
+ * and this store is on screen before Monaco is.
+ */
+async function previewed(
+  locations: Monaco.languages.Location[] | undefined,
+): Promise<Monaco.languages.Location[]> {
+  const { withPreviews } = await import("../lib/lsp/locations");
+  return withPreviews(locations ?? []);
+}
+
+/**
  * Providers are registered once per language and outlive any single session:
  * a server that crashes and restarts must not leave stale providers behind,
  * and Monaco offers no way to unregister cheaply. With no session they simply
@@ -82,10 +94,18 @@ function registerProviders(languageId: string): void {
     provideHover: (model, position) => session()?.hover(model, position) ?? null,
   });
   monaco.languages.registerDefinitionProvider(languageId, {
-    provideDefinition: (model, position) => session()?.definition(model, position) ?? null,
+    provideDefinition: async (model, position) => previewed(await session()?.definition(model, position)),
+  });
+  monaco.languages.registerImplementationProvider(languageId, {
+    provideImplementation: async (model, position) =>
+      previewed(await session()?.implementation(model, position)),
+  });
+  monaco.languages.registerTypeDefinitionProvider(languageId, {
+    provideTypeDefinition: async (model, position) =>
+      previewed(await session()?.typeDefinition(model, position)),
   });
   monaco.languages.registerReferenceProvider(languageId, {
-    provideReferences: (model, position) => session()?.references(model, position) ?? [],
+    provideReferences: async (model, position) => previewed(await session()?.references(model, position)),
   });
   monaco.languages.registerRenameProvider(languageId, {
     provideRenameEdits: (model, position, newName) =>

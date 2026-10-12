@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { monaco } from "../monaco";
 import { LspClient, STARTUP_TIMEOUT_MS } from "./client";
+import { toEditorLocations } from "./locations";
 import {
   hoverToMarkdown,
   modelPath,
@@ -127,13 +128,6 @@ interface LspWorkspaceEdit {
   documentChanges?: { textDocument?: { uri?: string }; edits?: LspTextEdit[] }[];
 }
 
-interface LspLocation {
-  uri?: string;
-  range?: LspRange;
-  targetUri?: string;
-  targetSelectionRange?: LspRange;
-}
-
 /** LSP InsertTextFormat: 1 PlainText, 2 Snippet. */
 const SNIPPET_FORMAT = 2;
 /** Diagnostics from a server are grouped under this marker owner. */
@@ -161,15 +155,19 @@ interface ProjectFiles {
 }
 
 /**
- * Tells a server which project it is looking at, and answers with what it told:
- * the solution path when one was opened, `null` otherwise. A later package
- * restore targets that same solution - one restore covers all of its projects.
+ * Tells a server which projects it is looking at, and answers with what it
+ * told: the solutions it opened, if any. A later package restore targets those
+ * same solutions - one restore covers all of a solution's projects.
  *
- * A solution wins when the repository has one - it is the unit the toolchain
- * itself works in, and the server loads every project inside it. Measured
- * against Roslyn: the two methods are not interchangeable, since handing a
- * `.csproj` to `solution/open` throws `InvalidProjectFileException` inside
- * MSBuild, and sending neither leaves the workspace empty for ever.
+ * Solutions win when the repository has them - they are the unit the toolchain
+ * itself works in, and the server loads every project inside each. Every one is
+ * opened, not the first: a folder holding two has two, and a file of the one
+ * left out is analysed alone - measured 2026-10-12 on a repository shaped like
+ * the user's (`control-plane/*.sln` beside `src/*.sln`), only the first opened
+ * and F12 answered `[]` for good, both opened and it landed. Roslyn adds each
+ * `solution/open` to what it has. The two methods are not interchangeable:
+ * handing a `.csproj` to `solution/open` throws `InvalidProjectFileException`
+ * inside MSBuild, and sending neither leaves the workspace empty for ever.
  */
 async function openProject(
   client: LspClient,
@@ -178,20 +176,21 @@ async function openProject(
 ): Promise<OpenedProject> {
   const files = await invoke<ProjectFiles>("lsp_project_files", { root });
   if (files.solutions.length > 0) {
-    const [solution] = files.solutions;
-    client.notify(methods.solutionMethod, { solution: pathToUri(solution) });
-    return { solution, opened: true };
+    for (const solution of files.solutions) {
+      client.notify(methods.solutionMethod, { solution: pathToUri(solution) });
+    }
+    return { solutions: files.solutions, opened: true };
   }
   if (files.projects.length > 0) {
     client.notify(methods.projectMethod, { projects: files.projects.map(pathToUri) });
-    return { solution: null, opened: true };
+    return { solutions: [], opened: true };
   }
-  return { solution: null, opened: false };
+  return { solutions: [], opened: false };
 }
 
-/** What `openProject` handed the server: a solution, some projects, or nothing. */
+/** What `openProject` handed the server: solutions, some projects, or nothing. */
 interface OpenedProject {
-  solution: string | null;
+  solutions: string[];
   opened: boolean;
 }
 
@@ -236,6 +235,8 @@ const INDEX_DEADLINE_MS = 60_000;
 interface InitializeAnswer {
   capabilities?: {
     documentSymbolProvider?: unknown;
+    implementationProvider?: unknown;
+    typeDefinitionProvider?: unknown;
     textDocumentSync?: number | { change?: number };
   };
 }
@@ -250,6 +251,13 @@ export class LanguageSession {
   private outline = false;
 
   /**
+   * Which of the jumps beyond definition and references the server answers.
+   * Asked, not tried: a server without one replies with an error, and Monaco
+   * offers the menu entry on every symbol.
+   */
+  private jumps = { implementation: false, typeDefinition: false };
+
+  /**
    * Whether the server asked for edits as ranges rather than whole documents.
    * This is the server's call, not a client convenience: Roslyn declares
    * incremental sync and throws `NullReferenceException` inside
@@ -258,8 +266,8 @@ export class LanguageSession {
    */
   private incrementalSync = false;
 
-  /** The solution `openProject` announced, which is what a restore targets. */
-  private solution: string | null = null;
+  /** The solutions `openProject` announced, which are what a restore targets. */
+  private solutions: string[] = [];
 
   /** Work-done progress the server has begun and not ended yet. */
   private readonly working = new Set<string>();
@@ -355,6 +363,8 @@ export class LanguageSession {
             },
             hover: { contentFormat: ["markdown", "plaintext"] },
             definition: { linkSupport: true },
+            implementation: { linkSupport: true },
+            typeDefinition: { linkSupport: true },
             signatureHelp: { signatureInformation: { documentationFormat: ["markdown", "plaintext"] } },
             documentSymbol: { hierarchicalDocumentSymbolSupport: true },
           },
@@ -364,6 +374,10 @@ export class LanguageSession {
     );
     // Servers answer this as `true` or as an options object; both mean yes.
     session.outline = Boolean(answer?.capabilities?.documentSymbolProvider);
+    session.jumps = {
+      implementation: Boolean(answer?.capabilities?.implementationProvider),
+      typeDefinition: Boolean(answer?.capabilities?.typeDefinitionProvider),
+    };
     const sync = answer?.capabilities?.textDocumentSync;
     session.incrementalSync = (typeof sync === "number" ? sync : sync?.change) === INCREMENTAL_SYNC;
     client.notify("initialized", {});
@@ -373,8 +387,8 @@ export class LanguageSession {
     if (projectOpen) {
       // Loading from before the call: the server may answer it at once.
       session.loadingProject = true;
-      const { solution, opened } = await openProject(client, root, projectOpen);
-      session.solution = solution;
+      const { solutions, opened } = await openProject(client, root, projectOpen);
+      session.solutions = solutions;
       if (!opened) session.loadingProject = false;
     }
     return session;
@@ -383,8 +397,8 @@ export class LanguageSession {
   /**
    * Runs `dotnet restore` for what the server asked, answering when it is done.
    *
-   * The target is the opened solution when there is one - one restore covers
-   * every project in it, where restoring 791 projects one by one (a real
+   * The targets are the opened solutions when there are any - one restore
+   * covers every project in each, where restoring 791 projects one by one (a real
    * repository) would not finish. Identical asks join the run already going;
    * different ones queue behind it, because parallel restores fight over
    * NuGet's own locks. The answer is always `null`: a failed restore is logged
@@ -393,7 +407,7 @@ export class LanguageSession {
    */
   private restore(params: unknown): Promise<null> {
     const asked = ((params ?? {}) as { projectFilePaths?: string[] }).projectFilePaths ?? [];
-    const targets = this.solution !== null ? [this.solution] : asked;
+    const targets = this.solutions.length > 0 ? this.solutions : asked;
     if (targets.length === 0) return Promise.resolve(null);
 
     const key = targets.join(";");
@@ -599,20 +613,38 @@ export class LanguageSession {
   async definition(
     model: monaco.editor.ITextModel,
     position: monaco.IPosition,
-  ): Promise<monaco.languages.Definition | null> {
-    const answer = await this.client.request<unknown>(
-      "textDocument/definition",
-      this.documentPosition(model, position),
+  ): Promise<monaco.languages.Location[]> {
+    return toEditorLocations(
+      await this.client.request<unknown>("textDocument/definition", this.documentPosition(model, position)),
     );
-    const locations = (Array.isArray(answer) ? answer : answer ? [answer] : []) as LspLocation[];
-    const targets = locations.flatMap((location) => {
-      // Servers answer with either a Location or a LocationLink.
-      const uri = location.uri ?? location.targetUri;
-      const range = location.range ?? location.targetSelectionRange;
-      if (!uri || !range) return [];
-      return [{ uri: monaco.Uri.file(uriToPath(uri)), range: toMonacoRange(range) }];
-    });
-    return targets.length > 0 ? targets : null;
+  }
+
+  /** Where an interface or abstract member is implemented - the jump C#, Java and TypeScript live on. */
+  async implementation(
+    model: monaco.editor.ITextModel,
+    position: monaco.IPosition,
+  ): Promise<monaco.languages.Location[]> {
+    if (!this.jumps.implementation) return [];
+    return toEditorLocations(
+      await this.client.request<unknown>(
+        "textDocument/implementation",
+        this.documentPosition(model, position),
+      ),
+    );
+  }
+
+  /** The declaration of the type of what is under the cursor. */
+  async typeDefinition(
+    model: monaco.editor.ITextModel,
+    position: monaco.IPosition,
+  ): Promise<monaco.languages.Location[]> {
+    if (!this.jumps.typeDefinition) return [];
+    return toEditorLocations(
+      await this.client.request<unknown>(
+        "textDocument/typeDefinition",
+        this.documentPosition(model, position),
+      ),
+    );
   }
 
   async signatureHelp(
@@ -649,16 +681,12 @@ export class LanguageSession {
     model: monaco.editor.ITextModel,
     position: monaco.IPosition,
   ): Promise<monaco.languages.Location[]> {
-    const answer = await this.client.request<LspLocation[] | null>("textDocument/references", {
-      ...this.documentPosition(model, position),
-      context: { includeDeclaration: true },
-    });
-    return (answer ?? []).flatMap((location) => {
-      const uri = location.uri ?? location.targetUri;
-      const range = location.range ?? location.targetSelectionRange;
-      if (!uri || !range) return [];
-      return [{ uri: monaco.Uri.file(uriToPath(uri)), range: toMonacoRange(range) }];
-    });
+    return toEditorLocations(
+      await this.client.request<unknown>("textDocument/references", {
+        ...this.documentPosition(model, position),
+        context: { includeDeclaration: true },
+      }),
+    );
   }
 
   /**

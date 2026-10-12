@@ -9,6 +9,7 @@ import {
   toOutline,
   uriToPath,
   answerToServerRequest,
+  inWorkspaceSpelling,
 } from "./convert";
 
 /** LSP counts from 0, so line 4 below is line 5 in the editor. */
@@ -168,6 +169,37 @@ describe("modelPath", () => {
   it("keeps a scheme that is not a drive letter out of the path", () => {
     const model = { uri: { scheme: "inmemory", path: "/model/1", fsPath: "/model/1" } };
     expect(modelPath(model)).toBe("/model/1");
+  });
+});
+
+describe("inWorkspaceSpelling", () => {
+  /** Written with forward slashes and turned, so no backslash has to survive an escape. */
+  const windows = (path: string) => path.replaceAll("/", "\\");
+  const root = windows("C:/Projects/Shop");
+
+  /** What Roslyn and typescript-language-server answer: forward slashes, a drive in either case. */
+  it("spells a file inside the workspace the way its tabs do", () => {
+    expect(inWorkspaceSpelling("c:/Projects/Shop/src/Log.cs", root)).toBe(
+      windows("C:/Projects/Shop/src/Log.cs"),
+    );
+    expect(inWorkspaceSpelling("C:/projects/shop/Log.cs", root)).toBe(windows("C:/Projects/Shop/Log.cs"));
+  });
+
+  it("only turns the separators of a file outside the workspace", () => {
+    expect(inWorkspaceSpelling("c:/Users/me/.nuget/X.cs", root)).toBe(windows("c:/Users/me/.nuget/X.cs"));
+  });
+
+  it("does not take a sibling folder that shares the root's prefix for the root", () => {
+    expect(inWorkspaceSpelling("C:/Projects/ShopTools/a.cs", root)).toBe(
+      windows("C:/Projects/ShopTools/a.cs"),
+    );
+  });
+
+  it("leaves a forward-slash workspace as it is", () => {
+    expect(inWorkspaceSpelling("/home/linh/app/src/main.ts", "/home/linh/app")).toBe(
+      "/home/linh/app/src/main.ts",
+    );
+    expect(inWorkspaceSpelling("/usr/lib/x.d.ts", null)).toBe("/usr/lib/x.d.ts");
   });
 });
 

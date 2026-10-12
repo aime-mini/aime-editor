@@ -3,6 +3,7 @@ import type { SymbolProbe, SymbolReferences } from "../blastRadius";
 import { languageOf } from "../languages";
 import { monaco } from "../monaco";
 import { sessionOf, useLsp } from "../../stores/lsp";
+import { modelPath } from "./convert";
 import type { LanguageSession } from "./session";
 
 /**
@@ -146,7 +147,7 @@ async function referencesIn(
     });
     references.push({
       symbol: symbol.name,
-      files: locations.flatMap((location) => insideProject(root, location.uri.fsPath)),
+      files: locations.flatMap((location) => insideProject(root, modelPath(location))),
     });
   }
   return references;
