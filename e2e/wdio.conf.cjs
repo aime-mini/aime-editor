@@ -373,16 +373,23 @@ const THROWAWAY_FOLDER = /^aime-[A-Za-z0-9-]+-[A-Za-z0-9]{6}$/;
  * folder during this run - measured 2026-10-11: 49 of them after one sweep.
  * One the app has not let go of yet is reported, not thrown: a throw here
  * would leave the stores and the driver profiles behind as well.
+ *
+ * The workspace is named rather than found by its age: the launcher loads this
+ * file more than once, the folder is made by the first load, and `startedAt`
+ * belongs to whichever load `onComplete` came from - measured, the workspace
+ * was older than it and stayed behind.
  */
 function removeThrowawayFolders() {
-  const folders = fs
+  const madeBySpecs = fs
     .readdirSync(os.tmpdir())
     .filter((name) => THROWAWAY_FOLDER.test(name))
     .map((name) => path.join(os.tmpdir(), name))
     .filter((folder) => {
+      if (folder === workspace) return false;
       const stats = fs.statSync(folder, { throwIfNoEntry: false });
       return stats ? (stats.birthtimeMs || stats.mtimeMs) >= startedAt : false;
     });
+  const folders = [workspace, ...madeBySpecs];
   let removed = 0;
   for (const folder of folders) {
     try {
@@ -427,6 +434,23 @@ async function removeDriverProfiles() {
 }
 
 let tauriDriver;
+
+/**
+ * Stops tauri-driver and everything it started: the native driver and the app.
+ *
+ * `kill()` alone stops tauri-driver and leaves its children running until this
+ * launcher exits - measured 2026-10-11, the app held the shared workspace
+ * through every retry of the cleanup and let go of it 6 ms after the run
+ * ended. On Windows only taskkill can end a tree.
+ */
+function stopTauriDriver() {
+  if (!tauriDriver?.pid) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(tauriDriver.pid), "/T", "/F"], { stdio: "ignore" });
+  } else {
+    tauriDriver.kill();
+  }
+}
 
 exports.config = {
   hostname: "127.0.0.1",
@@ -500,7 +524,7 @@ exports.config = {
   },
 
   onComplete: async () => {
-    tauriDriver?.kill();
+    stopTauriDriver();
     removeThrowawayFolders();
     removeThrowawayStores();
     await removeDriverProfiles();
