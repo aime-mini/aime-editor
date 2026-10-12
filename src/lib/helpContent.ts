@@ -20,8 +20,8 @@ const EN: HelpTopic[] = [
     id: "open-project",
     section: "Getting started",
     title: "Open a project",
-    body: "On the welcome screen: Open Folder picks any folder, Recent reopens the last 8 workspaces, New Project creates a folder and opens it in one step, and Clone Repository takes a git URL, asks where to put it, and opens the clone - no terminal needed. A single quiet line at the bottom reports what Aime found on this machine - it either says everything is ready or names what is missing, and opens the full list (both AI CLIs with their sign-in state, Git, Node, language servers) with the exact command to fix each one. Aime stands small in the bottom-left corner, the same greeting she gives on the starting window - she used to take a column of her own down the left side, which made the screen about her rather than about opening something.",
-    keywords: "workspace recent folder start clone git url github character",
+    body: "On the welcome screen: Open Folder picks any folder, Recent reopens the last 8 workspaces, New Project creates a folder and opens it in one step, and Clone Repository takes a git URL, asks where to put it, and opens the clone - no terminal needed. A single quiet line at the bottom reports what Aime found on this machine - it either says everything is ready or names what is missing, and opens the full list (both AI CLIs with their sign-in state, Git, Node, language servers) with the exact command to fix each one. Aime's logo above them draws itself when the screen opens and its spark flares again every few seconds - the same motion as the starting window, and nothing that asks for attention.",
+    keywords: "workspace recent folder start clone git url github logo",
   },
   {
     id: "updates",
@@ -34,8 +34,8 @@ const EN: HelpTopic[] = [
     id: "splash",
     section: "Getting started",
     title: "The starting window",
-    body: "Aime greets you while it starts, in a small window of its own, instead of putting an empty editor on screen and filling it in later. The middle of the card is what this program is: the name written letter by letter with a light running across it, then one sentence assembling itself word by word. Aime herself stands small in the bottom-right corner - she looks up, waves, glances over at her own name and nods - because the card is about the editor and she is the company, not the subject. The greeting stays for about four seconds, and it is not idle time - the project folder is opened and the editor's whole bundle is loaded behind it, so what replaces the greeting is a finished editor rather than a shell that fills itself in. She can also say hello OUT LOUD, once per launch, in whatever language Aime is set to - that is off until you turn on 'Voice at startup' in Settings, because an editor opened beside a colleague or late at night should be quiet unless it was asked not to be. The voice ships with Aime, so it is the same on every machine rather than whichever voices Windows happens to have installed. Press any key or click to go straight through, and the voice stops with it; turn off 'Greeting at startup' in Settings and there is no card at all - the editor opens the moment it is ready. If something goes wrong while starting, the greeting steps aside on its own and lets the editor show you what happened.",
-    keywords: "splash startup launch start screen logo skip loading character wave animation",
+    body: "Aime shows a small window of its own while it starts, instead of putting an empty editor on screen and filling it in later. Aime's logo draws itself - the tile arrives, the prompt is stroked in, the cursor starts blinking and the spark flares - then the name comes in letter by letter with a light running across it, and one sentence says what this program is. The card stays for about four seconds, and it is not idle time - the project folder is opened and the editor's whole bundle is loaded behind it, so what replaces the card is a finished editor rather than a shell that fills itself in. Press any key or click to go straight through; turn off 'Starting window' in Settings and there is no card at all - the editor opens the moment it is ready. If something goes wrong while starting, the card steps aside on its own and lets the editor show you what happened.",
+    keywords: "splash startup launch start screen logo skip loading animation",
   },
   {
     id: "cli",
@@ -406,8 +406,8 @@ const VI: HelpTopic[] = [
     id: "open-project",
     section: "Bắt đầu",
     title: "Mở dự án",
-    body: "Ở màn hình chào: Open Folder chọn thư mục bất kỳ, Recent mở lại 8 workspace gần nhất, New Project tạo thư mục mới và mở luôn. Aime đứng nhỏ ở góc dưới bên trái, vẫn lời chào như ở cửa sổ khởi động - trước đây cô ấy chiếm hẳn một cột bên trái, làm màn hình thành ra nói về cô ấy chứ không phải về việc mở một dự án.",
-    keywords: "workspace recent folder mở thư mục nhân vật",
+    body: "Ở màn hình chào: Open Folder chọn thư mục bất kỳ, Recent mở lại 8 workspace gần nhất, New Project tạo thư mục mới và mở luôn. Logo Aime phía trên tự vẽ ra khi màn hình mở và tia sáng của nó loé lại sau mỗi vài giây - cùng chuyển động với cửa sổ khởi động, không có gì giành sự chú ý của anh.",
+    keywords: "workspace recent folder mở thư mục logo",
   },
   {
     id: "updates",
@@ -420,8 +420,8 @@ const VI: HelpTopic[] = [
     id: "splash",
     section: "Bắt đầu",
     title: "Cửa sổ khởi động",
-    body: "Trong lúc khởi động, Aime chào anh bằng một cửa sổ riêng thay vì bày ra một editor trống rồi mới điền dần. Giữa tấm thẻ là chính chương trình này: cái tên hiện ra từng chữ với một vệt sáng chạy ngang, rồi một câu giới thiệu tự ráp lại từng từ. Aime đứng nhỏ ở góc dưới bên phải - ngẩng lên, vẫy tay, liếc sang tên mình rồi gật đầu - vì tấm thẻ nói về editor, còn cô ấy là người đi cùng chứ không phải nội dung. Lời chào ở lại khoảng bốn giây, và đó không phải thời gian chết - phía sau nó thư mục dự án được mở và toàn bộ bundle của editor được nạp xong, nên thứ thay chỗ lời chào là một editor hoàn chỉnh chứ không phải cái vỏ rồi điền dần. Cô ấy còn chào được bằng GIỌNG NÓI, mỗi lần mở app một lần, theo ngôn ngữ đang đặt - nhưng mặc định TẮT, bật ở Settings mục 'Giọng nói lúc khởi động', vì một editor mở cạnh đồng nghiệp hay mở lúc nửa đêm thì nên im lặng trừ khi được bảo ngược lại. Giọng đi kèm bản cài nên máy nào cũng giống nhau, không phụ thuộc giọng có sẵn trong Windows. Bấm phím bất kỳ hoặc click là vào thẳng app, giọng nói tắt theo; tắt 'Lời chào lúc khởi động' trong Settings thì không có tấm thẻ nào cả - editor mở ngay khi sẵn sàng. Nếu khởi động có chuyện, lời chào tự nhường chỗ để editor nói cho anh biết chuyện gì.",
-    keywords: "splash khởi động màn hình chào logo bỏ qua đang tải nhân vật vẫy tay hoạt hình",
+    body: "Trong lúc khởi động, Aime hiện một cửa sổ nhỏ riêng thay vì bày ra một editor trống rồi mới điền dần. Logo Aime tự vẽ ra - ô nền hiện lên, dấu nhắc được nét vào, con trỏ bắt đầu nhấp nháy và tia sáng loé lên - rồi cái tên hiện từng chữ với một vệt sáng chạy ngang, và một câu nói Aime là gì. Tấm thẻ ở lại khoảng bốn giây, và đó không phải thời gian chết - phía sau nó thư mục dự án được mở và toàn bộ bundle của editor được nạp xong, nên thứ thay chỗ tấm thẻ là một editor hoàn chỉnh chứ không phải cái vỏ rồi điền dần. Bấm phím bất kỳ hoặc click là vào thẳng app; tắt 'Cửa sổ khởi động' trong Settings thì không có tấm thẻ nào cả - editor mở ngay khi sẵn sàng. Nếu khởi động có chuyện, tấm thẻ tự nhường chỗ để editor nói cho anh biết chuyện gì.",
+    keywords: "splash khởi động màn hình chào logo bỏ qua đang tải hoạt hình",
   },
   {
     id: "cli",

@@ -38,18 +38,7 @@ export interface EditorSettings {
   /** Stable by default: a pre-release is a favour the user opts into. */
   updateChannel: UpdateChannel;
   /**
-   * Whether Aime says hello out loud while it starts.
-   *
-   * OFF by default, and it is the only setting here whose default was chosen
-   * against the feature rather than for it: a voice is the one thing an app
-   * can do that cannot be ignored, and an editor opened in a meeting or beside
-   * a colleague should be quiet unless it was told otherwise. The splash
-   * window reads this straight out of storage, because it has no bundle to
-   * import a store from (`splash.html`).
-   */
-  splashVoice: boolean;
-  /**
-   * Whether the greeting shows at all while Aime starts. Read by the splash
+   * Whether the starting window shows at all while Aime starts. Read by the splash
    * page itself, before it draws anything (`splash.html`); off, the editor
    * appears as soon as it has painted instead.
    */
@@ -67,7 +56,6 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   autoSave: true,
   inlineAi: "manual",
   updateChannel: "stable",
-  splashVoice: false,
   splash: true,
 };
 
@@ -95,7 +83,6 @@ export function sanitize(stored: unknown): EditorSettings {
     updateChannel: UPDATE_CHANNELS.includes(raw.updateChannel as UpdateChannel)
       ? (raw.updateChannel as UpdateChannel)
       : DEFAULT_SETTINGS.updateChannel,
-    splashVoice: typeof raw.splashVoice === "boolean" ? raw.splashVoice : DEFAULT_SETTINGS.splashVoice,
     splash: typeof raw.splash === "boolean" ? raw.splash : DEFAULT_SETTINGS.splash,
   };
 }

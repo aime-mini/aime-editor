@@ -579,11 +579,9 @@ export const vi: Record<TranslationKey, string> = {
   "settings.dark": "Tối",
   "settings.light": "Sáng",
   "settings.language": "Ngôn ngữ",
-  "settings.splash": "Lời chào lúc khởi động",
+  "settings.splash": "Cửa sổ khởi động",
   "settings.splashHint":
-    "Mặc định bật - tắt đi thì editor mở ngay khi sẵn sàng, không có tấm thẻ chào phía trước.",
-  "settings.splashVoice": "Giọng nói lúc khởi động",
-  "settings.splashVoiceHint": "Mặc định tắt - bật lên thì Aime chào bằng giọng nói trong lúc khởi động.",
+    "Mặc định bật - tắt đi thì editor mở ngay khi sẵn sàng, không có tấm thẻ nào phía trước.",
   "settings.fontSize": "Cỡ chữ",
   "settings.wordWrap": "Xuống dòng tự động",
   "settings.wordWrapHint": "Dòng dài sẽ gập xuống thay vì phải cuộn ngang",

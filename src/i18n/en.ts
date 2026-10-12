@@ -579,11 +579,9 @@ export const en = {
   "settings.dark": "Dark",
   "settings.light": "Light",
   "settings.language": "Language",
-  "settings.splash": "Greeting at startup",
+  "settings.splash": "Starting window",
   "settings.splashHint":
     "On by default - off, the editor opens as soon as it is ready, with no card in front of it.",
-  "settings.splashVoice": "Voice at startup",
-  "settings.splashVoiceHint": "Off by default - turn it on and Aime says hello out loud while it starts.",
   "settings.fontSize": "Font size",
   "settings.wordWrap": "Wrap long lines",
   "settings.wordWrapHint": "Fold lines that run past the edge instead of scrolling sideways",

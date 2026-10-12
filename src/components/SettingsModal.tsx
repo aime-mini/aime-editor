@@ -364,17 +364,6 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               }}
             />
           </Row>
-          {/* The voice belongs to the greeting: with no greeting it has nowhere to speak. */}
-          {settings.splash && (
-            <Row label={t("settings.splashVoice")} hint={t("settings.splashVoiceHint")}>
-              <Toggle
-                on={settings.splashVoice}
-                onChange={(splashVoice) => {
-                  settings.update({ splashVoice });
-                }}
-              />
-            </Row>
-          )}
 
           <p className={section}>
             <Eye size={12} /> {t("settings.editor")}

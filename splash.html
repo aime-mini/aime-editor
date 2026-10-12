@@ -5,7 +5,7 @@
     <title>Aime</title>
     <script>
       // Switched off in Settings (`splash`, src/stores/settings.ts): gone before
-      // a pixel is drawn. Rust closes this window and owes the greeting no time,
+      // a pixel is drawn. Rust closes this window and owes the card no time,
       // so the editor appears the moment it has painted (`splash_decline`).
       try {
         if (JSON.parse(localStorage.getItem("aime.settings") ?? "{}").splash === false) {
@@ -13,7 +13,7 @@
           void window.__TAURI_INTERNALS__?.invoke("splash_decline");
         }
       } catch {
-        // Storage refused: the greeting shows, as it would by default.
+        // Storage refused: the card shows, as it would by default.
       }
     </script>
     <!--
@@ -26,15 +26,6 @@
 
       The window itself is transparent and undecorated, so the rounded card below
       is the whole visible shape.
-    -->
-    <!--
-      The greetings are NOT preloaded any more.
-
-      They used to be, because the voice played on every launch and starting the
-      fetch before the script ran was most of what made it come in on time. The
-      voice is off unless somebody turns it on (Settings → Appearance), so two
-      180 KB files on every launch would be for a thing that mostly never
-      happens. The script fetches the one it needs, when it needs it.
     -->
     <style>
       :root {
@@ -69,14 +60,7 @@
         box-sizing: border-box;
       }
 
-      /*
-       * One centred column, and she is not part of it.
-       *
-       * She used to be a flex child taking 54% of the card at full height,
-       * which made the card about her; reported 2026-09-21 as too big and too
-       * sentimental. The card is about what this program is - so the words own
-       * the middle at every size, and she stands in the corner behind them.
-       */
+      /* One centred column: the mark, the name, what this program is. */
       #card {
         position: relative;
         display: grid;
@@ -148,6 +132,89 @@
       }
 
       /*
+       * The logo, drawing itself: the tile arrives, the prompt is stroked in,
+       * the cursor starts blinking and the spark flares - then keeps flaring,
+       * so the card is alive for as long as it is up.
+       *
+       * It replaced a 3D character, reported 2026-10-11 as too sentimental for
+       * a developer tool: what reads as intelligent here is the program's own
+       * mark doing something deliberate, not a mascot saying hello. Geometry
+       * from `src/assets/logo.svg` and timing shared with `AimeMark.tsx` -
+       * keep the three in step; this page cannot import either.
+       */
+      #mark {
+        display: block;
+        width: 76px;
+        height: 76px;
+        margin: 0 auto 20px;
+        overflow: visible;
+      }
+      #mark .tile {
+        transform-box: fill-box;
+        transform-origin: center;
+        opacity: 0;
+        animation: mark-tile 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      }
+      #mark .prompt {
+        stroke-dasharray: 1;
+        stroke-dashoffset: 1;
+        animation: mark-draw 0.5s 0.3s cubic-bezier(0.65, 0, 0.35, 1) forwards;
+      }
+      #mark .cursor {
+        opacity: 0;
+        animation: mark-blink 1.06s 0.75s steps(1, end) infinite;
+      }
+      #mark .spark {
+        transform-box: fill-box;
+        transform-origin: center;
+        transform: scale(0);
+        animation:
+          mark-flare 0.7s 0.85s cubic-bezier(0.34, 1.56, 0.64, 1) forwards,
+          mark-twinkle 2.4s 1.8s ease-in-out infinite;
+      }
+      @keyframes mark-tile {
+        from {
+          opacity: 0;
+          transform: scale(0.6) rotate(-8deg);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @keyframes mark-draw {
+        to {
+          stroke-dashoffset: 0;
+        }
+      }
+      @keyframes mark-blink {
+        0% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0;
+        }
+      }
+      @keyframes mark-flare {
+        from {
+          transform: scale(0) rotate(-90deg);
+        }
+        to {
+          transform: scale(1) rotate(0deg);
+        }
+      }
+      @keyframes mark-twinkle {
+        0%,
+        70%,
+        100% {
+          transform: scale(1) rotate(0deg);
+        }
+        82% {
+          transform: scale(1.3) rotate(45deg);
+        }
+      }
+
+      /*
        * Each letter arrives on its own, and then a light runs across the name.
        *
        * The sweep is the part that has to be SEEN: a splash is on screen for
@@ -168,7 +235,7 @@
         background-position: 100% 0;
         -webkit-background-clip: text;
         background-clip: text;
-        animation: sheen 3.2s 0.9s ease-in-out infinite;
+        animation: sheen 3.2s 1.4s ease-in-out infinite;
       }
       #wordmark span {
         color: transparent;
@@ -199,7 +266,7 @@
         text-transform: uppercase;
         color: var(--muted);
         opacity: 0;
-        animation: rise 0.7s 0.42s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        animation: rise 0.7s 0.85s cubic-bezier(0.22, 1, 0.36, 1) forwards;
       }
 
       /*
@@ -248,7 +315,7 @@
         background: var(--line);
         overflow: hidden;
         opacity: 0;
-        animation: rise 0.7s 0.58s ease forwards;
+        animation: rise 0.7s 1s ease forwards;
       }
       #bar::after {
         content: "";
@@ -268,55 +335,6 @@
         }
       }
 
-      /*
-       * Where the Aime character goes: the bottom-right corner, small.
-       *
-       * She was half the card at full height, beside the words. Reported
-       * 2026-09-21 - too big, too sentimental - and the fix is not a smaller
-       * number on the same layout: she is out of the flow entirely now, parked
-       * in the corner of the card behind the text, at a height the card sets
-       * and a hard ceiling in pixels so she cannot grow with the window. The
-       * words are centred whether she loads or not, so a missing file changes
-       * nothing about the composition.
-       *
-       * Drop the artwork at `public/splash/aime.webp` - an animated WebP with
-       * an alpha channel plays here on its own, which is how the character
-       * breathes without shipping a runtime to animate her.
-       */
-      #portrait {
-        position: absolute;
-        /* Behind the words rather than beside them, so the middle stays the
-           middle however narrow the window gets. */
-        z-index: 0;
-        /* Against the card's own edge, not in a margin of her own: asked for
-           2026-09-21, she reads as standing in the corner rather than placed
-           near it. */
-        right: 0;
-        bottom: 0;
-        display: none;
-        height: 44%;
-        max-height: 156px;
-        width: auto;
-        object-fit: contain;
-        object-position: bottom right;
-        opacity: 0;
-        transform: translateY(12px);
-        animation: arrive 0.9s 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-      }
-      #card.has-portrait #portrait {
-        display: block;
-      }
-      /* The hint moves out from under her. */
-      #card.has-portrait #hint {
-        right: auto;
-        left: 18px;
-      }
-      @keyframes arrive {
-        to {
-          opacity: 0.92;
-          transform: none;
-        }
-      }
       @keyframes fade-in {
         to {
           opacity: 1;
@@ -343,8 +361,8 @@
         #intro span,
         #bar,
         #bar::after,
-        #portrait,
-        #hint {
+        #hint,
+        #mark * {
           animation: none;
           opacity: 1;
           filter: none;
@@ -367,32 +385,47 @@
         <div class="glow one"></div>
         <div class="glow two"></div>
         <div id="words">
+          <svg id="mark" viewBox="0 0 1024 1024" aria-hidden="true">
+            <defs>
+              <linearGradient id="mark-fill" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#5B7CFF" />
+                <stop offset="100%" stop-color="#8B5CF6" />
+              </linearGradient>
+            </defs>
+            <rect class="tile" x="64" y="64" width="896" height="896" rx="200" fill="url(#mark-fill)" />
+            <path
+              class="prompt"
+              d="M 300 360 L 462 512 L 300 664"
+              pathLength="1"
+              fill="none"
+              stroke="#fff"
+              stroke-width="76"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <rect class="cursor" x="516" y="612" width="196" height="76" rx="38" fill="#fff" />
+            <path
+              class="spark"
+              d="M 706 236 L 733 313 L 810 340 L 733 367 L 706 444 L 679 367 L 602 340 L 679 313 Z"
+              fill="#fff"
+            />
+          </svg>
           <h1 id="wordmark" aria-label="Aime"></h1>
           <p id="tagline">AI Mini Editor</p>
           <p id="intro"></p>
           <div id="bar"></div>
         </div>
-        <img id="portrait" alt="" />
-        <audio id="greeting" preload="auto"></audio>
         <span id="hint">Esc to skip</span>
       </div>
     </div>
     <script type="module">
       /** Milliseconds between one letter of the wordmark and the next. */
       const LETTER_STAGGER_MS = 70;
-      /**
-       * Aime herself: an animated WebP with an alpha channel, which plays here
-       * on its own. That is deliberate - a live 3D scene would need a WebGL
-       * library and a model measured in megabytes, and a window whose whole job
-       * is to be on glass in a few milliseconds cannot wait for either. She is
-       * rendered from the 3D model once, offline (see CHARACTER-BRIEF.md).
-       */
-      const PORTRAIT = "/splash/aime.webp";
+      /** The name starts once the mark has drawn its prompt. */
+      const WORDMARK_DELAY_MS = 450;
 
       /** Where the app stores the chosen language - keep in step with src/i18n. */
       const LOCALE_KEY = "aime.locale";
-      /** And its other preferences - keep in step with src/stores/settings.ts. */
-      const SETTINGS_KEY = "aime.settings";
 
       /** The language the user chose, or English - the app's own default. */
       function chosenLocale() {
@@ -404,22 +437,13 @@
         }
       }
 
-      /** One stored preference, without a store to read it from. */
-      function setting(name) {
-        try {
-          return JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}")[name];
-        } catch {
-          return undefined;
-        }
-      }
-
       const locale = chosenLocale();
 
       const wordmark = document.getElementById("wordmark");
       for (const [index, letter] of [..."Aime"].entries()) {
         const span = document.createElement("span");
         span.textContent = letter;
-        span.style.animationDelay = `${index * LETTER_STAGGER_MS}ms`;
+        span.style.animationDelay = `${WORDMARK_DELAY_MS + index * LETTER_STAGGER_MS}ms`;
         wordmark.append(span);
       }
 
@@ -441,7 +465,7 @@
       /** Between one word of the sentence and the next. */
       const WORD_STAGGER_MS = 46;
       /** After the name and the tagline have had their moment. */
-      const INTRO_DELAY_MS = 620;
+      const INTRO_DELAY_MS = 1000;
 
       const intro = document.getElementById("intro");
       for (const [index, word] of INTRO[locale].split(" ").entries()) {
@@ -456,36 +480,13 @@
         intro.append(document.createTextNode(" "));
       }
 
-      // The portrait is optional, and a missing file must not leave a broken
-      // image on the card - so it is only shown once it has actually decoded.
-      const portrait = document.getElementById("portrait");
-      portrait.addEventListener("load", () => {
-        document.getElementById("card").classList.add("has-portrait");
-      });
-      portrait.addEventListener("error", () => {
-        portrait.remove();
-      });
-      portrait.src = PORTRAIT;
-
-      /** A moment after the last word, so the card does not vanish on it. */
-      const GREETING_SLACK_MS = 400;
-      /** How often the page repeats what it still needs while she is talking. */
-      const HOLD_EVERY_MS = 300;
-      /** What to ask for while the file's length is still unknown. */
-      const GREETING_UNKNOWN_MS = 1200;
-
-      const call = (command, args) => {
+      const call = (command) => {
         // Tauri's IPC is injected into this window like any other; there is no
         // bundle here to import the wrapper from.
-        window.__TAURI_INTERNALS__?.invoke(command, args).catch(() => {
+        window.__TAURI_INTERNALS__?.invoke(command).catch(() => {
           // Nothing to do about it here: the Rust side gives up on its own
           // timer, so a failed call costs a slower start and nothing else.
         });
-      };
-
-      /** Asks Rust to keep the card up for this much longer. */
-      const hold = (ms) => {
-        call("splash_hold", { ms });
       };
 
       // Rust creates this window hidden and shows it on this call. Without that
@@ -497,168 +498,7 @@
         });
       });
 
-      /*
-       * She says hello out loud, once per launch, from a file.
-       *
-       * The file is rendered offline by `scripts/render-greeting.mjs` with a
-       * licensed female voice per language, and that is the point: the webview's
-       * own `speechSynthesis` reads with whatever Windows has installed, which is
-       * a different voice on every machine - measured on the machine this was
-       * written on, the only Vietnamese voice was male. A shipped file sounds the
-       * same wherever Aime is installed.
-       *
-       * Speech synthesis stays as the fallback, for a build whose audio files are
-       * missing or a webview that refuses to play them.
-       *
-       * The language is the one the user picked in Settings, read straight from
-       * where the app keeps it (`aime.locale`, see src/i18n/index.ts). This
-       * window has no bundle to import that store from, and it would not help if
-       * it did: the setting is read as the app starts, so switching language
-       * takes effect from the next launch - which is exactly how a greeting
-       * should behave. It does not change under someone mid-sentence.
-       *
-       * Measured on this machine (2026-09-01): Windows ships "Microsoft An" for
-       * Vietnamese in its OneCore voices, which is what the webview offers, so
-       * both languages have a real voice. Where one is missing the browser is
-       * left to choose, and if it has nothing at all this does nothing - a
-       * greeting is not worth a launch.
-       */
-      /** The rendered greeting, one per language. Empty is not an option here. */
-      const audioFor = (locale) => `/splash/greeting-${locale}.wav`;
-      const GREETINGS = {
-        // Spelled for the ear, not the eye: "Aime" is said "eye-mee", and every
-        // English voice reads the written name as "aim". The card shows the real
-        // spelling; only the spoken line is respelled. Keep in step with the same
-        // lines in scripts/render-greeting.mjs, which are what the files say.
-        en: { text: "Hi, I'm Eye-mee. Have a great day at work!", lang: "en-US" },
-        vi: { text: "Xin chào, mình là Ai Mi. Chúc bạn một ngày làm việc thật vui vẻ!", lang: "vi-VN" },
-      };
-      /**
-       * Voices to reach for first, in order, per language.
-       *
-       * The Web Speech API says nothing about a voice's gender or age, so asking
-       * for the light, friendly one this greeting wants can only be done by name.
-       * The "Online (Natural)" voices are Microsoft's neural ones and sound the
-       * part; the desktop voices are the fallback that is always installed.
-       *
-       * Measured on this machine (2026-09-01): en-US offers David, Mark and Zira,
-       * of which Zira is the only female one; vi-VN offers only "Microsoft An",
-       * which is male. Installing Vietnamese speech in Windows adds "HoaiMy", and
-       * this list picks her up the moment she exists without a change here.
-       */
-      const PREFERRED_VOICES = {
-        "en-US": ["Ana", "Aria", "Jenny", "Michelle", "Zira"],
-        "vi-VN": ["HoaiMy", "An"],
-      };
-      /** A little above the voice's own pitch: friendlier, and still her. */
-      const PITCH = 1.25;
-      const RATE = 1.02;
-      /**
-       * How long to wait for the voice list, which arrives asynchronously.
-       *
-       * Measured 2026-09-01 in Edge: the first `getVoices()` of a page returns an
-       * empty list and the second, moments later, returns four. Waiting matters
-       * more than it looks - with no list there is no Vietnamese voice to pick,
-       * and the Vietnamese line then comes out read by an English one.
-       */
-      const VOICES_TIMEOUT_MS = 1500;
-      const VOICES_POLL_MS = 60;
-
-      const speech = window.speechSynthesis;
-
-      /** The best voice for a language: by name first, then any that speaks it. */
-      function voiceFor(lang) {
-        const code = lang.slice(0, 2).toLowerCase();
-        const speaks = speech
-          .getVoices()
-          .filter((voice) => voice.lang.toLowerCase().replace("_", "-").startsWith(code));
-        for (const name of PREFERRED_VOICES[lang] ?? []) {
-          const wanted = speaks.find((voice) => voice.name.includes(name));
-          if (wanted) return wanted;
-        }
-        return speaks[0] ?? null;
-      }
-
-      const greeting = document.getElementById("greeting");
-
-      async function greet() {
-        try {
-          /*
-           * Hold the card for as long as there is sentence left, and keep saying
-           * so until there is none.
-           *
-           * One request was not enough, twice over: the length is known before
-           * playback starts, so a hold measured from then runs out early - and a
-           * hold measured when playback finally starts can arrive after the
-           * handover has already been decided. Reported both times as the last
-           * word being cut off. Repeating it while the audio plays cannot lose
-           * that race: at every moment the splash is owed what is left plus a
-           * beat, and `splash_hold` only ever extends.
-           */
-          const keepAlive = setInterval(() => {
-            const left = greeting.duration - greeting.currentTime;
-            // Not yet known is not the same as finished: the length arrives with
-            // the file's metadata, and giving up here would end the holding
-            // before the sentence had even started.
-            if (!Number.isFinite(left)) {
-              hold(GREETING_UNKNOWN_MS);
-              return;
-            }
-            if (left <= 0) {
-              clearInterval(keepAlive);
-              return;
-            }
-            hold(Math.ceil(left * 1000) + GREETING_SLACK_MS);
-          }, HOLD_EVERY_MS);
-          greeting.addEventListener("ended", () => clearInterval(keepAlive), { once: true });
-
-          greeting.src = audioFor(locale);
-          await greeting.play();
-          return;
-        } catch {
-          // Missing file, or a webview that would not play it without a click:
-          // the machine's own voices are the fallback.
-        }
-
-        if (!speech) return;
-        const line = GREETINGS[locale];
-
-        // Polled rather than waited on: `voiceschanged` can fire before this
-        // window gets round to listening for it, and then the wait is the whole
-        // timeout for nothing.
-        const deadline = Date.now() + VOICES_TIMEOUT_MS;
-        while (speech.getVoices().length === 0 && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, VOICES_POLL_MS));
-        }
-
-        const utterance = new SpeechSynthesisUtterance(line.text);
-        utterance.lang = line.lang;
-        utterance.pitch = PITCH;
-        utterance.rate = RATE;
-        const voice = voiceFor(line.lang);
-        if (voice) utterance.voice = voice;
-        speech.speak(utterance);
-      }
-
-      /**
-       * The voice is off unless it was asked for.
-       *
-       * Asked for 2026-09-21, and it is the right default for a thing that
-       * speaks: an editor that opens next to a colleague, in a meeting, or at
-       * night should be quiet by default and loud by choice. The choice lives
-       * in Settings → Appearance (`splashVoice`), and this window reads it out
-       * of storage because it has no bundle to read a store from.
-       *
-       * Nothing else about the card depends on it: with the voice off the
-       * splash simply keeps its own minimum time on screen instead of being
-       * held open for a sentence.
-       */
-      if (setting("splashVoice") === true) void greet();
-
       const skip = () => {
-        // Whoever skips the greeting is skipping all of it, including the voice.
-        greeting.pause();
-        speech?.cancel();
         call("splash_skip");
       };
       addEventListener("keydown", skip);

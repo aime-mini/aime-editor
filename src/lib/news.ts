@@ -28,10 +28,10 @@ export interface NewsItem {
 const PLACEHOLDER: Record<Locale, NewsItem[]> = {
   en: [
     {
-      id: "greeting",
-      date: "2026-09-01",
-      title: "Aime greets you at launch",
-      body: "The starting window has Aime on it now - she waves, winks and nods while the editor loads behind her.",
+      id: "logo-mark",
+      date: "2026-10-11",
+      title: "A quieter start",
+      body: "The starting window and the home screen show Aime's own logo drawing itself, instead of a character.",
     },
     {
       id: "parallel-runs",
@@ -48,10 +48,10 @@ const PLACEHOLDER: Record<Locale, NewsItem[]> = {
   ],
   vi: [
     {
-      id: "greeting",
-      date: "2026-09-01",
-      title: "Aime chào anh mỗi lần mở app",
-      body: "Cửa sổ khởi động giờ có Aime: cô ấy vẫy tay, nháy mắt và gật đầu trong lúc editor nạp phía sau.",
+      id: "logo-mark",
+      date: "2026-10-11",
+      title: "Khởi động gọn gàng hơn",
+      body: "Cửa sổ khởi động và màn hình home giờ là logo Aime tự vẽ ra, thay cho nhân vật.",
     },
     {
       id: "parallel-runs",

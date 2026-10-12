@@ -104,7 +104,6 @@ pub fn run() {
             cloud::deploy::cloud_http_probe,
             cloud::deploy::programs_present,
             splash::splash_shown,
-            splash::splash_hold,
             splash::splash_skip,
             splash::splash_decline,
             splash::app_ready,

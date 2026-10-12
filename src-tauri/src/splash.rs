@@ -22,8 +22,8 @@ use crate::workspaces::{self, Workspaces};
 /// The splash window's label - the same one `capabilities/splash.json` names.
 const LABEL: &str = "splash";
 
-/// Logical size of the card: wide rather than tall, because the words sit on
-/// the left and the character portrait, when there is one, stands on the right.
+/// Logical size of the card: wide rather than tall, so the one sentence that
+/// says what Aime is fits on two lines under the mark and the name.
 const SIZE: (f64, f64) = (720.0, 400.0);
 
 /// How long the splash stays once it is actually on screen.
@@ -33,12 +33,10 @@ const SIZE: (f64, f64) = (720.0, 400.0);
 /// floor, not a budget: a cold start passes it long before the editor is usable,
 /// and anyone who finds it slow can press a key to skip it.
 ///
-/// Four seconds, because there is something to watch: the character's whole loop
-/// is four (`scripts/portrait/render.html`) - she notices you, waves, winks,
-/// glances at the wordmark and nods - and the portrait fades in over the first
-/// second of it. At 1.4 s a warm start showed a hand halfway up and then took
-/// her away; at 3 s the last beat was still being cut off. The frontend spends the same
-/// three seconds loading the editor's own bundle rather than idling - see the
+/// Four seconds, because there is something to read: the mark draws itself and
+/// the sentence under it has assembled by about two and a half, and a sentence
+/// taken away the moment it is complete was shown, not read. The frontend spends
+/// the same time loading the editor's own bundle rather than idling - see the
 /// startup effect in `src/App.tsx` - so the window that replaces the greeting is
 /// a finished editor, not a shell that fills in afterwards.
 const MIN_VISIBLE: Duration = Duration::from_millis(4000);
@@ -71,21 +69,13 @@ fn minimum_visible() -> Duration {
         .map_or(MIN_VISIBLE, Duration::from_millis)
 }
 
-/// The longest the page may ask for on top of the minimum - see `splash_hold`.
-///
-/// The page is trusted about its own audio, not about the editor's launch: a
-/// number that arrived wrong, or a file that turned out to be an hour long,
-/// cannot hold the editor for more than this.
-const MAX_HOLD: Duration = Duration::from_secs(8);
-
 /// Slack over the hold, so the backstop never cuts a deliberate hold short.
 const CAP_SLACK: Duration = Duration::from_secs(5);
 
 /// When the backstop fires: late enough to cover a slow first load, and never
-/// before whatever hold was asked for has been served - including the longest
-/// the greeting may ask for.
+/// before a hold asked for on the command line has been served.
 fn cap(minimum: Duration) -> Duration {
-    let over_hold = minimum.saturating_add(MAX_HOLD).saturating_add(CAP_SLACK);
+    let over_hold = minimum.saturating_add(CAP_SLACK);
     if over_hold > MAX_WAIT {
         over_hold
     } else {
@@ -102,8 +92,6 @@ pub struct SplashState(Mutex<Handover>);
 struct Handover {
     /// `None` until the page reports it has painted - see `splash_shown`.
     shown_at: Option<Instant>,
-    /// The page asked to stay up until here - see `splash_hold`.
-    hold_until: Option<Instant>,
     /// Switched off in Settings: nothing is owed, and the page is not listened
     /// to any more - see `splash_decline`.
     declined: bool,
@@ -120,22 +108,15 @@ impl Handover {
 
     /// How much of the minimum is still owed at `now`.
     ///
-    /// Nothing is owed while the card is not on screen: the wait exists so a
-    /// greeting is readable, and there is nothing to read yet. Whatever the page
-    /// asked for on top of that is owed either way - it is talking, and it is the
-    /// only side that knows how long the sentence is.
+    /// Nothing is owed while the card is not on screen: the wait exists so the
+    /// card is readable, and there is nothing to read yet.
     fn remaining(&self, now: Instant, minimum: Duration) -> Duration {
-        if self.declined {
-            return Duration::ZERO;
+        match self.shown_at {
+            Some(shown_at) if !self.declined => {
+                minimum.saturating_sub(now.saturating_duration_since(shown_at))
+            }
+            _ => Duration::ZERO,
         }
-        let floor = match self.shown_at {
-            None => Duration::ZERO,
-            Some(shown_at) => minimum.saturating_sub(now.saturating_duration_since(shown_at)),
-        };
-        let asked = self
-            .hold_until
-            .map_or(Duration::ZERO, |until| until.saturating_duration_since(now));
-        floor.max(asked)
     }
 }
 
@@ -181,12 +162,6 @@ pub fn start(app: &AppHandle) {
         .resizable(false)
         .always_on_top(true)
         .skip_taskbar(true)
-        // The greeting is audio the user never clicked to start, and Chromium
-        // blocks exactly that. Passing browser arguments replaces the ones wry
-        // passes by default, so they are repeated here rather than lost.
-        .additional_browser_args(
-            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection              --autoplay-policy=no-user-gesture-required",
-        )
         .build();
 
     if let Err(err) = built {
@@ -229,25 +204,6 @@ pub fn splash_shown(app: AppHandle) {
     app.state::<SplashState>().locked().shown_at = Some(Instant::now());
 }
 
-/// The page needs the card up for `ms` longer than the minimum would give it.
-///
-/// This is the spoken greeting asking for room to finish: the audio file's length
-/// is known to the page and to nobody else, and a greeting cut off mid-sentence
-/// is worse than a start that took another half second. Only ever extends - a
-/// second caller cannot shorten what the first asked for.
-#[tauri::command]
-pub fn splash_hold(app: AppHandle, ms: u64) {
-    let until = Instant::now() + Duration::from_millis(ms.min(MAX_HOLD.as_millis() as u64));
-    let state = app.state::<SplashState>();
-    let mut handover = state.locked();
-    if handover.declined {
-        return;
-    }
-    if handover.hold_until.is_none_or(|current| current < until) {
-        handover.hold_until = Some(until);
-    }
-}
-
 /// The greeting is switched off (Settings → Appearance): the page says so
 /// before it draws anything, and goes. Unlike a skip, the editor is not shown
 /// now - it appears the moment its first workspace has painted, as it would
@@ -279,13 +235,9 @@ pub async fn app_ready(app: AppHandle, webview: Webview) -> Result<(), String> {
     if !app.state::<Workspaces>().is_first(webview.label()) {
         return workspaces::painted(&app, webview.label());
     }
-    // Asked again after every wait, not once before the first.
-    //
-    // The editor is often ready before the greeting has finished loading, so the
-    // page's `splash_hold` can arrive while this is already asleep - and a debt
-    // read once is a debt that misses it. Measured: the voice was cut off mid
-    // sentence exactly this way. `MAX_HOLD` bounds what the page can ask for, so
-    // this cannot spin.
+    // Asked again after every wait, not once before the first: the page saying
+    // it has painted (`splash_shown`) moves the start of the minimum later, and
+    // it can arrive while this is asleep. The minimum is finite, so this ends.
     loop {
         let remaining = {
             let state = app.state::<SplashState>();
@@ -340,54 +292,23 @@ mod tests {
     fn the_backstop_never_cuts_a_deliberate_hold_short() {
         assert_eq!(cap(MIN_VISIBLE), MAX_WAIT, "the default hold sits well inside it");
         assert_eq!(
-            cap(Duration::from_secs(10)),
-            Duration::from_secs(23),
-            "the greeting may ask for MAX_HOLD on top, and the backstop leaves room for it"
-        );
-        assert_eq!(
             cap(Duration::from_secs(40)),
-            Duration::from_secs(53),
+            Duration::from_secs(45),
             "a hold past the backstop moves the backstop, not the hold"
         );
     }
 
     #[test]
-    fn a_hold_the_page_asked_for_outlives_the_minimum() {
-        let now = Instant::now();
-        let handover = Handover {
-            shown_at: Some(now),
-            hold_until: Some(now + Duration::from_millis(4500)),
-            declined: false,
-            done: false,
-        };
-        // The floor alone would let go at 3s; the greeting has 4.5s to say.
-        assert_eq!(
-            handover.remaining(now, Duration::from_secs(3)),
-            Duration::from_millis(4500),
-        );
-        // And it never shortens the floor either.
-        let quiet = Handover {
-            shown_at: Some(now),
-            hold_until: Some(now + Duration::from_millis(500)),
-            declined: false,
-            done: false,
-        };
-        assert_eq!(
-            quiet.remaining(now, Duration::from_secs(3)),
-            Duration::from_secs(3)
-        );
-    }
-
-    #[test]
-    fn a_greeting_switched_off_is_owed_nothing_whatever_the_page_asked() {
-        let now = Instant::now();
+    fn a_card_switched_off_is_owed_nothing() {
         let declined = Handover {
-            shown_at: Some(now),
-            hold_until: Some(now + Duration::from_secs(5)),
+            shown_at: Some(Instant::now()),
             declined: true,
             done: false,
         };
-        assert_eq!(declined.remaining(now, Duration::from_secs(4)), Duration::ZERO);
+        assert_eq!(
+            declined.remaining(Instant::now(), Duration::from_secs(4)),
+            Duration::ZERO
+        );
     }
 
     #[test]
@@ -405,7 +326,6 @@ mod tests {
         let now = Instant::now();
         let handover = Handover {
             shown_at: Some(now - Duration::from_millis(400)),
-            hold_until: None,
             declined: false,
             done: false,
         };
@@ -416,13 +336,12 @@ mod tests {
     }
 
     /// A start slower than the minimum must not be charged for it twice - the
-    /// greeting has already been read by the time the editor is ready.
+    /// card has already been read by the time the editor is ready.
     #[test]
     fn a_slow_start_waits_no_longer() {
         let now = Instant::now();
         let handover = Handover {
             shown_at: Some(now - Duration::from_secs(5)),
-            hold_until: None,
             declined: false,
             done: false,
         };

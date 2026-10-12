@@ -136,6 +136,73 @@
 }
 
 /*
+ * The logo drawing itself (`AimeMark.tsx`), in the starting window's timing
+ * (`splash.html`). The spark flares again every five seconds: on a screen that
+ * stays up while someone reads it, often enough to be seen and rarely enough
+ * not to be watched.
+ */
+.aime-mark {
+  overflow: visible;
+}
+.aime-mark .tile,
+.aime-mark .spark {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.aime-mark .tile {
+  opacity: 0;
+  animation: aime-mark-tile 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.aime-mark .prompt {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: aime-mark-draw 0.5s 0.3s cubic-bezier(0.65, 0, 0.35, 1) forwards;
+}
+.aime-mark .cursor {
+  opacity: 0;
+  animation: caret 1.06s 0.75s step-end infinite;
+}
+.aime-mark .spark {
+  transform: scale(0);
+  animation:
+    aime-mark-flare 0.7s 0.85s cubic-bezier(0.34, 1.56, 0.64, 1) forwards,
+    aime-mark-twinkle 5s 2s ease-in-out infinite;
+}
+@keyframes aime-mark-tile {
+  from {
+    opacity: 0;
+    transform: scale(0.6) rotate(-8deg);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes aime-mark-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes aime-mark-flare {
+  from {
+    transform: scale(0) rotate(-90deg);
+  }
+  to {
+    transform: scale(1) rotate(0deg);
+  }
+}
+@keyframes aime-mark-twinkle {
+  0%,
+  86%,
+  100% {
+    transform: scale(1) rotate(0deg);
+  }
+  93% {
+    transform: scale(1.3) rotate(45deg);
+  }
+}
+
+/*
  * Someone who asked the system for less motion still needs to see that the AI
  * is working, so the marks stay - they just stop moving.
  */
@@ -145,6 +212,13 @@
   .animate-spin,
   .animate-pulse {
     animation: none;
+  }
+  /* The logo is drawn complete rather than not at all. */
+  .aime-mark * {
+    animation: none;
+    opacity: 1;
+    stroke-dashoffset: 0;
+    transform: none;
   }
 }
 
