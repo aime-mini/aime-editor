@@ -37,7 +37,7 @@ import { ConflictView } from "./ConflictView";
 import { RunView } from "./RunView";
 import { CloudView } from "./CloudView";
 import { CsvView } from "./CsvView";
-import { Markdown } from "./Markdown";
+import { MarkdownDocument } from "./MarkdownDocument";
 import { StructuredView } from "./StructuredView";
 import { WorkItemView } from "./WorkItemView";
 import { DebugToolbar } from "./DebugToolbar";
@@ -814,7 +814,7 @@ export function EditorPane() {
       )}
       <div className="min-h-0 flex-1">
         {renderedView !== null && showsRendered ? (
-          <RenderedFile view={renderedView} text={fileContent} />
+          <RenderedFile view={renderedView} text={fileContent} path={openFilePath} />
         ) : (
           <Editor
             path={openFilePath}
@@ -893,14 +893,12 @@ function DiskNoticeBanner({ path }: { path: string }) {
 }
 
 /** The file drawn as what it is: a table, a document, a tree. */
-function RenderedFile({ view, text }: { view: RenderedView; text: string }) {
+function RenderedFile({ view, text, path }: { view: RenderedView; text: string; path: string }) {
   if (view === "table") return <CsvView text={text} />;
   if (view === "markdown") {
     return (
-      <div className="h-full overflow-auto px-8 py-6">
-        <div className="mx-auto max-w-3xl text-[13px] leading-relaxed">
-          <Markdown text={text} />
-        </div>
+      <div className="h-full overflow-auto px-10 py-8">
+        <MarkdownDocument text={text} path={path} />
       </div>
     );
   }

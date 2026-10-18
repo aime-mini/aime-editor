@@ -122,6 +122,7 @@ pub fn run() {
             updates::update_check,
             updates::update_install,
             fs_cmds::read_file,
+            fs_cmds::read_image,
             fs_cmds::write_file,
             fs_cmds::create_dir,
             fs_cmds::rename_path,

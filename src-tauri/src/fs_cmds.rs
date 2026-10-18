@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::fs;
-use std::io::Read;
-use std::path::Path;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
 
 #[derive(Serialize)]
 pub struct DirEntry {
@@ -153,6 +153,41 @@ fn starts_with_bom(path: &Path) -> bool {
 pub fn read_file(path: String) -> Result<String, String> {
     let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
     Ok(text.strip_prefix(BOM).unwrap_or(&text).to_string())
+}
+
+/// The pictures a document preview shows, by extension.
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"];
+
+/// Past this a picture is left unloaded: a document is read, not waited on.
+const IMAGE_MAX_BYTES: u64 = 25 * 1024 * 1024;
+
+/// The bytes of a picture a Markdown document shows, handed over raw.
+///
+/// The webview cannot read a file by its path, and opening Tauri's asset
+/// protocol would let any page content read any file; this hands over only
+/// pictures, only by name, only up to `IMAGE_MAX_BYTES`.
+#[tauri::command]
+pub async fn read_image(path: String) -> Result<tauri::ipc::Response, String> {
+    let file = PathBuf::from(&path);
+    let is_image = file
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()));
+    if !is_image {
+        return Err(format!("not a picture: {path}"));
+    }
+    let bytes = crate::background::off_main_thread(move || {
+        let size = fs::metadata(&file)?.len();
+        if size > IMAGE_MAX_BYTES {
+            return Err(io::Error::other(format!(
+                "{size} bytes is more than a preview loads"
+            )));
+        }
+        fs::read(&file)
+    })
+    .await?
+    .map_err(|e| format!("{path}: {e}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 /// Writes a file, keeping the byte order mark it had.

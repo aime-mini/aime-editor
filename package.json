@@ -16,8 +16,9 @@
     "test:e2e:fake-claude": "wdio run e2e/wdio.fake-claude.cjs"
   },
   "overrides": {
-    "dompurify": "^3.4.12",
-    "serialize-javascript": "^7.0.7"
+    "dompurify": "$dompurify",
+    "serialize-javascript": "^7.0.7",
+    "katex": "$katex"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -27,9 +28,18 @@
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
+    "@vscode/markdown-it-katex": "^1.1.2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "dompurify": "^3.4.17",
+    "katex": "^0.19.0",
     "lucide-react": "^1.28.0",
+    "markdown-it": "^14.3.3",
+    "markdown-it-emoji": "^3.1.0",
+    "markdown-it-footnote": "^4.0.0",
+    "markdown-it-github-alerts": "^1.0.1",
+    "markdown-it-task-lists": "^2.1.1",
+    "mermaid": "^11.17.2",
     "monaco-editor": "^0.56.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
@@ -40,6 +50,7 @@
     "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2",
+    "@types/markdown-it": "^14.2.0",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",

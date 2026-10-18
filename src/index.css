@@ -296,3 +296,234 @@ body,
 .debug-execution-line {
   background: color-mix(in srgb, var(--warn) 16%, transparent);
 }
+
+/*
+ * A Markdown file, read (`MarkdownDocument.tsx`). GitHub's way of setting a
+ * README - the place most of these files are written for - in Aime's colours,
+ * so the same document reads the same in the editor as on the repository page.
+ */
+.markdown-doc {
+  --md-important: #a371f7;
+  max-width: 860px;
+  margin: 0 auto;
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--text);
+  overflow-wrap: break-word;
+}
+:root[data-theme="light"] .markdown-doc {
+  --md-important: #8250df;
+}
+.markdown-doc > :first-child {
+  margin-top: 0;
+}
+.markdown-doc :is(p, ul, ol, blockquote, pre, table, details, .markdown-alert, .md-mermaid, .katex-display) {
+  margin: 0 0 1em;
+}
+.markdown-doc :is(h1, h2, h3, h4, h5, h6) {
+  margin: 1.6em 0 0.6em;
+  font-weight: 600;
+  line-height: 1.3;
+  scroll-margin-top: 12px;
+}
+.markdown-doc h1 {
+  font-size: 2em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+}
+.markdown-doc h2 {
+  font-size: 1.5em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+}
+.markdown-doc h3 {
+  font-size: 1.25em;
+}
+.markdown-doc h4 {
+  font-size: 1em;
+}
+.markdown-doc :is(h5, h6) {
+  font-size: 0.9em;
+  color: var(--text-muted);
+}
+.markdown-doc a {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+.markdown-doc a:hover {
+  text-decoration: underline;
+}
+.markdown-doc :is(strong, b) {
+  font-weight: 600;
+}
+.markdown-doc :is(ul, ol) {
+  padding-left: 2em;
+}
+.markdown-doc ul {
+  list-style: disc;
+}
+.markdown-doc ol {
+  list-style: decimal;
+}
+.markdown-doc li + li,
+.markdown-doc li > :is(ul, ol) {
+  margin-top: 0.25em;
+}
+.markdown-doc li > :is(ul, ol) {
+  margin-bottom: 0;
+}
+.markdown-doc .task-list-item {
+  list-style: none;
+}
+.markdown-doc .task-list-item-checkbox {
+  margin: 0 0.4em 0.2em -1.4em;
+  vertical-align: middle;
+  accent-color: var(--accent);
+}
+.markdown-doc blockquote {
+  padding: 0 1em;
+  color: var(--text-muted);
+  border-left: 0.25em solid var(--border);
+}
+.markdown-doc hr {
+  height: 0.25em;
+  margin: 1.5em 0;
+  border: 0;
+  background: var(--border);
+}
+.markdown-doc img {
+  display: inline-block;
+  max-width: 100%;
+}
+.markdown-doc :not(pre) > code {
+  padding: 0.2em 0.4em;
+  font-family: var(--font-mono);
+  font-size: 85%;
+  border-radius: 6px;
+  background: var(--bg-elevated);
+}
+.markdown-doc pre {
+  position: relative;
+  padding: 14px 16px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+.markdown-doc pre code {
+  font-family: inherit;
+  white-space: pre;
+}
+.markdown-doc .md-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 9px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.markdown-doc pre:hover .md-copy,
+.markdown-doc .md-copy:focus-visible {
+  opacity: 1;
+}
+.markdown-doc .md-copy:hover {
+  color: var(--text);
+}
+.markdown-doc table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow: auto;
+  border-collapse: collapse;
+}
+.markdown-doc :is(th, td) {
+  padding: 6px 13px;
+  border: 1px solid var(--border);
+}
+.markdown-doc th {
+  font-weight: 600;
+}
+.markdown-doc tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--bg-elevated) 55%, transparent);
+}
+.markdown-doc .md-front-matter th {
+  text-align: left;
+  color: var(--text-muted);
+}
+.markdown-doc kbd {
+  padding: 0.15em 0.4em;
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--bg-elevated);
+}
+.markdown-doc .markdown-alert {
+  --md-alert: var(--accent);
+  padding: 0.5em 1em;
+  border-left: 0.25em solid var(--md-alert);
+}
+.markdown-doc .markdown-alert > :last-child {
+  margin-bottom: 0;
+}
+.markdown-doc .markdown-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  font-weight: 600;
+  color: var(--md-alert);
+}
+.markdown-doc .markdown-alert-title svg {
+  fill: currentColor;
+}
+.markdown-doc .markdown-alert-tip {
+  --md-alert: var(--ok);
+}
+.markdown-doc .markdown-alert-important {
+  --md-alert: var(--md-important);
+}
+.markdown-doc .markdown-alert-warning {
+  --md-alert: var(--warn);
+}
+.markdown-doc .markdown-alert-caution {
+  --md-alert: var(--danger);
+}
+.markdown-doc .footnotes {
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+.markdown-doc .footnotes-sep {
+  height: 1px;
+}
+.markdown-doc .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.markdown-doc .md-mermaid {
+  display: flex;
+  justify-content: center;
+  padding: 16px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.markdown-doc .md-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+.markdown-doc .md-mermaid-error {
+  justify-content: flex-start;
+  color: var(--danger);
+  white-space: pre-wrap;
+}

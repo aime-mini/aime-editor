@@ -40,6 +40,20 @@ export default defineConfig(async () => ({
       },
     },
   },
+  // The document preview loads these with `import()`, which the dev server only
+  // discovers when a document is first opened - and it answers that discovery by
+  // reloading the page. Named here, they are bundled when the server starts.
+  optimizeDeps: {
+    include: [
+      "markdown-it",
+      "markdown-it-emoji",
+      "markdown-it-footnote",
+      "markdown-it-github-alerts",
+      "markdown-it-task-lists",
+      "@vscode/markdown-it-katex",
+      "mermaid",
+    ],
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
