@@ -65,6 +65,13 @@ const AGENT_STEP_MS = 700;
 const INVESTIGATION_STEPS = 14;
 const RETRIES_SHOWN = 3;
 const RETRY_MS = 1500;
+const LIVE_COMMAND = "sleep 3 && echo hi";
+const LIVE_COMMAND_MS = 3000;
+const LIVE_THINKING_MS = 1200;
+const LIVE_FILE = "C:\\work\\docs\\rivers.md";
+const LIVE_FILE_LINES = 120;
+const LIVE_ANSWER_LINES = 150;
+const LIVE_LINE_MS = 80;
 
 const SCENARIOS = {
   /** An Agent sent to the background: the answer ends, its subagent keeps working. */
@@ -175,6 +182,77 @@ const SCENARIOS = {
     const text = typeof answer === "string" ? answer : JSON.stringify(answer);
     say(text);
     result(0, 0, { result: text });
+  },
+
+  /**
+   * A turn as it is written, in the line shapes of 2.1.302 (captured
+   * 2026-10-18): a command that takes a while, a file whose content streams
+   * as the call's input for seconds, then an answer long enough to scroll.
+   */
+  async live({ say, system, result }) {
+    const stream = (event) => emit({ type: "stream_event", event, parent_tool_use_id: null });
+    const call = async (index, id, name, input, chunkChars, chunkMs) => {
+      stream({
+        type: "content_block_start",
+        index,
+        content_block: { type: "tool_use", id, name, input: {} },
+      });
+      const json = JSON.stringify(input);
+      for (let at = 0; at < json.length; at += chunkChars) {
+        stream({
+          type: "content_block_delta",
+          index,
+          delta: { type: "input_json_delta", partial_json: json.slice(at, at + chunkChars) },
+        });
+        await pause(chunkMs);
+      }
+      emit({
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id, name, input }] },
+        parent_tool_use_id: null,
+      });
+      stream({ type: "content_block_stop", index });
+    };
+    const answered = (id) =>
+      emit({
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ tool_use_id: id, type: "tool_result", content: "ok", is_error: false }],
+        },
+        parent_tool_use_id: null,
+      });
+
+    system("status", { status: "requesting" });
+    await call(
+      0,
+      "toolu_live_bash",
+      "Bash",
+      { command: LIVE_COMMAND, description: "Wait, then greet" },
+      20,
+      40,
+    );
+    await pause(LIVE_COMMAND_MS);
+    answered("toolu_live_bash");
+    system("status", { status: "requesting" });
+    stream({
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "thinking", thinking: "", signature: "" },
+    });
+    await pause(LIVE_THINKING_MS);
+    const poem = Array.from(
+      { length: LIVE_FILE_LINES },
+      (_, line) => `Line ${line + 1} of a river that keeps going`,
+    );
+    await call(1, "toolu_live_write", "Write", { file_path: LIVE_FILE, content: poem.join("\n") }, 60, 40);
+    answered("toolu_live_write");
+    system("status", { status: "requesting" });
+    for (let line = 1; line <= LIVE_ANSWER_LINES; line += 1) {
+      say(`Paragraph ${line} of the answer, long enough to wrap a little in a narrow panel.\n\n`);
+      await pause(LIVE_LINE_MS);
+    }
+    result(0, 0.3);
   },
 
   /** The turn that picks an interrupted one up. */

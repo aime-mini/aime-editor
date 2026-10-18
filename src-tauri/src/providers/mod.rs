@@ -4,6 +4,7 @@ pub mod claude;
 pub mod codex;
 pub mod generic;
 pub mod keys;
+pub mod ran_on;
 
 use crate::program::Program;
 use adapter::{adapter_for, Adapter, ApiKeyRoute, Invocation, Permission, ToolSet, TurnRequest};

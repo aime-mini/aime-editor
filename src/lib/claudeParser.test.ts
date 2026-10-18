@@ -241,6 +241,131 @@ describe("createClaudeParser", () => {
     });
   });
 
+  // Lines captured from 2.1.302 running `sleep 6 && echo hi`, then `exit 3`;
+  // ids, uuids and the session id trimmed.
+  describe("the answer as it is written", () => {
+    const bash = "toolu_01ULS2qkigUAG7aGwK4TpeAV";
+    const inputDelta = (partial_json: string) => ({
+      type: "stream_event",
+      event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json } },
+      parent_tool_use_id: null,
+    });
+
+    it("names a tool call the moment it starts, and what it is about once its input says", () => {
+      const parse = createClaudeParser();
+      expect(
+        parse({
+          type: "stream_event",
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: {
+              type: "tool_use",
+              id: bash,
+              name: "Bash",
+              input: {},
+              caller: { type: "direct" },
+            },
+          },
+          parent_tool_use_id: null,
+        }),
+      ).toEqual([{ kind: "tool-start", id: bash, name: "Bash" }]);
+      expect(parse(inputDelta(""))).toEqual([]);
+      expect(parse(inputDelta('{"command": "sleep 6'))).toEqual([]);
+      expect(parse(inputDelta(" && echo hi"))).toEqual([]);
+      expect(parse(inputDelta('", "description": "S'))).toEqual([
+        { kind: "tool-input", id: bash, chars: 51, detail: "sleep 6 && echo hi" },
+      ]);
+      expect(parse(inputDelta("leep 6 seconds"))).toEqual([]);
+    });
+
+    it("says how much of a long input has been written, a step at a time", () => {
+      const parse = createClaudeParser();
+      parse({
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "tool_use", id: "w", name: "Write" },
+        },
+      });
+      const line = "x".repeat(90);
+      const reports = Array.from({ length: 10 }, () => parse(inputDelta(line))).flat();
+      expect(reports.map((event) => (event.kind === "tool-input" ? event.chars : -1))).toEqual([
+        270, 540, 810,
+      ]);
+    });
+
+    it("forgets a call once its block ends", () => {
+      const parse = createClaudeParser();
+      parse({
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "tool_use", id: bash, name: "Bash" },
+        },
+      });
+      parse({
+        type: "stream_event",
+        event: { type: "content_block_stop", index: 0 },
+        parent_tool_use_id: null,
+      });
+      expect(parse(inputDelta("x".repeat(500)))).toEqual([]);
+    });
+
+    it("says when a call is back, and whether it failed", () => {
+      const parse = createClaudeParser();
+      expect(
+        parse({
+          type: "user",
+          message: {
+            role: "user",
+            content: [{ tool_use_id: bash, type: "tool_result", content: "hi", is_error: false }],
+          },
+          parent_tool_use_id: null,
+        }),
+      ).toEqual([{ kind: "tool-result", id: bash, failed: false }]);
+      expect(
+        parse({
+          type: "user",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                content: "Exit code 3",
+                is_error: true,
+                tool_use_id: "toolu_01NoBSTzZ5epnj9C2kqhg26Y",
+              },
+            ],
+          },
+          parent_tool_use_id: null,
+          tool_use_result: "Error: Exit code 3",
+        }),
+      ).toEqual([{ kind: "tool-result", id: "toolu_01NoBSTzZ5epnj9C2kqhg26Y", failed: true }]);
+    });
+
+    it("says when the AI is waiting on the service, and when it reasons", () => {
+      const parse = createClaudeParser();
+      expect(parse({ type: "system", subtype: "status", status: "requesting" })).toEqual([
+        { kind: "phase", phase: "requesting" },
+      ]);
+      expect(
+        parse({
+          type: "stream_event",
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "thinking", thinking: "", signature: "" },
+          },
+          parent_tool_use_id: null,
+          thinking_display: "updates",
+        }),
+      ).toEqual([{ kind: "phase", phase: "thinking" }]);
+    });
+  });
+
   it("returns an empty list for unknown line types and malformed input", () => {
     expect(parseClaudeEvent({ type: "rate_limit_event", info: {} })).toEqual([]);
     expect(parseClaudeEvent("not an object")).toEqual([]);

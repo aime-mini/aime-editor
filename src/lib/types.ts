@@ -49,6 +49,20 @@ export type UiAiEvent =
       /** Set when a subagent made this call: the id of the call that started that subagent. */
       parentId?: string;
     }
+  /**
+   * The AI has begun a tool call whose input it is still writing. A file's
+   * whole content travels as that input, so this can last a minute - and until
+   * the call is complete it is the only sign that anything is happening.
+   */
+  | { kind: "tool-start"; id: string; name: string }
+  /** How much of a started call's input has been written, and what it is about once that is known. */
+  | { kind: "tool-input"; id: string; chars: number; detail?: string }
+  /** A tool call came back; `failed` when it reported an error. */
+  | { kind: "tool-result"; id: string; failed: boolean }
+  /** What the AI is doing while it has nothing to show: waiting on the service, or reasoning. */
+  | { kind: "phase"; phase: "requesting" | "thinking" }
+  /** The model the turn runs on, from a CLI that says so in its output. */
+  | { kind: "ran-on"; model: string }
   /** The CLI could not reach the AI service and is trying again on its own. */
   | ({ kind: "retrying" } & ApiRetry)
   /** Everything the CLI is still running in the background - the whole list, every time it changes. */
@@ -100,6 +114,35 @@ export type MessagePart =
       id?: string;
       /** What the subagent this call started has done, in order. */
       steps?: ToolStep[];
+      /**
+       * Where the call is, for a CLI that says: its input still being written,
+       * running, or back. Absent for one that does not, and in sessions saved
+       * before it was tracked - the last call of a live turn then counts as running.
+       */
+      status?: ToolStatus;
+    };
+
+export type ToolStatus = "preparing" | "running" | "done" | "failed";
+
+/**
+ * What the live turn is doing at this moment, for the line that says so.
+ *
+ * Every provider gets at least `waiting` and `writing`, which follow from the
+ * text alone; the rest needs a CLI that reports it.
+ */
+export type TurnActivity =
+  | { kind: "waiting"; since: number }
+  | { kind: "thinking"; since: number }
+  | { kind: "writing"; since: number }
+  | {
+      kind: "tool";
+      since: number;
+      id: string | undefined;
+      name: string;
+      detail: string;
+      /** The call's input is still being written; `inputChars` says how much of it there is. */
+      preparing: boolean;
+      inputChars: number;
     };
 
 /**

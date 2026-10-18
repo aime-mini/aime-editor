@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, Loader2, Wrench } from "lucide-react";
+import { ChevronRight, CircleX, Loader2, Wrench } from "lucide-react";
 import { useT } from "../i18n";
 import type { BackgroundTask, MessagePart, ToolStep } from "../lib/types";
 import { formatElapsed, useSecondsSince } from "./useSecondsSince";
@@ -17,25 +17,33 @@ const CLOCK_AFTER_SECONDS = 5;
  * steps there were and of which kind, and keeps in view only what is running
  * now; one click lays every step out again.
  *
- * @param liveTail the answer is still being written and this block ends it, so
- *   its last call is the one in flight.
+ * @param live the answer is still being written.
+ * @param liveTail ...and this block ends it, so for a CLI that does not say
+ *   when a call is back, its last call is the one in flight.
  * @param activeAgents calls whose subagent is still at work in the background,
  *   wherever they sit in the answer.
  */
 export function ToolRun({
   tools,
+  live,
   liveTail,
   activeAgents,
 }: {
   tools: ToolPart[];
+  live: boolean;
   liveTail: boolean;
   activeAgents: ReadonlySet<string>;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const lastIndex = tools.length - 1;
-  const isRunning = (part: ToolPart, index: number) =>
-    (liveTail && index === lastIndex) || (part.id !== undefined && activeAgents.has(part.id));
+  const isRunning = (part: ToolPart, index: number) => {
+    if (part.id !== undefined && activeAgents.has(part.id)) return true;
+    if (!live) return false;
+    return part.status === undefined
+      ? liveTail && index === lastIndex
+      : part.status === "preparing" || part.status === "running";
+  };
 
   if (tools.length === 1) return <ToolChip part={tools[0]} running={isRunning(tools[0], 0)} />;
 
@@ -95,6 +103,8 @@ function ToolChip({ part, running }: { part: ToolPart; running: boolean }) {
       >
         {running ? (
           <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+        ) : part.status === "failed" ? (
+          <CircleX size={11} className="shrink-0 text-danger" />
         ) : (
           <Wrench size={11} className="shrink-0 text-accent" />
         )}

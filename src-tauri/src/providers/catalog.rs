@@ -419,7 +419,7 @@ fn additional_options(config: &Path) -> Vec<ModelChoice> {
 /// How long a CLI may take to list its models.
 const LIST_TIMEOUT: Duration = Duration::from_secs(20);
 /// The CLI's own copy of the catalog, in its home.
-const CODEX_CACHE: &str = "models_cache.json";
+pub(super) const CODEX_CACHE: &str = "models_cache.json";
 /// The catalog's word for a model the picker should show.
 const VISIBLE: &str = "list";
 

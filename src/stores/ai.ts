@@ -6,9 +6,19 @@ import { createEventParser, type EventParser } from "../lib/aiParsers";
 import { fingerprint } from "../lib/fingerprint";
 import type { Focus } from "../lib/knowledge";
 import { memoryFor } from "../lib/knowledgeStore";
+import {
+  activityAfter,
+  appendText,
+  withToolCall,
+  withToolResult,
+  withToolStarted,
+  withToolSubject,
+} from "../lib/liveTurn";
 import { formatProviderError } from "../lib/providerErrors";
+import { observe, type ObservedRun, type RanOn } from "../lib/ranOn";
 import { effortsOf, type DiscoveredModel } from "../lib/providers";
 import { Typewriter } from "../lib/typewriter";
+import { useComposer } from "./composer";
 import { useWorkspace } from "./workspace";
 import {
   addUsage,
@@ -20,7 +30,7 @@ import {
   type Checkpoint,
   type Permission,
   type TokenUsage,
-  type ToolStep,
+  type TurnActivity,
   type UiAiEvent,
 } from "../lib/types";
 
@@ -103,19 +113,25 @@ export interface TurnContext {
   focus?: Focus;
 }
 
+/** A message written while a turn ran, waiting for that turn to end. */
+export interface QueuedPrompt {
+  id: string;
+  text: string;
+  context: TurnContext;
+}
+
 interface SessionFile {
   version: 1;
   sessions: StoredSession[];
 }
 
 const MAX_SESSIONS_PER_PROJECT = 20;
-/** The name Claude Code gives the tool that starts a subagent. */
-const SUBAGENT_TOOL = "Agent";
 const TITLE_MAX_CHARS = 60;
 const PERMISSION_KEY = "aime.permission";
 /** Key of the boolean this setting replaced; read once, to keep the old choice. */
 const LEGACY_AUTO_APPROVE_KEY = "aime.autoApprove";
 const PROVIDER_KEY = "aime.provider";
+const OBSERVED_RUNS_KEY = "aime.observedRuns";
 const DEFAULT_PROVIDER = "claude";
 
 /** The CLI the user last picked. Their choice outlives any one conversation. */
@@ -143,6 +159,17 @@ export function sessionToResume<T extends { providerId?: string }>(
 const SIGN_IN_POLL_MS = 2_500;
 const SIGN_IN_POLL_TIMEOUT_MS = 5 * 60_000;
 
+/** What each provider's last turn ran on, as remembered from earlier sessions. */
+function storedObservedRuns(): Record<string, ObservedRun> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(OBSERVED_RUNS_KEY) ?? "{}");
+    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, ObservedRun>) : {};
+  } catch (error: unknown) {
+    console.warn("the remembered models could not be read:", error);
+    return {};
+  }
+}
+
 /** Reads the saved level, adopting the choice made under the old boolean setting. */
 function storedPermission(): Permission {
   const stored = localStorage.getItem(PERMISSION_KEY);
@@ -159,6 +186,8 @@ function freshSessionIdentity() {
     sessionUsage: EMPTY_USAGE,
     interrupted: false,
     memoryIndex: null,
+    // What was queued was written for the conversation being left.
+    queued: [],
   };
 }
 
@@ -206,6 +235,15 @@ interface AiState {
   backgroundTasks: BackgroundTask[];
   /** The CLI cannot reach the AI service and is retrying on its own; null otherwise. */
   retrying: ApiRetry | null;
+  /** What the live turn is doing right now; null when no turn runs. */
+  activity: TurnActivity | null;
+  /**
+   * Messages written while a turn ran, in the order they were written. They
+   * go out together as the next turn once this one ends well; a turn that is
+   * stopped or fails hands them back to the composer instead - nothing is
+   * sent into a turn the user has just taken control of.
+   */
+  queued: QueuedPrompt[];
   /**
    * The last turn stopped before it finished - the CLI or the AI service
    * failed, or the app was closed while it ran - so the panel offers to pick
@@ -218,6 +256,12 @@ interface AiState {
   effort: string;
   /** How much the agent may do on its own (ARCHITECTURE.md §4). */
   permission: Permission;
+  /**
+   * What each provider's last turn ran on, by provider id - what "Auto" picked,
+   * read from the CLI itself (`providers/ran_on.rs`). Kept across sessions:
+   * Auto picks the same again until the CLI's own settings change.
+   */
+  observedRuns: Record<string, ObservedRun>;
   /** Every provider Aime can talk to, including ones from providers.json. */
   providers: ProviderSummary[];
   /** Loads the provider list; called once when the AI panel mounts. */
@@ -260,6 +304,9 @@ interface AiState {
    * itself when this session has not been handed the current one yet.
    */
   sendPrompt: (prompt: string, cwd: string, context?: TurnContext) => Promise<void>;
+  /** Holds a message written while a turn runs; it is sent when that turn ends well. */
+  enqueuePrompt: (text: string, context: TurnContext) => void;
+  unqueuePrompt: (id: string) => void;
   cancel: () => Promise<void>;
   /**
    * Picks an interrupted turn up again: the CLI's own session carries on from
@@ -288,43 +335,11 @@ function patchLastAssistant(
   return [...messages.slice(0, -1), patch(last)];
 }
 
-/**
- * Files a subagent's tool call under the Agent call that started it. A
- * subagent resumed by a later turn answers to a call this message does not
- * hold, so that call gets a chip of its own, named after its background task
- * when the CLI has listed one.
- */
-function appendStep(message: ChatMessage, parentId: string, step: ToolStep, label: string): ChatMessage {
-  const index = message.parts.findIndex((part) => part.kind === "tool" && part.id === parentId);
-  if (index === -1) {
-    return {
-      ...message,
-      parts: [
-        ...message.parts,
-        { kind: "tool", name: SUBAGENT_TOOL, detail: label, id: parentId, steps: [step] },
-      ],
-    };
-  }
-  const parts = message.parts.map((part, i) =>
-    i === index && part.kind === "tool" ? { ...part, steps: [...(part.steps ?? []), step] } : part,
-  );
-  return { ...message, parts };
-}
-
 /** The turn has ended, one way or another. */
 function withoutUnfinished(message: ChatMessage): ChatMessage {
   const ended = { ...message };
   delete ended.unfinished;
   return ended;
-}
-
-function appendText(message: ChatMessage, text: string): ChatMessage {
-  const lastPart = message.parts.at(-1);
-  const parts =
-    lastPart?.kind === "text"
-      ? [...message.parts.slice(0, -1), { kind: "text" as const, text: lastPart.text + text }]
-      : [...message.parts, { kind: "text" as const, text }];
-  return { ...message, parts };
 }
 
 /**
@@ -342,6 +357,21 @@ async function memoryToHand(root: string, focus: Focus, handed: string | null): 
   }
 }
 
+/**
+ * The project as it is before a turn, so an unwanted turn is always
+ * reversible. Costs nothing when the AI changes nothing, covers every
+ * repository the workspace holds, and is null where it holds none - the UI
+ * then offers no undo rather than a lie.
+ */
+async function checkpointBefore(root: string): Promise<Checkpoint | null> {
+  try {
+    return await invoke<Checkpoint | null>("checkpoint_create", { root });
+  } catch (error: unknown) {
+    console.warn("no checkpoint for this turn:", error);
+    return null;
+  }
+}
+
 let listenersReady = false;
 /** Most recent stderr line of the running turn — appended to exit errors. */
 let lastStderrLine = "";
@@ -349,8 +379,16 @@ let lastStderrLine = "";
 let activeParser: EventParser = () => [];
 /** When the turn in flight was sent; its duration is the wait the user actually had. */
 let turnStartedAt = 0;
+/**
+ * Which turn may still start a CLI. A turn is on screen the moment it is sent
+ * and reaches the CLI a moment later; Stop in between bumps this, and the turn
+ * that wakes up to a different number knows it was called off.
+ */
+let turnGeneration = 0;
 /** The session's cost before the turn in flight; the CLI only ever reports the running total. */
 let costBeforeTurn = 0;
+/** What was picked in Aime for the turn in flight; what the CLI ran on is filed under it. */
+let choiceThisTurn = { model: "", effort: "" };
 /** Fingerprint of the memory index the live turn carries, until the CLI confirms it took the turn. */
 let memoryHandedThisTurn: string | null = null;
 
@@ -463,17 +501,66 @@ export const useAi = create<AiState>((set, get) => {
     showText(typewriter.flush());
   };
 
+  /**
+   * Files what a turn ran on under its provider, and remembers it for the next session.
+   *
+   * @param chose what was picked in Aime when that turn ran.
+   */
+  const noteRanOn = (providerId: string, ranOn: RanOn, chose = choiceThisTurn) => {
+    const previous = get().observedRuns[providerId];
+    const observedRuns = { ...get().observedRuns, [providerId]: observe(previous, { ranOn, chose }) };
+    set({ observedRuns });
+    try {
+      localStorage.setItem(OBSERVED_RUNS_KEY, JSON.stringify(observedRuns));
+    } catch (error: unknown) {
+      console.warn("the models a turn ran on could not be remembered:", error);
+    }
+  };
+
+  /**
+   * Reads what the session's last turn ran on out of the CLI's record of it -
+   * after a turn, and as soon as a conversation is reopened, so the pickers
+   * say what Auto picks before anything is sent (reported 2026-10-18: a fresh
+   * window showed a bare "Auto" until a turn had run in it).
+   */
+  const readRanOn = async (chose = choiceThisTurn) => {
+    const { providerId, sessionId } = get();
+    if (sessionId === null) return;
+    try {
+      const ranOn = await invoke<RanOn | null>("provider_ran_on", { providerId, sessionId });
+      if (ranOn !== null) noteRanOn(providerId, ranOn, chose);
+    } catch (error: unknown) {
+      console.warn("what the turn ran on could not be read:", error);
+    }
+  };
+
+  /** Patches the turn being written. */
+  const patchLive = (patch: (message: ChatMessage) => ChatMessage) => {
+    set((s) => ({ messages: patchLastAssistant(s.messages, patch) }));
+  };
+
   const applyUiEvent = (ev: UiAiEvent) => {
-    if (ev.kind !== "message-delta") revealEverything();
+    // Progress on a call's input is not part of the transcript, so the text
+    // already waiting need not be hurried out for it.
+    if (ev.kind !== "message-delta" && ev.kind !== "tool-input") revealEverything();
     // Anything the AI says or does means the connection is back.
     if (ev.kind !== "retrying" && ev.kind !== "background" && get().retrying) set({ retrying: null });
+    const activity = get().activity;
+    if (activity !== null) {
+      const next = activityAfter(activity, ev, Date.now());
+      if (next !== activity) set({ activity: next });
+    }
     switch (ev.kind) {
       case "session-info":
         // The CLI took the turn, memory included: from here the session holds it.
         set({ sessionId: ev.sessionId, memoryIndex: memoryHandedThisTurn ?? get().memoryIndex });
+        if (ev.model !== undefined) noteRanOn(get().providerId, { model: ev.model });
         // Saved now, while the turn is still marked unfinished: if the app is
         // closed before the turn ends, this id is what lets it be continued.
         void persist();
+        break;
+      case "ran-on":
+        noteRanOn(get().providerId, { model: ev.model });
         break;
       case "compacted":
         // What the CLI summarised may or may not still hold the index; the
@@ -487,17 +574,22 @@ export const useAi = create<AiState>((set, get) => {
         typewriter.push(ev.text, performance.now());
         scheduleReveal();
         break;
-      case "tool-call": {
-        const { name, detail, id, parentId } = ev;
-        set((s) => ({
-          messages: patchLastAssistant(s.messages, (m) =>
-            parentId === undefined
-              ? { ...m, parts: [...m.parts, { kind: "tool", name, detail, id }] }
-              : appendStep(m, parentId, { name, detail }, taskLabel(s.backgroundTasks, parentId)),
-          ),
-        }));
+      case "tool-start":
+        patchLive((m) => withToolStarted(m, ev.id, ev.name));
+        break;
+      case "tool-input": {
+        const { detail } = ev;
+        if (detail !== undefined) patchLive((m) => withToolSubject(m, ev.id, detail));
         break;
       }
+      case "tool-call": {
+        const label = ev.parentId === undefined ? "" : taskLabel(get().backgroundTasks, ev.parentId);
+        patchLive((m) => withToolCall(m, ev, label));
+        break;
+      }
+      case "tool-result":
+        patchLive((m) => withToolResult(m, ev.id, ev.failed));
+        break;
       case "background":
         set({ backgroundTasks: ev.tasks });
         break;
@@ -530,8 +622,27 @@ export const useAi = create<AiState>((set, get) => {
       runId: null,
       backgroundTasks: [],
       retrying: null,
+      activity: null,
       messages: patchLastAssistant(s.messages, (m) => ({ ...withoutUnfinished(m), durationMs })),
     }));
+  };
+
+  /** Sends what was queued during the turn that just ended well, as one turn. */
+  const sendQueued = () => {
+    const { queued, projectRoot } = get();
+    const last = queued.at(-1);
+    if (last === undefined || projectRoot === null) return;
+    set({ queued: [] });
+    // The editor's view as it was when the last of them was written.
+    void get().sendPrompt(queued.map((item) => item.text).join("\n\n"), projectRoot, last.context);
+  };
+
+  /** Puts what was queued back where it was written, for a turn that will not carry on by itself. */
+  const returnQueued = () => {
+    const { queued } = get();
+    if (queued.length === 0) return;
+    set({ queued: [] });
+    useComposer.getState().prepend(queued.map((item) => item.text).join("\n\n"));
   };
 
   const ensureListeners = async () => {
@@ -545,6 +656,7 @@ export const useAi = create<AiState>((set, get) => {
       if (payload.run_id !== get().runId) return;
       endTurn();
       void recordChangedFiles();
+      void readRanOn();
       // Only Stop ends a turn without an exit code, and Stop is not listened
       // for here - so anything but 0 is the CLI or the AI service giving up.
       const failed = payload.code !== 0;
@@ -556,6 +668,8 @@ export const useAi = create<AiState>((set, get) => {
       }
       set({ interrupted: failed });
       void persist();
+      if (failed) returnQueued();
+      else sendQueued();
     });
     await listen<StreamPayload>("ai:stderr", ({ payload }) => {
       if (typeof payload.event === "string" && payload.event.trim()) {
@@ -577,11 +691,14 @@ export const useAi = create<AiState>((set, get) => {
     memoryIndex: null,
     backgroundTasks: [],
     retrying: null,
+    activity: null,
+    queued: [],
     interrupted: false,
     lastError: null,
     model: "",
     effort: "",
     permission: storedPermission(),
+    observedRuns: storedObservedRuns(),
     providers: [],
     providerHealth: "unknown",
     modelCatalog: {},
@@ -611,6 +728,8 @@ export const useAi = create<AiState>((set, get) => {
         running: false,
         runId: null,
         backgroundTasks: [],
+        activity: null,
+        queued: [],
         // Continue where the project left off, or start clean.
         ...(latest
           ? {
@@ -628,6 +747,7 @@ export const useAi = create<AiState>((set, get) => {
             }
           : { ...freshSessionIdentity(), createdAt: Date.now(), providerId, model: "", effort: "" }),
       });
+      void readRanOn({ model: get().model, effort: get().effort });
     },
 
     loadProviders: async () => {
@@ -702,44 +822,47 @@ export const useAi = create<AiState>((set, get) => {
         running: false,
         runId: null,
         backgroundTasks: [],
+        activity: null,
       });
     },
 
     sendPrompt: async (prompt, cwd, context = {}) => {
-      await ensureListeners();
+      if (get().running) return;
+      const generation = ++turnGeneration;
       lastStderrLine = "";
-      const provider = get().providers.find((candidate) => candidate.id === get().providerId);
-      const memory = await memoryToHand(cwd, context.focus ?? [], get().memoryIndex);
-      memoryHandedThisTurn = memory === null ? null : fingerprint(memory);
-      // Taken before the CLI runs, so an unwanted turn is always reversible.
-      // Costs nothing when the AI changes nothing, covers every repository the
-      // workspace holds, and is skipped where it holds none - the UI then
-      // offers no undo rather than a lie.
-      let checkpoint: Checkpoint | null = null;
-      try {
-        checkpoint = await invoke<Checkpoint | null>("checkpoint_create", { root: cwd });
-      } catch (err: unknown) {
-        console.warn("no checkpoint for this turn:", err);
-      }
-
-      activeParser = createEventParser({
-        id: get().providerId,
-        parser: provider?.parser,
-        textField: provider?.textField,
-      });
       turnStartedAt = Date.now();
       costBeforeTurn = get().totalCostUsd;
+      choiceThisTurn = { model: get().model, effort: get().effort };
+      // On screen before anything is awaited: the checkpoint and the memory
+      // below take a moment on a large project, and a message that appears
+      // that moment after Enter reads as a slow app (reported 2026-10-16).
       set((s) => ({
         lastError: null,
         running: true,
         backgroundTasks: [],
         interrupted: false,
+        activity: { kind: "waiting", since: turnStartedAt },
         messages: [
           ...s.messages,
           { role: "user", parts: [{ kind: "text", text: prompt }] },
-          { role: "assistant", parts: [], checkpoint: checkpoint ?? undefined, unfinished: true },
+          { role: "assistant", parts: [], unfinished: true },
         ],
       }));
+      await ensureListeners();
+      const [memory, checkpoint] = await Promise.all([
+        memoryToHand(cwd, context.focus ?? [], get().memoryIndex),
+        checkpointBefore(cwd),
+      ]);
+      if (generation !== turnGeneration) return;
+      memoryHandedThisTurn = memory === null ? null : fingerprint(memory);
+      if (checkpoint !== null) patchLive((m) => ({ ...m, checkpoint }));
+
+      const provider = get().providers.find((candidate) => candidate.id === get().providerId);
+      activeParser = createEventParser({
+        id: get().providerId,
+        parser: provider?.parser,
+        textField: provider?.textField,
+      });
       try {
         const runId = await invoke<string>("ai_send_prompt", {
           providerId: get().providerId,
@@ -752,15 +875,28 @@ export const useAi = create<AiState>((set, get) => {
             permission: get().permission,
           },
         });
-        set({ runId });
+        // Stopped while the CLI was starting: there was no run to stop yet.
+        if (generation !== turnGeneration) await invoke("ai_cancel", { runId });
+        else set({ runId });
       } catch (e) {
+        if (generation !== turnGeneration) return;
         set((s) => ({
           running: false,
+          activity: null,
           lastError: formatProviderError(e),
           messages: patchLastAssistant(s.messages, withoutUnfinished),
         }));
+        returnQueued();
         void persist();
       }
+    },
+
+    enqueuePrompt: (text, context) => {
+      set((s) => ({ queued: [...s.queued, { id: crypto.randomUUID(), text, context }] }));
+    },
+
+    unqueuePrompt: (id) => {
+      set((s) => ({ queued: s.queued.filter((item) => item.id !== id) }));
     },
 
     resumeTurn: async (cwd) => {
@@ -783,9 +919,11 @@ export const useAi = create<AiState>((set, get) => {
 
     cancel: async () => {
       const { runId } = get();
-      if (runId) await invoke("ai_cancel", { runId });
+      turnGeneration++;
       endTurn();
+      returnQueued();
       void persist();
+      if (runId) await invoke("ai_cancel", { runId });
     },
 
     undoTurn: async (messageIndex) => {
@@ -812,6 +950,7 @@ export const useAi = create<AiState>((set, get) => {
     },
 
     newSession: () => {
+      returnQueued();
       void persist();
       set({ ...freshSessionIdentity(), createdAt: Date.now(), lastError: null });
     },
@@ -836,6 +975,7 @@ export const useAi = create<AiState>((set, get) => {
         memoryIndex: target.memoryIndex ?? null,
         lastError: null,
       });
+      void readRanOn({ model: get().model, effort: get().effort });
     },
 
     setProvider: (providerId) => {

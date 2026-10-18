@@ -43,14 +43,26 @@ describe("createCodexParser", () => {
     ).toEqual([{ kind: "message-delta", text: "second" }]);
   });
 
-  it("chips a command once, at the phase that first carries the command", () => {
+  it("chips a command once, at the phase that first carries the command, and says when it is back", () => {
     const parse = createCodexParser();
-    const item = { id: "cmd_1", type: "command_execution", command: "npm test" };
+    const item = { id: "cmd_1", type: "command_execution", command: "npm test", status: "in_progress" };
 
     expect(parse({ type: "item.started", item })).toEqual([
-      { kind: "tool-call", name: "shell", detail: "npm test" },
+      { kind: "tool-call", name: "shell", detail: "npm test", id: "cmd_1" },
     ]);
-    expect(parse({ type: "item.completed", item: { ...item, exit_code: 0 } })).toEqual([]);
+    expect(parse({ type: "item.completed", item: { ...item, exit_code: 0, status: "completed" } })).toEqual([
+      { kind: "tool-result", id: "cmd_1", failed: false },
+    ]);
+  });
+
+  // Captured from 0.146.0 running a command PowerShell could not parse.
+  it("reports a command that exited non-zero as failed", () => {
+    const parse = createCodexParser();
+    const item = { id: "item_1", type: "command_execution", command: "echo hi && exit 3" };
+    parse({ type: "item.started", item: { ...item, exit_code: null, status: "in_progress" } });
+    expect(parse({ type: "item.completed", item: { ...item, exit_code: 1, status: "failed" } })).toEqual([
+      { kind: "tool-result", id: "item_1", failed: true },
+    ]);
   });
 
   it("chips a detail-less tool at completion rather than dropping it", () => {
@@ -59,7 +71,8 @@ describe("createCodexParser", () => {
 
     expect(parse({ type: "item.started", item })).toEqual([]);
     expect(parse({ type: "item.completed", item })).toEqual([
-      { kind: "tool-call", name: "github.list_issues", detail: "" },
+      { kind: "tool-call", name: "github.list_issues", detail: "", id: "mcp_1" },
+      { kind: "tool-result", id: "mcp_1", failed: false },
     ]);
   });
 
@@ -77,14 +90,21 @@ describe("createCodexParser", () => {
           ],
         },
       }),
-    ).toEqual([{ kind: "tool-call", name: "edit", detail: "src/main.rs, src/new.rs" }]);
+    ).toEqual([
+      { kind: "tool-call", name: "edit", detail: "src/main.rs, src/new.rs", id: "fc_1" },
+      { kind: "tool-result", id: "fc_1", failed: false },
+    ]);
   });
 
-  it("keeps reasoning out of the transcript", () => {
+  it("keeps reasoning out of the transcript, and says only that it is happening", () => {
     const parse = createCodexParser();
-    expect(
-      parse({ type: "item.completed", item: { id: "r1", type: "reasoning", text: "let me think" } }),
-    ).toEqual([]);
+    const item = { id: "r1", type: "reasoning", text: "let me think" };
+    expect(parse({ type: "item.started", item })).toEqual([{ kind: "phase", phase: "thinking" }]);
+    expect(parse({ type: "item.completed", item })).toEqual([]);
+  });
+
+  it("says a turn has gone to the AI service", () => {
+    expect(createCodexParser()({ type: "turn.started" })).toEqual([{ kind: "phase", phase: "requesting" }]);
   });
 
   it("maps turn.completed to done with normalized usage and no invented cost", () => {
@@ -124,7 +144,6 @@ describe("createCodexParser", () => {
 
   it("ignores unknown and malformed lines", () => {
     const parse = createCodexParser();
-    expect(parse({ type: "turn.started" })).toEqual([]);
     expect(parse({ type: "item.completed", item: { id: "t1", type: "todo_list" } })).toEqual([]);
     expect(parse("not an object")).toEqual([]);
     expect(parse(null)).toEqual([]);

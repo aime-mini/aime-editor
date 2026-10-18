@@ -26,6 +26,24 @@ export function useSecondsSince(active: boolean): number {
   return active ? seconds : 0;
 }
 
+/**
+ * Whole seconds since the moment `since` (epoch milliseconds), ticking each
+ * second - for a clock whose start is a fact of the store rather than of the
+ * component showing it, so it does not restart when the view is redrawn.
+ */
+export function useSecondsFrom(since: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const ticking = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => {
+      clearInterval(ticking);
+    };
+  }, []);
+  return Math.max(0, Math.floor((now - since) / 1000));
+}
+
 /** `42s`, then `3m 05s`: a clock that reads at a glance, in either language. */
 export function formatElapsed(seconds: number): string {
   if (seconds < SECONDS_PER_MINUTE) return `${String(seconds)}s`;

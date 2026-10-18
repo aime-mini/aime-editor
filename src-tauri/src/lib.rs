@@ -198,6 +198,7 @@ pub fn run() {
             memory_mirror::memory_mirror_sync,
             providers::catalog::provider_models,
             providers::catalog::provider_light_model,
+            providers::ran_on::provider_ran_on,
             tasks::detect_tasks,
             exec::exec_run,
             exec::exec_cancel,

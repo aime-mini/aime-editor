@@ -20,14 +20,33 @@ interface ClaudeSystemLine {
   /** `api_retry`: the CLI could not reach the API and is trying again. */
   attempt?: number;
   max_retries?: number;
+  /** `status`: what the CLI is about to do, `requesting` among others. */
+  status?: string;
 }
 
 interface ClaudeStreamLine {
   type: "stream_event";
   event?: {
     type?: string;
-    delta?: { type?: string; text?: string };
+    /** Which content block of the message this event belongs to. */
+    index?: number;
+    content_block?: { type?: string; id?: string; name?: string };
+    delta?: { type?: string; text?: string; partial_json?: string };
   };
+  parent_tool_use_id?: string | null;
+}
+
+/** A tool's answer, handed back to the AI as the next user message. */
+interface ClaudeUserLine {
+  type: "user";
+  message?: { content?: unknown };
+  parent_tool_use_id?: string | null;
+}
+
+interface ClaudeToolResult {
+  type?: string;
+  tool_use_id?: string;
+  is_error?: boolean;
 }
 
 interface ClaudeContentBlock {
@@ -62,10 +81,57 @@ interface ClaudeResultLine {
   };
 }
 
-type ClaudeLine = ClaudeSystemLine | ClaudeStreamLine | ClaudeAssistantLine | ClaudeResultLine;
+type ClaudeLine =
+  ClaudeSystemLine | ClaudeStreamLine | ClaudeAssistantLine | ClaudeUserLine | ClaudeResultLine;
 
 function isClaudeLine(raw: unknown): raw is ClaudeLine {
   return typeof raw === "object" && raw !== null && typeof (raw as { type?: unknown }).type === "string";
+}
+
+/**
+ * How many more characters of a call's input make it worth saying so. A file
+ * written by the AI arrives as hundreds of tiny deltas (measured: 460 for a
+ * sixty-line poem); one event per delta would redraw the panel for nothing.
+ */
+const INPUT_PROGRESS_STEP = 200;
+
+/** How far into a call's input its subject is looked for; it is written first, when at all. */
+const DETAIL_SCAN_CHARS = 4_096;
+
+/** The input fields that say what a call is about, as `summarizeToolInput` reads them. */
+const DETAIL_FIELD = /"(?:file_path|command|pattern|description)"\s*:\s*"((?:[^"\\]|\\.)*)"/;
+
+/** A tool call whose input is still streaming. */
+interface OpenCall {
+  id: string;
+  chars: number;
+  reported: number;
+  /** The start of the input, kept only until the call's subject is found in it. */
+  head: string;
+  detail: string | undefined;
+}
+
+/** The subject of a call, read out of the first part of its still-incomplete JSON input. */
+function detailOf(partialInput: string): string | undefined {
+  const match = DETAIL_FIELD.exec(partialInput);
+  if (match === null) return undefined;
+  try {
+    return truncateDetail(JSON.parse(`"${match[1]}"`) as string);
+  } catch {
+    // An escape cut in half by the stream: the next delta completes it.
+    return undefined;
+  }
+}
+
+/** The calls a user line hands results back for, and whether each one failed. */
+function toolResults(raw: ClaudeUserLine): UiAiEvent[] {
+  const content = raw.message?.content;
+  if (raw.parent_tool_use_id || !Array.isArray(content)) return [];
+  return (content as ClaudeToolResult[]).flatMap((block) =>
+    block.type === "tool_result" && block.tool_use_id
+      ? [{ kind: "tool-result" as const, id: block.tool_use_id, failed: block.is_error === true }]
+      : [],
+  );
 }
 
 /**
@@ -85,6 +151,54 @@ function isClaudeLine(raw: unknown): raw is ClaudeLine {
 export function createClaudeParser(): (raw: unknown) => UiAiEvent[] {
   const toolUseIdByTask = new Map<string, string>();
   let running: BackgroundTask[] = [];
+  /** Tool calls whose input is streaming, by content block index. */
+  const openCalls = new Map<number, OpenCall>();
+
+  /**
+   * The answer as it is written: its text, and - measured on 2.1.302 - a
+   * `content_block_start` for every tool call and every stretch of reasoning
+   * the moment it begins, the call's input following as `input_json_delta`.
+   * A subagent's own stream is left to its tool calls, which carry its steps.
+   */
+  const parseStream = (raw: ClaudeStreamLine): UiAiEvent[] => {
+    const event = raw.event;
+    if (event === undefined || raw.parent_tool_use_id) return [];
+    const block = event.content_block;
+    const delta = event.delta;
+    switch (event.type) {
+      case "content_block_start":
+        if (block?.type === "thinking") return [{ kind: "phase", phase: "thinking" }];
+        if (block?.type !== "tool_use" || !block.id || event.index === undefined) return [];
+        openCalls.set(event.index, { id: block.id, chars: 0, reported: 0, head: "", detail: undefined });
+        return [{ kind: "tool-start", id: block.id, name: block.name ?? "tool" }];
+      case "content_block_delta":
+        if (delta?.type === "text_delta" && delta.text) return [{ kind: "message-delta", text: delta.text }];
+        if (delta?.type === "input_json_delta" && event.index !== undefined) {
+          return inputProgress(event.index, delta.partial_json ?? "");
+        }
+        return [];
+      case "content_block_stop":
+        if (event.index !== undefined) openCalls.delete(event.index);
+        return [];
+      default:
+        return [];
+    }
+  };
+
+  const inputProgress = (index: number, json: string): UiAiEvent[] => {
+    const call = openCalls.get(index);
+    if (call === undefined || json === "") return [];
+    call.chars += json.length;
+    let found = false;
+    if (call.detail === undefined && call.head.length < DETAIL_SCAN_CHARS) {
+      call.head += json;
+      call.detail = detailOf(call.head);
+      found = call.detail !== undefined;
+    }
+    if (!found && call.chars - call.reported < INPUT_PROGRESS_STEP) return [];
+    call.reported = call.chars;
+    return [{ kind: "tool-input", id: call.id, chars: call.chars, detail: call.detail }];
+  };
 
   const backgroundEvent = (): UiAiEvent => ({
     kind: "background",
@@ -115,25 +229,27 @@ export function createClaudeParser(): (raw: unknown) => UiAiEvent[] {
       // (`trigger` manual or auto, `pre_tokens`, `post_tokens`).
       case "compact_boundary":
         return [{ kind: "compacted" }];
+      // Sent before every request to the AI service: the first one of a turn,
+      // and the one after each tool answer.
+      case "status":
+        return raw.status === "requesting" ? [{ kind: "phase", phase: "requesting" }] : [];
       default:
         return [];
     }
   };
 
-  return (raw: unknown): UiAiEvent[] => (isClaudeLine(raw) ? parseLine(raw, parseSystem) : []);
+  return (raw: unknown): UiAiEvent[] => {
+    if (!isClaudeLine(raw)) return [];
+    if (raw.type === "system") return parseSystem(raw);
+    if (raw.type === "stream_event") return parseStream(raw);
+    return parseLine(raw);
+  };
 }
 
-function parseLine(raw: ClaudeLine, parseSystem: (raw: ClaudeSystemLine) => UiAiEvent[]): UiAiEvent[] {
+function parseLine(raw: ClaudeAssistantLine | ClaudeUserLine | ClaudeResultLine): UiAiEvent[] {
   switch (raw.type) {
-    case "system":
-      return parseSystem(raw);
-
-    case "stream_event": {
-      const delta = raw.event?.delta;
-      return raw.event?.type === "content_block_delta" && delta?.type === "text_delta" && delta.text
-        ? [{ kind: "message-delta", text: delta.text }]
-        : [];
-    }
+    case "user":
+      return toolResults(raw);
 
     case "assistant": {
       const parentId = raw.parent_tool_use_id ?? undefined;

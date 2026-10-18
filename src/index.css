@@ -110,6 +110,48 @@
    */
   --animate-thinking: thinking 1.4s ease-in-out infinite;
   --animate-caret: caret 1.1s step-end infinite;
+  /*
+   * The line that says what the AI is doing right now. Unlike the two above it
+   * has to be seen from the corner of an eye while the reader is elsewhere in
+   * the conversation - a subtle mark there was read as a frozen app (reported
+   * 2026-10-16) - so its light travels, and a bar sweeps along its edge.
+   */
+  --animate-shimmer: shimmer 2.2s linear infinite;
+  --animate-sweep: sweep 1.6s ease-in-out infinite;
+}
+
+/* A highlight passing through text, left to right; the gradient lives on `.text-shimmer`. */
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+/* A short bar crossing its track, for work whose end cannot be known. */
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(350%);
+  }
+}
+
+.text-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--text-muted) 0%,
+    var(--text-muted) 38%,
+    var(--text) 50%,
+    var(--text-muted) 62%,
+    var(--text-muted) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  color: transparent;
 }
 
 /* One dot of the thinking wave; the three are offset by their animation-delay. */
@@ -209,6 +251,8 @@
 @media (prefers-reduced-motion: reduce) {
   .animate-thinking,
   .animate-caret,
+  .animate-shimmer,
+  .animate-sweep,
   .animate-spin,
   .animate-pulse {
     animation: none;

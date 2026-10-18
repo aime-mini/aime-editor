@@ -27,6 +27,9 @@ interface CodexItem {
   tool?: string;
   /** web_search */
   query?: string;
+  /** command_execution: `in_progress`, then `completed` or `failed` */
+  status?: string;
+  exit_code?: number | null;
 }
 
 interface CodexEvent {
@@ -81,6 +84,14 @@ function toolChipOf(item: CodexItem): ToolChip | null {
   }
 }
 
+/** Measured on 0.146.0: a command that exits non-zero completes with `status: "failed"`. */
+function failed(item: CodexItem): boolean {
+  return (
+    item.status === "failed" ||
+    (item.exit_code !== undefined && item.exit_code !== null && item.exit_code !== 0)
+  );
+}
+
 /**
  * Maps the Codex CLI's JSONL to normalized UI events (ARCHITECTURE.md §4).
  *
@@ -112,16 +123,20 @@ export function createCodexParser(): (raw: unknown) => UiAiEvent[] {
       return item.message ? [{ kind: "error", message: item.message }] : [];
     }
     // Reasoning and plan items are the agent's scratch pad — deliberately not
-    // shown, so the transcript stays the conversation the user had.
-    if (chippedItems.has(itemId)) return [];
-
+    // shown, so the transcript stays the conversation the user had; that the
+    // agent is reasoning is still worth saying.
+    if (item.type === "reasoning") return isFinalPhase ? [] : [{ kind: "phase", phase: "thinking" }];
     const tool = toolChipOf(item);
     if (!tool) return [];
+    const result: UiAiEvent[] = isFinalPhase
+      ? [{ kind: "tool-result", id: itemId, failed: failed(item) }]
+      : [];
+    if (chippedItems.has(itemId)) return result;
     // Chip once per item, at the first phase carrying a usable detail —
     // or at completion, so a detail-less tool still leaves a trace.
     if (!tool.detail && !isFinalPhase) return [];
     chippedItems.add(itemId);
-    return [tool];
+    return [{ ...tool, id: itemId }, ...result];
   };
 
   return (raw: unknown): UiAiEvent[] => {
@@ -130,6 +145,9 @@ export function createCodexParser(): (raw: unknown) => UiAiEvent[] {
     switch (raw.type) {
       case "thread.started":
         return raw.thread_id ? [{ kind: "session-info", sessionId: raw.thread_id }] : [];
+
+      case "turn.started":
+        return [{ kind: "phase", phase: "requesting" }];
 
       case "item.started":
       case "item.updated":
@@ -157,7 +175,7 @@ export function createCodexParser(): (raw: unknown) => UiAiEvent[] {
       case "error":
         return raw.message ? [{ kind: "error", message: raw.message }] : [];
 
-      // Unknown event types (turn.started, future additions) are ignored by design.
+      // Unknown event types (future additions) are ignored by design.
       default:
         return [];
     }
