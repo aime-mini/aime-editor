@@ -244,6 +244,8 @@ export const en = {
   "mcp.catalogFooter":
     "Picking one fills the form below - review it, then add. * needs an API key in the environment box.",
   "mcp.needsKey": "needs an API key",
+  "lsp.jumpWaitsForStart": "Starting the {language} language server - the jump follows once it answers.",
+  "lsp.jumpWaitsForLoad": "{language} is still loading the project - the jump follows as soon as it is done.",
   "mcp.group.boards": "Issues & boards",
   "mcp.group.design": "Design",
   "mcp.group.docs": "Docs, files & customers",

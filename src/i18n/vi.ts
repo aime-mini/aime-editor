@@ -245,6 +245,8 @@ export const vi: Record<TranslationKey, string> = {
     "Chọn một cái sẽ điền sẵn vào form bên dưới - xem lại rồi bấm thêm. Dấu * là cần API key ở ô biến môi trường.",
   "mcp.needsKey": "cần API key",
   "mcp.group.boards": "Issue & board",
+  "lsp.jumpWaitsForStart": "Đang khởi động language server cho {language} - nó trả lời là nhảy ngay.",
+  "lsp.jumpWaitsForLoad": "{language} vẫn đang nạp project - nạp xong là nhảy ngay.",
   "mcp.group.design": "Thiết kế",
   "mcp.group.docs": "Tài liệu, file & khách hàng",
   "mcp.group.cloud": "Nền tảng cloud",

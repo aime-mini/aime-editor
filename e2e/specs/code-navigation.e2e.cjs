@@ -228,20 +228,64 @@ const placeCursor = ([lineNumber, column]) =>
     column,
   );
 
+/**
+ * Opens files of the open project as tabs, all at once - the way a workspace
+ * reopens with its tabs. The workspace store is the page's own instance: once
+ * Vite has hot-updated it the page loads it as `?t=...`, and a bare import
+ * would make a second, empty store.
+ */
+const openTogether = (files) =>
+  browser.executeAsync((targets, done) => {
+    const store = "/src/stores/workspace.ts";
+    const loaded =
+      performance
+        .getEntriesByType("resource")
+        .map((entry) => entry.name)
+        .filter((name) => name.includes(store))
+        .pop() ?? store;
+    import(loaded).then(({ useWorkspace }) => {
+      Promise.all(targets.map((target) => useWorkspace.getState().openFile(target))).then(done, done);
+    }, done);
+  }, files);
+
 /** Brings a file of the open project to the front, as a tab. */
 async function bringToFront(folder, file) {
-  await browser.executeAsync(
-    (target, done) => {
-      import("/src/stores/workspace.ts").then(({ useWorkspace }) => {
-        useWorkspace.getState().openFile(target).then(done, done);
-      }, done);
-    },
-    path.join(folder, file),
-  );
+  await openTogether([path.join(folder, file)]);
   await browser.waitUntil(async () => (await whereAmI())?.file === path.basename(file), {
     timeout: 15_000,
     timeoutMsg: `${file} never came to the front`,
   });
+}
+
+/** Opens a folder from the welcome screen's Recent list. */
+async function openFolder(folder) {
+  await browser.execute((recent) => {
+    localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: recent, openedAt: Date.now() }]));
+  }, folder);
+  await browser.refresh();
+  await browser.waitUntil(async () => (await $("body").getText()).toLowerCase().includes("recent"), {
+    timeout: 30_000,
+    timeoutMsg: "the welcome screen never rendered",
+  });
+  await (await $(`span=${path.basename(folder)}`)).click();
+}
+
+/** The process ids of every Roslyn server running on this machine. */
+function roslynServers() {
+  const program = "Microsoft.CodeAnalysis.LanguageServer";
+  const [command, args] =
+    process.platform === "win32"
+      ? [
+          "powershell",
+          ["-NoProfile", "-Command", `(Get-Process ${program} -ErrorAction SilentlyContinue).Id`],
+        ]
+      : ["pgrep", ["-f", program]];
+  try {
+    return execFileSync(command, args, { encoding: "utf8" }).split(/\s+/).filter(Boolean);
+  } catch {
+    // pgrep exits 1 when nothing matches.
+    return [];
+  }
 }
 
 /** Where on screen a line and column of the file in front is drawn. */
@@ -346,15 +390,7 @@ for (const language of LANGUAGES) {
         this.skip();
       }
       folder = language.build();
-      await browser.execute((recent) => {
-        localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: recent, openedAt: Date.now() }]));
-      }, folder);
-      await browser.refresh();
-      await browser.waitUntil(async () => (await $("body").getText()).toLowerCase().includes("recent"), {
-        timeout: 30_000,
-        timeoutMsg: "the welcome screen never rendered",
-      });
-      await (await $(`span=${path.basename(folder)}`)).click();
+      await openFolder(folder);
       await bringToFront(folder, language.callee);
 
       // The status bar's language chip turns green once the server is running;
@@ -458,3 +494,45 @@ for (const language of LANGUAGES) {
     }
   });
 }
+
+/** The longest one click is given to land on a server that is still getting ready (`JUMP_WAIT_MS`). */
+const EARLY_JUMP_DEADLINE_MS = 240_000;
+
+// Reported 2026-10-12, on a workspace that reopened with two C# tabs: each tab
+// started a Roslyn of its own, and a click made while the server was starting
+// or loading the solution did nothing at all. Measured on nopCommerce, the
+// shop that report came from is built on: the menu had no Go to Definition for
+// the first seconds, then every symbol answered "nowhere" for forty more.
+describe("A jump asked before the C# server is ready", () => {
+  const csharp = LANGUAGES.find((language) => language.languageId === "csharp");
+
+  it("lands from one click, on one server", async function () {
+    if (!csharp.available()) this.skip();
+    this.timeout(EARLY_JUMP_DEADLINE_MS + 60_000);
+    const runningBefore = roslynServers();
+    const folder = csharp.build();
+    await openFolder(folder);
+    await openTogether([path.join(folder, csharp.callee), path.join(folder, csharp.caller)]);
+    await bringToFront(folder, csharp.caller);
+
+    const { at, lands } = csharp.definition;
+    await placeCursor(at);
+    await fromContextMenu("Go to Definition")(at);
+    const callee = path.basename(csharp.callee);
+    try {
+      await browser.waitUntil(
+        async () => {
+          const where = await whereAmI();
+          return where?.file === callee && where.line === lands;
+        },
+        { timeout: EARLY_JUMP_DEADLINE_MS, interval: 500 },
+      );
+    } catch {
+      throw new Error(`one early click never landed; the editor is at ${JSON.stringify(await whereAmI())}`);
+    }
+    const started = roslynServers().filter((pid) => !runningBefore.includes(pid));
+    if (started.length !== 1) {
+      throw new Error(`the workspace started ${String(started.length)} Roslyn servers, not one`);
+    }
+  });
+});

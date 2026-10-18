@@ -520,6 +520,19 @@ export class LanguageSession {
     }
   }
 
+  /**
+   * Answers `true` once the server has loaded its project, `false` if `deadline`
+   * passes or `cancelled` turns true first.
+   */
+  async whenLoaded(deadlineMs: number, cancelled: () => boolean): Promise<boolean> {
+    const startedAt = Date.now();
+    while (this.loading) {
+      if (cancelled() || Date.now() - startedAt >= deadlineMs) return false;
+      await new Promise((resolve) => setTimeout(resolve, INDEX_POLL_MS));
+    }
+    return true;
+  }
+
   private publishDiagnostics(params: unknown): void {
     const { uri, diagnostics } = (params ?? {}) as { uri?: string; diagnostics?: LspDiagnostic[] };
     if (!uri) return;

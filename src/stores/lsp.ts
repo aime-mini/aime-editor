@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type * as Monaco from "monaco-editor";
 import type { LanguageSession, ProjectOpenMethods } from "../lib/lsp/session";
+import { translate } from "../i18n";
+import { activeEditor } from "../lib/monacoAccess";
 import { useWorkspace } from "./workspace";
 
 /** Mirror of the Rust `ServerAvailability` (lsp/mod.rs). */
@@ -66,18 +68,87 @@ const TRIGGER_CHARACTERS = [".", ":", ">", "<", '"', "'", "/", "@", "(", ","];
  * (`lib/lsp/locations.ts`). Imported on first use: that module is Monaco's,
  * and this store is on screen before Monaco is.
  */
-async function previewed(
-  locations: Monaco.languages.Location[] | undefined,
-): Promise<Monaco.languages.Location[]> {
+async function previewed(locations: Monaco.languages.Location[]): Promise<Monaco.languages.Location[]> {
   const { withPreviews } = await import("../lib/lsp/locations");
-  return withPreviews(locations ?? []);
+  return withPreviews(locations);
+}
+
+/**
+ * How long a jump waits for a server still loading its project. Measured
+ * 2026-10-12 on nopCommerce (40 projects): Roslyn answers `[]` for every symbol
+ * for the first ~40 s, then in milliseconds; a solution of hundreds of projects
+ * takes minutes.
+ */
+const JUMP_WAIT_MS = 180_000;
+
+/**
+ * A jump - definition, implementation, references - that does not give up on a
+ * server that is still getting ready.
+ *
+ * Asked while the server starts, it waits for it; answered "nowhere" while the
+ * server is still loading its project - what Roslyn says about every symbol
+ * until it has read the solution - it waits for the load and asks again. Both
+ * waits are said at the cursor. Reported 2026-10-12: a click in that first
+ * minute did nothing at all, and read as broken.
+ */
+async function jump(
+  languageId: string,
+  model: Monaco.editor.ITextModel,
+  position: Monaco.IPosition,
+  token: Monaco.CancellationToken,
+  ask: (session: LanguageSession) => Promise<Monaco.languages.Location[]>,
+): Promise<Monaco.languages.Location[]> {
+  const cancelled = () => token.isCancellationRequested;
+  let session = sessions.get(languageId);
+  if (!session && useLsp.getState().languages[languageId]?.kind === "starting") {
+    tellAtCursor(model, position, translate("lsp.jumpWaitsForStart", { language: languageId }));
+    session = await startedSession(languageId, token);
+  }
+  if (!session || cancelled()) return [];
+  let locations = await ask(session);
+  if (locations.length === 0 && session.loading && !cancelled()) {
+    tellAtCursor(model, position, translate("lsp.jumpWaitsForLoad", { language: languageId }));
+    if (await session.whenLoaded(JUMP_WAIT_MS, cancelled)) locations = await ask(session);
+  }
+  return previewed(locations);
+}
+
+/** The session of a language whose server is starting, once it has started or failed to. */
+function startedSession(
+  languageId: string,
+  token: Monaco.CancellationToken,
+): Promise<LanguageSession | undefined> {
+  return new Promise((resolve) => {
+    const finish = () => {
+      unsubscribe();
+      cancellation.dispose();
+      resolve(sessions.get(languageId));
+    };
+    const unsubscribe = useLsp.subscribe((state) => {
+      if (state.languages[languageId]?.kind !== "starting") finish();
+    });
+    const cancellation = token.onCancellationRequested(finish);
+  });
+}
+
+/** Monaco's own line at the cursor - where it says "No definition found". */
+interface MessageController extends Monaco.editor.IEditorContribution {
+  showMessage(message: string, position: Monaco.IPosition): void;
+}
+
+/** Says something at the cursor of the editor showing `model`, if one is. */
+function tellAtCursor(model: Monaco.editor.ITextModel, position: Monaco.IPosition, text: string): void {
+  const shown = activeEditor();
+  if (shown?.getModel() !== model) return;
+  shown.getContribution<MessageController>("editor.contrib.messageController")?.showMessage(text, position);
 }
 
 /**
  * Providers are registered once per language and outlive any single session:
  * a server that crashes and restarts must not leave stale providers behind,
- * and Monaco offers no way to unregister cheaply. With no session they simply
- * answer "nothing", which is exactly how the editor behaves without LSP.
+ * and Monaco offers no way to unregister cheaply. With no session they answer
+ * "nothing", which is exactly how the editor behaves without LSP - except the
+ * jumps, which wait for a server that is starting (`jump`).
  */
 function registerProviders(languageId: string): void {
   if (providersRegistered.has(languageId) || !editor) return;
@@ -94,18 +165,20 @@ function registerProviders(languageId: string): void {
     provideHover: (model, position) => session()?.hover(model, position) ?? null,
   });
   monaco.languages.registerDefinitionProvider(languageId, {
-    provideDefinition: async (model, position) => previewed(await session()?.definition(model, position)),
+    provideDefinition: (model, position, token) =>
+      jump(languageId, model, position, token, (server) => server.definition(model, position)),
   });
   monaco.languages.registerImplementationProvider(languageId, {
-    provideImplementation: async (model, position) =>
-      previewed(await session()?.implementation(model, position)),
+    provideImplementation: (model, position, token) =>
+      jump(languageId, model, position, token, (server) => server.implementation(model, position)),
   });
   monaco.languages.registerTypeDefinitionProvider(languageId, {
-    provideTypeDefinition: async (model, position) =>
-      previewed(await session()?.typeDefinition(model, position)),
+    provideTypeDefinition: (model, position, token) =>
+      jump(languageId, model, position, token, (server) => server.typeDefinition(model, position)),
   });
   monaco.languages.registerReferenceProvider(languageId, {
-    provideReferences: async (model, position) => previewed(await session()?.references(model, position)),
+    provideReferences: (model, position, _context, token) =>
+      jump(languageId, model, position, token, (server) => server.references(model, position)),
   });
   monaco.languages.registerRenameProvider(languageId, {
     provideRenameEdits: (model, position, newName) =>
@@ -157,7 +230,18 @@ export const useLsp = create<LspStoreState>((set, get) => ({
     // twenty files does not run twenty probes.
     if (known && known.kind !== "failed") return;
 
-    const availability = await invoke<ServerAvailability | null>("lsp_availability", { languageId });
+    // Claimed before the first await: the tabs a workspace reopens with create
+    // their models in one go, and each asks for a server. Claimed after it,
+    // both got past the check above - measured 2026-10-12, two Roslyn servers
+    // loading the same solution side by side, one of them at 4.6 GB.
+    set((s) => ({ languages: { ...s.languages, [languageId]: { kind: "starting" } } }));
+    const availability = await invoke<ServerAvailability | null>("lsp_availability", { languageId }).catch(
+      (err: unknown) => {
+        // A claim left behind by a failed probe would keep the language from ever starting.
+        get().forget(languageId);
+        throw err;
+      },
+    );
     if (!availability) {
       set((s) => ({ languages: { ...s.languages, [languageId]: { kind: "unsupported" } } }));
       return;
@@ -177,7 +261,10 @@ export const useLsp = create<LspStoreState>((set, get) => ({
       return;
     }
 
-    set((s) => ({ languages: { ...s.languages, [languageId]: { kind: "starting" } } }));
+    // Before the server starts, not after: a big project's server takes seconds
+    // to come up, and until the providers exist the context menu has no Go to
+    // Definition at all. Asked meanwhile, a jump waits for the server (`jump`).
+    registerProviders(languageId);
     try {
       // Imported here, not at the top: a language session speaks to Monaco,
       // and the status bar imports this store long before an editor exists.
@@ -197,7 +284,6 @@ export const useLsp = create<LspStoreState>((set, get) => ({
         availability.projectOpen ?? undefined,
       );
       sessions.set(languageId, session);
-      registerProviders(languageId);
       session.onRestore = (running) => {
         set((s) => ({ restoring: { ...s.restoring, [languageId]: running } }));
       };
