@@ -310,6 +310,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
 
   const capabilities = capabilitiesOf(providerId);
   const modelCatalog = useAi((s) => s.modelCatalog);
+  const effortOptions = effortsOf(providerId, model, modelCatalog[providerId]);
   const apiKeyRoute = providers.find((provider) => provider.id === providerId)?.apiKeyRoute ?? null;
   const section =
     "mt-3 mb-1 flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-muted uppercase";
@@ -441,21 +442,23 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               ))}
             </select>
           </Row>
-          <Row label={t("ai.effort")}>
-            <select
-              value={effort}
-              onChange={(e) => {
-                setEffort(e.target.value);
-              }}
-              className="rounded-md border border-line bg-elevated px-2 py-1 text-[11.5px] outline-none"
-            >
-              {effortsOf(providerId, model, modelCatalog[providerId]).map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </Row>
+          {effortOptions.length > 1 && (
+            <Row label={t("ai.effort")}>
+              <select
+                value={effort}
+                onChange={(e) => {
+                  setEffort(e.target.value);
+                }}
+                className="rounded-md border border-line bg-elevated px-2 py-1 text-[11.5px] outline-none"
+              >
+                {effortOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </Row>
+          )}
           <Row label={t("settings.inlineAi")} hint={t(`settings.inlineAi.${settings.inlineAi}`)}>
             <Choice
               options={INLINE_AI_MODES.map((mode) => ({

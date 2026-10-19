@@ -22,30 +22,33 @@ export interface AutoHints {
 const CONTEXT_SUFFIX = /\[[^\]]*\]$/;
 
 /**
- * What "Auto" ran on last time, for the pickers to say beside it.
+ * What "Auto" stands for, for the pickers to say beside it.
  *
- * Only an observation made under the same choice speaks for the current one:
- * the model Auto picked says nothing once a model is chosen, and the effort a
- * model ran at says nothing about another model.
+ * The last turn speaks first, but only for the choice it ran under: the model
+ * Auto picked says nothing once a model is chosen, and the effort a model ran
+ * at says nothing about another model. Where it cannot speak, the CLI's own
+ * answer for the current choice does - asked before anything is sent.
  *
+ * @param expected what the CLI said it would run the current choice on.
  * @param models the picker's options, so a model is called by the name it has there.
  */
 export function autoHints(
   observed: ObservedRun | undefined,
+  expected: RanOn | undefined,
   choice: { model: string; effort: string },
   models: readonly ProviderOption[],
 ): AutoHints {
-  if (observed === undefined) return { model: null, effort: null };
-  const ranModel = observed.ranOn.model;
-  const model =
-    choice.model === "" && observed.chose.model === "" && ranModel !== undefined
-      ? nameOf(ranModel, models)
-      : null;
-  const effort =
-    choice.effort === "" && observed.chose.effort === "" && observed.chose.model === choice.model
-      ? (observed.ranOn.effort ?? null)
-      : null;
-  return { model, effort };
+  const sameModel = observed?.chose.model === choice.model;
+  const observedModel = sameModel && choice.model === "" ? observed.ranOn.model : undefined;
+  const observedEffort = sameModel && observed.chose.effort === "" ? observed.ranOn.effort : undefined;
+  const ranModel = choice.model === "" ? (observedModel ?? expected?.model) : undefined;
+  const effort = choice.effort === "" ? (observedEffort ?? expected?.effort ?? null) : null;
+  return { model: ranModel === undefined ? null : nameOf(ranModel, models), effort };
+}
+
+/** Where a CLI's answer for a choice is kept: it holds for that model in that folder. */
+export function expectationKey(providerId: string, cwd: string, model: string): string {
+  return JSON.stringify([providerId, cwd, model]);
 }
 
 function nameOf(model: string, models: readonly ProviderOption[]): string {

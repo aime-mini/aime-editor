@@ -182,7 +182,7 @@ export const en = {
   "ai.inputPlaceholderNoFolder": "Open a project folder first",
   "ai.stop": "Stop",
   "ai.send": "Send",
-  "ai.autoRanOn": "the last turn ran on {value}",
+  "ai.autoStandsFor": "Auto is {value} here",
   "ai.queueSend": "Queue - sent when this turn ends",
   "ai.inputPlaceholderQueued": "Write the next message - it is sent when this turn ends",
   "ai.queue.waiting": "Queued - sent when this turn ends",

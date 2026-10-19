@@ -15,7 +15,7 @@ import {
   withToolSubject,
 } from "../lib/liveTurn";
 import { formatProviderError } from "../lib/providerErrors";
-import { observe, type ObservedRun, type RanOn } from "../lib/ranOn";
+import { expectationKey, observe, type ObservedRun, type RanOn } from "../lib/ranOn";
 import { effortsOf, type DiscoveredModel } from "../lib/providers";
 import { Typewriter } from "../lib/typewriter";
 import { useComposer } from "./composer";
@@ -262,6 +262,14 @@ interface AiState {
    * Auto picks the same again until the CLI's own settings change.
    */
   observedRuns: Record<string, ObservedRun>;
+  /**
+   * What each CLI said it would run a choice on before any turn
+   * (`providers/next_run.rs`), by `expectationKey`. Asked once per model and
+   * folder in each run of Aime, since the CLI's settings may change in between.
+   */
+  expectedRuns: Record<string, RanOn>;
+  /** Asks the current CLI what the current choice would run on, unless it already said. */
+  expectNextRun: () => Promise<void>;
   /** Every provider Aime can talk to, including ones from providers.json. */
   providers: ProviderSummary[];
   /** Loads the provider list; called once when the AI panel mounts. */
@@ -391,6 +399,8 @@ let costBeforeTurn = 0;
 let choiceThisTurn = { model: "", effort: "" };
 /** Fingerprint of the memory index the live turn carries, until the CLI confirms it took the turn. */
 let memoryHandedThisTurn: string | null = null;
+/** The choices the CLI has been asked about, answered or still answering, by `expectationKey`. */
+const askedExpectations = new Set<string>();
 
 /**
  * The turn's own price, from the running total the CLI reports. A session an
@@ -699,6 +709,7 @@ export const useAi = create<AiState>((set, get) => {
     effort: "",
     permission: storedPermission(),
     observedRuns: storedObservedRuns(),
+    expectedRuns: {},
     providers: [],
     providerHealth: "unknown",
     modelCatalog: {},
@@ -784,6 +795,26 @@ export const useAi = create<AiState>((set, get) => {
         if (health.installed) void get().loadModels(probed);
       } catch (err: unknown) {
         console.error("provider health check failed:", err);
+      }
+    },
+
+    expectNextRun: async () => {
+      const { providerId, projectRoot, model } = get();
+      if (projectRoot === null) return;
+      const key = expectationKey(providerId, projectRoot, model);
+      if (askedExpectations.has(key)) return;
+      askedExpectations.add(key);
+      try {
+        const ranOn = await invoke<RanOn | null>("provider_next_run", {
+          providerId,
+          model,
+          cwd: projectRoot,
+        });
+        if (ranOn !== null) set((s) => ({ expectedRuns: { ...s.expectedRuns, [key]: ranOn } }));
+      } catch (error: unknown) {
+        // Not asked, then: the next time this choice comes round asks again.
+        askedExpectations.delete(key);
+        console.warn(`${providerId} could not say what it would run on:`, error);
       }
     },
 

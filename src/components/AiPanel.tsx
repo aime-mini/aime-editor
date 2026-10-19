@@ -44,7 +44,7 @@ import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Markdown } from "./Markdown";
 import { ResizeHandle } from "./ResizeHandle";
 import { capabilitiesOf, effortsOf, modelsOf, type ProviderOption } from "../lib/providers";
-import { autoHints } from "../lib/ranOn";
+import { autoHints, expectationKey } from "../lib/ranOn";
 import type {
   ApiRetry,
   BackgroundTask,
@@ -138,7 +138,7 @@ function PickerChip({
           const rect = e.currentTarget.getBoundingClientRect();
           setMenu({ x: rect.left, y: rect.bottom + 4 });
         }}
-        title={hint === null ? title : `${title} - ${t("ai.autoRanOn", { value: hint })}`}
+        title={hint === null ? title : `${title} - ${t("ai.autoStandsFor", { value: hint })}`}
         className="flex h-[22px] min-w-0 items-center gap-1 rounded-md px-1.5 text-[11px] leading-none whitespace-nowrap text-muted hover:bg-elevated hover:text-fg"
       >
         <span className="flex shrink-0 items-center overflow-visible">{icon}</span>
@@ -469,6 +469,9 @@ export function AiPanel() {
     permission,
     cyclePermission,
     observedRuns,
+    expectedRuns,
+    expectNextRun,
+    projectRoot,
     sessionUsage,
     totalCostUsd,
     backgroundTasks,
@@ -537,7 +540,10 @@ export function AiPanel() {
   const t = useT();
   const capabilities = capabilitiesOf(providerId);
   const modelOptions = modelsOf(providerId, modelCatalog[providerId]);
-  const hints = autoHints(observedRuns[providerId], { model, effort }, modelOptions);
+  const expected =
+    projectRoot === null ? undefined : expectedRuns[expectationKey(providerId, projectRoot, model)];
+  const hints = autoHints(observedRuns[providerId], expected, { model, effort }, modelOptions);
+  const effortOptions = effortsOf(providerId, model, modelCatalog[providerId]);
   // Built-in providers keep their capability table; a configured one is named
   // by its own config, so the picker shows whatever the user called it.
   const providerOptions: ProviderOption[] =
@@ -581,6 +587,11 @@ export function AiPanel() {
       window.removeEventListener("focus", recheck);
     };
   }, [checkHealth, providerId]);
+
+  // Auto has to say what it stands for before the first turn, not after it.
+  useEffect(() => {
+    if (providerHealth === "ok") void expectNextRun();
+  }, [expectNextRun, providerHealth, providerId, model, projectRoot]);
 
   // The "already signed in" answer is a reply to a click, not a lasting state.
   useEffect(() => {
@@ -821,14 +832,17 @@ export function AiPanel() {
             autoHint={hints.model}
             onChange={setModel}
           />
-          <PickerChip
-            icon={<SlidersHorizontal size={12} className="text-accent" />}
-            value={effort}
-            options={effortsOf(providerId, model, modelCatalog[providerId])}
-            title={t("ai.effort")}
-            autoHint={hints.effort}
-            onChange={setEffort}
-          />
+          {/* A CLI that takes no effort (Gemini, most CLIs added by hand) has nothing to pick. */}
+          {effortOptions.length > 1 && (
+            <PickerChip
+              icon={<SlidersHorizontal size={12} className="text-accent" />}
+              value={effort}
+              options={effortOptions}
+              title={t("ai.effort")}
+              autoHint={hints.effort}
+              onChange={setEffort}
+            />
+          )}
           <button
             onClick={() => {
               useLayout.getState().setMcpOpen(true);

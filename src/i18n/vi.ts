@@ -183,7 +183,7 @@ export const vi: Record<TranslationKey, string> = {
   "ai.inputPlaceholderNoFolder": "Mở thư mục dự án trước",
   "ai.stop": "Dừng",
   "ai.send": "Gửi",
-  "ai.autoRanOn": "lượt gần nhất chạy bằng {value}",
+  "ai.autoStandsFor": "Auto ở đây là {value}",
   "ai.queueSend": "Xếp hàng - gửi khi lượt này xong",
   "ai.inputPlaceholderQueued": "Viết tin tiếp theo - sẽ gửi khi lượt này xong",
   "ai.queue.waiting": "Đang chờ - gửi khi lượt này xong",

@@ -199,6 +199,7 @@ pub fn run() {
             providers::catalog::provider_models,
             providers::catalog::provider_light_model,
             providers::ran_on::provider_ran_on,
+            providers::next_run::provider_next_run,
             tasks::detect_tasks,
             exec::exec_run,
             exec::exec_cancel,
