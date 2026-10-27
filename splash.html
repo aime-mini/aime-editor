@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Aime</title>
+    <script>
+      // Switched off in Settings (`splash`, src/stores/settings.ts): gone before
+      // a pixel is drawn. Rust closes this window and owes the card no time,
+      // so the editor appears the moment it has painted (`splash_decline`).
+      try {
+        if (JSON.parse(localStorage.getItem("aime.settings") ?? "{}").splash === false) {
+          document.documentElement.style.display = "none";
+          void window.__TAURI_INTERNALS__?.invoke("splash_decline");
+        }
+      } catch {
+        // Storage refused: the card shows, as it would by default.
+      }
+    </script>
+    <!--
+      The window Aime shows while it starts.
+
+      Everything here is inline and there is no import: this page exists to be on
+      glass in the first few milliseconds, and a module graph - even a small one -
+      is the one thing that would stop it doing its job. It is a separate Vite
+      entry for the same reason; the editor's own bundle is 4.4 MB of Monaco.
+
+      The window itself is transparent and undecorated, so the rounded card below
+      is the whole visible shape.
+    -->
+    <style>
+      :root {
+        --bg: rgba(22, 24, 29, 0.94);
+        --line: #2b303a;
+        --text: #d7dae0;
+        --muted: #8b919d;
+        --accent: #6c8cff;
+        --accent-strong: #4c5fd7;
+      }
+
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+        /* A splash cannot wait for a webfont, so it asks for the same stack the
+           app asks for and takes whichever of them is already on the machine. */
+        font-family: Inter, "Segoe UI", system-ui, sans-serif;
+        color: var(--text);
+        cursor: default;
+        user-select: none;
+      }
+
+      /* Any click anywhere skips ahead, so the whole page is the target. */
+      #stage {
+        display: grid;
+        place-items: center;
+        height: 100%;
+        padding: 12px;
+        box-sizing: border-box;
+      }
+
+      /* One centred column: the mark, the name, what this program is. */
+      #card {
+        position: relative;
+        display: grid;
+        place-items: center;
+        width: 100%;
+        height: 100%;
+        padding: 0 40px;
+        box-sizing: border-box;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--bg);
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+        overflow: hidden;
+      }
+
+      /*
+       * The light behind the mark. Two blurred discs rather than one, drifting
+       * against each other: a single pulsing glow reads as a notification badge,
+       * two slow ones read as depth.
+       */
+      .glow {
+        position: absolute;
+        border-radius: 50%;
+        filter: blur(58px);
+        opacity: 0.5;
+        pointer-events: none;
+      }
+      .glow.one {
+        width: 260px;
+        height: 260px;
+        left: -60px;
+        top: -90px;
+        background: var(--accent);
+        animation: drift-one 9s ease-in-out infinite;
+      }
+      .glow.two {
+        width: 300px;
+        height: 300px;
+        right: -80px;
+        bottom: -120px;
+        background: var(--accent-strong);
+        animation: drift-two 11s ease-in-out infinite;
+      }
+
+      @keyframes drift-one {
+        0%,
+        100% {
+          transform: translate3d(0, 0, 0) scale(1);
+        }
+        50% {
+          transform: translate3d(26px, 18px, 0) scale(1.12);
+        }
+      }
+      @keyframes drift-two {
+        0%,
+        100% {
+          transform: translate3d(0, 0, 0) scale(1.08);
+        }
+        50% {
+          transform: translate3d(-22px, -16px, 0) scale(1);
+        }
+      }
+
+      #words {
+        position: relative;
+        z-index: 1;
+        max-width: 460px;
+        text-align: center;
+      }
+
+      /*
+       * The logo, drawing itself: the tile arrives, the prompt is stroked in,
+       * the cursor starts blinking and the spark flares - then keeps flaring,
+       * so the card is alive for as long as it is up.
+       *
+       * It replaced a 3D character that read as too sentimental for
+       * a developer tool: what reads as intelligent here is the program's own
+       * mark doing something deliberate, not a mascot saying hello. Geometry
+       * from `src/assets/logo.svg` and timing shared with `AimeMark.tsx` -
+       * keep the three in step; this page cannot import either.
+       */
+      #mark {
+        display: block;
+        width: 76px;
+        height: 76px;
+        margin: 0 auto 20px;
+        overflow: visible;
+      }
+      #mark .tile {
+        transform-box: fill-box;
+        transform-origin: center;
+        opacity: 0;
+        animation: mark-tile 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      }
+      #mark .prompt {
+        stroke-dasharray: 1;
+        stroke-dashoffset: 1;
+        animation: mark-draw 0.5s 0.3s cubic-bezier(0.65, 0, 0.35, 1) forwards;
+      }
+      #mark .cursor {
+        opacity: 0;
+        animation: mark-blink 1.06s 0.75s steps(1, end) infinite;
+      }
+      #mark .spark {
+        transform-box: fill-box;
+        transform-origin: center;
+        transform: scale(0);
+        animation:
+          mark-flare 0.7s 0.85s cubic-bezier(0.34, 1.56, 0.64, 1) forwards,
+          mark-twinkle 2.4s 1.8s ease-in-out infinite;
+      }
+      @keyframes mark-tile {
+        from {
+          opacity: 0;
+          transform: scale(0.6) rotate(-8deg);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @keyframes mark-draw {
+        to {
+          stroke-dashoffset: 0;
+        }
+      }
+      @keyframes mark-blink {
+        0% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0;
+        }
+      }
+      @keyframes mark-flare {
+        from {
+          transform: scale(0) rotate(-90deg);
+        }
+        to {
+          transform: scale(1) rotate(0deg);
+        }
+      }
+      @keyframes mark-twinkle {
+        0%,
+        70%,
+        100% {
+          transform: scale(1) rotate(0deg);
+        }
+        82% {
+          transform: scale(1.3) rotate(45deg);
+        }
+      }
+
+      /*
+       * Each letter arrives on its own, and then a light runs across the name.
+       *
+       * The sweep is the part that has to be SEEN: a splash is on screen for
+       * about four seconds and an effect too polite to notice is an effect
+       * nobody was shown. The gradient is clipped to the glyphs, so it reads as
+       * light moving over the word rather than as a box behind it.
+       */
+      #wordmark {
+        margin: 0;
+        font-size: 46px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        line-height: 1;
+        display: flex;
+        justify-content: center;
+        background: linear-gradient(100deg, var(--text) 32%, #ffffff 44%, var(--accent) 52%, var(--text) 64%);
+        background-size: 280% 100%;
+        background-position: 100% 0;
+        -webkit-background-clip: text;
+        background-clip: text;
+        animation: sheen 3.2s 1.4s ease-in-out infinite;
+      }
+      #wordmark span {
+        color: transparent;
+        opacity: 0;
+        transform: translateY(14px);
+        animation: rise 0.62s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      }
+      @keyframes rise {
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      @keyframes sheen {
+        0% {
+          background-position: 100% 0;
+        }
+        55%,
+        100% {
+          background-position: 0 0;
+        }
+      }
+
+      #tagline {
+        margin: 12px 0 0;
+        font-size: 12px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--muted);
+        opacity: 0;
+        animation: rise 0.7s 0.85s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      }
+
+      /*
+       * What this program is, in one sentence, word by word.
+       *
+       * The words are separate elements so they can arrive in order: the line
+       * assembling itself is the effect, and it is over before the card is.
+       */
+      #intro {
+        margin: 16px auto 0;
+        max-width: 420px;
+        font-size: 14px;
+        line-height: 1.55;
+        color: var(--text);
+      }
+      #intro span {
+        display: inline-block;
+        opacity: 0;
+        filter: blur(6px);
+        transform: translateY(8px);
+        animation: settle 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      }
+      #intro .accent {
+        color: var(--accent);
+        font-weight: 600;
+      }
+      @keyframes settle {
+        to {
+          opacity: 1;
+          filter: blur(0);
+          transform: translateY(0);
+        }
+      }
+
+      /*
+       * The one line that says work is happening. It sweeps rather than fills:
+       * a progress bar would be a promise about how far along the start is, and
+       * nothing here knows that.
+       */
+      #bar {
+        position: relative;
+        margin: 26px auto 0;
+        height: 2px;
+        width: 190px;
+        border-radius: 2px;
+        background: var(--line);
+        overflow: hidden;
+        opacity: 0;
+        animation: rise 0.7s 1s ease forwards;
+      }
+      #bar::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        width: 42%;
+        border-radius: 2px;
+        background: linear-gradient(90deg, transparent, var(--accent), transparent);
+        animation: sweep 1.5s ease-in-out infinite;
+      }
+      @keyframes sweep {
+        0% {
+          transform: translateX(-110%);
+        }
+        100% {
+          transform: translateX(340%);
+        }
+      }
+
+      @keyframes fade-in {
+        to {
+          opacity: 1;
+        }
+      }
+
+      #hint {
+        position: absolute;
+        right: 18px;
+        bottom: 12px;
+        z-index: 1;
+        font-size: 10.5px;
+        color: var(--muted);
+        opacity: 0;
+        animation: fade-in 0.6s 1.6s ease forwards;
+      }
+
+      /* Asked for less motion: the card still arrives, it just stops moving. */
+      @media (prefers-reduced-motion: reduce) {
+        .glow,
+        #wordmark,
+        #wordmark span,
+        #tagline,
+        #intro span,
+        #bar,
+        #bar::after,
+        #hint,
+        #mark * {
+          animation: none;
+          opacity: 1;
+          filter: none;
+          transform: none;
+        }
+        /* Without the sweep there is no gradient to read the letters out of. */
+        #wordmark {
+          background: none;
+          -webkit-text-fill-color: var(--text);
+        }
+        #wordmark span {
+          color: var(--text);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <div id="card">
+        <div class="glow one"></div>
+        <div class="glow two"></div>
+        <div id="words">
+          <svg id="mark" viewBox="0 0 1024 1024" aria-hidden="true">
+            <defs>
+              <linearGradient id="mark-fill" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#5B7CFF" />
+                <stop offset="100%" stop-color="#8B5CF6" />
+              </linearGradient>
+            </defs>
+            <rect class="tile" x="64" y="64" width="896" height="896" rx="200" fill="url(#mark-fill)" />
+            <path
+              class="prompt"
+              d="M 300 360 L 462 512 L 300 664"
+              pathLength="1"
+              fill="none"
+              stroke="#fff"
+              stroke-width="76"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <rect class="cursor" x="516" y="612" width="196" height="76" rx="38" fill="#fff" />
+            <path
+              class="spark"
+              d="M 706 236 L 733 313 L 810 340 L 733 367 L 706 444 L 679 367 L 602 340 L 679 313 Z"
+              fill="#fff"
+            />
+          </svg>
+          <h1 id="wordmark" aria-label="Aime"></h1>
+          <p id="tagline">AI Mini Editor</p>
+          <p id="intro"></p>
+          <div id="bar"></div>
+        </div>
+        <span id="hint">Esc to skip</span>
+      </div>
+    </div>
+    <script type="module">
+      /** Milliseconds between one letter of the wordmark and the next. */
+      const LETTER_STAGGER_MS = 70;
+      /** The name starts once the mark has drawn its prompt. */
+      const WORDMARK_DELAY_MS = 450;
+
+      /** Where the app stores the chosen language - keep in step with src/i18n. */
+      const LOCALE_KEY = "aime.locale";
+
+      /** The language the user chose, or English - the app's own default. */
+      function chosenLocale() {
+        try {
+          return localStorage.getItem(LOCALE_KEY) === "vi" ? "vi" : "en";
+        } catch {
+          // A locked-down profile can refuse storage; English is the default anyway.
+          return "en";
+        }
+      }
+
+      const locale = chosenLocale();
+
+      const wordmark = document.getElementById("wordmark");
+      for (const [index, letter] of [..."Aime"].entries()) {
+        const span = document.createElement("span");
+        span.textContent = letter;
+        span.style.animationDelay = `${WORDMARK_DELAY_MS + index * LETTER_STAGGER_MS}ms`;
+        wordmark.append(span);
+      }
+
+      /**
+       * What this program is, said in one sentence while it starts.
+       *
+       * Two languages and no i18n bundle - this window has none, and the whole
+       * point of it is to be on glass before a bundle could load. `*` marks the
+       * words the sentence turns on, which are drawn in the accent colour.
+       */
+      const INTRO = {
+        // What Aime actually is, in the project's own words (README):
+        // a light editor layer over the AI CLIs a developer already has, rather
+        // than an agent of its own. A splash that oversells is a splash that
+        // gets read twice and believed once.
+        en: "A light desktop editor built on the *AI CLIs* you already have - they do the work, Aime gives them an editor.",
+        vi: "Editor desktop gọn nhẹ dựng trên chính *AI CLI* bạn đang dùng - chúng làm việc, Aime cho chúng một editor.",
+      };
+      /** Between one word of the sentence and the next. */
+      const WORD_STAGGER_MS = 46;
+      /** After the name and the tagline have had their moment. */
+      const INTRO_DELAY_MS = 1000;
+
+      const intro = document.getElementById("intro");
+      for (const [index, word] of INTRO[locale].split(" ").entries()) {
+        const accented = word.includes("*");
+        const span = document.createElement("span");
+        span.textContent = word.replaceAll("*", "");
+        if (accented) span.className = "accent";
+        span.style.animationDelay = `${INTRO_DELAY_MS + index * WORD_STAGGER_MS}ms`;
+        intro.append(span);
+        // A space between the words, and it is a text node so a line can break
+        // there: the words themselves are inline-blocks and would not.
+        intro.append(document.createTextNode(" "));
+      }
+
+      const call = (command) => {
+        // Tauri's IPC is injected into this window like any other; there is no
+        // bundle here to import the wrapper from.
+        window.__TAURI_INTERNALS__?.invoke(command).catch(() => {
+          // Nothing to do about it here: the Rust side gives up on its own
+          // timer, so a failed call costs a slower start and nothing else.
+        });
+      };
+
+      // Rust creates this window hidden and shows it on this call. Without that
+      // handshake an undecorated transparent window is put on screen before the
+      // webview has painted, which flashes white for a frame.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          call("splash_shown");
+        });
+      });
+
+      const skip = () => {
+        call("splash_skip");
+      };
+      addEventListener("keydown", skip);
+      addEventListener("mousedown", skip);
+    </script>
+  </body>
+</html>

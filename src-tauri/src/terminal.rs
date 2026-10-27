@@ -1,0 +1,231 @@
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
+
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, EventTarget, Manager, State, Webview};
+
+static TERM_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Raw PTY output chunk; bytes (not text) so multibyte sequences split across
+/// reads survive — xterm.js decodes them on the frontend.
+const DATA_EVENT: &str = "term:data";
+const EXIT_EVENT: &str = "term:exit";
+
+struct Session {
+    master: Box<dyn MasterPty + Send>,
+    writer: Box<dyn Write + Send>,
+    killer: Box<dyn ChildKiller + Send + Sync>,
+    workspace: String,
+}
+
+/// Live PTY sessions keyed by terminal id.
+#[derive(Default)]
+pub struct TerminalState(Mutex<HashMap<u64, Session>>);
+
+impl TerminalState {
+    /// A poisoned lock still holds valid data — recover it instead of panicking.
+    fn sessions(&self) -> MutexGuard<'_, HashMap<u64, Session>> {
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct DataPayload {
+    term_id: u64,
+    data: Vec<u8>,
+}
+
+#[derive(Clone, Serialize)]
+struct ExitPayload {
+    term_id: u64,
+}
+
+fn default_shell() -> CommandBuilder {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = CommandBuilder::new("powershell.exe");
+        cmd.arg("-NoLogo");
+        cmd
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        CommandBuilder::new(std::env::var("SHELL").unwrap_or_else(|_| "bash".into()))
+    }
+}
+
+/// Spawns a shell in a new PTY and streams its output to the calling workspace
+/// as `term:data` events; `term:exit` follows when the shell ends.
+#[tauri::command]
+pub fn term_create(
+    app: AppHandle,
+    webview: Webview,
+    state: State<'_, TerminalState>,
+    cwd: String,
+    cols: u16,
+    rows: u16,
+) -> Result<u64, String> {
+    let pty = native_pty_system()
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut shell = default_shell();
+    shell.cwd(&cwd);
+    let mut child = pty.slave.spawn_command(shell).map_err(|e| e.to_string())?;
+    drop(pty.slave); // the child owns its end now
+
+    let term_id = TERM_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let killer = child.clone_killer();
+    let mut reader = pty.master.try_clone_reader().map_err(|e| e.to_string())?;
+    let writer = pty.master.take_writer().map_err(|e| e.to_string())?;
+    let label = webview.label().to_string();
+
+    // Reader thread: pump PTY output to the owning workspace until the shell exits.
+    {
+        let app = app.clone();
+        let label = label.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let payload = DataPayload {
+                            term_id,
+                            data: buf[..n].to_vec(),
+                        };
+                        if app
+                            .emit_to(EventTarget::webview(label.as_str()), DATA_EVENT, payload)
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            let _ = child.wait(); // reap the process
+            if let Some(state) = app.try_state::<TerminalState>() {
+                state.sessions().remove(&term_id);
+            }
+            let _ = app.emit_to(
+                EventTarget::webview(label.as_str()),
+                EXIT_EVENT,
+                ExitPayload { term_id },
+            );
+        });
+    }
+
+    state.sessions().insert(
+        term_id,
+        Session {
+            master: pty.master,
+            writer,
+            killer,
+            workspace: label,
+        },
+    );
+    Ok(term_id)
+}
+
+/// Forwards user keystrokes (already encoded by xterm.js) to the shell.
+#[tauri::command]
+pub fn term_write(state: State<'_, TerminalState>, term_id: u64, data: String) -> Result<(), String> {
+    let mut sessions = state.sessions();
+    let session = sessions
+        .get_mut(&term_id)
+        .ok_or_else(|| format!("terminal {term_id} not found"))?;
+    session
+        .writer
+        .write_all(data.as_bytes())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn term_resize(
+    state: State<'_, TerminalState>,
+    term_id: u64,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let sessions = state.sessions();
+    let session = sessions
+        .get(&term_id)
+        .ok_or_else(|| format!("terminal {term_id} not found"))?;
+    session
+        .master
+        .resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Whether a kill that reported failure actually succeeded.
+///
+/// `portable-pty` 0.9 inverts `TerminateProcess`'s success test on Windows
+/// (`src/win/mod.rs:74`): the call returns non-zero when it worked, and the
+/// crate turns exactly that case into `Err(last_os_error())` — which is
+/// `ERROR_SUCCESS`, printed as "The operation completed successfully".
+/// A zero error code therefore means the shell was killed, not that it wasn't.
+fn kill_actually_succeeded(err: &std::io::Error) -> bool {
+    err.raw_os_error() == Some(0)
+}
+
+/// Kills the shell; the reader thread then observes EOF and emits `term:exit`.
+#[tauri::command]
+pub fn term_kill(state: State<'_, TerminalState>, term_id: u64) -> Result<(), String> {
+    let Some(mut session) = state.sessions().remove(&term_id) else {
+        return Ok(()); // already gone: the shell exited on its own
+    };
+    match session.killer.kill() {
+        Ok(()) => Ok(()),
+        Err(err) if kill_actually_succeeded(&err) => Ok(()),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// Stops every terminal a workspace started; called when that workspace closes.
+pub fn kill_for_workspace(app: &AppHandle, workspace: &str) {
+    let state = app.state::<TerminalState>();
+    let mut sessions = state.sessions();
+    sessions.retain(|_, session| {
+        if session.workspace == workspace {
+            let _ = session.killer.kill();
+            false
+        } else {
+            true
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kill_actually_succeeded;
+    use std::io::Error;
+
+    #[test]
+    fn error_success_is_not_a_failure() {
+        // What `portable-pty` hands back after a kill that worked on Windows.
+        assert!(kill_actually_succeeded(&Error::from_raw_os_error(0)));
+    }
+
+    #[test]
+    fn a_real_os_error_stays_a_failure() {
+        // ERROR_ACCESS_DENIED — a kill that genuinely did not happen.
+        assert!(!kill_actually_succeeded(&Error::from_raw_os_error(5)));
+    }
+
+    #[test]
+    fn an_error_without_an_os_code_stays_a_failure() {
+        assert!(!kill_actually_succeeded(&Error::other("no code")));
+    }
+}

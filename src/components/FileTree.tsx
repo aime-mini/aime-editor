@@ -1,0 +1,758 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import {
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  EyeOff,
+  File,
+  FileClock,
+  FilePlus,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  Pencil,
+  Trash2,
+  X,
+  Workflow,
+} from "lucide-react";
+import { translate, useT } from "../i18n";
+import type { TranslationKey } from "../i18n/en";
+import { openOrReveal } from "../lib/openOrReveal";
+import { foldersUpTo, inRepository, relativeTo, repositoryOf } from "../lib/repositories";
+import { useGit } from "../stores/git";
+import { failedTo } from "../stores/notices";
+import { usePathDrag } from "../stores/pathDrag";
+import { useWorkspace } from "../stores/workspace";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { useFlows } from "../stores/flows";
+import { useLayout } from "../stores/layout";
+import { PromptModal } from "./PromptModal";
+import type { DirEntry } from "../lib/types";
+
+/** `ignored` travels with the target: only the row itself knows it inherited it. */
+type MenuTarget = { entry: DirEntry; ignored: boolean; x: number; y: number };
+type ModalAction =
+  | { kind: "new-file" | "new-folder"; dirPath: string }
+  | { kind: "rename"; entry: DirEntry }
+  | { kind: "delete"; entry: DirEntry }
+  | { kind: "untrack"; entry: DirEntry };
+
+/**
+ * A tree action that failed: what was being done, and what the system said.
+ * Shown in the tree, where the action was asked for - a console nobody has
+ * open is not an answer.
+ */
+type TreeProblem = { what: string; reason: string };
+
+/** What went wrong, in the words the backend or the OS used. */
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The words for a modal action that failed, and the name it was acting on. */
+function failureOf(modal: ModalAction, value: string): { key: TranslationKey; name: string } {
+  switch (modal.kind) {
+    case "new-file":
+    case "new-folder":
+      return { key: "tree.createFailed", name: value };
+    case "rename":
+      return { key: "tree.renameFailed", name: modal.entry.name };
+    case "delete":
+      return { key: "tree.deleteFailed", name: modal.entry.name };
+    case "untrack":
+      return { key: "tree.untrackFailed", name: modal.entry.name };
+  }
+}
+
+function nameOf(path: string): string {
+  return path.split(/[\\/]/).pop() ?? path;
+}
+
+/**
+ * Moving something in the tree is a pointer gesture, not an HTML5 drag.
+ *
+ * Not a preference: this window has Tauri's native drop handling on, because
+ * that is the only way a file dropped from Explorer arrives with its path on
+ * disk - and with it on, the webview's own DOM drag-and-drop never fires
+ * (Tauri v2: "Tauri's internal drag and drop system is enabled, and DOM drag
+ * and drop is disabled"). `usePathDrag` does the same job with pointer events,
+ * and the chat box reads the same store, so one gesture serves both.
+ */
+
+interface TreeDnd {
+  /** Folder currently hovered as a drop target (for highlighting). */
+  dropTarget: string | null;
+  onHover: (dir: string | null) => void;
+  onDropInto: (sourcePath: string, entry: DirEntry) => void;
+}
+
+/** Git badges keyed by normalized absolute path; folders map to "●". */
+type GitBadges = Map<string, { label: string; color: string }>;
+
+function pathKey(path: string): string {
+  return path.replaceAll("/", "\\").toLowerCase();
+}
+
+function badgeColorOf(letter: string): string {
+  if (letter === "D") return "text-danger";
+  if (letter === "U" || letter === "A") return "text-ok";
+  return "text-accent";
+}
+
+function parentOf(path: string): string {
+  return path.replace(/[\\/][^\\/]+$/, "");
+}
+
+function TreeNode({
+  entry,
+  depth,
+  onMenu,
+  dnd,
+  badges,
+  ignoredPaths,
+  ignored,
+}: {
+  entry: DirEntry;
+  depth: number;
+  onMenu: (target: MenuTarget) => void;
+  dnd: TreeDnd;
+  badges: GitBadges;
+  ignoredPaths: ReadonlySet<string>;
+  /** Already decided by the parent: an ignored folder ignores everything in it. */
+  ignored: boolean;
+}) {
+  // In the store, not in the row: a folder left open stays open across a restart.
+  const expanded = useWorkspace((s) => s.expandedDirs.includes(entry.path));
+  const setDirExpanded = useWorkspace((s) => s.setDirExpanded);
+  const [children, setChildren] = useState<DirEntry[] | null>(null);
+  /** Why the folder could not be listed, the last time it was asked. */
+  const [unreadable, setUnreadable] = useState<string | null>(null);
+  const { openFilePath, treeVersion } = useWorkspace();
+  const t = useT();
+
+  // Loads on first expand and reloads while expanded whenever the workspace
+  // changes, so nested levels stay fresh without collapsing the tree.
+  useEffect(() => {
+    if (!entry.is_dir || !expanded) return;
+    let stale = false;
+    invoke<DirEntry[]>("list_dir", { path: entry.path })
+      .then((list) => {
+        if (stale) return;
+        setChildren(list);
+        setUnreadable(null);
+      })
+      .catch((error: unknown) => {
+        if (!stale) setUnreadable(reasonOf(error));
+      });
+    return () => {
+      stale = true;
+    };
+  }, [entry.is_dir, entry.path, expanded, treeVersion]);
+
+  const toggle = () => {
+    if (!entry.is_dir) {
+      openOrReveal(entry.path).catch(failedTo(translate("notice.openFile", { name: entry.name })));
+      return;
+    }
+    setDirExpanded(entry.path, !expanded);
+  };
+
+  const active = openFilePath === entry.path;
+  const isDropTarget = entry.is_dir && dnd.dropTarget === entry.path;
+
+  const press = usePathDrag((s) => s.press);
+  const dragging = usePathDrag((s) => s.path);
+
+  return (
+    <div>
+      <button
+        onClick={toggle}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onMenu({ entry, ignored, x: e.clientX, y: e.clientY });
+        }}
+        onPointerDown={(e) => {
+          // Left button only: a right-click opens the menu and a middle-click
+          // is not a drag either.
+          if (e.button === 0) press(entry.path, e.clientX, e.clientY);
+        }}
+        onPointerEnter={() => {
+          if (dragging !== null && dragging !== entry.path) {
+            dnd.onHover(entry.is_dir ? entry.path : null);
+          }
+        }}
+        onPointerLeave={() => {
+          if (isDropTarget) dnd.onHover(null);
+        }}
+        onPointerUp={(e) => {
+          if (dragging === null || dragging === entry.path) return;
+          e.stopPropagation();
+          dnd.onDropInto(dragging, entry);
+          dnd.onHover(null);
+        }}
+        title={ignored ? t("tree.ignored") : undefined}
+        className={`flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left hover:bg-elevated ${
+          active ? "bg-accent-soft text-accent" : ignored ? "text-muted" : "text-fg"
+        } ${isDropTarget ? "bg-accent-soft outline-1 outline-accent" : ""}`}
+        style={{ paddingLeft: depth * 12 + 6 }}
+      >
+        {entry.is_dir ? (
+          <>
+            {expanded ? (
+              <ChevronDown size={13} className="shrink-0 text-muted" />
+            ) : (
+              <ChevronRight size={13} className="shrink-0 text-muted" />
+            )}
+            {/* The folder icon carries the accent, so it has to dim too - a
+                bright folder over a grey name reads as a rendering slip. */}
+            {expanded ? (
+              <FolderOpen size={14} className={`shrink-0 ${ignored ? "text-muted" : "text-accent"}`} />
+            ) : (
+              <Folder size={14} className={`shrink-0 ${ignored ? "text-muted" : "text-accent"}`} />
+            )}
+          </>
+        ) : (
+          <File size={14} className="ml-[13px] shrink-0 text-muted" />
+        )}
+        <span className="truncate">{entry.name}</span>
+        {(() => {
+          const badge = badges.get(pathKey(entry.path));
+          return badge ? (
+            <span className={`ml-auto shrink-0 pr-1 font-mono text-[10px] ${badge.color}`}>
+              {badge.label}
+            </span>
+          ) : null;
+        })()}
+      </button>
+      {expanded && unreadable !== null && (
+        <div
+          role="alert"
+          title={unreadable}
+          className="truncate py-0.5 pr-1 text-[11px] text-danger"
+          style={{ paddingLeft: (depth + 1) * 12 + 6 + 13 }}
+        >
+          {t("tree.listFailed", { reason: unreadable })}
+        </div>
+      )}
+      {expanded &&
+        children?.map((c) => (
+          <TreeNode
+            key={c.path}
+            entry={c}
+            depth={depth + 1}
+            onMenu={onMenu}
+            dnd={dnd}
+            badges={badges}
+            ignoredPaths={ignoredPaths}
+            ignored={ignored || ignoredPaths.has(pathKey(c.path))}
+          />
+        ))}
+    </div>
+  );
+}
+
+/**
+ * The label that follows the pointer while something is being dragged.
+ *
+ * An HTML5 drag draws its own ghost; a pointer drag draws nothing, and a
+ * gesture with no feedback reads as a gesture that failed. Rendered once, at
+ * the tree root, and positioned rather than reflowed so dragging costs no
+ * layout.
+ */
+function DragGhost() {
+  const { path, x, y } = usePathDrag();
+  if (path === null) return null;
+  return (
+    <span
+      className="pointer-events-none fixed z-50 rounded border border-accent bg-panel px-1.5 py-0.5 text-[11px] text-fg shadow-lg"
+      style={{ left: x + 10, top: y + 10 }}
+    >
+      {nameOf(path)}
+    </span>
+  );
+}
+
+/**
+ * Runs a git action on the repository an entry lives in, naming the entry the
+ * way git does there. The panel is moved to that repository first, since that
+ * is the one every operation acts on - and where the result shows.
+ */
+function inItsRepository<T>(path: string, act: (relative: string) => T): T | undefined {
+  const git = useGit.getState();
+  const repository = repositoryOf(path, git.repositories);
+  if (repository === null) return undefined;
+  git.selectRepository(repository);
+  return act(relativeTo(repository, path));
+}
+
+export function FileTree() {
+  const { rootPath, treeVersion, refreshTree, handlePathDeleted, handlePathRenamed } = useWorkspace();
+  const { openFolder, closeFolder, openBlame } = useWorkspace();
+  const repositories = useGit((s) => s.repositories);
+  /** The repository an entry lives in, or null - a workspace can hold several, or none. */
+  const repositoryAt = (path: string) => repositoryOf(path, repositories);
+  const [entries, setEntries] = useState<DirEntry[]>([]);
+  const [menu, setMenu] = useState<MenuTarget | null>(null);
+  const [modal, setModal] = useState<ModalAction | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [problem, setProblem] = useState<TreeProblem | null>(null);
+  const dragging = usePathDrag((s) => s.path);
+  const cancelDrag = usePathDrag((s) => s.cancel);
+  const t = useT();
+
+  /** Moves `sourcePath` into `targetDir` (same-name, VS Code semantics). */
+  const moveInto = useCallback(
+    async (sourcePath: string, targetDir: string) => {
+      const name = nameOf(sourcePath);
+      if (!name) return;
+      const invalid =
+        targetDir === sourcePath ||
+        targetDir === parentOf(sourcePath) || // already there
+        targetDir.startsWith(`${sourcePath}\\`) || // can't move a folder into itself
+        targetDir.startsWith(`${sourcePath}/`);
+      if (invalid) return;
+      setProblem(null);
+      try {
+        const to = `${targetDir}/${name}`;
+        await invoke("rename_path", { from: sourcePath, to });
+        handlePathRenamed(sourcePath, to);
+        refreshTree();
+      } catch (error: unknown) {
+        setProblem({ what: t("tree.moveFailed", { name }), reason: reasonOf(error) });
+      }
+    },
+    [handlePathRenamed, refreshTree, t],
+  );
+
+  const dnd: TreeDnd = {
+    dropTarget,
+    onHover: setDropTarget,
+    onDropInto: (sourcePath, entry) => {
+      // Dropping on a file moves next to it — into its containing folder.
+      void moveInto(sourcePath, entry.is_dir ? entry.path : parentOf(entry.path));
+    },
+  };
+
+  // Every repository's, not only the one the panel shows: the tree is the whole workspace.
+  const statuses = useGit((s) => s.statuses);
+  const ignoredIn = useGit((s) => s.ignoredIn);
+  const badges: GitBadges = useMemo(() => {
+    const map: GitBadges = new Map();
+    if (!rootPath) return map;
+    for (const [repository, status] of Object.entries(statuses)) {
+      for (const file of status?.files ?? []) {
+        const worktreeChanged = file.unstaged !== " " && file.unstaged !== ".";
+        const letter = file.conflicted
+          ? "!"
+          : file.unstaged === "?"
+            ? "U"
+            : worktreeChanged
+              ? file.unstaged
+              : file.staged;
+        const path = inRepository(repository, file.path);
+        map.set(pathKey(path), { label: letter, color: badgeColorOf(letter) });
+        // Every folder up to the workspace gets a dot, so a change shows while
+        // collapsed - the repository's own folder among them.
+        for (const folder of foldersUpTo(path, rootPath)) {
+          const key = pathKey(folder);
+          if (!map.has(key)) map.set(key, { label: "●", color: "text-accent" });
+        }
+      }
+    }
+    return map;
+  }, [statuses, rootPath]);
+
+  /**
+   * Absolute paths git ignores, as the tree keys them.
+   *
+   * Grey rather than hidden, which is the choice VS Code made and the right one
+   * here too: `.env`, `dist/` and a build log are files people open on purpose,
+   * and a tree that pretends they do not exist sends them to Explorer. The
+   * colour is the whole message - this is not part of the repository.
+   */
+  const ignoredPaths: ReadonlySet<string> = useMemo(
+    () =>
+      new Set(
+        Object.entries(ignoredIn).flatMap(([repository, paths]) =>
+          (paths ?? []).map((path) => pathKey(inRepository(repository, path))),
+        ),
+      ),
+    [ignoredIn],
+  );
+
+  /**
+   * Absolute paths git has never been told about.
+   *
+   * `git_status` runs with `--untracked-files=all`, so every untracked file is
+   * a record of its own here - which is what makes "would ignoring this do
+   * anything?" answerable without asking git a second question.
+   */
+  const untrackedPaths: string[] = useMemo(
+    () =>
+      Object.entries(statuses).flatMap(([repository, status]) =>
+        (status?.files ?? [])
+          .filter((file) => file.unstaged === "?")
+          .map((file) => pathKey(inRepository(repository, file.path))),
+      ),
+    [statuses],
+  );
+
+  useEffect(() => {
+    if (!rootPath) return;
+    let stale = false;
+    invoke<DirEntry[]>("list_dir", { path: rootPath })
+      .then((list) => {
+        if (!stale) setEntries(list);
+      })
+      .catch((error: unknown) => {
+        if (stale) return;
+        setProblem({ what: t("tree.rootFailed", { name: nameOf(rootPath) }), reason: reasonOf(error) });
+      });
+    return () => {
+      stale = true;
+    };
+  }, [rootPath, treeVersion, t]);
+
+  const runModalAction = useCallback(
+    async (value: string) => {
+      if (!modal) return;
+      setProblem(null);
+      try {
+        switch (modal.kind) {
+          case "new-file":
+            await invoke("write_file", { path: `${modal.dirPath}/${value}`, content: "" });
+            break;
+          case "new-folder":
+            await invoke("create_dir", { path: `${modal.dirPath}/${value}` });
+            break;
+          case "rename": {
+            const to = `${parentOf(modal.entry.path)}/${value}`;
+            await invoke("rename_path", { from: modal.entry.path, to });
+            handlePathRenamed(modal.entry.path, to);
+            break;
+          }
+          case "delete":
+            await invoke("delete_path", { path: modal.entry.path });
+            handlePathDeleted(modal.entry.path);
+            break;
+          case "untrack": {
+            // The file stays where it is; only git stops carrying it.
+            await inItsRepository(modal.entry.path, (relative) =>
+              useGit.getState().untrackAndIgnore([relative]),
+            );
+            break;
+          }
+        }
+        refreshTree();
+      } catch (error: unknown) {
+        const { key, name } = failureOf(modal, value);
+        setProblem({ what: t(key, { name }), reason: reasonOf(error) });
+      } finally {
+        setModal(null);
+      }
+    },
+    [modal, refreshTree, handlePathDeleted, handlePathRenamed, t],
+  );
+
+  if (!rootPath) return null;
+
+  /**
+   * Whether adding this entry to `.gitignore` would change anything.
+   *
+   * Git ignores only what it is not already tracking, so the entry is offered
+   * for an untracked file - and for a folder that holds one, which is the case
+   * ignoring a folder exists for. Something already ignored is grey on screen
+   * and needs no second pattern.
+   */
+  const canIgnore = (target: MenuTarget): boolean => {
+    if (!ignorable(target)) return false;
+    const key = pathKey(target.entry.path);
+    return target.entry.is_dir
+      ? untrackedPaths.some((path) => path.startsWith(`${key}\\`))
+      : untrackedPaths.includes(key);
+  };
+
+  /**
+   * Whether this entry is git's business at all: inside a repository, not the
+   * repository itself, and not already grey.
+   */
+  const ignorable = (target: MenuTarget): boolean => {
+    const repository = repositoryAt(target.entry.path);
+    return repository !== null && !target.ignored && pathKey(target.entry.path) !== pathKey(repository);
+  };
+
+  /**
+   * The same wish for a path git already tracks, which `.gitignore` alone cannot
+   * grant - the pattern would be read and skipped. Untracking first is what
+   * makes it work, and it is a different promise: the file stays on disk, but
+   * the next commit deletes it for everyone else. So it is a separate entry,
+   * worded as what it does, rather than the same one quietly doing more.
+   */
+  const canUntrack = (target: MenuTarget): boolean =>
+    ignorable(target) && !canIgnore(target) && !untrackedPaths.includes(pathKey(target.entry.path));
+
+  const menuItems = (target: MenuTarget): MenuItem[] => {
+    const items: MenuItem[] = [];
+    if (!target.entry.is_dir) {
+      items.push({
+        label: t("menu.open"),
+        icon: <File size={14} />,
+        onClick: () => {
+          openOrReveal(target.entry.path).catch(
+            failedTo(translate("notice.openFile", { name: target.entry.name })),
+          );
+        },
+      });
+      if (repositoryAt(target.entry.path) !== null) {
+        items.push({
+          label: t("menu.gitBlame"),
+          icon: <FileClock size={14} />,
+          onClick: () => {
+            inItsRepository(target.entry.path, openBlame);
+          },
+        });
+      }
+    }
+    items.push({
+      label: t("flows.menu.runWith"),
+      icon: <Workflow size={13} />,
+      onClick: () => {
+        useFlows.getState().offerInput({
+          text: "",
+          items: [{ kind: target.entry.is_dir ? "folder" : "file", ref: target.entry.path }],
+          params: {},
+        });
+        useLayout.getState().setSidebarView("flows");
+        useWorkspace.getState().openFlows();
+      },
+    });
+    items.push({
+      label: t("menu.revealExplorer"),
+      icon: <ExternalLink size={14} />,
+      onClick: () => {
+        setProblem(null);
+        revealItemInDir(target.entry.path).catch((error: unknown) => {
+          setProblem({
+            what: t("tree.revealFailed", { name: nameOf(target.entry.path) }),
+            reason: reasonOf(error),
+          });
+        });
+      },
+    });
+    if (target.entry.is_dir) {
+      items.push(
+        {
+          label: t("menu.newFile"),
+          icon: <FilePlus size={14} />,
+          onClick: () => {
+            setModal({ kind: "new-file", dirPath: target.entry.path });
+          },
+        },
+        {
+          label: t("menu.newFolder"),
+          icon: <FolderPlus size={14} />,
+          onClick: () => {
+            setModal({ kind: "new-folder", dirPath: target.entry.path });
+          },
+        },
+      );
+    }
+    if (canIgnore(target)) {
+      items.push({
+        label: t("menu.gitIgnore"),
+        icon: <EyeOff size={14} />,
+        onClick: () => {
+          inItsRepository(target.entry.path, (relative) => {
+            void useGit.getState().ignore([relative]);
+          });
+        },
+      });
+    } else if (canUntrack(target)) {
+      items.push({
+        label: t("menu.gitUntrack"),
+        icon: <EyeOff size={14} />,
+        onClick: () => {
+          setModal({ kind: "untrack", entry: target.entry });
+        },
+      });
+    }
+    if (target.entry.path === rootPath) {
+      // The workspace root can be switched or closed — never renamed/deleted from here.
+      items.push(
+        {
+          label: t("welcome.openFolder"),
+          icon: <FolderOpen size={14} />,
+          onClick: () => {
+            void openFolder();
+          },
+        },
+        {
+          label: t("menu.closeFolder"),
+          icon: <X size={14} />,
+          onClick: closeFolder,
+        },
+      );
+      return items;
+    }
+    items.push(
+      {
+        label: t("menu.rename"),
+        icon: <Pencil size={14} />,
+        onClick: () => {
+          setModal({ kind: "rename", entry: target.entry });
+        },
+      },
+      {
+        label: t("menu.delete"),
+        icon: <Trash2 size={14} />,
+        danger: true,
+        onClick: () => {
+          setModal({ kind: "delete", entry: target.entry });
+        },
+      },
+    );
+    return items;
+  };
+
+  return (
+    <div
+      className="flex h-full flex-col overflow-y-auto py-1 pr-1 select-none"
+      onPointerUp={() => {
+        // A release that reached no target ends the drag rather than leaving
+        // the ghost following the pointer around.
+        if (dragging !== null) cancelDrag();
+      }}
+    >
+      <DragGhost />
+      <div
+        className={`group flex items-center gap-1 px-2 py-1 text-[11px] font-semibold tracking-wider text-muted uppercase ${
+          dropTarget === rootPath ? "bg-accent-soft text-accent" : ""
+        }`}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setMenu({
+            entry: { name: "", path: rootPath, is_dir: true },
+            ignored: false,
+            x: e.clientX,
+            y: e.clientY,
+          });
+        }}
+        onPointerEnter={() => {
+          if (dragging !== null) setDropTarget(rootPath);
+        }}
+        onPointerLeave={() => {
+          if (dropTarget === rootPath) setDropTarget(null);
+        }}
+        onPointerUp={() => {
+          if (dragging === null) return;
+          void moveInto(dragging, rootPath);
+          setDropTarget(null);
+        }}
+      >
+        <span className="min-w-0 flex-1 truncate">{nameOf(rootPath)}</span>
+        <button
+          onClick={() => void openFolder()}
+          title={t("welcome.openFolder")}
+          className="shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-elevated hover:text-fg"
+        >
+          <FolderOpen size={12} />
+        </button>
+        <button
+          onClick={closeFolder}
+          title={t("menu.closeFolder")}
+          className="shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-elevated hover:text-danger"
+        >
+          <X size={12} />
+        </button>
+      </div>
+      {problem !== null && (
+        <div
+          role="alert"
+          className="mx-1 mb-1 flex items-start gap-1 rounded bg-danger/10 px-1.5 py-1 text-[11px]"
+        >
+          <span className="min-w-0 flex-1 break-words">
+            <span className="text-danger">{problem.what}</span>
+            <span className="text-muted"> - {problem.reason}</span>
+          </span>
+          <button
+            onClick={() => {
+              setProblem(null);
+            }}
+            title={t("tree.dismiss")}
+            className="shrink-0 rounded p-0.5 text-muted hover:bg-elevated hover:text-fg"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+      {entries.map((e) => (
+        <TreeNode
+          key={e.path}
+          entry={e}
+          depth={0}
+          onMenu={setMenu}
+          dnd={dnd}
+          badges={badges}
+          ignoredPaths={ignoredPaths}
+          ignored={ignoredPaths.has(pathKey(e.path))}
+        />
+      ))}
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems(menu)}
+          onClose={() => {
+            setMenu(null);
+          }}
+        />
+      )}
+      {modal && modal.kind !== "delete" && modal.kind !== "untrack" && (
+        <PromptModal
+          title={
+            modal.kind === "new-file"
+              ? t("modal.newFileTitle")
+              : modal.kind === "new-folder"
+                ? t("modal.newFolderTitle")
+                : t("modal.renameTitle")
+          }
+          initialValue={modal.kind === "rename" ? modal.entry.name : ""}
+          onSubmit={(v) => {
+            void runModalAction(v);
+          }}
+          onClose={() => {
+            setModal(null);
+          }}
+        />
+      )}
+      {modal && modal.kind === "untrack" && (
+        <PromptModal
+          title={t("modal.untrackTitle", { name: modal.entry.name })}
+          hint={t("modal.untrackHint")}
+          onSubmit={() => {
+            void runModalAction("");
+          }}
+          onClose={() => {
+            setModal(null);
+          }}
+        />
+      )}
+      {modal && modal.kind === "delete" && (
+        <PromptModal
+          title={t("modal.deleteTitle", { name: modal.entry.name })}
+          hint={t("modal.deleteHint")}
+          danger
+          onSubmit={() => {
+            void runModalAction("");
+          }}
+          onClose={() => {
+            setModal(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}

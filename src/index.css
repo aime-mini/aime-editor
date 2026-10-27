@@ -1,0 +1,589 @@
+@import "tailwindcss";
+
+/*
+ * Dark-first theme — one accent hue in two shades;
+ * light via [data-theme="light"].
+ *
+ * `--accent` is the hue as a mark: text, icons, borders, the unsaved dot. It is
+ * light because it has to read on a near-black panel. `--accent-strong` is the
+ * same hue as a *surface* under white text, where light is exactly wrong: white
+ * on `--accent` measures 3.07:1, under the 4.5:1 a 13px label needs, while the
+ * block itself sits 5.78:1 above the chrome - a button that shouts and a label
+ * that whispers. The strong shade reverses that (5.35:1 for the label).
+ */
+:root {
+  --bg: #16181d;
+  --bg-panel: #1c1f26;
+  --bg-elevated: #23272f;
+  --border: #2b303a;
+  --text: #d7dae0;
+  --text-muted: #8b919d;
+  --accent: #6c8cff;
+  --accent-strong: #4c5fd7;
+  --accent-soft: rgba(108, 140, 255, 0.14);
+  --danger: #e5534b;
+  --warn: #daaa3f;
+  --ok: #57ab5a;
+
+  /*
+   * One hue per family of cloud service, so a resource list reads at a glance
+   * the way a cloud console does - compute is one colour, data another, and
+   * the eye finds the databases without reading a word.
+   *
+   * These are Aime's own colours, not any vendor's. AWS states its icon set is
+   * for "architecture diagrams... whitepapers, presentations, data sheets and
+   * posters" rather than a third-party product's interface, and Microsoft ships
+   * its Azure artwork under its own terms, so neither set is redistributed
+   * here. What the colour carries is
+   * the KIND of thing, which is what a reader is actually scanning for.
+   *
+   * Picked to hold up on the near-black panel and to stay distinguishable for
+   * the common forms of colour blindness: the pairs that matter most - compute
+   * vs data, storage vs network - differ in lightness as well as hue.
+   */
+  --svc-compute: #6c8cff;
+  --svc-data: #b98cff;
+  --svc-storage: #45b8c4;
+  --svc-network: #4fb0e8;
+  --svc-security: #daaa3f;
+  --svc-identity: #ef7a9b;
+  --svc-observe: #57ab5a;
+  --svc-integrate: #e8894a;
+  --svc-other: #8b919d;
+}
+
+:root[data-theme="light"] {
+  --bg: #f7f8fa;
+  --bg-panel: #ffffff;
+  --bg-elevated: #eef0f4;
+  --border: #d9dde4;
+  --text: #24292f;
+  --text-muted: #6b7280;
+  --accent: #4f6ef2;
+  --accent-strong: #4460e0;
+  --accent-soft: rgba(79, 110, 242, 0.12);
+  --danger: #cf222e;
+  --warn: #9a6700;
+  --ok: #1a7f37;
+
+  /* The same families, darkened to carry on white (see the dark block). */
+  --svc-compute: #3f5bd6;
+  --svc-data: #7c3fd0;
+  --svc-storage: #0f7f8c;
+  --svc-network: #1170ad;
+  --svc-security: #8a5d00;
+  --svc-identity: #c03f66;
+  --svc-observe: #1a7f37;
+  --svc-integrate: #b45309;
+  --svc-other: #6b7280;
+}
+
+@theme {
+  --color-bg: var(--bg);
+  --color-panel: var(--bg-panel);
+  --color-elevated: var(--bg-elevated);
+  --color-line: var(--border);
+  --color-fg: var(--text);
+  --color-muted: var(--text-muted);
+  --color-svc-compute: var(--svc-compute);
+  --color-svc-data: var(--svc-data);
+  --color-svc-storage: var(--svc-storage);
+  --color-svc-network: var(--svc-network);
+  --color-svc-security: var(--svc-security);
+  --color-svc-identity: var(--svc-identity);
+  --color-svc-observe: var(--svc-observe);
+  --color-svc-integrate: var(--svc-integrate);
+  --color-svc-other: var(--svc-other);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-warn: var(--warn);
+  --color-ok: var(--ok);
+  --font-sans: Inter, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, monospace;
+
+  /*
+   * Waiting on the AI. Both are slow and small on purpose: a panel that has to
+   * stay watchable for minutes cannot flash, and the only thing these have to
+   * say is "still going" - the answer itself is the content.
+   */
+  --animate-thinking: thinking 1.4s ease-in-out infinite;
+  --animate-caret: caret 1.1s step-end infinite;
+  /*
+   * The line that says what the AI is doing right now. Unlike the two above it
+   * has to be seen from the corner of an eye while the reader is elsewhere in
+   * the conversation - a subtle mark there reads as a frozen app - so its light
+   * travels, and a bar sweeps along its edge.
+   */
+  --animate-shimmer: shimmer 2.2s linear infinite;
+  --animate-sweep: sweep 1.6s ease-in-out infinite;
+}
+
+/* A highlight passing through text, left to right; the gradient lives on `.text-shimmer`. */
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+/* A short bar crossing its track, for work whose end cannot be known. */
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(350%);
+  }
+}
+
+.text-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--text-muted) 0%,
+    var(--text-muted) 38%,
+    var(--text) 50%,
+    var(--text-muted) 62%,
+    var(--text-muted) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  color: transparent;
+}
+
+/* One dot of the thinking wave; the three are offset by their animation-delay. */
+@keyframes thinking {
+  0%,
+  70%,
+  100% {
+    opacity: 0.2;
+  }
+  35% {
+    opacity: 1;
+  }
+}
+
+/* A text caret: on, off, no fade - anything softer reads as a glow. */
+@keyframes caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/*
+ * The logo drawing itself (`AimeMark.tsx`), in the starting window's timing
+ * (`splash.html`). The spark flares again every five seconds: on a screen that
+ * stays up while someone reads it, often enough to be seen and rarely enough
+ * not to be watched.
+ */
+.aime-mark {
+  overflow: visible;
+}
+.aime-mark .tile,
+.aime-mark .spark {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.aime-mark .tile {
+  opacity: 0;
+  animation: aime-mark-tile 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.aime-mark .prompt {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: aime-mark-draw 0.5s 0.3s cubic-bezier(0.65, 0, 0.35, 1) forwards;
+}
+.aime-mark .cursor {
+  opacity: 0;
+  animation: caret 1.06s 0.75s step-end infinite;
+}
+.aime-mark .spark {
+  transform: scale(0);
+  animation:
+    aime-mark-flare 0.7s 0.85s cubic-bezier(0.34, 1.56, 0.64, 1) forwards,
+    aime-mark-twinkle 5s 2s ease-in-out infinite;
+}
+@keyframes aime-mark-tile {
+  from {
+    opacity: 0;
+    transform: scale(0.6) rotate(-8deg);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes aime-mark-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes aime-mark-flare {
+  from {
+    transform: scale(0) rotate(-90deg);
+  }
+  to {
+    transform: scale(1) rotate(0deg);
+  }
+}
+@keyframes aime-mark-twinkle {
+  0%,
+  86%,
+  100% {
+    transform: scale(1) rotate(0deg);
+  }
+  93% {
+    transform: scale(1.3) rotate(45deg);
+  }
+}
+
+/*
+ * Someone who asked the system for less motion still needs to see that the AI
+ * is working, so the marks stay - they just stop moving.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .animate-thinking,
+  .animate-caret,
+  .animate-shimmer,
+  .animate-sweep,
+  .animate-spin,
+  .animate-pulse {
+    animation: none;
+  }
+  /* The logo is drawn complete rather than not at all. */
+  .aime-mark * {
+    animation: none;
+    opacity: 1;
+    stroke-dashoffset: 0;
+    transform: none;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Git change marks in the Monaco line-decorations margin */
+.git-gutter-added {
+  border-left: 3px solid var(--ok);
+}
+.git-gutter-modified {
+  border-left: 3px solid var(--accent);
+}
+.git-gutter-deleted {
+  border-left: 3px solid var(--danger);
+}
+
+/* Inline blame on the cursor line (GitLens style) */
+.blame-inline {
+  color: var(--text-muted);
+  opacity: 0.55;
+  font-style: italic;
+}
+
+/* Breakpoints and the paused line, in Monaco's glyph margin */
+.debug-breakpoint::after {
+  content: "";
+  display: block;
+  width: 10px;
+  height: 10px;
+  margin: 4px auto 0;
+  border-radius: 50%;
+  background: var(--danger);
+}
+/* A breakpoint with a rule: hollow, so it never passes for an unconditional one. */
+.debug-breakpoint-rule::after {
+  content: "";
+  display: block;
+  width: 10px;
+  height: 10px;
+  margin: 4px auto 0;
+  border-radius: 50%;
+  border: 2px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 25%, transparent);
+}
+.debug-execution-arrow::after {
+  content: "▶";
+  display: block;
+  color: var(--warn);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+.debug-execution-line {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+}
+
+/*
+ * A Markdown file, read (`MarkdownDocument.tsx`). GitHub's way of setting a
+ * README - the place most of these files are written for - in Aime's colours,
+ * so the same document reads the same in the editor as on the repository page.
+ */
+.markdown-doc {
+  --md-important: #a371f7;
+  max-width: 860px;
+  margin: 0 auto;
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--text);
+  overflow-wrap: break-word;
+}
+:root[data-theme="light"] .markdown-doc {
+  --md-important: #8250df;
+}
+.markdown-doc > :first-child {
+  margin-top: 0;
+}
+.markdown-doc :is(p, ul, ol, blockquote, pre, table, details, .markdown-alert, .md-mermaid, .katex-display) {
+  margin: 0 0 1em;
+}
+.markdown-doc :is(h1, h2, h3, h4, h5, h6) {
+  margin: 1.6em 0 0.6em;
+  font-weight: 600;
+  line-height: 1.3;
+  scroll-margin-top: 12px;
+}
+.markdown-doc h1 {
+  font-size: 2em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+}
+.markdown-doc h2 {
+  font-size: 1.5em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+}
+.markdown-doc h3 {
+  font-size: 1.25em;
+}
+.markdown-doc h4 {
+  font-size: 1em;
+}
+.markdown-doc :is(h5, h6) {
+  font-size: 0.9em;
+  color: var(--text-muted);
+}
+.markdown-doc a {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+.markdown-doc a:hover {
+  text-decoration: underline;
+}
+.markdown-doc :is(strong, b) {
+  font-weight: 600;
+}
+.markdown-doc :is(ul, ol) {
+  padding-left: 2em;
+}
+.markdown-doc ul {
+  list-style: disc;
+}
+.markdown-doc ol {
+  list-style: decimal;
+}
+.markdown-doc li + li,
+.markdown-doc li > :is(ul, ol) {
+  margin-top: 0.25em;
+}
+.markdown-doc li > :is(ul, ol) {
+  margin-bottom: 0;
+}
+.markdown-doc .task-list-item {
+  list-style: none;
+}
+.markdown-doc .task-list-item-checkbox {
+  margin: 0 0.4em 0.2em -1.4em;
+  vertical-align: middle;
+  accent-color: var(--accent);
+}
+.markdown-doc blockquote {
+  padding: 0 1em;
+  color: var(--text-muted);
+  border-left: 0.25em solid var(--border);
+}
+.markdown-doc hr {
+  height: 0.25em;
+  margin: 1.5em 0;
+  border: 0;
+  background: var(--border);
+}
+.markdown-doc img {
+  display: inline-block;
+  max-width: 100%;
+}
+.markdown-doc :not(pre) > code {
+  padding: 0.2em 0.4em;
+  font-family: var(--font-mono);
+  font-size: 85%;
+  border-radius: 6px;
+  background: var(--bg-elevated);
+}
+.markdown-doc pre {
+  position: relative;
+  padding: 14px 16px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+.markdown-doc pre code {
+  font-family: inherit;
+  white-space: pre;
+}
+.markdown-doc .md-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 9px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.markdown-doc pre:hover .md-copy,
+.markdown-doc .md-copy:focus-visible {
+  opacity: 1;
+}
+.markdown-doc .md-copy:hover {
+  color: var(--text);
+}
+.markdown-doc table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow: auto;
+  border-collapse: collapse;
+}
+.markdown-doc :is(th, td) {
+  padding: 6px 13px;
+  border: 1px solid var(--border);
+}
+.markdown-doc th {
+  font-weight: 600;
+}
+.markdown-doc tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--bg-elevated) 55%, transparent);
+}
+.markdown-doc .md-front-matter th {
+  text-align: left;
+  color: var(--text-muted);
+}
+.markdown-doc kbd {
+  padding: 0.15em 0.4em;
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--bg-elevated);
+}
+.markdown-doc .markdown-alert {
+  --md-alert: var(--accent);
+  padding: 0.5em 1em;
+  border-left: 0.25em solid var(--md-alert);
+}
+.markdown-doc .markdown-alert > :last-child {
+  margin-bottom: 0;
+}
+.markdown-doc .markdown-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  font-weight: 600;
+  color: var(--md-alert);
+}
+.markdown-doc .markdown-alert-title svg {
+  fill: currentColor;
+}
+.markdown-doc .markdown-alert-tip {
+  --md-alert: var(--ok);
+}
+.markdown-doc .markdown-alert-important {
+  --md-alert: var(--md-important);
+}
+.markdown-doc .markdown-alert-warning {
+  --md-alert: var(--warn);
+}
+.markdown-doc .markdown-alert-caution {
+  --md-alert: var(--danger);
+}
+.markdown-doc .footnotes {
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+.markdown-doc .footnotes-sep {
+  height: 1px;
+}
+.markdown-doc .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.markdown-doc .md-mermaid {
+  display: flex;
+  justify-content: center;
+  padding: 16px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.markdown-doc .md-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+.markdown-doc .md-mermaid-error {
+  justify-content: flex-start;
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+
+/* The flow canvas (@xyflow/react) in Aime's colours, both themes. */
+.react-flow {
+  --xy-background-color: var(--bg);
+  --xy-minimap-background-color: var(--bg-panel);
+  --xy-minimap-mask-background-color: rgba(0, 0, 0, 0.35);
+  --xy-edge-stroke: #4a5160;
+  --xy-handle-background-color: var(--bg-elevated);
+  --xy-handle-border-color: var(--border);
+  --xy-node-background-color: transparent;
+  --xy-node-border: none;
+  --xy-node-boxshadow-selected: none;
+}
+.react-flow__edge-textbg {
+  fill: var(--bg-elevated);
+}

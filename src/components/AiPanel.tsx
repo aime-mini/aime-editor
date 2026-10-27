@@ -1,0 +1,1160 @@
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Activity,
+  ArrowDown,
+  Bot,
+  Check,
+  ChevronDown,
+  CircleStop,
+  Cpu,
+  Eye,
+  History,
+  FolderPlus,
+  KeyRound,
+  MessageSquare,
+  Paperclip,
+  Plug,
+  Plus,
+  Loader2,
+  RefreshCw,
+  SendHorizontal,
+  Shield,
+  ShieldOff,
+  SlidersHorizontal,
+  Undo2,
+} from "lucide-react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { open } from "@tauri-apps/plugin-dialog";
+import { useT } from "../i18n";
+import { usePathDrag } from "../stores/pathDrag";
+import { hasReadme, startersFor } from "../lib/aiStarters";
+import { fuzzyFilter } from "../lib/fuzzy";
+import { activeMention, applyMention } from "../lib/mentions";
+import { currentView, describeView, focusOf } from "../lib/viewContext";
+import { projectFiles } from "../lib/projectFiles";
+import { changedFileCount, useGit } from "../stores/git";
+import { useTasks } from "../stores/tasks";
+import { useAi, type TurnContext } from "../stores/ai";
+import { useComposer } from "../stores/composer";
+import { runFlowCommand } from "../lib/flows/chatCommand";
+import { useLayout } from "../stores/layout";
+import { runInTerminal } from "../stores/terminals";
+import { useWorkspace } from "../stores/workspace";
+import { Panel, PanelGroup } from "react-resizable-panels";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { Markdown } from "./Markdown";
+import { ResizeHandle } from "./ResizeHandle";
+import { capabilitiesOf, effortsOf, modelsOf, type ProviderOption } from "../lib/providers";
+import { autoHints, expectationKey } from "../lib/ranOn";
+import type {
+  ApiRetry,
+  BackgroundTask,
+  ChatMessage,
+  MessagePart,
+  Permission,
+  TokenUsage,
+} from "../lib/types";
+import type { TranslationKey } from "../i18n/en";
+import { StreamingCaret, ThinkingDots, Waiting } from "./Waiting";
+import { BackgroundNotice, ToolRun, type ToolPart } from "./ToolActivity";
+import { TurnRecovery } from "./TurnRecovery";
+import { LiveActivity, QueuedPrompts } from "./LiveActivity";
+import { useStickToBottom } from "./useStickToBottom";
+import { formatElapsed, useSecondsSince } from "./useSecondsSince";
+import { loggedAs } from "../stores/notices";
+
+/**
+ * The three permission levels, in the order the shield chip cycles through.
+ * Colour follows risk, not "on/off": the least guarded level is the one that
+ * stands out.
+ */
+const PERMISSION_UI: Record<Permission, { icon: typeof Shield; className: string; label: TranslationKey }> = {
+  full: { icon: ShieldOff, className: "text-warn", label: "ai.permission.full" },
+  edits: { icon: Shield, className: "text-accent", label: "ai.permission.edits" },
+  readOnly: { icon: Eye, className: "text-muted", label: "ai.permission.readOnly" },
+};
+
+/** Files offered at once for an `@` mention - a list, not a directory listing. */
+const MENTION_LIMIT = 8;
+
+/** Stable empty list: a fresh array every render would re-run everything. */
+const NO_FILES: string[] = [];
+
+/** How long the "already signed in" confirmation stays on screen. */
+const SIGNED_IN_NOTICE_MS = 4000;
+
+/**
+ * The shortest the prompt box can be without losing anything.
+ *
+ * Its own content sets this: the border above it, 10px of padding twice, the
+ * box's border, 6px of inner padding twice, and the 28px send button - about
+ * 63px, so 72 leaves a line of text visible next to the button.
+ */
+const COMPOSER_FLOOR_PX = 72;
+
+/** Changes what the prompt box holds; module-level, so every handler reads it as the same function. */
+function writeDraft(next: string | ((current: string) => string)): void {
+  useComposer.getState().setText(next);
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+/**
+ * Compact chip + styled menu for the model / effort pickers — a native
+ * <select> can't be themed, so this reuses the app's own ContextMenu look.
+ *
+ * @param autoHint what "Auto" ran on last time, said beside it while Auto is
+ *   the choice - "Auto" alone hides exactly what the reader wants to know.
+ */
+function PickerChip({
+  icon,
+  value,
+  options,
+  title,
+  autoHint = null,
+  onChange,
+}: {
+  icon: ReactNode;
+  value: string;
+  options: ProviderOption[];
+  title: string;
+  autoHint?: string | null;
+  onChange: (value: string) => void;
+}) {
+  const t = useT();
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const hint = value === "" ? autoHint : null;
+  // Options can be empty for a moment while they load from the backend; a
+  // picker with nothing in it is a picker, not a crash.
+  const current = options.find((o) => o.value === value) ?? options.at(0) ?? { value, label: value };
+
+  return (
+    <>
+      <button
+        onClick={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          setMenu({ x: rect.left, y: rect.bottom + 4 });
+        }}
+        title={hint === null ? title : `${title} - ${t("ai.autoStandsFor", { value: hint })}`}
+        className="flex h-[22px] min-w-0 items-center gap-1 rounded-md px-1.5 text-[11px] leading-none whitespace-nowrap text-muted hover:bg-elevated hover:text-fg"
+      >
+        <span className="flex shrink-0 items-center overflow-visible">{icon}</span>
+        <span className="font-medium">{current.label}</span>
+        {hint !== null && <span className="min-w-0 truncate text-fg/80">· {hint}</span>}
+        <ChevronDown size={10} className="shrink-0 opacity-60" />
+      </button>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={options.map((o) => ({
+            label: o.label,
+            icon:
+              o.value === value ? (
+                <Check size={13} className="text-accent" />
+              ) : (
+                <span className="inline-block w-[13px]" />
+              ),
+            onClick: () => {
+              onChange(o.value);
+            },
+          }))}
+          onClose={() => {
+            setMenu(null);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+/** One click moves the agent to the next permission level. */
+function PermissionChip({ permission, onCycle }: { permission: Permission; onCycle: () => void }) {
+  const t = useT();
+  const { icon: Icon, className, label } = PERMISSION_UI[permission];
+  return (
+    <button
+      onClick={onCycle}
+      title={t(label)}
+      className="flex h-[22px] items-center rounded-md px-1.5 text-muted hover:bg-elevated hover:text-fg"
+    >
+      <Icon size={13} className={`shrink-0 ${className}`} />
+    </button>
+  );
+}
+
+/** Session usage breakdown, opened from the Activity button. */
+function UsagePopover({
+  usage,
+  costUsd,
+  showCost,
+  onClose,
+}: {
+  usage: TokenUsage;
+  costUsd: number;
+  /** false for subscription CLIs that report no price — never show a fake $0. */
+  showCost: boolean;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const rows: [string, string][] = [
+    [t("ai.usage.input"), formatTokens(usage.inputTokens)],
+    [t("ai.usage.output"), formatTokens(usage.outputTokens)],
+    [t("ai.usage.cacheRead"), formatTokens(usage.cacheReadTokens)],
+    [t("ai.usage.cacheWrite"), formatTokens(usage.cacheWriteTokens)],
+    ...(showCost ? [[t("ai.usage.cost"), `$${costUsd.toFixed(4)}`] as [string, string]] : []),
+  ];
+  return (
+    <div className="fixed inset-0 z-50" onClick={onClose}>
+      <div
+        className="absolute top-16 right-3 w-52 rounded-lg border border-line bg-elevated p-3 shadow-xl"
+        onClick={(e) => {
+          e.stopPropagation();
+        }}
+      >
+        <p className="mb-2 text-[11px] font-semibold tracking-wider text-muted uppercase">
+          {t("ai.usage.title")}
+        </p>
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex items-center justify-between py-0.5 text-[12px]">
+            <span className="text-muted">{label}</span>
+            <span className="font-mono">{value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Actionable notice about the AI CLI itself (not installed, not signed in).
+ * It never disables the editor — AI is optional by design.
+ */
+function ProviderNotice({
+  tone,
+  message,
+  children,
+}: {
+  tone: "danger" | "warn" | "ok";
+  message: string;
+  children?: ReactNode;
+}) {
+  const toneClasses = {
+    danger: "border-danger/40 bg-danger/10 text-danger",
+    warn: "border-warn/40 bg-warn/10 text-warn",
+    ok: "border-ok/40 bg-ok/10 text-ok",
+  }[tone];
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${toneClasses}`}>
+      <p>{message}</p>
+      {children && <div className="mt-2 flex items-center gap-2">{children}</div>}
+    </div>
+  );
+}
+
+/**
+ * What a turn did to the project, and how to take it back.
+ *
+ * The point of an AI editor is that the AI changes your files - which is only
+ * comfortable if changing them back is one click. Deliberately worded without
+ * a single git term: the user is told how many files moved and offered to undo
+ * it, not offered a stash object.
+ */
+function TurnChanges({ message, index }: { message: ChatMessage; index: number }) {
+  const undoTurn = useAi((s) => s.undoTurn);
+  const running = useAi((s) => s.running);
+  const setSidebarView = useLayout((s) => s.setSidebarView);
+  const [undoing, setUndoing] = useState(false);
+  const t = useT();
+
+  const changed = message.changedFiles ?? [];
+  if (changed.length === 0) return null;
+
+  if (message.undone) {
+    return (
+      <span className="flex items-center gap-1.5 text-[11px] text-muted">
+        <Undo2 size={11} /> {t("ai.turnUndone", { count: String(changed.length) })}
+      </span>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-[11px]">
+      <span className="text-muted" title={changed.join("\n")}>
+        {t("ai.turnChanged", { count: String(changed.length) })}
+      </span>
+      <button
+        onClick={() => {
+          setSidebarView("git");
+        }}
+        className="rounded-md border border-line px-2 py-0.5 text-muted hover:border-accent hover:text-fg"
+      >
+        {t("ai.turnReview")}
+      </button>
+      <button
+        onClick={() => {
+          setUndoing(true);
+          void undoTurn(index).finally(() => {
+            setUndoing(false);
+          });
+        }}
+        disabled={running || undoing}
+        className="flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-muted hover:border-warn hover:text-warn disabled:opacity-40"
+        title={t("ai.turnUndoHint")}
+      >
+        {undoing ? <Loader2 size={10} className="animate-spin" /> : <Undo2 size={10} />}
+        {t("ai.turnUndo")}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * What a finished turn cost and how long it was waited for, whichever of the two
+ * the CLI lets Aime know - Codex reports no price, so it shows the time alone.
+ */
+function TurnFooter({ message }: { message: ChatMessage }) {
+  if (message.role !== "assistant") return null;
+  const facts = [
+    message.costUsd === undefined ? null : `$${message.costUsd.toFixed(4)}`,
+    message.durationMs === undefined ? null : formatElapsed(Math.round(message.durationMs / 1000)),
+  ].filter((fact) => fact !== null);
+  if (facts.length === 0) return null;
+  return <span className="text-[10px] text-muted">{facts.join(" · ")}</span>;
+}
+
+/** What a message is drawn as: its text, and the tool calls between the text folded into runs. */
+type Segment =
+  { kind: "text"; text: string; last: boolean } | { kind: "tools"; tools: ToolPart[]; last: boolean };
+
+function segmentsOf(parts: MessagePart[]): Segment[] {
+  const segments: Segment[] = [];
+  parts.forEach((part, index) => {
+    const last = index === parts.length - 1;
+    const previous = segments.at(-1);
+    if (part.kind === "text") segments.push({ kind: "text", text: part.text, last });
+    else if (previous?.kind === "tools") {
+      previous.tools.push(part);
+      previous.last = last;
+    } else segments.push({ kind: "tools", tools: [part], last });
+  });
+  return segments;
+}
+
+/** Shared by every bubble that is not the live one, so `memo` sees the same value. */
+const NO_TASKS: BackgroundTask[] = [];
+
+/**
+ * @param live this is the turn the AI is writing right now, so its tail carries
+ *   whichever mark says what is happening: nothing written yet, text still
+ *   arriving, or a tool still running.
+ * @param background what the CLI still runs in the background for this turn.
+ * @param retrying the CLI cannot reach the AI service and is trying again - which
+ *   is said instead of "Thinking…", since nothing is being thought about.
+ */
+const MessageBubble = memo(function MessageBubble({
+  message,
+  index,
+  live,
+  background,
+  retrying,
+}: {
+  message: ChatMessage;
+  index: number;
+  live: boolean;
+  background: BackgroundTask[];
+  retrying: ApiRetry | null;
+}) {
+  const isUser = message.role === "user";
+  const t = useT();
+  // What the AI ran in: the folder the paths an answer names are read against.
+  const projectRoot = useAi((s) => s.projectRoot);
+  const lastPart = message.parts.at(-1);
+  const beforeFirstWord = live && lastPart === undefined;
+  const seconds = useSecondsSince(beforeFirstWord);
+  const activeAgents = new Set(background.flatMap((task) => (task.toolUseId ? [task.toolUseId] : [])));
+
+  // A turn the CLI ended without writing a word - it failed to start, or it was
+  // cancelled before it said anything. The error box under the conversation says
+  // why; an empty bubble would only be a second, emptier answer, and the
+  // "Thinking…" this used to keep forever was an untrue one.
+  if (!isUser && lastPart === undefined && !live) return null;
+
+  return (
+    <div className={`flex flex-col gap-1.5 ${isUser ? "items-end" : "items-start"}`}>
+      <div
+        // `break-words` because what the AI quotes back is often a path or a
+        // URL with no space in it, and a bubble capped at 92% cannot wrap what
+        // has no break in it — it just draws past the panel.
+        className={`max-w-[92%] rounded-lg px-3 py-2 leading-relaxed break-words whitespace-pre-wrap ${
+          isUser ? "bg-accent-soft text-fg" : "bg-elevated text-fg"
+        }`}
+      >
+        {beforeFirstWord && !retrying && (
+          <span className="flex items-center gap-2 text-muted">
+            <ThinkingDots />
+            {seconds > 0 ? t("ai.thinkingFor", { seconds }) : t("ai.thinking")}
+          </span>
+        )}
+        {segmentsOf(message.parts).map((segment, i) =>
+          segment.kind === "text" ? (
+            // The AI writes Markdown - tables, headings, code - so its text is
+            // rendered rather than shown as raw characters. What the person typed
+            // stays as typed. The caret rides inside the last block, where the
+            // next character will land.
+            isUser ? (
+              <span key={i}>{segment.text}</span>
+            ) : (
+              <Markdown
+                key={i}
+                text={segment.text}
+                tail={live && segment.last ? <StreamingCaret /> : undefined}
+                root={projectRoot ?? undefined}
+              />
+            )
+          ) : (
+            <ToolRun
+              key={i}
+              tools={segment.tools}
+              live={live}
+              liveTail={live && segment.last}
+              activeAgents={activeAgents}
+            />
+          ),
+        )}
+        {retrying && (
+          <Waiting label={t("ai.retrying", { attempt: retrying.attempt, max: retrying.maxAttempts })} />
+        )}
+      </div>
+      {live && <BackgroundNotice tasks={background} />}
+      <TurnChanges message={message} index={index} />
+      {!live && <TurnFooter message={message} />}
+    </div>
+  );
+});
+
+/**
+ * Whether a drop reported by Tauri landed on the prompt box.
+ *
+ * Tauri gives the pointer in **physical** pixels while `getBoundingClientRect`
+ * answers in CSS pixels, so the ratio has to be divided out - on a 150% display
+ * the two differ by half the window, which would make every drop miss.
+ */
+function isOverBox(box: HTMLElement | null, point: { x: number; y: number }): boolean {
+  if (box === null) return false;
+  const ratio = window.devicePixelRatio || 1;
+  const x = point.x / ratio;
+  const y = point.y / ratio;
+  const rect = box.getBoundingClientRect();
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+export function AiPanel() {
+  const {
+    messages,
+    running,
+    sendPrompt,
+    cancel,
+    newSession,
+    resumeSession,
+    history,
+    localId,
+    providerId,
+    setProvider,
+    modelCatalog,
+    model,
+    effort,
+    setModel,
+    setEffort,
+    permission,
+    cyclePermission,
+    observedRuns,
+    expectedRuns,
+    expectNextRun,
+    projectRoot,
+    sessionUsage,
+    totalCostUsd,
+    backgroundTasks,
+    retrying,
+    activity,
+    queued,
+    enqueuePrompt,
+    unqueuePrompt,
+    providerHealth,
+    signedIn,
+    loginCommand,
+    checkHealth,
+    watchSignIn,
+    providers,
+    loadProviders,
+  } = useAi();
+  const rootPath = useWorkspace((s) => s.rootPath);
+  const input = useComposer((s) => s.text);
+  const [fileIndex, setFileIndex] = useState<{ root: string; files: string[] } | null>(null);
+  /** Where the caret is: the composer needs it during render, and reading a
+   *  ref while rendering is a lie waiting for the next paint. */
+  const [caret, setCaret] = useState(0);
+  /** Which mention suggestion is selected, or null when the picker is closed. */
+  const [mentionIndex, setMentionIndex] = useState<number | null>(null);
+  /** True while a dragged path is over the prompt box, so it says so. */
+  const [dropping, setDropping] = useState(false);
+  /** The path being dragged out of the file tree, if any. */
+  const treeDrag = usePathDrag((s) => s.path);
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [historyMenu, setHistoryMenu] = useState<{ x: number; y: number } | null>(null);
+  const [usageOpen, setUsageOpen] = useState(false);
+  const [signedInConfirmed, setSignedInConfirmed] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const { following, toEnd } = useStickToBottom(scrollRef, transcriptRef);
+  const panelsRef = useRef<HTMLDivElement>(null);
+  /**
+   * The smallest the prompt box may be dragged, as a percentage.
+   *
+   * The panel library speaks only percentages, and a percentage floor is the
+   * wrong floor: on a short window 10% is less than the box's own content, and a
+   * panel clips what does not fit - which showed up as the send button cut off
+   * along the bottom edge. So the real floor is `COMPOSER_FLOOR_PX`, converted
+   * against the height these panels actually have, and re-converted when the
+   * window changes it.
+   */
+  const [composerFloor, setComposerFloor] = useState(12);
+  useEffect(() => {
+    const panels = panelsRef.current;
+    if (!panels) return;
+    const observer = new ResizeObserver(() => {
+      const height = panels.getBoundingClientRect().height;
+      if (height <= 0) return;
+      setComposerFloor(Math.min(50, (COMPOSER_FLOOR_PX / height) * 100));
+    });
+    observer.observe(panels);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+  // The AI works in the whole workspace, so its "uncommitted changes" are every repository's.
+  const changedFiles = useGit(changedFileCount);
+  const hasTests = useTasks((s) => s.tasks.some((task) => task.kind === "test"));
+  const openFilePath = useWorkspace((s) => s.openFilePath);
+  const t = useT();
+  const capabilities = capabilitiesOf(providerId);
+  const modelOptions = modelsOf(providerId, modelCatalog[providerId]);
+  /** Whether a message written during a turn reaches the AI in that turn. */
+  const steers = providers.some((p) => p.id === providerId && p.steers);
+  const withdraws = providers.some((p) => p.id === providerId && p.withdraws);
+  const expected =
+    projectRoot === null ? undefined : expectedRuns[expectationKey(providerId, projectRoot, model)];
+  const hints = autoHints(observedRuns[providerId], expected, { model, effort }, modelOptions);
+  const effortOptions = effortsOf(providerId, model, modelCatalog[providerId]);
+  // Built-in providers keep their capability table; a configured one is named
+  // by its own config, so the picker shows whatever the user called it.
+  const providerOptions: ProviderOption[] =
+    providers.length > 0
+      ? providers.map((provider) => ({ value: provider.id, label: provider.displayName }))
+      : // Until the backend answers, the chip still names the provider in use.
+        [{ value: providerId, label: capabilities.displayName }];
+
+  const formatWhen = (ts: number) =>
+    new Date(ts).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+  const historyItems: MenuItem[] =
+    history.length === 0
+      ? [{ label: t("ai.historyEmpty"), onClick: () => undefined }]
+      : history.map((s) => ({
+          label: `${s.localId === localId ? "• " : ""}${s.title} · ${formatWhen(s.updatedAt)}`,
+          icon: <MessageSquare size={13} />,
+          onClick: () => {
+            resumeSession(s.localId);
+          },
+        }));
+
+  // Cheap install + sign-in probe per panel mount and on every provider switch,
+  // so the user is guided before the first prompt instead of after a failure.
+  // Re-probing on focus catches the return from a browser sign-in or from an
+  // install run in another window — the banner clears itself.
+  useEffect(() => {
+    void loadProviders();
+  }, [loadProviders]);
+
+  useEffect(() => {
+    void checkHealth();
+    const recheck = () => void checkHealth();
+    window.addEventListener("focus", recheck);
+    return () => {
+      window.removeEventListener("focus", recheck);
+    };
+  }, [checkHealth, providerId]);
+
+  // Auto has to say what it stands for before the first turn, not after it.
+  useEffect(() => {
+    if (providerHealth === "ok") void expectNextRun();
+  }, [expectNextRun, providerHealth, providerId, model, projectRoot]);
+
+  // The "already signed in" answer is a reply to a click, not a lasting state.
+  useEffect(() => {
+    if (!signedInConfirmed) return;
+    const timer = window.setTimeout(() => {
+      setSignedInConfirmed(false);
+    }, SIGNED_IN_NOTICE_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [signedInConfirmed]);
+
+  const signInNeeded = signedIn === false;
+  const inputEnabled = rootPath !== null && providerHealth !== "missing" && !signInNeeded;
+  const signIn = () => {
+    runInTerminal(loginCommand);
+    // The CLI signs in on its own schedule; poll until it reports success.
+    watchSignIn();
+  };
+  /** Signing in again would only log the user out of a working session. */
+  const signInOrConfirm = () => {
+    if (signedIn === true) setSignedInConfirmed(true);
+    else signIn();
+  };
+  const recheckButton = (
+    <button
+      onClick={() => void checkHealth()}
+      className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] text-muted hover:text-fg"
+    >
+      <RefreshCw size={12} /> {t("ai.signInRecheck")}
+    </button>
+  );
+
+  // One walk of the tree per project, shared with the command palette.
+  useEffect(() => {
+    if (!rootPath) return;
+    let stale = false;
+    void projectFiles(rootPath)
+      .then((list) => {
+        if (!stale) setFileIndex({ root: rootPath, files: list });
+      })
+      .catch(loggedAs("file-index"));
+    return () => {
+      stale = true;
+    };
+  }, [rootPath]);
+
+  const files = fileIndex?.root === rootPath ? fileIndex.files : NO_FILES;
+  const mention = activeMention(input, caret);
+  const mentionMatches =
+    mention === null
+      ? []
+      : fuzzyFilter(files, mention.query, (path) => path, MENTION_LIMIT).map((match) => match.item);
+  const pickerOpen = mentionIndex !== null && mentionMatches.length > 0;
+
+  /** Puts the chosen path in the composer and hands the cursor back. */
+  const pickMention = (path: string) => {
+    if (!mention) return;
+    const next = applyMention(input, mention, path);
+    writeDraft(next.text);
+    setCaret(next.cursor);
+    setMentionIndex(null);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(next.cursor, next.cursor);
+    });
+  };
+
+  /**
+   * A path dragged out of the file tree, written into the prompt.
+   *
+   * The same channel `@` uses: what an AI CLI needs is a path, and dropping a
+   * folder is the fastest way to say "read this". Appended rather than
+   * inserted at the caret, and with a space after it, so dropping several
+   * things in a row builds a list instead of overwriting itself.
+   *
+   * Only drags that began in Aime's own tree are accepted (`DRAG_MIME`).
+   * A file dragged from the desktop cannot be: this window turns Tauri's
+   * native drop handling off so the tree can do its own moves, and without it
+   * the webview is handed a file with no path on disk to give the CLI.
+   */
+  const dropPath = (path: string) => {
+    writeDraft((current) => {
+      const spaced = current === "" || current.endsWith(" ") || current.endsWith("\n");
+      return `${current}${spaced ? "" : " "}@${path} `;
+    });
+    setMentionIndex(null);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      const end = inputRef.current?.value.length ?? 0;
+      inputRef.current?.setSelectionRange(end, end);
+      setCaret(end);
+    });
+  };
+
+  /**
+   * Files and folders dropped from outside Aime - Explorer, Finder, a desktop.
+   *
+   * Tauri delivers these with their paths on disk, which no webview does: the
+   * DOM drop event hands over a `File` whose path is deliberately hidden, and
+   * a path is the one thing an AI CLI can act on. The drop only counts when it
+   * lands on the prompt box itself, so dropping a folder on the editor still
+   * means what it means there.
+   */
+  useEffect(() => {
+    const stop = getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload.type === "over") {
+        setDropping(isOverBox(boxRef.current, event.payload.position));
+        return;
+      }
+      if (event.payload.type === "leave") {
+        setDropping(false);
+        return;
+      }
+      const wanted = isOverBox(boxRef.current, event.payload.position);
+      setDropping(false);
+      if (!wanted) return;
+      for (const path of event.payload.paths) dropPath(path);
+    });
+    return () => {
+      void stop.then((unlisten) => {
+        unlisten();
+      });
+    };
+    // Subscribed once. `dropPath` only appends to the prompt, so re-running
+    // this on every keystroke would drop events for nothing.
+  }, []);
+
+  /**
+   * Files or a folder chosen from anywhere on this machine.
+   *
+   * Beside dropping, not instead of it: a drop is faster when the thing is
+   * already on screen, and a picker is the only way to reach something that
+   * is not - and the one place a keyboard can get to. Both end in the same
+   * place, a real path appended to the prompt.
+   */
+  const attach = async (directory: boolean) => {
+    const chosen = await open({
+      directory,
+      multiple: true,
+      title: t(directory ? "ai.attachFolderTitle" : "ai.attachFileTitle"),
+    });
+    const paths = typeof chosen === "string" ? [chosen] : (chosen ?? []);
+    for (const path of paths) dropPath(path);
+  };
+
+  const starters = startersFor({
+    openFileName: openFilePath?.split(/[\\/]/).pop() ?? null,
+    changedFiles,
+    hasTests,
+    hasReadme: hasReadme(files),
+  });
+
+  /**
+   * What the editor is showing - the file, the selection, the cloud panel - to
+   * travel with a prompt; the files in view also decide what the project's
+   * memory opens on, and the store hands that memory over itself.
+   */
+  const turnContext = (): TurnContext => {
+    const view = currentView();
+    return { view: view === null ? null : describeView(view), focus: focusOf(view) };
+  };
+
+  const send = (prompt: string) => {
+    if (!rootPath) return;
+    void sendPrompt(prompt, rootPath, turnContext());
+  };
+
+  /** Sends the prompt, or - while the AI is still at work - queues it behind the turn. */
+  const submit = () => {
+    const prompt = input.trim();
+    if (!prompt || !rootPath || !inputEnabled) return;
+    writeDraft("");
+    setMentionIndex(null);
+    toEnd();
+    if (runFlowCommand(prompt)) return;
+    if (running) enqueuePrompt(prompt, turnContext());
+    else send(prompt);
+  };
+
+  return (
+    <div className="flex h-full flex-col bg-panel">
+      <div className="flex items-center justify-between border-b border-line px-3 py-2">
+        <div className="flex items-center gap-1">
+          <PickerChip
+            icon={<Bot size={14} className="text-accent" />}
+            value={providerId}
+            options={providerOptions}
+            title={t("ai.provider")}
+            onChange={(next) => {
+              setSignedInConfirmed(false); // it described the previous CLI
+              setProvider(next);
+            }}
+          />
+          <button
+            onClick={signInOrConfirm}
+            title={
+              signedIn === true
+                ? t("ai.signedIn", { provider: capabilities.displayName })
+                : t("ai.signInWith", { command: loginCommand })
+            }
+            className="flex h-[22px] items-center rounded-md px-1.5 text-muted hover:bg-elevated hover:text-fg"
+          >
+            <KeyRound
+              size={13}
+              className={`shrink-0 ${signedIn === true ? "text-ok" : signInNeeded ? "text-warn" : ""}`}
+            />
+          </button>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              setHistoryMenu({ x: rect.right, y: rect.bottom + 4 });
+            }}
+            disabled={running}
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-elevated disabled:opacity-50"
+            title={t("ai.history")}
+          >
+            <History size={12} />
+          </button>
+          <button
+            onClick={newSession}
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-elevated"
+            title={t("ai.newSession")}
+          >
+            <Plus size={12} /> {t("ai.newSession")}
+          </button>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-line px-3 py-1.5">
+        <div className="flex items-center gap-1">
+          <PickerChip
+            icon={<Cpu size={12} className="text-accent" />}
+            value={model}
+            options={modelOptions}
+            title={t("ai.model")}
+            autoHint={hints.model}
+            onChange={setModel}
+          />
+          {/* A CLI that takes no effort (Gemini, most CLIs added by hand) has nothing to pick. */}
+          {effortOptions.length > 1 && (
+            <PickerChip
+              icon={<SlidersHorizontal size={12} className="text-accent" />}
+              value={effort}
+              options={effortOptions}
+              title={t("ai.effort")}
+              autoHint={hints.effort}
+              onChange={setEffort}
+            />
+          )}
+          <button
+            onClick={() => {
+              useLayout.getState().setMcpOpen(true);
+            }}
+            title={t("cmd.manageMcp")}
+            className="flex h-[22px] items-center rounded-md px-1.5 text-muted hover:bg-elevated hover:text-fg"
+          >
+            <Plug size={13} className="shrink-0" />
+          </button>
+          <PermissionChip permission={permission} onCycle={cyclePermission} />
+        </div>
+        <button
+          onClick={() => {
+            setUsageOpen(true);
+          }}
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-elevated hover:text-fg"
+          title={t("ai.usage.title")}
+        >
+          <Activity size={12} />
+          {formatTokens(sessionUsage.inputTokens + sessionUsage.outputTokens)}
+        </button>
+      </div>
+
+      {usageOpen && (
+        <UsagePopover
+          usage={sessionUsage}
+          costUsd={totalCostUsd}
+          showCost={capabilities.reportsCost}
+          onClose={() => {
+            setUsageOpen(false);
+          }}
+        />
+      )}
+
+      {historyMenu && (
+        <ContextMenu
+          x={historyMenu.x}
+          y={historyMenu.y}
+          items={historyItems}
+          onClose={() => {
+            setHistoryMenu(null);
+          }}
+        />
+      )}
+
+      {/*
+       * Two panels with a divider: how much room the box you type in gets is the
+       * user's call, not a fixed two rows. Sizes belong to the panel library
+       * (`autoSaveId`), so where this is dragged is remembered like every other
+       * divider in the app - the same arrangement as Changes/History in Git.
+       */}
+      <div ref={panelsRef} className="flex min-h-0 flex-1 flex-col">
+        <PanelGroup direction="vertical" autoSaveId="aime-ai-panel" className="min-h-0 flex-1">
+          <Panel id="ai-messages" order={1} minSize={25} className="flex flex-col">
+            <div className="relative flex min-h-0 flex-1 flex-col">
+              {/* `log`: a region whose news is added in order at its end - a conversation. */}
+              <div ref={scrollRef} role="log" className="min-h-0 flex-1 overflow-y-auto p-3">
+                <div ref={transcriptRef} className="flex flex-col gap-3">
+                  {providerHealth === "missing" && (
+                    <ProviderNotice
+                      tone="danger"
+                      message={t("ai.cliNotFound", {
+                        provider: capabilities.displayName,
+                        install: capabilities.installCommand,
+                      })}
+                    >
+                      {recheckButton}
+                    </ProviderNotice>
+                  )}
+                  {signedInConfirmed && signedIn === true && (
+                    <ProviderNotice
+                      tone="ok"
+                      message={t("ai.signedInAlready", { provider: capabilities.displayName })}
+                    />
+                  )}
+                  {signInNeeded && (
+                    <ProviderNotice
+                      tone="warn"
+                      message={t("ai.signInRequired", { provider: capabilities.displayName })}
+                    >
+                      <button
+                        onClick={signIn}
+                        className="flex items-center gap-1.5 rounded-md bg-accent-strong px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90"
+                      >
+                        <KeyRound size={12} /> {t("ai.signIn")}
+                      </button>
+                      {/* The other door in: an API key pasted in Settings works
+                      without any browser round-trip (providers that take one). */}
+                      {providers.find((p) => p.id === providerId)?.apiKeyRoute != null && (
+                        <button
+                          onClick={() => {
+                            useLayout.getState().setSettingsOpen(true);
+                          }}
+                          className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] text-muted hover:text-fg"
+                        >
+                          {t("ai.useApiKey")}
+                        </button>
+                      )}
+                      {recheckButton}
+                    </ProviderNotice>
+                  )}
+                  {messages.length === 0 && (
+                    <div className="mt-6 flex flex-col gap-2">
+                      <p className="text-center text-muted">{t("ai.emptyPrompt")}</p>
+                      {starters.map((starter) => (
+                        <button
+                          key={starter.key}
+                          onClick={() => {
+                            send(t(starter.promptKey, starter.params));
+                          }}
+                          disabled={!rootPath || running}
+                          className="rounded-lg border border-line px-3 py-2 text-left text-muted hover:border-accent hover:text-fg disabled:opacity-50"
+                        >
+                          {t(starter.key, starter.params)}
+                        </button>
+                      ))}
+                      <p className="mt-1 text-center text-[11px] text-muted">{t("ai.mentionHint")}</p>
+                    </div>
+                  )}
+                  {messages.map((m, i) => (
+                    // Only the last turn can be the one being written, and only
+                    // while the CLI is still running.
+                    <MessageBubble
+                      key={i}
+                      message={m}
+                      index={i}
+                      live={running && i === messages.length - 1}
+                      background={running && i === messages.length - 1 ? backgroundTasks : NO_TASKS}
+                      retrying={running && i === messages.length - 1 ? retrying : null}
+                    />
+                  ))}
+                  <TurnRecovery />
+                  <QueuedPrompts queued={queued} withdrawable={withdraws} onRemove={unqueuePrompt} />
+                </div>
+              </div>
+              {!following && messages.length > 0 && (
+                <button
+                  onClick={toEnd}
+                  className="absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full border border-line bg-elevated px-2.5 py-1 text-[11px] text-fg shadow-lg hover:border-accent"
+                >
+                  <ArrowDown size={12} className={running ? "animate-bounce text-accent" : "text-accent"} />
+                  {t("ai.jumpToLatest")}
+                </button>
+              )}
+            </div>
+            {running && activity && (
+              <LiveActivity
+                activity={activity}
+                retrying={retrying}
+                provider={providerOptions.find((option) => option.value === providerId)?.label ?? providerId}
+              />
+            )}
+          </Panel>
+
+          <ResizeHandle horizontal />
+
+          {/*
+           * Starts at about the two rows it used to be fixed at: the point is being
+           * able to drag it, not being handed more room than was asked for. The floor
+           * is `composerFloor` - a real pixel height turned into the percentage this
+           * library speaks - and the ceiling stops it swallowing the conversation.
+           */}
+          <Panel
+            id="ai-composer"
+            order={2}
+            minSize={composerFloor}
+            maxSize={60}
+            defaultSize={Math.max(11, composerFloor)}
+            className="flex flex-col"
+          >
+            <div className="relative flex min-h-0 flex-1 flex-col border-t border-line p-2.5">
+              {pickerOpen && (
+                <ul className="absolute bottom-full left-2.5 z-20 mb-1 w-[calc(100%-1.25rem)] overflow-hidden rounded-lg border border-line bg-panel shadow-xl">
+                  {mentionMatches.map((path, i) => (
+                    <li key={path}>
+                      <button
+                        onMouseDown={(e) => {
+                          // Down, not click: the textarea must not lose focus first.
+                          e.preventDefault();
+                          pickMention(path);
+                        }}
+                        className={`flex w-full items-baseline gap-2 px-2.5 py-1 text-left text-[12px] ${
+                          i === mentionIndex ? "bg-accent-strong text-white" : "hover:bg-elevated"
+                        }`}
+                      >
+                        <span className="truncate">{path.split(/[\\/]/).pop()}</span>
+                        <span className="min-w-0 flex-1 truncate text-right text-[10.5px] opacity-60">
+                          {path}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div
+                ref={boxRef}
+                onPointerEnter={() => {
+                  if (treeDrag !== null) setDropping(true);
+                }}
+                onPointerLeave={() => {
+                  setDropping(false);
+                }}
+                onPointerUp={() => {
+                  setDropping(false);
+                  if (treeDrag !== null) dropPath(treeDrag);
+                }}
+                className={`flex min-h-0 flex-1 items-stretch gap-1.5 rounded-lg border bg-elevated px-2 py-1.5 focus-within:border-accent ${
+                  dropping ? "border-accent bg-accent-soft" : "border-line"
+                }`}
+              >
+                <textarea
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => {
+                    writeDraft(e.target.value);
+                    setCaret(e.target.selectionStart);
+                    // Typing `@` opens the picker; typing past every match closes it.
+                    setMentionIndex(activeMention(e.target.value, e.target.selectionStart) ? 0 : null);
+                  }}
+                  onSelect={(e) => {
+                    setCaret(e.currentTarget.selectionStart);
+                  }}
+                  onKeyDown={(e) => {
+                    if (pickerOpen) {
+                      const move = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+                      if (move !== 0) {
+                        e.preventDefault();
+                        setMentionIndex((current) => {
+                          const at = (current ?? 0) + move;
+                          return (at + mentionMatches.length) % mentionMatches.length;
+                        });
+                        return;
+                      }
+                      if (e.key === "Enter" || e.key === "Tab") {
+                        e.preventDefault();
+                        // Safe: the picker is only open with a selected match, and
+                        // every keystroke resets the selection to the first one.
+                        pickMention(mentionMatches[mentionIndex]);
+                        return;
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setMentionIndex(null);
+                        return;
+                      }
+                    }
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      submit();
+                    }
+                  }}
+                  placeholder={
+                    !rootPath
+                      ? t("ai.inputPlaceholderNoFolder")
+                      : running
+                        ? t(steers ? "ai.inputPlaceholderSteer" : "ai.inputPlaceholderQueued")
+                        : t("ai.inputPlaceholder")
+                  }
+                  disabled={!inputEnabled}
+                  // No `rows`, no `max-h`: the panel above decides how tall this is, and
+                  // the browser's own corner grip would fight the divider for it.
+                  className="min-h-0 flex-1 resize-none bg-transparent outline-none placeholder:text-muted disabled:opacity-50"
+                />
+                <button
+                  onClick={() => void attach(false)}
+                  disabled={!inputEnabled}
+                  className="self-end rounded p-1.5 text-muted hover:bg-panel hover:text-fg disabled:opacity-40"
+                  title={t("ai.attachFile")}
+                >
+                  <Paperclip size={15} />
+                </button>
+                <button
+                  onClick={() => void attach(true)}
+                  disabled={!inputEnabled}
+                  className="self-end rounded p-1.5 text-muted hover:bg-panel hover:text-fg disabled:opacity-40"
+                  title={t("ai.attachFolder")}
+                >
+                  <FolderPlus size={15} />
+                </button>
+                {running && (
+                  <button
+                    onClick={() => void cancel()}
+                    className="self-end rounded p-1.5 text-danger hover:bg-panel"
+                    title={t("ai.stop")}
+                  >
+                    <CircleStop size={16} />
+                  </button>
+                )}
+                {/* While the AI works, Send queues - and only shows once there is something to queue. */}
+                {(!running || input.trim() !== "") && (
+                  <button
+                    onClick={submit}
+                    disabled={!input.trim() || !inputEnabled}
+                    className="self-end rounded p-1.5 text-accent hover:bg-panel disabled:opacity-40"
+                    title={running ? t(steers ? "ai.queueSendSteer" : "ai.queueSend") : t("ai.send")}
+                  >
+                    <SendHorizontal size={16} />
+                  </button>
+                )}
+              </div>
+            </div>
+          </Panel>
+        </PanelGroup>
+      </div>
+    </div>
+  );
+}

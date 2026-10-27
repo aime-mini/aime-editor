@@ -1,0 +1,43 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# AI progress journal - per-machine working memory, rewritten every turn.
+.aime/
+
+# Personal working files: they stay on the author's machine, not in the repo.
+.claude/
+.vscode/
+CLAUDE.md
+STATUS.md
+ARCHITECTURE.md
+ROADMAP.md
+
+# Bug reports dropped here while using the app - notes and screenshots of this
+# machine, and a queue rather than a record: what comes out of it is the fix.
+bugs/
+
+# Updater signing keys - losing control of these means signing fake updates.
+*.key
+*.key.pub
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

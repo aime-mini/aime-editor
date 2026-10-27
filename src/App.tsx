@@ -1,0 +1,505 @@
+import { lazy, Suspense, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import { AppWindow, FolderOpen, FolderPlus, GitBranch, Loader2, X } from "lucide-react";
+
+/**
+ * The whole editor, loaded the moment a project is - and not before.
+ *
+ * Monaco alone is 4.4 MB of JavaScript. The welcome screen has no editor on
+ * it, so waiting for that parse before showing anything is time the user
+ * pays for nothing.
+ *
+ * Named rather than inlined because the startup effect below warms the same
+ * import while the greeting is on screen: one module, fetched once, and by the
+ * time `lazy` asks for it the answer is already there.
+ */
+const loadWorkbench = () => import("./components/Workbench");
+const Workbench = lazy(loadWorkbench);
+
+/**
+ * The longest the greeting is asked to wait for the first screen to be ready.
+ *
+ * Chosen against the splash's own floor of three seconds (src-tauri/src/splash.rs):
+ * a release start finishes well inside it, and a slow one still puts the editor
+ * on screen within five seconds rather than holding a picture up indefinitely.
+ */
+const STARTUP_BUDGET_MS = 5000;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+import { useT } from "./i18n";
+import { watchAdoptions } from "./lib/transfer";
+import { startAutoSave } from "./lib/autoSave";
+import { learnInBackground } from "./lib/projectLearner";
+// For its effect: every workspace is reopened the way it was left.
+import "./stores/workspaceSession";
+import { AimeMark } from "./components/AimeMark";
+import { EnvironmentCheck } from "./components/EnvironmentCheck";
+import { HomeNews } from "./components/HomeNews";
+import { CommandPalette } from "./components/CommandPalette";
+import { HelpModal } from "./components/HelpModal";
+import { InstallerModal } from "./components/InstallerModal";
+import { SetupProgressModal } from "./components/SetupProgressModal";
+import { BreakpointRuleModal } from "./components/BreakpointRuleModal";
+import { LaunchArgumentsModal } from "./components/LaunchArgumentsModal";
+import { McpModal } from "./components/McpModal";
+import { PromptModal } from "./components/PromptModal";
+import { SettingsModal } from "./components/SettingsModal";
+import { StatusBar } from "./components/StatusBar";
+import { Notices } from "./components/Notices";
+import { UpdateNotice } from "./components/UpdateNotice";
+import { WorkspaceTabs } from "./components/WorkspaceTabs";
+import { useWorkspaceTabs } from "./stores/workspaceTabs";
+import { useAi } from "./stores/ai";
+import { useDebug } from "./stores/debug";
+import { useLayout } from "./stores/layout";
+import { usePlugins } from "./stores/plugins";
+import { useRecent } from "./stores/recent";
+import { useWorkspace } from "./stores/workspace";
+import { loggedAs } from "./stores/notices";
+
+const openNewWindow = () => invoke("open_new_window");
+
+function folderNameOf(path: string): string {
+  return path.split(/[\\/]/).pop() ?? path;
+}
+
+function WelcomeScreen() {
+  const { openFolder, adoptFolder } = useWorkspace();
+  const { folders, forget } = useRecent();
+  const [newProjectParent, setNewProjectParent] = useState<string | null>(null);
+  const [cloneUrl, setCloneUrl] = useState<string | null>(null);
+  const [cloning, setCloning] = useState(false);
+  const t = useT();
+
+  const pickNewProjectLocation = async () => {
+    const parent = await open({
+      directory: true,
+      multiple: false,
+      title: t("dialog.pickParentTitle"),
+    });
+    if (typeof parent === "string") setNewProjectParent(parent);
+  };
+
+  const createProject = async (name: string) => {
+    if (!newProjectParent) return;
+    const path = `${newProjectParent}/${name}`;
+    try {
+      await invoke("create_dir", { path });
+      await adoptFolder(path);
+    } catch (err: unknown) {
+      console.error("failed to create project folder:", err);
+    } finally {
+      setNewProjectParent(null);
+    }
+  };
+
+  /** The folder git itself would create: the repository name without `.git`. */
+  const repositoryNameOf = (url: string) =>
+    url
+      .replace(/\.git$/, "")
+      .split(/[\\/:]/)
+      .filter(Boolean)
+      .pop() ?? "repository";
+
+  const cloneInto = async (url: string) => {
+    const parent = await open({ directory: true, multiple: false, title: t("dialog.pickParentTitle") });
+    if (typeof parent !== "string") return;
+    setCloning(true);
+    try {
+      const path = await invoke<string>("git_clone", { url, parent, folder: repositoryNameOf(url) });
+      await adoptFolder(path);
+    } catch (err: unknown) {
+      console.error("clone failed:", err);
+    } finally {
+      setCloning(false);
+    }
+  };
+
+  const openRecent = async (path: string) => {
+    try {
+      await invoke("list_dir", { path }); // probe — the folder may have been moved or deleted
+      await adoptFolder(path);
+    } catch {
+      forget(path);
+    }
+  };
+
+  const actionButton =
+    "flex w-full items-center gap-2 rounded-lg border border-line px-4 py-2 font-medium text-muted hover:border-accent hover:text-fg";
+
+  return (
+    // Centred while it fits, scrollable the moment it does not - otherwise a
+    // long environment report pushes the logo off the top of the window.
+    <div className="relative h-full overflow-y-auto">
+      {/*
+       * Three columns: a margin, the welcome screen, the news.
+       *
+       * They were absolutely positioned into the margins at first, which meant
+       * every window size had to be argued about separately - and the panel that
+       * could not shrink like a picture ended up jumping above or below the
+       * screen it belongs beside. A grid states the whole arrangement once: the
+       * middle takes up to 42rem and no more, both sides have a floor they never
+       * go under, and the leftover space is split between them. Nothing moves at
+       * any width; it only gets narrower.
+       */}
+      <div className="relative grid min-h-full grid-cols-[minmax(6rem,1fr)_minmax(0,42rem)_minmax(12rem,1fr)]">
+        {/* The left margin: it keeps the middle in the middle. */}
+        <div />
+        <div className="flex items-center px-8 py-10">
+          <div className="w-full">
+            <div className="flex flex-col items-center gap-3">
+              <AimeMark className="size-20 drop-shadow-lg" />
+              <h1 className="mt-2 text-2xl font-semibold tracking-tight">Aime</h1>
+              <p className="max-w-sm text-center text-muted">{t("app.tagline")}</p>
+            </div>
+
+            <div className="mt-10 grid grid-cols-2 gap-10">
+              <section>
+                <h2 className="text-[11px] font-semibold tracking-wider text-muted uppercase">
+                  {t("welcome.start")}
+                </h2>
+                <div className="mt-3 flex flex-col gap-2">
+                  <button
+                    onClick={() => void openFolder()}
+                    className="flex w-full items-center gap-2 rounded-lg bg-accent-strong px-4 py-2 font-medium text-white hover:opacity-90"
+                  >
+                    <FolderOpen size={16} /> {t("welcome.openFolder")}
+                  </button>
+                  <button onClick={() => void pickNewProjectLocation()} className={actionButton}>
+                    <FolderPlus size={16} /> {t("welcome.newProject")}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setCloneUrl("");
+                    }}
+                    disabled={cloning}
+                    className={actionButton}
+                    title={t("welcome.cloneHint")}
+                  >
+                    {cloning ? <Loader2 size={16} className="animate-spin" /> : <GitBranch size={16} />}
+                    {t("welcome.clone")}
+                  </button>
+                  <button
+                    onClick={() => void openNewWindow()}
+                    className={actionButton}
+                    title={t("welcome.newWindowHint")}
+                  >
+                    <AppWindow size={16} /> {t("welcome.newWindow")}
+                  </button>
+                </div>
+              </section>
+
+              <section>
+                <h2 className="text-[11px] font-semibold tracking-wider text-muted uppercase">
+                  {t("welcome.recent")}
+                </h2>
+                {/*
+                 * The list scrolls, not the page.
+                 *
+                 * Measured on a 650px-tall window: eight recent folders put the
+                 * welcome screen 31px past the viewport, which gave the whole
+                 * screen a scrollbar for the sake of one row. The page keeps its
+                 * own scrolling for the one thing that can still outgrow it - an
+                 * expanded environment report - and everything else stays put.
+                 */}
+                <div className="mt-3 flex max-h-[38vh] flex-col gap-1 overflow-y-auto pr-1">
+                  {folders.length === 0 && <p className="py-2 text-muted">{t("welcome.noRecent")}</p>}
+                  {folders.map((f) => (
+                    <div key={f.path} className="group flex items-center rounded-md hover:bg-elevated">
+                      <button
+                        onClick={() => void openRecent(f.path)}
+                        title={f.path}
+                        className="flex min-w-0 flex-1 flex-col px-2 py-1.5 text-left"
+                      >
+                        <span className="font-medium text-accent">{folderNameOf(f.path)}</span>
+                        <span className="truncate text-[11px] text-muted">{f.path}</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          forget(f.path);
+                        }}
+                        title={t("welcome.removeRecent")}
+                        aria-label={t("welcome.removeRecent")}
+                        className="mr-1.5 shrink-0 rounded p-1 text-muted opacity-0 group-hover:opacity-100 hover:bg-panel hover:text-fg focus-visible:opacity-100"
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+
+            <EnvironmentCheck />
+          </div>
+        </div>
+
+        <aside className="flex items-center px-6 py-10">
+          <div className="w-full">
+            <HomeNews />
+          </div>
+        </aside>
+      </div>
+      {cloneUrl !== null && (
+        <PromptModal
+          title={t("modal.cloneTitle")}
+          hint={t("modal.cloneHint")}
+          initialValue=""
+          onSubmit={(url) => {
+            setCloneUrl(null);
+            if (url.trim()) void cloneInto(url.trim());
+          }}
+          onClose={() => {
+            setCloneUrl(null);
+          }}
+        />
+      )}
+      {newProjectParent && (
+        <PromptModal
+          title={t("modal.newProjectTitle")}
+          hint={t("modal.newProjectHint")}
+          initialValue=""
+          onSubmit={(name) => {
+            void createProject(name);
+          }}
+          onClose={() => {
+            setNewProjectParent(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** The debugger keys, in the arrangement every editor has agreed on. */
+const DEBUG_KEYS = new Set(["F5", "F10", "F11"]);
+
+function runDebugShortcut(key: string, shift: boolean): void {
+  const debug = useDebug.getState();
+  if (key === "F5") {
+    if (shift) {
+      void debug.stop();
+    } else if (debug.status.kind === "paused") {
+      void debug.resume();
+    } else if (debug.status.kind === "idle") {
+      void debug.start();
+    }
+    return;
+  }
+  if (key === "F10") void debug.stepOver();
+  if (key === "F11") void (shift ? debug.stepOut() : debug.stepInto());
+}
+
+export default function App() {
+  const rootPath = useWorkspace((s) => s.rootPath);
+  // A folder open, or more than one tab: the strip is how the others are reached.
+  const showTabs = useWorkspaceTabs((s) => rootPath !== null || s.tabs.length > 1);
+  const { toggleSidebar, toggleAiPanel, toggleBottomPanel, helpOpen, toggleHelp, setHelpOpen } = useLayout();
+  const { paletteOpen, togglePalette, setPaletteOpen } = useLayout();
+  const { mcpOpen, setMcpOpen } = useLayout();
+  const { installerTools, setInstallerTools } = useLayout();
+  const { settingsOpen, setSettingsOpen } = useLayout();
+
+  // `aime <folder>` launch: adopt the CLI folder unless the user beat us to the
+  // dialog - and then release the splash window.
+  //
+  // Everything the first screen needs is done here, while the greeting is up:
+  // the CLI folder is opened, its tree read, and the editor's own bundle
+  // fetched and parsed. The window that replaces the greeting is therefore a
+  // finished editor rather than a shell that fills itself in afterwards, which
+  // is the whole point of having a greeting at all.
+  //
+  // Only two frames after that, since one frame means the layout has been
+  // computed - the second is the one that has been painted.
+  // A folder opened at any time may turn out to be a project brought from
+  // another machine (`lib/transfer`); the person is told in the corner.
+  useEffect(() => {
+    const watching = watchAdoptions();
+    return () => {
+      void watching.then((stop) => {
+        stop();
+      });
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const warmUp = async () => {
+      const folder = await invoke<string | null>("initial_folder").catch((error: unknown) => {
+        loggedAs("initial-folder")(error);
+        return null;
+      });
+      if (folder && useWorkspace.getState().rootPath === null) {
+        await useWorkspace.getState().adoptFolder(folder);
+      }
+      await loadWorkbench().catch(loggedAs("workbench-load"));
+    };
+
+    // The greeting waits for the warm-up, but never on it: under `tauri dev`
+    // the first load of Monaco is the dev server transforming 4.4 MB and has
+    // been measured past eight seconds. Whatever is unfinished by then finishes
+    // behind the editor's own Suspense fallback instead of behind a picture.
+    void Promise.race([warmUp(), sleep(STARTUP_BUDGET_MS)]).finally(() => {
+      if (cancelled) return;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          invoke("app_ready").catch(loggedAs("app-ready"));
+        });
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Plugins the user switched on, started once per window.
+  useEffect(() => {
+    void usePlugins.getState().refresh();
+  }, []);
+
+  // Auto save listens to the workspace, not to a component: the file being
+  // edited outlives every view that shows it.
+  useEffect(() => startAutoSave(), []);
+
+  // Bind the AI store to the workspace: restores this project's saved sessions.
+  useEffect(() => {
+    if (rootPath) void useAi.getState().hydrate(rootPath);
+  }, [rootPath]);
+
+  // Learn the project in the background, so the first conversation about it
+  // already knows the codebase - again when the CLI becomes able to answer
+  // (installed, signed in), which it may not be when the project opens.
+  const cliReady = useAi((s) => s.providerHealth === "ok" && s.signedIn !== false);
+  useEffect(() => {
+    if (rootPath) void learnInBackground(rootPath);
+  }, [rootPath, cliReady]);
+
+  // Suppress the webview's default browser context menu — custom menus and
+  // Monaco provide their own; editable fields keep the native one.
+  useEffect(() => {
+    const onContextMenu = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest("input, textarea, [contenteditable='true'], .monaco-editor")) return;
+      e.preventDefault();
+    };
+    window.addEventListener("contextmenu", onContextMenu);
+    return () => {
+      window.removeEventListener("contextmenu", onContextMenu);
+    };
+  }, []);
+
+  // Global shortcuts: Ctrl+Shift+N new window, Ctrl+B file tree, Ctrl+L AI panel,
+  // Ctrl+` terminal, F1 help, and the debugger keys every editor shares
+  // (F5 run/continue, Shift+F5 stop, F10/F11 step). F9 belongs to the editor,
+  // which is the only thing that knows where the cursor is.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "F1") {
+        e.preventDefault();
+        toggleHelp();
+        return;
+      }
+      if (DEBUG_KEYS.has(e.key)) {
+        e.preventDefault();
+        runDebugShortcut(e.key, e.shiftKey);
+        return;
+      }
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const key = e.key.toLowerCase();
+      if (e.shiftKey && key === "n") {
+        e.preventDefault();
+        void openNewWindow();
+      } else if (key === "k" || key === "p") {
+        e.preventDefault();
+        togglePalette();
+      } else if (key === "b") {
+        e.preventDefault();
+        toggleSidebar();
+      } else if (key === "l") {
+        e.preventDefault();
+        toggleAiPanel();
+      } else if (e.code === "Backquote") {
+        e.preventDefault();
+        toggleBottomPanel();
+      } else if (e.key === ",") {
+        // Ctrl+, is where every editor keeps its settings.
+        e.preventDefault();
+        useLayout.getState().setSettingsOpen(true);
+      } else if (key === "w") {
+        // Closes the current editor tab, not the window - the editor meaning
+        // of Ctrl+W is the one a user has in their fingers here.
+        const { openFilePath, closeTab } = useWorkspace.getState();
+        if (openFilePath) {
+          e.preventDefault();
+          closeTab(openFilePath);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [toggleSidebar, toggleAiPanel, toggleBottomPanel, toggleHelp, togglePalette]);
+
+  return (
+    <div className="flex h-full flex-col">
+      <UpdateNotice />
+      {showTabs && <WorkspaceTabs />}
+      <main className="min-h-0 flex-1">
+        {rootPath ? (
+          <Suspense fallback={<div className="h-full bg-bg" />}>
+            <Workbench />
+          </Suspense>
+        ) : (
+          <WelcomeScreen />
+        )}
+      </main>
+      <StatusBar />
+      <Notices />
+      {helpOpen && (
+        <HelpModal
+          onClose={() => {
+            setHelpOpen(false);
+          }}
+        />
+      )}
+      {paletteOpen && (
+        <CommandPalette
+          onClose={() => {
+            setPaletteOpen(false);
+          }}
+        />
+      )}
+      {mcpOpen && (
+        <McpModal
+          onClose={() => {
+            setMcpOpen(false);
+          }}
+        />
+      )}
+      {settingsOpen && (
+        <SettingsModal
+          onClose={() => {
+            setSettingsOpen(false);
+          }}
+        />
+      )}
+      {installerTools.length > 0 && (
+        <InstallerModal
+          tools={installerTools}
+          onClose={() => {
+            setInstallerTools([]);
+          }}
+        />
+      )}
+      {/* Mounted always: it decides for itself whether a setup run is worth
+          showing, and the run outlives the file that started it. */}
+      <SetupProgressModal />
+      <BreakpointRuleModal />
+      <LaunchArgumentsModal />
+    </div>
+  );
+}

@@ -1,0 +1,11 @@
+# One line ending everywhere. Prettier and rustfmt both write LF, so a CRLF
+# checkout (Git's default on Windows via core.autocrlf) would make every file
+# fail the pre-commit hook on a machine that never edited them.
+* text=auto eol=lf
+
+# Binary assets must never be touched by end-of-line conversion.
+*.png binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary

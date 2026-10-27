@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "splash",
+  "description": "The starting window. It announces itself, offers to be skipped, and steps aside - so it needs the core set and nothing else.",
+  "windows": [
+    "splash"
+  ],
+  "permissions": [
+    "core:default"
+  ]
+}

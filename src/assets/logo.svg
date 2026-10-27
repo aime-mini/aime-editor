@@ -1,0 +1,17 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5B7CFF"/>
+      <stop offset="100%" stop-color="#8B5CF6"/>
+    </linearGradient>
+  </defs>
+  <!-- Nền: vuông bo góc, gradient indigo → violet -->
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#bg)"/>
+  <!-- Dấu nhắc terminal ">" — editor chạy trên AI CLI -->
+  <path d="M 300 360 L 462 512 L 300 664" fill="none" stroke="#FFFFFF" stroke-width="76"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Con trỏ gõ "_" -->
+  <rect x="516" y="612" width="196" height="76" rx="38" fill="#FFFFFF"/>
+  <!-- Tia spark 4 cánh — AI -->
+  <path d="M 706 236 L 733 313 L 810 340 L 733 367 L 706 444 L 679 367 L 602 340 L 679 313 Z" fill="#FFFFFF"/>
+</svg>

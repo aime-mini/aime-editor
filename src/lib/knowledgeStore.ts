@@ -1,0 +1,260 @@
+import { invoke } from "@tauri-apps/api/core";
+import {
+  INDEX_DIR,
+  MEMORY_DIR,
+  memoryBlock,
+  parseMemory,
+  renderMemory,
+  renderPages,
+  type Evidence,
+  type Focus,
+  type Memory,
+} from "./knowledge";
+import { conventionsLearned } from "./runLearning";
+
+/**
+ * Reading and writing a project's memories (`lib/knowledge.ts`).
+ *
+ * Built for a project that has kept them for years: one directory listing per
+ * turn, and a file is read again only when its modified time moved, so a
+ * thousand memories cost a thousand reads once and one listing afterwards. The
+ * pages a large index refers to are rewritten only when a memory changed.
+ *
+ * The memories live in the repository, where every CLI can read and write
+ * them, and `.aime/` keeps itself out of git - so a fresh clone, or the same
+ * repository on another machine, would start with nothing. Rust mirrors the
+ * folder into Aime's own data, keyed by the repository's remote, and puts it
+ * back when the folder is found missing (`memory_mirror.rs`); that runs here,
+ * before reading, and again when a turn ends.
+ */
+
+/** Mirror of the Rust `DirEntry`, for the fields this needs. */
+interface DirEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  modified_ms: number | null;
+}
+
+interface Cached {
+  modified: number;
+  memory: Memory | null;
+}
+
+/** The one page an earlier Aime wrote beside the memories; nothing reads it now. */
+const LEGACY_INDEX = "INDEX.md";
+
+/** Per project root: each memory file as last read, by file name. */
+const cache = new Map<string, Map<string, Cached>>();
+/** Per project root: the pages as last written, so unchanged ones are not written again. */
+const pagesWritten = new Map<string, string>();
+
+/** Every memory of the project; an unreadable file is left out, never guessed at. */
+export async function loadMemories(root: string): Promise<Memory[]> {
+  return [...(await loadKept(root)).keys()];
+}
+
+/** Every memory of the project, with when its file was last written. */
+async function loadKept(root: string): Promise<Map<Memory, number>> {
+  const base = trim(root);
+  if (!cache.has(base)) await carryOverLegacy(base);
+  await syncMirror(base);
+  const entries = await listOrEmpty(`${base}/${MEMORY_DIR}`);
+  const known = cache.get(base) ?? new Map<string, Cached>();
+  const now = new Map<string, Cached>();
+  for (const entry of entries) {
+    if (entry.is_dir || !entry.name.endsWith(".md")) continue;
+    if (entry.name === LEGACY_INDEX) {
+      await invoke("delete_path", { path: entry.path });
+      continue;
+    }
+    const modified = entry.modified_ms ?? 0;
+    const before = known.get(entry.name);
+    if (before !== undefined && before.modified === modified) {
+      now.set(entry.name, before);
+      continue;
+    }
+    now.set(entry.name, { modified, memory: await readMemory(entry.path, entry.name) });
+  }
+  cache.set(base, now);
+  const kept = new Map<Memory, number>();
+  for (const { memory, modified } of now.values()) if (memory !== null) kept.set(memory, modified);
+  await writePages(base, [...kept.keys()]);
+  return kept;
+}
+
+/** The memory block a conversation on the files of `focus` is handed, or null when the project has none. */
+export async function memoryFor(root: string, focus: Focus): Promise<string | null> {
+  const { memories, evidence } = await memoriesWithEvidence(root);
+  return memoryBlock(memories, focus, evidence);
+}
+
+/** Every memory of the project, and what each can be checked against. */
+export async function memoriesWithEvidence(
+  root: string,
+): Promise<{ memories: Memory[]; evidence: Evidence }> {
+  const kept = await loadKept(root);
+  const memories = [...kept.keys()];
+  const evidence: Evidence = {
+    changed: await changeTimes(root, memories),
+    written: (memory) => kept.get(memory) ?? 0,
+  };
+  return { memories, evidence };
+}
+
+/**
+ * Writes memories Aime learned itself from reading the code - a task run's
+ * first step, or learning the project in the background (`projectLearner.ts`).
+ * One with the name of an existing memory replaces it only when it says
+ * something new, so a person's own edit to a memory is never overwritten by
+ * the same lesson learned again.
+ */
+export async function rememberAll(root: string, learned: readonly Memory[]): Promise<void> {
+  const existing = new Map((await loadMemories(root)).map((memory) => [memory.name, memory]));
+  await writeAll(
+    root,
+    learned.filter((memory) => existing.get(memory.name)?.summary !== memory.summary),
+  );
+}
+
+/**
+ * Writes memories as given, replacing any of the same name. For a study that
+ * re-read the code a memory cites: rewriting it even unchanged is what records
+ * that it was checked, so it is no longer marked STALE.
+ */
+export async function writeAll(root: string, memories: readonly Memory[]): Promise<void> {
+  for (const memory of memories) {
+    await invoke("write_file", {
+      path: `${trim(root)}/${MEMORY_DIR}/${memory.name}.md`,
+      content: renderMemory(memory),
+    });
+  }
+}
+
+/** Removes memories by name; the caller has checked that each one exists. */
+export async function forgetAll(root: string, names: readonly string[]): Promise<void> {
+  for (const name of names) await invoke("delete_path", { path: `${trim(root)}/${MEMORY_DIR}/${name}.md` });
+}
+
+/**
+ * Puts the memories back from Aime's mirror when the folder is missing, and
+ * mirrors it otherwise; either way `.aime/` is kept out of git. A mirror that
+ * cannot be reached costs nothing but the safety net, and says so in the log.
+ */
+export async function syncMirror(root: string): Promise<void> {
+  try {
+    await invoke("memory_mirror_sync", { root: trim(root) });
+  } catch (error: unknown) {
+    console.warn("the project's memory could not be mirrored:", error);
+  }
+}
+
+/** What an earlier Aime kept as one page of read conventions (`.aime/project.json`). */
+const LEGACY_JSON = ".aime/project.json";
+const LEGACY_PAGE = ".aime/PROJECT.md";
+
+/**
+ * Turns the single page an earlier Aime kept into memories, once, and removes
+ * it: nothing it learned is lost, and nothing is said twice in two places.
+ */
+async function carryOverLegacy(base: string): Promise<void> {
+  let text: string;
+  try {
+    text = await invoke<string>("read_file", { path: `${base}/${LEGACY_JSON}` });
+  } catch {
+    return; // nothing from before
+  }
+  const learned = (JSON.parse(text) as { learned?: { text?: unknown; kind?: unknown; seen?: unknown }[] })
+    .learned;
+  const memories = (learned ?? []).flatMap((one): Memory[] => {
+    if (typeof one.text !== "string" || one.text.trim() === "") return [];
+    const seen = typeof one.seen === "string" ? one.seen : today();
+    return one.kind === "tests"
+      ? conventionsLearned({ files: [], patterns: [], testsLiveIn: one.text, suites: [], raw: "" }, seen)
+      : conventionsLearned({ files: [], patterns: [one.text], testsLiveIn: "", suites: [], raw: "" }, seen);
+  });
+  for (const memory of memories) {
+    await invoke("write_file", {
+      path: `${base}/${MEMORY_DIR}/${memory.name}.md`,
+      content: renderMemory(memory),
+    });
+  }
+  await invoke("delete_path", { path: `${base}/${LEGACY_JSON}` });
+  try {
+    await invoke("delete_path", { path: `${base}/${LEGACY_PAGE}` });
+  } catch {
+    // Already gone, which is the state this asks for.
+  }
+}
+
+export function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * When each path a memory cites last changed, read once per folder per turn. A
+ * cited folder counts by its own time - it moves when an entry is added,
+ * removed or renamed in it - since one left out would read as gone, and the
+ * memory as stale for ever (measured: a study cited `www/docs` and was run
+ * again on every open).
+ */
+async function changeTimes(root: string, memories: readonly Memory[]): Promise<Evidence["changed"]> {
+  const base = trim(root);
+  const folders = new Set(memories.flatMap((memory) => memory.files.map(folderOf)));
+  const times = new Map<string, number>();
+  for (const folder of folders) {
+    for (const entry of await listOrEmpty(folder === "" ? base : `${base}/${folder}`)) {
+      if (entry.modified_ms !== null) {
+        times.set(folder === "" ? entry.name : `${folder}/${entry.name}`, entry.modified_ms);
+      }
+    }
+  }
+  return (file) => times.get(file) ?? null;
+}
+
+/**
+ * An emptied file is how an AI deletes a memory: every CLI can write a file,
+ * not every one may delete it, so Aime removes it here.
+ */
+async function readMemory(path: string, name: string): Promise<Memory | null> {
+  try {
+    const text = await invoke<string>("read_file", { path });
+    if (text.trim() !== "") return parseMemory(text, name);
+    await invoke("delete_path", { path });
+    return null;
+  } catch (error: unknown) {
+    console.warn(`memory ${name} could not be read:`, error);
+    return null;
+  }
+}
+
+/** The per-folder pages of a large index, and no page for a folder that has none left. */
+async function writePages(base: string, memories: readonly Memory[]): Promise<void> {
+  const pages = renderPages(memories);
+  const signature = pages.map((page) => `${page.path}\n${page.content}`).join("\n");
+  if (pagesWritten.get(base) === signature) return;
+  for (const page of pages)
+    await invoke("write_file", { path: `${base}/${page.path}`, content: page.content });
+  const current = new Set(pages.map((page) => `${base}/${page.path}`.replace(/\\/g, "/")));
+  for (const entry of await listOrEmpty(`${base}/${INDEX_DIR}`)) {
+    if (!current.has(entry.path.replace(/\\/g, "/"))) await invoke("delete_path", { path: entry.path });
+  }
+  pagesWritten.set(base, signature);
+}
+
+async function listOrEmpty(path: string): Promise<DirEntry[]> {
+  try {
+    return await invoke<DirEntry[]>("list_dir", { path });
+  } catch {
+    return []; // not there yet: nothing has been remembered
+  }
+}
+
+function folderOf(file: string): string {
+  const slash = file.lastIndexOf("/");
+  return slash === -1 ? "" : file.slice(0, slash);
+}
+
+function trim(root: string): string {
+  return root.replace(/[\\/]+$/, "");
+}
