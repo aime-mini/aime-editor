@@ -19,8 +19,8 @@ sees to that itself. It reads the runtime's version out of
 matches. When none does - WebView2 updates itself in the background - it
 downloads `https://msedgedriver.microsoft.com/<version>/edgedriver_<arch>.zip`
 for this machine's architecture and keeps it there as `msedgedriver-edge<major>.exe`,
-next to the older ones. Measured 2026-09-24: with no 153 driver in the folder, the
-run fetched 153.0.4234.48 for a 153.0.4234.48 runtime and went on green.
+next to the older ones. With no matching driver in the folder, a run against WebView2
+153.0.4234.48 fetched driver 153.0.4234.48 and went on green.
 
 Point `AIME_EDGE_DRIVER` at a driver kept somewhere else; it still wins.
 
@@ -58,9 +58,8 @@ Both cost an afternoon once, so they are written down rather than rediscovered:
 
 The test window is parked off-screen (`AIME_UNATTENDED`) but it still takes
 keyboard focus, so anything typed at the machine lands in whichever field the
-spec is filling. Measured 2026-08-24: the word "làm" arrived inside a board URL
-(`lhttp://127.0.0.1:51291àm`) and the connect step failed as if the product were
-broken. Specs therefore type through `fill()` in `e2e/support/fields.cjs`, which
+spec is filling. A word typed during a run once arrived inside a board URL and the
+connect step failed as if the product were broken. Specs therefore type through `fill()` in `e2e/support/fields.cjs`, which
 reads the field back and retries; use it for every value the app then acts on
 rather than `setValue` directly.
 
@@ -74,9 +73,8 @@ The app is started by tauri-driver, which `wdio.conf.cjs` spawns - so whatever
 is in the runner's environment reaches every process the app starts: the
 program being debugged, js-debug, language servers, the AI CLIs. wdio puts two
 things there for itself (`NODE_ENV=test`, and `--import <tsx>` in
-`NODE_OPTIONS`), and until 2026-09-24 both leaked through: every Node program
-under test ran through tsx, and a top-level `throw` read as handled because
-tsx's loader had wrapped it. `appEnvironment()` takes both back out, so the app
+`NODE_OPTIONS`). Leaked through, every Node program under test would run through
+tsx, and a top-level `throw` would read as handled because tsx's loader wraps it. `appEnvironment()` takes both back out, so the app
 sees the environment the suite was started from, plus `AIME_UNATTENDED`.
 
 A program the app runs is also slower here than on a desktop, by design of the
