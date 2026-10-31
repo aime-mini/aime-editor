@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listenHere } from "../lib/workspaceEvents";
+import { touchesListedFolder } from "../lib/listedFolders";
 import { announceFileSaved } from "../lib/savedFiles";
 import { open } from "@tauri-apps/plugin-dialog";
 import { translate } from "../i18n";
@@ -68,6 +69,12 @@ interface WorkspaceState {
   savedContent: string;
   dirty: boolean;
   treeVersion: number; // bump to make FileTree reload
+  /**
+   * Bumped when a path git ignores changed in a folder the tree lists: the
+   * tree reloads its listings, and nothing else that follows `treeVersion`
+   * runs for it.
+   */
+  listingVersion: number;
   /** Folders open in the file tree - kept here, not in each row, so they outlive a restart. */
   expandedDirs: string[];
   /** Files that came back with unsaved text the disk no longer matches. */
@@ -213,21 +220,36 @@ const EMPTY_EDITOR: Pick<
 let fsListenerReady = false;
 
 export const useWorkspace = create<WorkspaceState>((set, get) => {
-  /** Reacts to backend `fs:changed` events (debounced, ignored dirs filtered). */
+  /** The open file changed on disk: shown as it is now, unless it has edits of its own. */
+  const reloadIfOpen = (changedPaths: string[]) => {
+    const { openFilePath, dirty } = get();
+    if (openFilePath && !dirty && changedPaths.includes(openFilePath)) {
+      get()
+        .reloadOpenFile()
+        .catch((err: unknown) => {
+          // Deleted or locked mid-write — keep the buffer; the tree already updated.
+          console.warn("reload after fs change failed:", err);
+        });
+    }
+  };
+
+  /**
+   * Reacts to the backend's debounced change events: `fs:changed` refreshes
+   * everything that reads the workspace; `fs:ignored-changed` - paths git
+   * ignores - only the listing of a folder on screen, and the open file.
+   */
   const ensureFsListener = async () => {
     if (fsListenerReady) return;
     fsListenerReady = true;
     await listenHere<string[]>("fs:changed", ({ payload: changedPaths }) => {
       get().refreshTree();
-      const { openFilePath, dirty } = get();
-      if (openFilePath && !dirty && changedPaths.includes(openFilePath)) {
-        get()
-          .reloadOpenFile()
-          .catch((err: unknown) => {
-            // Deleted or locked mid-write — keep the buffer; the tree already updated.
-            console.warn("reload after fs change failed:", err);
-          });
-      }
+      reloadIfOpen(changedPaths);
+    });
+    await listenHere<string[]>("fs:ignored-changed", ({ payload: changedPaths }) => {
+      const { rootPath, expandedDirs } = get();
+      const listed = rootPath === null ? expandedDirs : [rootPath, ...expandedDirs];
+      if (touchesListedFolder(changedPaths, listed)) set((s) => ({ listingVersion: s.listingVersion + 1 }));
+      reloadIfOpen(changedPaths);
     });
   };
 
@@ -248,6 +270,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     savedContent: "",
     dirty: false,
     treeVersion: 0,
+    listingVersion: 0,
     expandedDirs: [],
     diskNotices: {},
 

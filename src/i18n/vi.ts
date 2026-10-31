@@ -229,6 +229,7 @@ export const vi: Record<TranslationKey, string> = {
   "ai.queue.remove": "Rút lại tin này",
   "ai.queue.withdrawing": "Đang rút lại…",
   "ai.jumpToLatest": "Mới nhất",
+  "ai.showEarlier": "Xem tin nhắn trước ({count} tin nữa)",
   "ai.activity.waiting": "Đang chờ {provider}",
   "ai.activity.thinking": "Đang suy nghĩ",
   "ai.activity.writing": "Đang viết câu trả lời",

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   AppWindow,
   ArrowDown,
@@ -123,7 +124,15 @@ function InlineAiChip() {
 
 export function StatusBar() {
   const rootPath = useWorkspace((s) => s.rootPath);
-  const { running, totalCostUsd, sessionId, providerId } = useAi();
+  // Picked, not the whole store: it changes with every word the AI streams.
+  const { running, totalCostUsd, sessionId, providerId } = useAi(
+    useShallow((s) => ({
+      running: s.running,
+      totalCostUsd: s.totalCostUsd,
+      sessionId: s.sessionId,
+      providerId: s.providerId,
+    })),
+  );
   const { tasks, run: runTask, runKind, discovering, trying, notices } = useTasks();
   const setInstallerTools = useLayout((s) => s.setInstallerTools);
   const setSettingsOpen = useLayout((s) => s.setSettingsOpen);

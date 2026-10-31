@@ -8,12 +8,19 @@ use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
 use tauri::{AppHandle, Emitter, EventTarget, Manager, State, Webview};
 
 use crate::fs_cmds::IGNORED_DIRS;
+use crate::git_ignored::GitIgnored;
 
 /// Coalesces change bursts (a git checkout, an AI edit run) into a single event.
 const DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Event delivered to the frontend: the deduplicated list of changed paths.
 const CHANGED_EVENT: &str = "fs:changed";
+
+/// The same for paths git ignores. Kept apart: what follows a change in the
+/// workspace (git status, the task list, the paths a conversation names) has
+/// nothing to learn from them, and a folder written to constantly - a browser
+/// profile, a cache - would otherwise keep all of it running.
+const IGNORED_CHANGED_EVENT: &str = "fs:ignored-changed";
 
 /// One watcher per workspace, keyed by the workspace's webview label.
 /// Inserting a new watcher for a label drops (and thereby stops) the old one.
@@ -28,9 +35,10 @@ fn is_relevant(path: &Path) -> bool {
 }
 
 /// Watches `path` recursively for the calling workspace and emits debounced
-/// `fs:changed` events (with the affected paths) back to that workspace only.
-/// Called again — e.g. when the user opens another folder — it replaces the
-/// workspace's previous watcher.
+/// `fs:changed` events (with the affected paths) back to that workspace only,
+/// and `fs:ignored-changed` for the paths git ignores. Called again — e.g.
+/// when the user opens another folder — it replaces the workspace's previous
+/// watcher.
 #[tauri::command]
 pub fn watch_workspace(
     app: AppHandle,
@@ -40,6 +48,7 @@ pub fn watch_workspace(
 ) -> Result<(), String> {
     let label = webview.label().to_string();
     let emit_label = label.clone();
+    let mut git_ignored = GitIgnored::new(Path::new(&path));
 
     let mut debouncer = new_debouncer(DEBOUNCE, move |result: DebounceEventResult| match result {
         Ok(events) => {
@@ -51,9 +60,18 @@ pub fn watch_workspace(
             if changed.is_empty() {
                 return;
             }
-            let paths: Vec<String> = changed.into_iter().collect();
-            if let Err(err) = app.emit_to(EventTarget::webview(emit_label.as_str()), CHANGED_EVENT, &paths) {
-                eprintln!("[fs_watch] failed to emit {CHANGED_EVENT} to '{emit_label}': {err}");
+            let split = git_ignored.split(changed.into_iter().collect());
+            let target = EventTarget::webview(emit_label.as_str());
+            for (event, paths) in [
+                (CHANGED_EVENT, split.kept),
+                (IGNORED_CHANGED_EVENT, split.ignored),
+            ] {
+                if paths.is_empty() {
+                    continue;
+                }
+                if let Err(err) = app.emit_to(target.clone(), event, &paths) {
+                    eprintln!("[fs_watch] failed to emit {event} to '{emit_label}': {err}");
+                }
             }
         }
         Err(err) => eprintln!("[fs_watch] watcher error: {err}"),

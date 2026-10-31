@@ -129,7 +129,11 @@ function TreeNode({
   const [children, setChildren] = useState<DirEntry[] | null>(null);
   /** Why the folder could not be listed, the last time it was asked. */
   const [unreadable, setUnreadable] = useState<string | null>(null);
-  const { openFilePath, treeVersion } = useWorkspace();
+  // Picked one by one: the whole store changes with every key typed in the
+  // editor, and a row has no business re-rendering for that.
+  const openFilePath = useWorkspace((s) => s.openFilePath);
+  const treeVersion = useWorkspace((s) => s.treeVersion);
+  const listingVersion = useWorkspace((s) => s.listingVersion);
   const t = useT();
 
   // Loads on first expand and reloads while expanded whenever the workspace
@@ -149,7 +153,7 @@ function TreeNode({
     return () => {
       stale = true;
     };
-  }, [entry.is_dir, entry.path, expanded, treeVersion]);
+  }, [entry.is_dir, entry.path, expanded, treeVersion, listingVersion]);
 
   const toggle = () => {
     if (!entry.is_dir) {
@@ -288,8 +292,15 @@ function inItsRepository<T>(path: string, act: (relative: string) => T): T | und
 }
 
 export function FileTree() {
-  const { rootPath, treeVersion, refreshTree, handlePathDeleted, handlePathRenamed } = useWorkspace();
-  const { openFolder, closeFolder, openBlame } = useWorkspace();
+  const rootPath = useWorkspace((s) => s.rootPath);
+  const treeVersion = useWorkspace((s) => s.treeVersion);
+  const listingVersion = useWorkspace((s) => s.listingVersion);
+  const refreshTree = useWorkspace((s) => s.refreshTree);
+  const handlePathDeleted = useWorkspace((s) => s.handlePathDeleted);
+  const handlePathRenamed = useWorkspace((s) => s.handlePathRenamed);
+  const openFolder = useWorkspace((s) => s.openFolder);
+  const closeFolder = useWorkspace((s) => s.closeFolder);
+  const openBlame = useWorkspace((s) => s.openBlame);
   const repositories = useGit((s) => s.repositories);
   /** The repository an entry lives in, or null - a workspace can hold several, or none. */
   const repositoryAt = (path: string) => repositoryOf(path, repositories);
@@ -413,7 +424,7 @@ export function FileTree() {
     return () => {
       stale = true;
     };
-  }, [rootPath, treeVersion, t]);
+  }, [rootPath, treeVersion, listingVersion, t]);
 
   const runModalAction = useCallback(
     async (value: string) => {

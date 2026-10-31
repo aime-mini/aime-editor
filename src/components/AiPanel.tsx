@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   ArrowDown,
+  ArrowUp,
   Bot,
   Check,
   ChevronDown,
@@ -60,6 +61,7 @@ import { BackgroundNotice, ToolRun, type ToolPart } from "./ToolActivity";
 import { TurnRecovery } from "./TurnRecovery";
 import { LiveActivity, QueuedPrompts } from "./LiveActivity";
 import { useStickToBottom } from "./useStickToBottom";
+import { useChatWindow } from "./useChatWindow";
 import { formatElapsed, useSecondsSince } from "./useSecondsSince";
 import { loggedAs } from "../stores/notices";
 
@@ -437,6 +439,20 @@ const MessageBubble = memo(function MessageBubble({
   );
 });
 
+/** The way up to the messages above the ones drawn. */
+function EarlierMessages({ count, onShow }: { count: number; onShow: () => void }) {
+  const t = useT();
+  return (
+    <button
+      onClick={onShow}
+      data-earlier-messages
+      className="mx-auto flex items-center gap-1 rounded-full border border-line px-3 py-1 text-[11px] text-muted hover:border-accent hover:text-fg"
+    >
+      <ArrowUp size={12} /> {t("ai.showEarlier", { count: String(count) })}
+    </button>
+  );
+}
+
 /**
  * Whether a drop reported by Tauri landed on the prompt box.
  *
@@ -512,6 +528,7 @@ export function AiPanel() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const { following, toEnd } = useStickToBottom(scrollRef, transcriptRef);
+  const { from: shownFrom, showEarlier } = useChatWindow(localId, messages.length, scrollRef);
   const panelsRef = useRef<HTMLDivElement>(null);
   /**
    * The smallest the prompt box may be dragged, as a percentage.
@@ -970,18 +987,23 @@ export function AiPanel() {
                       <p className="mt-1 text-center text-[11px] text-muted">{t("ai.mentionHint")}</p>
                     </div>
                   )}
-                  {messages.map((m, i) => (
+                  {shownFrom > 0 && <EarlierMessages count={shownFrom} onShow={showEarlier} />}
+                  {messages.slice(shownFrom).map((m, offset) => {
+                    const i = shownFrom + offset;
                     // Only the last turn can be the one being written, and only
                     // while the CLI is still running.
-                    <MessageBubble
-                      key={i}
-                      message={m}
-                      index={i}
-                      live={running && i === messages.length - 1}
-                      background={running && i === messages.length - 1 ? backgroundTasks : NO_TASKS}
-                      retrying={running && i === messages.length - 1 ? retrying : null}
-                    />
-                  ))}
+                    const live = running && i === messages.length - 1;
+                    return (
+                      <MessageBubble
+                        key={i}
+                        message={m}
+                        index={i}
+                        live={live}
+                        background={live ? backgroundTasks : NO_TASKS}
+                        retrying={live ? retrying : null}
+                      />
+                    );
+                  })}
                   <TurnRecovery />
                   <QueuedPrompts queued={queued} withdrawable={withdraws} onRemove={unqueuePrompt} />
                 </div>

@@ -229,6 +229,7 @@ export const en = {
   "ai.queue.remove": "Take this message back",
   "ai.queue.withdrawing": "Taking it back…",
   "ai.jumpToLatest": "Latest",
+  "ai.showEarlier": "Show earlier messages ({count} more)",
   "ai.activity.waiting": "Waiting for {provider}",
   "ai.activity.thinking": "Thinking",
   "ai.activity.writing": "Writing the answer",

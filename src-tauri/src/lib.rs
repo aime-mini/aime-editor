@@ -13,6 +13,7 @@ mod flows;
 mod fs_cmds;
 mod fs_watch;
 mod git;
+mod git_ignored;
 mod home;
 mod login_shell;
 mod lsp;
