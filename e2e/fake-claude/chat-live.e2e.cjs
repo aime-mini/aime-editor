@@ -19,6 +19,9 @@ const CALLS_FILE = path.join(fakeClaudeState, "calls.jsonl");
 const STEERED_FILE = path.join(fakeClaudeState, "steered.jsonl");
 const WITHDRAWN_FILE = path.join(fakeClaudeState, "withdrawn.jsonl");
 const QUEUED = "and the tests too";
+/** Two messages written one after the other while the AI works. */
+const SECOND = "check the docs as well";
+const THIRD = "then summarise";
 /** Written by mistake, and taken back before the AI read it. */
 const MISTYPED = "delete the whole repo";
 const TAKE_BACK = "Take this message back";
@@ -270,6 +273,56 @@ describe("The chat panel while the AI is at work", () => {
     assert.equal(calls().length, before + 1, "the message was sent again after the turn");
     const after = await panel();
     assert.deepEqual(after.queued, [], "the bubble outlived the turn");
+  });
+
+  it("hands several messages written during a turn over one at a time, each read once and in order", async () => {
+    // Handed over together, the CLI echoes the second with the first's text
+    // joined to it: matched by text it would stay queued, its x would do
+    // nothing, and it would be sent again after the turn.
+    playNext("live");
+    const before = calls().length;
+    const taken = steered().length;
+    await type("first question");
+    await until((p) => p.activity !== null, "the turn never started");
+    await type(SECOND);
+    await type(THIRD);
+
+    const waiting = await until(
+      (p) => p.queued.length === 2,
+      "the two messages written during the turn are not both shown",
+    );
+    assert.deepEqual(
+      waiting.queuedStates,
+      ["handed", "waiting"],
+      "the second message went to the CLI before the AI read the first",
+    );
+
+    const read = await until(
+      (p) => p.queued.length === 0 && p.userBubbles.some((bubble) => bubble.includes(THIRD)),
+      "the messages written during the turn never all joined the conversation",
+    );
+    assert.ok(read.running, "the turn had ended before the messages were taken up");
+    const order = [SECOND, THIRD].map((text) =>
+      read.userBubbles.findIndex((bubble) => bubble.includes(text)),
+    );
+    assert.ok(order[0] !== -1 && order[0] < order[1], `the conversation shows them out of order: ${order}`);
+    assert.deepEqual(
+      steered()
+        .slice(taken)
+        .map((entry) => entry.text.split("\n\n").at(-1)),
+      [SECOND, THIRD],
+      "the CLI did not get the messages one by one, in the order written",
+    );
+
+    await settle();
+    const after = await panel();
+    assert.deepEqual(after.queued, [], "a message outlived the turn in the queue");
+    for (const text of [SECOND, THIRD]) {
+      const shown = after.userBubbles.filter((bubble) => bubble.includes(text)).length;
+      assert.equal(shown, 1, `"${text}" is in the conversation ${String(shown)} times`);
+    }
+    await browser.pause(1_000);
+    assert.equal(calls().length, before + 1, "a message read during the turn was sent again after it");
   });
 
   it("answers a message written after the answer while a server it started keeps running", async () => {

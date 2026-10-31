@@ -90,13 +90,22 @@ function readStreamJson() {
 }
 
 /**
- * Takes up what was handed over, the way 2.1.307 does at a step boundary:
+ * Takes up what was handed over, the way 2.1.316 does at a step boundary:
  * each message is echoed back as a user line (`--replay-user-messages`), with
- * the id it was handed with, and is from then on part of the turn.
+ * the id it was handed with, and is from then on part of the turn. Messages
+ * that waited together come back under their own ids but with their texts
+ * joined: the second of two echoes "first\nsecond".
  */
 function takeUp() {
+  const texts = [];
   for (const { text, uuid } of handed.splice(0)) {
-    emit({ type: "user", uuid, message: { role: "user", content: text }, parent_tool_use_id: null });
+    texts.push(text);
+    emit({
+      type: "user",
+      uuid,
+      message: { role: "user", content: texts.join("\n") },
+      parent_tool_use_id: null,
+    });
     record("steered.jsonl", { text });
   }
 }

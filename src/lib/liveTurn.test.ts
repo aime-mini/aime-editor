@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   activityAfter,
+  nextToHandOver,
   withQueuedRead,
   withToolCall,
   withToolResult,
@@ -112,19 +113,50 @@ describe("a message handed to the turn in flight", () => {
   const handed = { id: "q1", text: "and the tests", sent: "The editor shows x.ts\n\nand the tests" };
   const waiting = { id: "q2", text: "then push", sent: null };
 
+  const readAsHanded = [
+    conversation[0],
+    { role: "assistant", parts: [{ kind: "text", text: "Looking." }] },
+    { role: "user", parts: [{ kind: "text", text: "and the tests" }] },
+    { role: "assistant", parts: [], unfinished: true },
+  ];
+
   it("joins the conversation when the CLI echoes it, and the answer carries on under it", () => {
-    const read = withQueuedRead(conversation, [handed, waiting], handed.sent);
+    const read = withQueuedRead(conversation, [handed, waiting], { text: handed.sent });
     expect(read?.queued).toEqual([waiting]);
-    expect(read?.messages).toEqual([
-      conversation[0],
-      { role: "assistant", parts: [{ kind: "text", text: "Looking." }] },
-      { role: "user", parts: [{ kind: "text", text: "and the tests" }] },
-      { role: "assistant", parts: [], unfinished: true },
-    ]);
+    expect(read?.messages).toEqual(readAsHanded);
+  });
+
+  it("is found by the id the CLI names, though the text came back joined to another", () => {
+    const joined = { id: "q1", text: `earlier message\n${handed.sent}` };
+    const read = withQueuedRead(conversation, [handed, waiting], joined);
+    expect(read?.queued).toEqual([waiting]);
+    expect(read?.messages).toEqual(readAsHanded);
   });
 
   it("is only the message handed in - the turn's own prompt is echoed too, and is already there", () => {
-    expect(withQueuedRead(conversation, [handed, waiting], "fix the build")).toBeNull();
-    expect(withQueuedRead(conversation, [waiting], "then push")).toBeNull();
+    expect(
+      withQueuedRead(conversation, [handed, waiting], { text: "fix the build", id: "cli-own" }),
+    ).toBeNull();
+    expect(withQueuedRead(conversation, [waiting], { text: "then push" })).toBeNull();
+    expect(withQueuedRead(conversation, [waiting], { id: "q2" })).toBeNull();
+  });
+});
+
+describe("handing queued messages to the turn", () => {
+  type Queued = { id: string; text: string; sent: string | null };
+  const waiting = (id: string): Queued => ({ id, text: id, sent: null });
+  const handed = (id: string): Queued => ({ id, text: id, sent: id });
+  const nothingQueued: Queued[] = [];
+
+  it("hands the oldest waiting message over first", () => {
+    expect(nextToHandOver([waiting("a"), waiting("b")])?.id).toBe("a");
+  });
+
+  it("holds the rest until the AI has read the one handed over", () => {
+    expect(nextToHandOver([handed("a"), waiting("b")])).toBeUndefined();
+  });
+
+  it("has nothing to hand over when nothing waits", () => {
+    expect(nextToHandOver(nothingQueued)).toBeUndefined();
   });
 });

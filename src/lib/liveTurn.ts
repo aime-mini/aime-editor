@@ -89,18 +89,38 @@ function patchCall(message: ChatMessage, index: number, patch: (part: ToolPart) 
   return { ...message, parts };
 }
 
+/** What the queue needs of a message to follow it from written to read. */
+interface Queueable {
+  id: string;
+  text: string;
+  /** What the CLI was handed, or null while the message still waits in Aime. */
+  sent: string | null;
+}
+
 /**
- * A message handed to the running turn was read by the AI, which echoed it
- * back: it takes its place in the conversation, the answer so far closes,
- * and what follows is a new answer under it. The turn's own prompt is echoed
- * the same way and matches nothing queued: it is in the conversation already.
+ * Which handed message the AI has read: the one the CLI names, else the one
+ * whose text came back. The id decides whenever there is one, because the
+ * text does not survive every read - messages that waited together come back
+ * under their own ids with their texts joined.
  */
-export function withQueuedRead<Q extends { text: string; sent: string | null }>(
+function readMessage<Q extends Queueable>(queued: Q[], read: { id?: string; text?: string }): Q | undefined {
+  const handed = queued.filter((item) => item.sent !== null);
+  const byId = read.id === undefined ? undefined : handed.find((item) => item.id === read.id);
+  return byId ?? (read.text === undefined ? undefined : handed.find((item) => item.sent === read.text));
+}
+
+/**
+ * A message handed to the running turn was read by the AI: it takes its
+ * place in the conversation, the answer so far closes, and what follows is a
+ * new answer under it. The turn's own prompt is echoed the same way and
+ * matches nothing queued: it is in the conversation already.
+ */
+export function withQueuedRead<Q extends Queueable>(
   messages: ChatMessage[],
   queued: Q[],
-  echoed: string,
+  echoed: { id?: string; text?: string },
 ): { messages: ChatMessage[]; queued: Q[] } | null {
-  const read = queued.find((item) => item.sent === echoed);
+  const read = readMessage(queued, echoed);
   if (read === undefined) return null;
   const closed = messages.map((message, index) => {
     if (index !== messages.length - 1 || message.role !== "assistant") return message;
@@ -116,6 +136,18 @@ export function withQueuedRead<Q extends { text: string; sent: string | null }>(
       { role: "assistant", parts: [], unfinished: true },
     ],
   };
+}
+
+/**
+ * The queued message to hand the turn next: the oldest still waiting, once
+ * the AI has read every message handed before it. Handing them over one at a
+ * time keeps each a message of its own - several waiting in the CLI at once
+ * are read as one, and the AI answers only the first of them (measured on
+ * 2.1.316) - and keeps them in the order they were written.
+ */
+export function nextToHandOver<Q extends Queueable>(queued: Q[]): Q | undefined {
+  if (queued.some((item) => item.sent !== null)) return undefined;
+  return queued.at(0);
 }
 
 /**

@@ -325,7 +325,32 @@ describe("createClaudeParser", () => {
           session_id: "558ae744-7432-48a2-9772-5cba59c3b088",
           uuid: "6d0c6e9c-1f1c-4a35-9a1e-9d3b7a1b2c3d",
         }),
-      ).toEqual([{ kind: "user-read", text: "Second instruction: reply with the single word DONE2." }]);
+      ).toEqual([
+        {
+          kind: "user-read",
+          text: "Second instruction: reply with the single word DONE2.",
+          id: "6d0c6e9c-1f1c-4a35-9a1e-9d3b7a1b2c3d",
+        },
+      ]);
+    });
+
+    it("names a message read together with the one before it by its own id, though its text is joined", () => {
+      // Captured from 2.1.316: two messages that waited for the same turn end.
+      const parse = createClaudeParser();
+      expect(
+        parse({
+          type: "user",
+          message: { role: "user", content: "Reply with exactly: ONE\nReply with exactly: TWO" },
+          parent_tool_use_id: null,
+          uuid: "a497f7e9-924a-4d6d-b816-fbdb5805c935",
+        }),
+      ).toEqual([
+        {
+          kind: "user-read",
+          text: "Reply with exactly: ONE\nReply with exactly: TWO",
+          id: "a497f7e9-924a-4d6d-b816-fbdb5805c935",
+        },
+      ]);
     });
 
     it("reads the CLI's answer to taking a message back, by the message it names", () => {

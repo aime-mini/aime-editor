@@ -65,9 +65,10 @@ export type UiAiEvent =
   | { kind: "ran-on"; model: string }
   /**
    * The AI took up a message written to it during the turn: the CLI echoes
-   * the text at that moment. The turn's own prompt comes back the same way.
+   * it at that moment, with the id it was handed under (`id`) when the CLI
+   * keeps one. The turn's own prompt comes back the same way.
    */
-  | { kind: "user-read"; text: string }
+  | { kind: "user-read"; text: string; id?: string }
   /**
    * The CLI's answer to taking back a message it was handed (`ai_withdraw`):
    * `withdrawn` when the AI had not read it yet, and now never will.

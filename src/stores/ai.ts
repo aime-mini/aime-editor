@@ -11,6 +11,7 @@ import {
   appendText,
   withToolCall,
   withToolResult,
+  nextToHandOver,
   withToolStarted,
   withQueuedRead,
   withToolSubject,
@@ -120,11 +121,12 @@ export interface TurnContext {
 
 /**
  * A message written while a turn ran. With a CLI that reads messages as it
- * works it is handed over at once, and `sent` is the exact text handed in -
- * what the CLI echoes back when the AI takes it up, which is when it joins
- * the conversation. Until then, or with any other CLI, it waits for the turn
- * to end and goes out as the next one. A waiting message can be taken back at
- * any time; a handed one, until the AI reads it, from a CLI that gives it back.
+ * works it is handed over as soon as the AI has read the one before it, and
+ * `sent` is the exact text handed in; the CLI names it by `id` when the AI
+ * takes it up, which is when it joins the conversation. Until then, or with
+ * any other CLI, it waits for the turn to end and goes out as the next one. A
+ * waiting message can be taken back at any time; a handed one, until the AI
+ * reads it, from a CLI that gives it back.
  */
 export interface QueuedPrompt {
   id: string;
@@ -414,6 +416,8 @@ let costBeforeTurn = 0;
 let choiceThisTurn = { model: "", effort: "" };
 /** Fingerprint of the memory index the live turn carries, until the CLI confirms it took the turn. */
 let memoryHandedThisTurn: string | null = null;
+/** The editor's view the AI was last handed in the turn in flight; a message under the same view goes without it. */
+let viewHandedThisTurn: string | null = null;
 /** The choices the CLI has been asked about, answered or still answering, by `expectationKey`. */
 const askedExpectations = new Set<string>();
 
@@ -600,18 +604,17 @@ export const useAi = create<AiState>((set, get) => {
         noteRanOn(get().providerId, { model: ev.model });
         break;
       case "withdrawal":
-        set((s) => ({
-          queued: ev.withdrawn
-            ? s.queued.filter((item) => item.id !== ev.id)
-            : s.queued.map((item) => (item.id === ev.id ? { ...item, withdrawing: false } : item)),
-        }));
+        // Not taken back means the AI has it: the message joins the
+        // conversation, if its echo has not already put it there.
+        if (ev.withdrawn) set((s) => ({ queued: s.queued.filter((item) => item.id !== ev.id) }));
+        else moveReadIntoConversation({ id: ev.id });
+        handOverNext();
         break;
-      case "user-read": {
+      case "user-read":
         answerEnded = false;
-        const read = withQueuedRead(get().messages, get().queued, ev.text);
-        if (read !== null) set(read);
+        moveReadIntoConversation(ev);
+        handOverNext();
         break;
-      }
       case "compacted":
         // What the CLI summarised may or may not still hold the index; the
         // next turn hands it over again rather than trusting the summary.
@@ -700,16 +703,32 @@ export const useAi = create<AiState>((set, get) => {
     void get().sendPrompt(queued.map((item) => item.text).join("\n\n"), projectRoot, last.context);
   };
 
+  /** A handed message the AI has read leaves the queue for its place in the conversation. */
+  const moveReadIntoConversation = (echoed: { id?: string; text?: string }) => {
+    const read = withQueuedRead(get().messages, get().queued, echoed);
+    if (read !== null) set(read);
+  };
+
+  /** Hands the turn the next queued message, once it has read the one before. */
+  const handOverNext = () => {
+    const next = nextToHandOver(get().queued);
+    if (next !== undefined) void handOver(next);
+  };
+
   /**
    * Hands a queued message to the turn in flight, when its CLI reads messages
    * as it works. Marked handed over before the call so it cannot be taken back
    * in the meantime; a turn that ended first (`INPUT_CLOSED`) hands it back to
-   * the queue, and it goes out as the next turn, as from any other CLI.
+   * the queue, and it goes out as the next turn, as from any other CLI. The
+   * editor's view goes with it only when it changed since the AI last saw it.
    */
   const handOver = async (item: QueuedPrompt) => {
     const { runId, providerId, providers } = get();
     if (runId === null || !providers.some((p) => p.id === providerId && p.steers)) return;
-    const sent = [item.context.view, item.text].filter(Boolean).join("\n\n");
+    const view = item.context.view ?? null;
+    const changedView = view === viewHandedThisTurn ? null : view;
+    if (view !== null) viewHandedThisTurn = view;
+    const sent = [changedView, item.text].filter(Boolean).join("\n\n");
     const mark = (value: string | null) => {
       set((s) => ({ queued: s.queued.map((q) => (q.id === item.id ? { ...q, sent: value } : q)) }));
     };
@@ -987,6 +1006,7 @@ export const useAi = create<AiState>((set, get) => {
       ]);
       if (generation !== turnGeneration) return;
       memoryHandedThisTurn = memory === null ? null : fingerprint(memory);
+      viewHandedThisTurn = context.view ?? null;
       if (checkpoint !== null) patchLive((m) => ({ ...m, checkpoint }));
 
       const provider = get().providers.find((candidate) => candidate.id === get().providerId);
@@ -1012,7 +1032,7 @@ export const useAi = create<AiState>((set, get) => {
         else {
           set({ runId });
           // Written while the CLI was still starting: handed over now that it runs.
-          for (const item of get().queued) void handOver(item);
+          handOverNext();
         }
       } catch (e) {
         if (generation !== turnGeneration) return;
@@ -1030,7 +1050,7 @@ export const useAi = create<AiState>((set, get) => {
     enqueuePrompt: (text, context) => {
       const item: QueuedPrompt = { id: crypto.randomUUID(), text, context, sent: null, withdrawing: false };
       set((s) => ({ queued: [...s.queued, item] }));
-      void handOver(item);
+      handOverNext();
     },
 
     unqueuePrompt: (id) => {

@@ -32,6 +32,26 @@ const FILE_TOOLS: &str = "Read,Glob,Grep,Edit,Write";
 /// to write it with.
 const READ_TOOLS: &str = "Read,Glob,Grep";
 
+/// A message written during a turn reaches the AI only between its tool calls,
+/// so a long command in the foreground keeps it waiting until the command ends.
+/// Measured on 2.1.316 (Sonnet, a 60-second command, a message written 10 s in):
+/// read after 54.8 s without this, after 1.1 s with it - the AI started the
+/// command in the background and still reported its output when it finished.
+const STEERING_PROMPT: &str = "The user can write to you while you work, but a message reaches you only \
+between your tool calls - a command that runs for minutes keeps it waiting all that time. Start any command \
+that may take longer than about 20 seconds - a build, a test suite, a server, a batch job, a sleep - with \
+run_in_background, then end your turn or keep working while it runs; you are told when it finishes. A \
+message the user writes meanwhile is then read at once: answer it before going back to the task.";
+
+/// Everything Aime adds to the CLI's own system prompt for a chat turn, as one
+/// line with no double quotes: a CLI installed as a `.cmd` shim is run through
+/// `cmd /C` on Windows, which splits an argument at a double quote and ends the
+/// whole command line at a line break - everything after it, `--resume`
+/// included, would never reach the CLI.
+fn appended_system_prompt() -> String {
+    format!("{MEMORY_PROMPT} {STEERING_PROMPT}")
+}
+
 /// `-p` combined with `--output-format stream-json` requires `--verbose`.
 /// The permission level maps onto `--permission-mode` (choices verified
 /// against 2.1.220): full bypass (headless-verified with
@@ -72,7 +92,7 @@ pub fn build_args(
         "--permission-mode".into(),
         permission_mode.into(),
         "--append-system-prompt".into(),
-        MEMORY_PROMPT.into(),
+        appended_system_prompt(),
     ];
     if tools == ToolSet::FilesOnly {
         args.push("--tools".into());
@@ -318,6 +338,21 @@ mod tests {
         let args = build_args(None, None, None, Permission::Full, ToolSet::Everything);
         assert!(args.contains(&"--append-system-prompt".to_string()));
         assert!(!args.contains(&"--resume".to_string()));
+    }
+
+    #[test]
+    fn the_appended_prompt_keeps_memory_and_asks_for_long_commands_in_the_background() {
+        let args = build_args(None, None, None, Permission::Full, ToolSet::Everything);
+        let at = args
+            .iter()
+            .position(|a| a == "--append-system-prompt")
+            .expect("--append-system-prompt present");
+        let appended = &args[at + 1];
+        assert!(appended.starts_with(super::MEMORY_PROMPT));
+        assert!(appended.contains("run_in_background"));
+        // It travels through `cmd /C` on Windows, where a double quote splits it
+        // and a line break ends the command line.
+        assert!(!appended.contains(['"', '\n', '\r']));
     }
 
     #[test]

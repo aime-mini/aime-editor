@@ -45,6 +45,8 @@ interface ClaudeUserLine {
   type: "user";
   message?: { content?: unknown };
   parent_tool_use_id?: string | null;
+  /** The id a message was written under, echoed back with it. */
+  uuid?: string;
 }
 
 interface ClaudeToolResult {
@@ -282,7 +284,12 @@ function parseLine(raw: ClaudeAssistantLine | ClaudeUserLine | ClaudeResultLine)
   switch (raw.type) {
     case "user": {
       const content = raw.message?.content;
-      if (typeof content === "string") return [{ kind: "user-read", text: content }];
+      // The id is what identifies the message: messages that waited together
+      // are echoed under their own ids but with their texts joined
+      // (2.1.316: the second echo of two carries "first\nsecond").
+      if (typeof content === "string") {
+        return [{ kind: "user-read", text: content, ...(raw.uuid === undefined ? {} : { id: raw.uuid }) }];
+      }
       return toolResults(raw);
     }
 
