@@ -11,6 +11,7 @@ export const en = {
   "tabs.closeHint":
     "Anything still running in it stops: an AI turn, terminals, a debug session. Its files stay as they are.",
   "tabs.closeConfirm": "Close",
+  "tabs.opening": "Opening {name}…",
   "welcome.newProject": "New Project…",
   "welcome.clone": "Clone Repository…",
   "welcome.cloneHint": "Clone from GitHub or any git URL and open it right away",

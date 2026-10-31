@@ -552,6 +552,9 @@ fn bring_back(state: &Workspaces, window: &str, anchor: &str, folder: &str) {
 ///
 /// A folder opened in a window of one tab brings back the tabs it was last
 /// open with. Async so that writing the record down stays off the main thread.
+/// A tab opened on a folder says "nothing" once before its page has asked
+/// for that folder; its tab keeps the folder's name meanwhile, rather than
+/// flashing the welcome screen's.
 #[tauri::command]
 pub async fn workspace_register(
     app: AppHandle,
@@ -563,6 +566,9 @@ pub async fn workspace_register(
     let (window, before, alone) = {
         let mut registry = state.lock();
         let window = registry.window_of(label)?;
+        if folder.is_none() && registry.pending.contains_key(label) {
+            return Ok(());
+        }
         let before = registry
             .members
             .get_mut(label)

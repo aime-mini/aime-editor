@@ -13,6 +13,7 @@ export const vi: Record<TranslationKey, string> = {
   "tabs.closeHint":
     "Những gì đang chạy trong đó sẽ dừng: lượt AI, terminal, phiên debug. File vẫn giữ nguyên.",
   "tabs.closeConfirm": "Đóng",
+  "tabs.opening": "Đang mở {name}…",
   "welcome.newProject": "Dự án mới…",
   "welcome.clone": "Clone repository…",
   "welcome.cloneHint": "Clone từ GitHub hoặc bất kỳ URL git nào rồi mở luôn",
