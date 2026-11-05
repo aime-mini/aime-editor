@@ -39,7 +39,6 @@ import { useAi, type TurnContext } from "../stores/ai";
 import { useComposer } from "../stores/composer";
 import { runFlowCommand } from "../lib/flows/chatCommand";
 import { useLayout } from "../stores/layout";
-import { runInTerminal } from "../stores/terminals";
 import { useWorkspace } from "../stores/workspace";
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -59,6 +58,7 @@ import type { TranslationKey } from "../i18n/en";
 import { StreamingCaret, ThinkingDots, Waiting } from "./Waiting";
 import { BackgroundNotice, ToolRun, type ToolPart } from "./ToolActivity";
 import { TurnRecovery } from "./TurnRecovery";
+import { useSignIn } from "./useSignIn";
 import { LiveActivity, QueuedPrompts } from "./LiveActivity";
 import { useStickToBottom } from "./useStickToBottom";
 import { useChatWindow } from "./useChatWindow";
@@ -82,8 +82,11 @@ const MENTION_LIMIT = 8;
 /** Stable empty list: a fresh array every render would re-run everything. */
 const NO_FILES: string[] = [];
 
-/** How long the "already signed in" confirmation stays on screen. */
-const SIGNED_IN_NOTICE_MS = 4000;
+/**
+ * How long the "already signed in" confirmation stays on screen - long enough
+ * to reach the "Sign in again" button it carries.
+ */
+const SIGNED_IN_NOTICE_MS = 10_000;
 
 /**
  * The shortest the prompt box can be without losing anything.
@@ -502,9 +505,7 @@ export function AiPanel() {
     unqueuePrompt,
     providerHealth,
     signedIn,
-    loginCommand,
     checkHealth,
-    watchSignIn,
     providers,
     loadProviders,
   } = useAi();
@@ -525,6 +526,7 @@ export function AiPanel() {
   const [historyMenu, setHistoryMenu] = useState<{ x: number; y: number } | null>(null);
   const [usageOpen, setUsageOpen] = useState(false);
   const [signedInConfirmed, setSignedInConfirmed] = useState(false);
+  const signIn = useSignIn();
   const scrollRef = useRef<HTMLDivElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const { following, toEnd } = useStickToBottom(scrollRef, transcriptRef);
@@ -630,15 +632,15 @@ export function AiPanel() {
 
   const signInNeeded = signedIn === false;
   const inputEnabled = rootPath !== null && providerHealth !== "missing" && !signInNeeded;
-  const signIn = () => {
-    runInTerminal(loginCommand);
-    // The CLI signs in on its own schedule; poll until it reports success.
-    watchSignIn();
-  };
-  /** Signing in again would only log the user out of a working session. */
+  /**
+   * Signed in, the key answers with a confirmation instead of a new sign-in -
+   * which would only log a working session out. The confirmation still offers
+   * to sign in again, because a CLI's status keeps reporting a login that has
+   * expired (see `asksToSignInAgain`).
+   */
   const signInOrConfirm = () => {
     if (signedIn === true) setSignedInConfirmed(true);
-    else signIn();
+    else signIn?.start();
   };
   const recheckButton = (
     <button
@@ -815,7 +817,7 @@ export function AiPanel() {
             title={
               signedIn === true
                 ? t("ai.signedIn", { provider: capabilities.displayName })
-                : t("ai.signInWith", { command: loginCommand })
+                : t("ai.signInWith", { command: signIn?.command ?? "" })
             }
             className="flex h-[22px] items-center rounded-md px-1.5 text-muted hover:bg-elevated hover:text-fg"
           >
@@ -941,19 +943,34 @@ export function AiPanel() {
                     <ProviderNotice
                       tone="ok"
                       message={t("ai.signedInAlready", { provider: capabilities.displayName })}
-                    />
+                    >
+                      {signIn && (
+                        <button
+                          onClick={() => {
+                            setSignedInConfirmed(false);
+                            signIn.start();
+                          }}
+                          title={t("ai.signInWith", { command: signIn.command })}
+                          className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] text-muted hover:text-fg"
+                        >
+                          <KeyRound size={12} /> {t("ai.signInAgain")}
+                        </button>
+                      )}
+                    </ProviderNotice>
                   )}
                   {signInNeeded && (
                     <ProviderNotice
                       tone="warn"
                       message={t("ai.signInRequired", { provider: capabilities.displayName })}
                     >
-                      <button
-                        onClick={signIn}
-                        className="flex items-center gap-1.5 rounded-md bg-accent-strong px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90"
-                      >
-                        <KeyRound size={12} /> {t("ai.signIn")}
-                      </button>
+                      {signIn && (
+                        <button
+                          onClick={signIn.start}
+                          className="flex items-center gap-1.5 rounded-md bg-accent-strong px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90"
+                        >
+                          <KeyRound size={12} /> {t("ai.signIn")}
+                        </button>
+                      )}
                       {/* The other door in: an API key pasted in Settings works
                       without any browser round-trip (providers that take one). */}
                       {providers.find((p) => p.id === providerId)?.apiKeyRoute != null && (

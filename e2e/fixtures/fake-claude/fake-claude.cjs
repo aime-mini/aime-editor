@@ -158,6 +158,7 @@ const LIVE_ANSWER_LINES = 150;
 const LIVE_LINE_MS = 80;
 const SLOW_COMMAND = "sleep 10";
 const SLOW_COMMAND_MS = 10_000;
+const SIGNED_OUT = "Failed to authenticate: OAuth session expired and could not be refreshed";
 
 /** What a flow's AI step says: JSON when asked for one, else prose the executor reads. */
 function stepAnswer(prompt) {
@@ -315,6 +316,22 @@ const SCENARIOS = {
     }
     say("Checked every file.");
     result(0, 0.6);
+  },
+
+  /**
+   * A stored login whose refresh token is no longer accepted: `auth status`
+   * still answers `loggedIn: true`, and the turn fails. The lines are the ones
+   * Claude Code 2.1.318 printed against such a login.
+   */
+  async signedOut({ result }) {
+    emit({
+      type: "assistant",
+      error: "authentication_failed",
+      message: { model: "<synthetic>", role: "assistant", content: [{ type: "text", text: SIGNED_OUT }] },
+      parent_tool_use_id: null,
+    });
+    result(0, 0, { is_error: true, terminal_reason: "api_error", result: SIGNED_OUT });
+    process.exitCode = 1;
   },
 
   /** The AI service cannot be reached: the CLI retries, then gives up and exits 1. */

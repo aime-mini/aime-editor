@@ -17,6 +17,8 @@ const { workspace, fakeClaudeState } = require("../wdio.fake-claude.cjs");
 const MODE_FILE = path.join(fakeClaudeState, "mode.txt");
 const CALLS_FILE = path.join(fakeClaudeState, "calls.jsonl");
 const CONTINUE = "Continue";
+const SIGN_IN_AGAIN = "Sign in again";
+const LABELS = { continueLabel: CONTINUE, signInLabel: SIGN_IN_AGAIN };
 
 const playNext = (scenario) => fs.writeFileSync(MODE_FILE, scenario);
 const lastCall = () => JSON.parse(fs.readFileSync(CALLS_FILE, "utf8").trim().split("\n").at(-1));
@@ -37,7 +39,7 @@ async function send(prompt) {
  * status box, the error box, and the Stop button by its title.
  */
 function panel() {
-  return browser.execute((continueLabel) => {
+  return browser.execute(({ continueLabel, signInLabel }) => {
     const answer = [...document.querySelectorAll("div.flex-col.items-start")].at(-1) ?? null;
     const textOf = (element) => element.textContent ?? "";
     return {
@@ -56,10 +58,13 @@ function panel() {
       continueButtons: [...document.querySelectorAll("button")].filter(
         (b) => textOf(b).trim() === continueLabel,
       ).length,
+      signInAgain: [...document.querySelectorAll("div.text-danger button")].filter(
+        (b) => textOf(b).trim() === signInLabel,
+      ).length,
       running: document.querySelector('button[title="Stop"]') !== null,
       cutOff: (document.body.textContent ?? "").includes("This turn was cut off"),
     };
-  }, CONTINUE);
+  }, LABELS);
 }
 
 async function until(predicate, message) {
@@ -76,6 +81,49 @@ async function until(predicate, message) {
       assert.fail(`${message} - the panel showed ${JSON.stringify(seen)}`);
     });
   return seen;
+}
+
+/**
+ * Puts a recorder where the terminal tabs are opened, or puts the real opener
+ * back. A sign-in must not reach a real terminal here: the app's shells take
+ * PATH from the system rather than from this suite, so the stand-in `claude`
+ * is not found there and the real `claude auth login` would open a browser.
+ */
+function recordTerminals(recording) {
+  return browser.executeAsync((on, done) => {
+    void import("/src/stores/terminals.ts").then(({ useTerminals }) => {
+      if (on) {
+        window.__aimeOpenTab = useTerminals.getState().addTab;
+        window.__aimeTerminalCommands = [];
+        useTerminals.setState({
+          addTab: (tab) => {
+            window.__aimeTerminalCommands.push(tab?.initialCommand ?? "");
+            return -1;
+          },
+        });
+      } else {
+        useTerminals.setState({ addTab: window.__aimeOpenTab });
+      }
+      done();
+    });
+  }, recording);
+}
+
+/** Waits for a terminal to have been asked to run `claude auth login`, `count` times in all. */
+async function signInsReach(count, button) {
+  let commands = [];
+  await browser
+    .waitUntil(
+      async () => {
+        commands = await browser.execute(() => window.__aimeTerminalCommands);
+        return commands.length === count;
+      },
+      { timeout: 10_000, interval: 150 },
+    )
+    .catch(() => {
+      assert.fail(`${button} opened no sign-in terminal - terminals asked for: ${JSON.stringify(commands)}`);
+    });
+  assert.equal(commands.at(-1), "claude auth login", `${button} ran the wrong command`);
 }
 
 /** Clicks a fold toggle of the last answer, found by its words. */
@@ -216,6 +264,32 @@ describe("A chat turn that is more than one answer, or did not finish", () => {
     assert.ok(call.prompt.includes("Continue where you left off"), `Continue sent "${call.prompt}"`);
     assert.equal(resumed.continueButtons, 0, "Continue outstayed the turn that answered it");
     assert.equal(resumed.errors.length, 0, "the old error outstayed the turn that recovered");
+  });
+
+  it("offers to sign in again when the CLI's sign-in expired behind a status that says signed in", async () => {
+    playNext("signedOut");
+    await send("are you there");
+    const failed = await until(
+      (p) => !p.running && p.signInAgain === 1,
+      "the expired sign-in was not offered back",
+    );
+    assert.ok(
+      failed.errors.some((error) => error.includes("OAuth session expired")),
+      `the CLI's reason is not on screen: ${failed.errors}`,
+    );
+
+    await recordTerminals(true);
+    try {
+      await (await $("div.text-danger").$(`button=${SIGN_IN_AGAIN}`)).click();
+      await signInsReach(1, "Sign in again in the error");
+
+      // The key in the header offers the same, although the CLI reports itself signed in.
+      await (await $('button[title="Signed in to Claude Code"]')).click();
+      await (await $("div.text-ok").$(`button=${SIGN_IN_AGAIN}`)).click();
+      await signInsReach(2, "Sign in again from the key");
+    } finally {
+      await recordTerminals(false);
+    }
   });
 
   it("hands a conversation what the project remembers once, and again when it changes or the CLI compacts", async () => {

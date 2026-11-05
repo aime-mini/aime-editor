@@ -84,7 +84,9 @@ export const vi: Record<TranslationKey, string> = {
   "ai.signIn": "Đăng nhập",
   "ai.signInWith": "Đăng nhập - chạy `{command}` trong terminal",
   "ai.signedIn": "Đã đăng nhập {provider}",
-  "ai.signedInAlready": "{provider} đã đăng nhập rồi - không cần làm gì thêm.",
+  "ai.signedInAlready":
+    "{provider} đã đăng nhập rồi. Nếu AI vẫn báo phiên đăng nhập hết hạn, hãy đăng nhập lại.",
+  "ai.signInAgain": "Đăng nhập lại",
   "ai.signInRequired": "{provider} đã cài nhưng chưa đăng nhập.",
   "ai.signInRecheck": "Kiểm tra lại",
   "ai.useApiKey": "Dùng API key thay thế",

@@ -82,7 +82,9 @@ export const en = {
   "ai.signIn": "Sign in",
   "ai.signInWith": "Sign in - runs `{command}` in a terminal",
   "ai.signedIn": "Signed in to {provider}",
-  "ai.signedInAlready": "Already signed in to {provider} - nothing to do.",
+  "ai.signedInAlready":
+    "Already signed in to {provider}. If the AI still says its sign-in expired, sign in again.",
+  "ai.signInAgain": "Sign in again",
   "ai.signInRequired": "{provider} is installed but not signed in yet.",
   "ai.signInRecheck": "Check again",
   "ai.useApiKey": "Use an API key instead",
