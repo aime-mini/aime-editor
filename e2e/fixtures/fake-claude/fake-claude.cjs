@@ -20,10 +20,18 @@ const path = require("node:path");
 const state = process.env.AIME_FAKE_CLAUDE_STATE ?? "";
 const args = process.argv.slice(2);
 
+/** Written by a spec to play a CLI whose login is gone; `auth status` then says so. */
+const SIGNED_OUT_FILE = path.join(state, "signed-out");
+
 /** What the health probes ask before any turn. */
 const PROBES = {
   "--version": () => console.log("2.1.286 (Claude Code)"),
-  auth: () => console.log(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" })),
+  auth: () =>
+    console.log(
+      fs.existsSync(SIGNED_OUT_FILE)
+        ? JSON.stringify({ loggedIn: false, authMethod: "none" })
+        : JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }),
+    ),
 };
 
 const emit = (line) => process.stdout.write(`${JSON.stringify(line)}\n`);

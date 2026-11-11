@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import {
   Activity,
   ArrowDown,
@@ -12,7 +12,6 @@ import {
   History,
   FolderPlus,
   KeyRound,
-  MessageSquare,
   Paperclip,
   Plug,
   Plus,
@@ -41,7 +40,8 @@ import { runFlowCommand } from "../lib/flows/chatCommand";
 import { useLayout } from "../stores/layout";
 import { useWorkspace } from "../stores/workspace";
 import { Panel, PanelGroup } from "react-resizable-panels";
-import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { ContextMenu } from "./ContextMenu";
+import { SessionHistory } from "./SessionHistory";
 import { Markdown } from "./Markdown";
 import { ResizeHandle } from "./ResizeHandle";
 import { capabilitiesOf, effortsOf, modelsOf, type ProviderOption } from "../lib/providers";
@@ -63,7 +63,8 @@ import { LiveActivity, QueuedPrompts } from "./LiveActivity";
 import { useStickToBottom } from "./useStickToBottom";
 import { useChatWindow } from "./useChatWindow";
 import { formatElapsed, useSecondsSince } from "./useSecondsSince";
-import { loggedAs } from "../stores/notices";
+import { failedTo, loggedAs } from "../stores/notices";
+import { pastedImages, savePastedImage } from "../lib/pastedImages";
 
 /**
  * The three permission levels, in the order the shield chip cycles through.
@@ -480,6 +481,7 @@ export function AiPanel() {
     cancel,
     newSession,
     resumeSession,
+    renameSession,
     history,
     localId,
     providerId,
@@ -503,6 +505,7 @@ export function AiPanel() {
     queued,
     enqueuePrompt,
     unqueuePrompt,
+    editQueuedPrompt,
     providerHealth,
     signedIn,
     checkHealth,
@@ -524,6 +527,9 @@ export function AiPanel() {
   const boxRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [historyMenu, setHistoryMenu] = useState<{ x: number; y: number } | null>(null);
+  const closeHistory = useCallback(() => {
+    setHistoryMenu(null);
+  }, []);
   const [usageOpen, setUsageOpen] = useState(false);
   const [signedInConfirmed, setSignedInConfirmed] = useState(false);
   const signIn = useSignIn();
@@ -577,25 +583,6 @@ export function AiPanel() {
       ? providers.map((provider) => ({ value: provider.id, label: provider.displayName }))
       : // Until the backend answers, the chip still names the provider in use.
         [{ value: providerId, label: capabilities.displayName }];
-
-  const formatWhen = (ts: number) =>
-    new Date(ts).toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-
-  const historyItems: MenuItem[] =
-    history.length === 0
-      ? [{ label: t("ai.historyEmpty"), onClick: () => undefined }]
-      : history.map((s) => ({
-          label: `${s.localId === localId ? "• " : ""}${s.title} · ${formatWhen(s.updatedAt)}`,
-          icon: <MessageSquare size={13} />,
-          onClick: () => {
-            resumeSession(s.localId);
-          },
-        }));
 
   // Cheap install + sign-in probe per panel mount and on every provider switch,
   // so the user is guided before the first prompt instead of after a failure.
@@ -764,6 +751,22 @@ export function AiPanel() {
     for (const path of paths) dropPath(path);
   };
 
+  /**
+   * A picture pasted into the box - a screenshot from a snipping tool, say -
+   * is saved into the project and mentioned like any attached file, since a
+   * path is what every CLI reads a picture by. Text pastes as it always has.
+   */
+  const pasteImages = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const images = pastedImages(event.clipboardData);
+    if (images.length === 0 || !rootPath) return;
+    event.preventDefault();
+    for (const image of images) {
+      savePastedImage(rootPath, image)
+        .then(dropPath)
+        .catch(failedTo(t("ai.pasteImageFailed")));
+    }
+  };
+
   const starters = startersFor({
     openFileName: openFilePath?.split(/[\\/]/).pop() ?? null,
     changedFiles,
@@ -833,8 +836,7 @@ export function AiPanel() {
               const rect = e.currentTarget.getBoundingClientRect();
               setHistoryMenu({ x: rect.right, y: rect.bottom + 4 });
             }}
-            disabled={running}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-elevated disabled:opacity-50"
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-elevated"
             title={t("ai.history")}
           >
             <History size={12} />
@@ -905,13 +907,15 @@ export function AiPanel() {
       )}
 
       {historyMenu && (
-        <ContextMenu
+        <SessionHistory
           x={historyMenu.x}
           y={historyMenu.y}
-          items={historyItems}
-          onClose={() => {
-            setHistoryMenu(null);
-          }}
+          sessions={history}
+          liveId={localId}
+          canOpen={!running}
+          onOpen={resumeSession}
+          onRename={renameSession}
+          onClose={closeHistory}
         />
       )}
 
@@ -928,64 +932,6 @@ export function AiPanel() {
               {/* `log`: a region whose news is added in order at its end - a conversation. */}
               <div ref={scrollRef} role="log" className="min-h-0 flex-1 overflow-y-auto p-3">
                 <div ref={transcriptRef} className="flex flex-col gap-3">
-                  {providerHealth === "missing" && (
-                    <ProviderNotice
-                      tone="danger"
-                      message={t("ai.cliNotFound", {
-                        provider: capabilities.displayName,
-                        install: capabilities.installCommand,
-                      })}
-                    >
-                      {recheckButton}
-                    </ProviderNotice>
-                  )}
-                  {signedInConfirmed && signedIn === true && (
-                    <ProviderNotice
-                      tone="ok"
-                      message={t("ai.signedInAlready", { provider: capabilities.displayName })}
-                    >
-                      {signIn && (
-                        <button
-                          onClick={() => {
-                            setSignedInConfirmed(false);
-                            signIn.start();
-                          }}
-                          title={t("ai.signInWith", { command: signIn.command })}
-                          className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] text-muted hover:text-fg"
-                        >
-                          <KeyRound size={12} /> {t("ai.signInAgain")}
-                        </button>
-                      )}
-                    </ProviderNotice>
-                  )}
-                  {signInNeeded && (
-                    <ProviderNotice
-                      tone="warn"
-                      message={t("ai.signInRequired", { provider: capabilities.displayName })}
-                    >
-                      {signIn && (
-                        <button
-                          onClick={signIn.start}
-                          className="flex items-center gap-1.5 rounded-md bg-accent-strong px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90"
-                        >
-                          <KeyRound size={12} /> {t("ai.signIn")}
-                        </button>
-                      )}
-                      {/* The other door in: an API key pasted in Settings works
-                      without any browser round-trip (providers that take one). */}
-                      {providers.find((p) => p.id === providerId)?.apiKeyRoute != null && (
-                        <button
-                          onClick={() => {
-                            useLayout.getState().setSettingsOpen(true);
-                          }}
-                          className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] text-muted hover:text-fg"
-                        >
-                          {t("ai.useApiKey")}
-                        </button>
-                      )}
-                      {recheckButton}
-                    </ProviderNotice>
-                  )}
                   {messages.length === 0 && (
                     <div className="mt-6 flex flex-col gap-2">
                       <p className="text-center text-muted">{t("ai.emptyPrompt")}</p>
@@ -1022,7 +968,15 @@ export function AiPanel() {
                     );
                   })}
                   <TurnRecovery />
-                  <QueuedPrompts queued={queued} withdrawable={withdraws} onRemove={unqueuePrompt} />
+                  <QueuedPrompts
+                    queued={queued}
+                    withdrawable={withdraws}
+                    onRemove={unqueuePrompt}
+                    onEdit={(id) => {
+                      editQueuedPrompt(id);
+                      inputRef.current?.focus();
+                    }}
+                  />
                 </div>
               </div>
               {!following && messages.length > 0 && (
@@ -1035,6 +989,73 @@ export function AiPanel() {
                 </button>
               )}
             </div>
+            {/*
+             * Outside the scrolled log: the box below is disabled while one of
+             * these holds, and the reason has to be where the user is looking - a
+             * notice at the top of a long conversation is never seen.
+             */}
+            {(providerHealth === "missing" || signInNeeded || (signedInConfirmed && signedIn === true)) && (
+              <div role="status" className="flex flex-col gap-2 border-t border-line p-3">
+                {providerHealth === "missing" && (
+                  <ProviderNotice
+                    tone="danger"
+                    message={t("ai.cliNotFound", {
+                      provider: capabilities.displayName,
+                      install: capabilities.installCommand,
+                    })}
+                  >
+                    {recheckButton}
+                  </ProviderNotice>
+                )}
+                {signedInConfirmed && signedIn === true && (
+                  <ProviderNotice
+                    tone="ok"
+                    message={t("ai.signedInAlready", { provider: capabilities.displayName })}
+                  >
+                    {signIn && (
+                      <button
+                        onClick={() => {
+                          setSignedInConfirmed(false);
+                          signIn.start();
+                        }}
+                        title={t("ai.signInWith", { command: signIn.command })}
+                        className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] text-muted hover:text-fg"
+                      >
+                        <KeyRound size={12} /> {t("ai.signInAgain")}
+                      </button>
+                    )}
+                  </ProviderNotice>
+                )}
+                {signInNeeded && (
+                  <ProviderNotice
+                    tone="warn"
+                    message={t("ai.signInRequired", { provider: capabilities.displayName })}
+                  >
+                    {signIn && (
+                      <button
+                        onClick={signIn.start}
+                        className="flex items-center gap-1.5 rounded-md bg-accent-strong px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90"
+                      >
+                        <KeyRound size={12} /> {t("ai.signIn")}
+                      </button>
+                    )}
+                    {/* The other door in: an API key pasted in Settings works
+                        without any browser round-trip (providers that take one). */}
+                    {providers.find((p) => p.id === providerId)?.apiKeyRoute != null && (
+                      <button
+                        onClick={() => {
+                          useLayout.getState().setSettingsOpen(true);
+                        }}
+                        className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] text-muted hover:text-fg"
+                      >
+                        {t("ai.useApiKey")}
+                      </button>
+                    )}
+                    {recheckButton}
+                  </ProviderNotice>
+                )}
+              </div>
+            )}
             {running && activity && (
               <LiveActivity
                 activity={activity}
@@ -1112,6 +1133,7 @@ export function AiPanel() {
                   onSelect={(e) => {
                     setCaret(e.currentTarget.selectionStart);
                   }}
+                  onPaste={pasteImages}
                   onKeyDown={(e) => {
                     if (pickerOpen) {
                       const move = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;

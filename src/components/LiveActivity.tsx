@@ -1,4 +1,4 @@
-import { Clock3, CornerDownRight, Loader2, X } from "lucide-react";
+import { Clock3, CornerDownRight, Loader2, Pencil, X } from "lucide-react";
 import { useT } from "../i18n";
 import type { QueuedPrompt } from "../stores/ai";
 import type { ApiRetry, TurnActivity } from "../lib/types";
@@ -124,29 +124,52 @@ export function QueuedPrompts({
   queued,
   withdrawable,
   onRemove,
+  onEdit,
 }: {
   queued: QueuedPrompt[];
   withdrawable: boolean;
   onRemove: (id: string) => void;
+  /** Takes the message back into the composer, to be rewritten and sent again. */
+  onEdit: (id: string) => void;
 }) {
   const t = useT();
   return queued.map((item) => {
     const state = queuedState(item);
+    const actionClass =
+      "shrink-0 rounded p-0.5 text-muted hover:bg-elevated hover:text-fg disabled:hover:bg-transparent";
     return (
       <div key={item.id} className="flex flex-col items-end gap-1">
         <div className="flex max-w-[92%] items-start gap-2 rounded-lg border border-dashed border-accent/60 bg-accent-soft/40 px-3 py-2 leading-relaxed break-words whitespace-pre-wrap text-fg/80">
           <span className="min-w-0 flex-1">{item.text}</span>
           {(state === "waiting" || withdrawable) && (
-            <button
-              onClick={() => {
-                onRemove(item.id);
-              }}
-              disabled={state === "withdrawing"}
-              title={t("ai.queue.remove")}
-              className="-mr-1 shrink-0 rounded p-0.5 text-muted hover:bg-elevated hover:text-fg disabled:hover:bg-transparent"
-            >
-              {state === "withdrawing" ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
-            </button>
+            <span className="-mr-1 flex shrink-0 items-center gap-0.5">
+              {state === "withdrawing" ? (
+                <Loader2 size={12} className="m-0.5 animate-spin text-muted" />
+              ) : (
+                <>
+                  <button
+                    onClick={() => {
+                      onEdit(item.id);
+                    }}
+                    title={t("ai.queue.edit")}
+                    aria-label={t("ai.queue.edit")}
+                    className={actionClass}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                  <button
+                    onClick={() => {
+                      onRemove(item.id);
+                    }}
+                    title={t("ai.queue.remove")}
+                    aria-label={t("ai.queue.remove")}
+                    className={actionClass}
+                  >
+                    <X size={12} />
+                  </button>
+                </>
+              )}
+            </span>
           )}
         </div>
         <span className="flex items-center gap-1 text-[10.5px] text-muted" data-queued={state}>

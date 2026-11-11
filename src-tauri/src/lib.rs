@@ -23,6 +23,7 @@ mod memory_mirror;
 mod net;
 mod page_preview;
 mod page_probe;
+mod pasted;
 mod plugins;
 mod program;
 mod providers;
@@ -160,6 +161,7 @@ pub fn run() {
             fs_cmds::opens_as_text,
             fs_cmds::read_image,
             fs_cmds::write_file,
+            pasted::save_pasted_image,
             fs_cmds::create_dir,
             fs_cmds::rename_path,
             fs_cmds::delete_path,

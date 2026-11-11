@@ -94,7 +94,10 @@ export interface StoredSession {
   localId: string;
   /** Provider session id; lets the CLI resume its full context across app restarts. */
   sessionId: string | null;
+  /** Taken from the first message; what the list shows until the user names the session. */
   title: string;
+  /** The name the user gave the session, which the list shows instead of its title. */
+  name?: string;
   createdAt: number;
   updatedAt: number;
   totalCostUsd: number;
@@ -126,16 +129,20 @@ export interface TurnContext {
  * takes it up, which is when it joins the conversation. Until then, or with
  * any other CLI, it waits for the turn to end and goes out as the next one. A
  * waiting message can be taken back at any time; a handed one, until the AI
- * reads it, from a CLI that gives it back.
+ * reads it, from a CLI that gives it back. Taken back to be edited, its text
+ * returns to the composer.
  */
 export interface QueuedPrompt {
   id: string;
   text: string;
   context: TurnContext;
   sent: string | null;
-  /** Being taken back: asked of the CLI, whose answer has not come yet. */
-  withdrawing: boolean;
+  /** Being taken back - asked of the CLI, whose answer has not come yet - and what for; null otherwise. */
+  withdrawing: Withdrawal | null;
 }
+
+/** Why a queued message is taken back: to drop it, or to rewrite it in the composer. */
+export type Withdrawal = "discard" | "edit";
 
 interface SessionFile {
   version: 1;
@@ -217,6 +224,20 @@ function titleOf(messages: ChatMessage[]): string {
   const firstUserText = messages.find((m) => m.role === "user")?.parts.find((p) => p.kind === "text");
   const title = firstUserText?.kind === "text" ? firstUserText.text.trim() : "";
   return title.length > TITLE_MAX_CHARS ? `${title.slice(0, TITLE_MAX_CHARS)}…` : title || "—";
+}
+
+/** What the session list calls a session: the user's name for it, else its first message. */
+export function sessionLabel(session: Pick<StoredSession, "title" | "name">): string {
+  return session.name ?? session.title;
+}
+
+/** `session` under a new name; a blank one hands the label back to the session's title. */
+export function renamed(session: StoredSession, name: string): StoredSession {
+  const trimmed = name.trim();
+  if (trimmed !== "") return { ...session, name: trimmed };
+  const unnamed = { ...session };
+  delete unnamed.name;
+  return unnamed;
 }
 
 function isSessionFile(value: unknown): value is SessionFile {
@@ -332,6 +353,8 @@ interface AiState {
   /** Holds a message written while a turn runs; it is sent when that turn ends well. */
   enqueuePrompt: (text: string, context: TurnContext) => void;
   unqueuePrompt: (id: string) => void;
+  /** Takes a queued message back into the composer to be rewritten and sent again. */
+  editQueuedPrompt: (id: string) => void;
   cancel: () => Promise<void>;
   /**
    * Picks an interrupted turn up again: the CLI's own session carries on from
@@ -343,6 +366,8 @@ interface AiState {
   undoTurn: (messageIndex: number) => Promise<void>;
   newSession: () => void;
   resumeSession: (localId: string) => void;
+  /** Names a saved session; a blank name gives it back its automatic title. */
+  renameSession: (localId: string, name: string) => void;
   /** Switching CLI starts a new session — resume ids belong to one provider. */
   setProvider: (providerId: string) => void;
   setModel: (model: string) => void;
@@ -465,6 +490,18 @@ function stopSignInWatch(): void {
 }
 
 export const useAi = create<AiState>((set, get) => {
+  /** Writes the project's session file as `history` now has it. */
+  const writeHistory = async () => {
+    const { projectRoot, history } = get();
+    if (!projectRoot) return;
+    const file: SessionFile = { version: 1, sessions: history };
+    try {
+      await invoke("save_ai_sessions", { rootPath: projectRoot, sessions: file });
+    } catch (err: unknown) {
+      console.error("failed to save AI sessions:", err);
+    }
+  };
+
   /** Upserts the live session into history and writes the project's session file. */
   const persist = async () => {
     const { projectRoot, messages, localId, sessionId, createdAt, totalCostUsd, history } = get();
@@ -474,6 +511,8 @@ export const useAi = create<AiState>((set, get) => {
       localId,
       sessionId,
       title: titleOf(messages),
+      // The name lives on the saved entry: the live session never holds a copy to go stale.
+      name: history.find((s) => s.localId === localId)?.name,
       createdAt,
       updatedAt: Date.now(),
       totalCostUsd,
@@ -488,12 +527,7 @@ export const useAi = create<AiState>((set, get) => {
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, MAX_SESSIONS_PER_PROJECT);
     set({ history: merged });
-    const file: SessionFile = { version: 1, sessions: merged };
-    try {
-      await invoke("save_ai_sessions", { rootPath: projectRoot, sessions: file });
-    } catch (err: unknown) {
-      console.error("failed to save AI sessions:", err);
-    }
+    await writeHistory();
   };
 
   /**
@@ -606,7 +640,7 @@ export const useAi = create<AiState>((set, get) => {
       case "withdrawal":
         // Not taken back means the AI has it: the message joins the
         // conversation, if its echo has not already put it there.
-        if (ev.withdrawn) set((s) => ({ queued: s.queued.filter((item) => item.id !== ev.id) }));
+        if (ev.withdrawn) dropFromQueue(ev.id);
         else moveReadIntoConversation({ id: ev.id });
         handOverNext();
         break;
@@ -686,15 +720,34 @@ export const useAi = create<AiState>((set, get) => {
   };
 
   /**
-   * What is still queued once a turn has ended. A message being taken back
-   * then was never read - had it been, the CLI's echo would have moved it into
-   * the conversation - so it goes, as asked.
+   * Takes a message out of the queue for good. One taken back to be edited
+   * goes back to the composer, ahead of whatever is being written there.
    */
-  const stillQueued = () => get().queued.filter((item) => !item.withdrawing);
+  const dropFromQueue = (id: string) => {
+    const item = get().queued.find((queued) => queued.id === id);
+    if (item === undefined) return;
+    set((s) => ({ queued: s.queued.filter((queued) => queued.id !== id) }));
+    if (item.withdrawing === "edit") useComposer.getState().prepend(item.text);
+  };
+
+  /**
+   * Settles the queue once a turn has ended and returns what is still in it.
+   * A message being taken back then was never read - had it been, the CLI's
+   * echo would have moved it into the conversation - so it goes, as asked:
+   * dropped, or back to the composer to be edited.
+   */
+  const settleQueue = () => {
+    get()
+      .queued.filter((item) => item.withdrawing !== null)
+      .forEach((item) => {
+        dropFromQueue(item.id);
+      });
+    return get().queued;
+  };
 
   /** Sends what was queued during the turn that just ended well, as one turn. */
   const sendQueued = () => {
-    const queued = stillQueued();
+    const queued = settleQueue();
     const { projectRoot } = get();
     const last = queued.at(-1);
     if (last === undefined || projectRoot === null) return;
@@ -749,26 +802,38 @@ export const useAi = create<AiState>((set, get) => {
    * (`withdrawal`); one read in the meantime joins the conversation as it
    * would have anyway, so the chat never shows a message gone that the AI has.
    */
-  const withdraw = async (item: QueuedPrompt) => {
+  const withdraw = async (item: QueuedPrompt, purpose: Withdrawal) => {
     const { runId, providerId, providers } = get();
     if (runId === null || !providers.some((p) => p.id === providerId && p.withdraws)) return;
-    const mark = (withdrawing: boolean) => {
+    const mark = (withdrawing: Withdrawal | null) => {
       set((s) => ({ queued: s.queued.map((q) => (q.id === item.id ? { ...q, withdrawing } : q)) }));
     };
-    mark(true);
+    mark(purpose);
     try {
       await invoke("ai_withdraw", { runId, id: item.id });
     } catch (error: unknown) {
       if (!String(error).includes("INPUT_CLOSED")) {
         console.error("could not take the message back:", error);
       }
-      mark(false);
+      mark(null);
     }
+  };
+
+  /** Takes a queued message back: at once while it waits, through the CLI once handed over. */
+  const takeBack = (id: string, purpose: Withdrawal) => {
+    const item = get().queued.find((queued) => queued.id === id);
+    if (item === undefined || item.withdrawing !== null) return;
+    if (item.sent !== null) {
+      void withdraw(item, purpose);
+      return;
+    }
+    set((s) => ({ queued: s.queued.map((q) => (q.id === id ? { ...q, withdrawing: purpose } : q)) }));
+    dropFromQueue(id);
   };
 
   /** Puts what was queued back where it was written, for a turn that will not carry on by itself. */
   const returnQueued = () => {
-    const queued = stillQueued();
+    const queued = settleQueue();
     if (queued.length === 0) return;
     set({ queued: [] });
     useComposer.getState().prepend(queued.map((item) => item.text).join("\n\n"));
@@ -1048,16 +1113,17 @@ export const useAi = create<AiState>((set, get) => {
     },
 
     enqueuePrompt: (text, context) => {
-      const item: QueuedPrompt = { id: crypto.randomUUID(), text, context, sent: null, withdrawing: false };
+      const item: QueuedPrompt = { id: crypto.randomUUID(), text, context, sent: null, withdrawing: null };
       set((s) => ({ queued: [...s.queued, item] }));
       handOverNext();
     },
 
     unqueuePrompt: (id) => {
-      const item = get().queued.find((queued) => queued.id === id);
-      if (item === undefined || item.withdrawing) return;
-      if (item.sent === null) set((s) => ({ queued: s.queued.filter((queued) => queued.id !== id) }));
-      else void withdraw(item);
+      takeBack(id, "discard");
+    },
+
+    editQueuedPrompt: (id) => {
+      takeBack(id, "edit");
     },
 
     resumeTurn: async (cwd) => {
@@ -1137,6 +1203,13 @@ export const useAi = create<AiState>((set, get) => {
         lastError: null,
       });
       void readRanOn({ model: get().model, effort: get().effort });
+    },
+
+    renameSession: (localId, name) => {
+      set((s) => ({
+        history: s.history.map((session) => (session.localId === localId ? renamed(session, name) : session)),
+      }));
+      void writeHistory();
     },
 
     setProvider: (providerId) => {

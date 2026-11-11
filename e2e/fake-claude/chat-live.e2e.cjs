@@ -25,6 +25,12 @@ const THIRD = "then summarise";
 /** Written by mistake, and taken back before the AI read it. */
 const MISTYPED = "delete the whole repo";
 const TAKE_BACK = "Take this message back";
+const EDIT_QUEUED = "Edit this message: it goes back to the box below, to be sent again";
+/** Written into the queue with a typo, taken back to the composer and corrected. */
+const TYPO = "run the unti tests";
+const CORRECTION = " - I mean unit tests";
+const SESSION_NAME = "Queue and steering checks";
+const SIGNED_OUT_FILE = path.join(fakeClaudeState, "signed-out");
 
 const playNext = (scenario) => fs.writeFileSync(MODE_FILE, scenario);
 const lines = (file) =>
@@ -403,5 +409,166 @@ describe("The chat panel while the AI is at work", () => {
     assert.equal(stopped.composer, QUEUED, "the queued words did not come back to the composer");
     await browser.pause(1_000);
     assert.equal(calls().length, before + 1, "a stopped turn still sent what was queued");
+  });
+
+  it("takes a handed message back into the composer to be corrected, and hands the correction over", async () => {
+    playNext("slow");
+    const taken = steered().length;
+    await type("wait a while");
+    await until((p) => p.activity !== null, "the turn never started");
+    await type(TYPO);
+    await until(
+      (p) => p.queuedStates[0] === "handed",
+      "the message written during the turn was not handed over",
+    );
+
+    await (await $(`div.border-dashed button[title="${EDIT_QUEUED}"]`)).click();
+    const reclaimed = await until(
+      (p) => p.queued.length === 0 && p.composer === TYPO,
+      "the queued message did not come back to the composer",
+    );
+    assert.ok(reclaimed.running, "the turn had ended before the message was taken back");
+    assert.ok(
+      withdrawn().some((entry) => entry.text.includes(TYPO)),
+      "the CLI was never asked to take the message back",
+    );
+
+    // The caret goes to the end of what came back, and the correction follows it.
+    await browser.execute(() => {
+      const box = document.querySelector("textarea[placeholder]");
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
+    });
+    await browser.keys([...CORRECTION.split(""), "Enter"]);
+    await until(
+      () =>
+        steered()
+          .slice(taken)
+          .some((entry) => entry.text.includes(TYPO + CORRECTION)),
+      "the corrected message never reached the AI",
+    );
+    await settle();
+    const after = await panel();
+    assert.ok(
+      after.userBubbles.some((bubble) => bubble.includes(TYPO + CORRECTION)),
+      "the corrected message is not in the conversation",
+    );
+    assert.ok(
+      !after.userBubbles.some((bubble) => bubble.trim().endsWith(TYPO)),
+      "the message as first written joined the conversation",
+    );
+  });
+
+  it("names a session from the list of previous sessions, and keeps the name", async () => {
+    const openHistory = async () => {
+      await (await $('button[title="Previous sessions"]')).click();
+      await $('[role="menu"][aria-label="Previous sessions"]').waitForDisplayed({ timeout: 5_000 });
+    };
+    const rows = () =>
+      browser.execute(() =>
+        [...document.querySelectorAll('[role="menu"][aria-label="Previous sessions"] [role="menuitem"]')].map(
+          (row) => row.textContent ?? "",
+        ),
+      );
+
+    await openHistory();
+    const live = await $('[role="menu"][aria-label="Previous sessions"] button[aria-label="Rename session"]');
+    // The pencil only shows on hover; it is still the first row's button.
+    await live.click();
+    const box = await $('[role="menu"] input[aria-label="Rename session"]');
+    await box.waitForDisplayed({ timeout: 5_000 });
+    await browser.keys([...SESSION_NAME.split(""), "Enter"]);
+    await browser.waitUntil(async () => (await rows()).some((row) => row.includes(SESSION_NAME)), {
+      timeout: 5_000,
+      timeoutMsg: "the list does not show the new name",
+    });
+    await browser.keys(["Escape"]);
+    await $('[role="menu"][aria-label="Previous sessions"]').waitForDisplayed({
+      reverse: true,
+      timeout: 5_000,
+    });
+
+    await openHistory();
+    assert.ok((await rows())[0].includes(SESSION_NAME), "the name was gone when the list was opened again");
+    await browser.keys(["Escape"]);
+    const saved = fs
+      .readdirSync(process.env.APPDATA ?? "")
+      .filter((name) => name.startsWith("io.github.aime-mini.editor"))
+      .flatMap((name) => {
+        const folder = path.join(process.env.APPDATA ?? "", name, "sessions");
+        return fs.existsSync(folder) ? fs.readdirSync(folder).map((file) => path.join(folder, file)) : [];
+      })
+      .filter((file) => path.basename(file).startsWith(path.basename(workspace).toLowerCase()))
+      .map((file) => fs.readFileSync(file, "utf8"));
+    assert.ok(
+      saved.some((text) => JSON.parse(text).sessions.some((session) => session.name === SESSION_NAME)),
+      "the name never reached the project's session file",
+    );
+  });
+
+  it("attaches a pasted screenshot as a file in the project, mentioned in the composer", async () => {
+    // The smallest valid PNG: one transparent pixel.
+    const png = [
+      137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31,
+      21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 0, 1, 0, 0, 5, 0, 1, 13, 10, 45, 180, 0, 0, 0,
+      0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    await browser.execute((bytes) => {
+      const box = document.querySelector("textarea[placeholder]");
+      box.focus();
+      const data = new DataTransfer();
+      data.items.add(new File([new Uint8Array(bytes)], "image.png", { type: "image/png" }));
+      box.dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
+      );
+    }, png);
+    const pasted = await until(
+      (p) => /@\S*pasted-\d+-\d+\.png /.test(p.composer ?? ""),
+      "the pasted picture was not mentioned in the composer",
+    );
+    const mentioned = /@(\S*pasted-\d+-\d+\.png) /.exec(pasted.composer)[1];
+    assert.ok(
+      path.resolve(mentioned).startsWith(path.join(path.resolve(workspace), ".aime", "pasted")),
+      `the picture was saved outside the project's .aime folder: ${mentioned}`,
+    );
+    assert.deepEqual([...fs.readFileSync(mentioned)], png, "the saved file is not the pasted picture");
+    await browser.execute(() => {
+      const box = document.querySelector("textarea[placeholder]");
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(box, "");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  });
+
+  it("shows why the composer is disabled where the user is typing, however long the conversation", async () => {
+    fs.writeFileSync(SIGNED_OUT_FILE, "");
+    try {
+      // The panel re-checks the CLI when the window gets focus back.
+      await browser.execute(() => window.dispatchEvent(new Event("focus")));
+      await browser.waitUntil(
+        () => browser.execute(() => document.querySelector("textarea[placeholder]")?.disabled === true),
+        { timeout: 15_000, timeoutMsg: "signing out did not disable the composer" },
+      );
+      const notice = await browser.execute(() => {
+        const sign = [...document.querySelectorAll("button")].find(
+          (b) => (b.textContent ?? "").trim() === "Sign in",
+        );
+        if (!sign) return null;
+        const box = sign.getBoundingClientRect();
+        return {
+          inLog: sign.closest('[role="log"]') !== null,
+          visible: box.top >= 0 && box.bottom <= window.innerHeight && box.height > 0,
+        };
+      });
+      assert.ok(notice, "no Sign in button was shown while the composer was disabled");
+      assert.equal(notice.inLog, false, "the notice scrolls away with the conversation");
+      assert.equal(notice.visible, true, "the notice is out of sight");
+    } finally {
+      fs.rmSync(SIGNED_OUT_FILE, { force: true });
+      await browser.execute(() => window.dispatchEvent(new Event("focus")));
+      await browser.waitUntil(
+        () => browser.execute(() => document.querySelector("textarea[placeholder]")?.disabled === false),
+        { timeout: 15_000, timeoutMsg: "signing back in did not enable the composer again" },
+      );
+    }
   });
 });

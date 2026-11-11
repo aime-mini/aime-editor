@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sessionToResume } from "./ai";
+import { renamed, sessionLabel, sessionToResume, type StoredSession } from "./ai";
 
 /** Newest first, the way the store keeps them. */
 const history = [
@@ -26,5 +26,31 @@ describe("sessionToResume", () => {
   it("has nothing to resume in a project with no history", () => {
     const empty: { providerId?: string }[] = [];
     expect(sessionToResume(empty, "claude")).toBeUndefined();
+  });
+});
+
+describe("naming a session", () => {
+  const session: StoredSession = {
+    localId: "1",
+    sessionId: null,
+    title: "continue the security fix",
+    createdAt: 0,
+    updatedAt: 0,
+    totalCostUsd: 0,
+    messages: [],
+  };
+
+  it("lists a session by its first message until it is named", () => {
+    expect(sessionLabel(session)).toBe("continue the security fix");
+  });
+
+  it("lists a named session by its name, trimmed", () => {
+    expect(sessionLabel(renamed(session, "  Support portal  "))).toBe("Support portal");
+  });
+
+  it("gives the first message back when the name is cleared", () => {
+    const cleared = renamed(renamed(session, "Support portal"), "   ");
+    expect(sessionLabel(cleared)).toBe("continue the security fix");
+    expect("name" in cleared).toBe(false);
   });
 });
