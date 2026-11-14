@@ -173,6 +173,43 @@ The plan:
 `;
 
 /**
+ * The second reading of whether a change is proved on running software, once
+ * the code exists.
+ *
+ * `needsDeploy` is answered before a line is written, and an answer given too
+ * low lets a changed screen call itself proved by suites that never open it -
+ * which leaves the developer to try it by hand, the very work a run is for. So
+ * a "no" is checked against the diff by a reader that did not write the plan.
+ * A "yes" is never second-guessed: it is the direction that asks for more proof.
+ */
+export interface ProofCheck {
+  needsRunning: boolean;
+  /** What in the change decided it, in one sentence for the run's log. */
+  why: string;
+}
+
+export const PROOF_CHECK_PROMPT = `The plan for this change said its cases are believed from the project's own test suites,
+without building, deploying and driving the software. The code exists now: decide again from what actually changed.
+
+Answer ONLY with JSON, no prose and no code fence:
+{"needsRunning": false, "why": "one sentence naming what in the change decides it"}
+
+- "needsRunning" is true when the change alters anything a person sees or calls: a screen, a page, a
+  component, an endpoint, a command a person runs, a message or a file they read. Green suites do not
+  show those; a tester would open the software and look.
+- It is false only when nothing a person meets changed: a pure function the suites exercise, a
+  refactor with no visible effect, tests, build or tooling files.
+- When in doubt, answer true. A broken screen called proved costs more than one deployment.
+`;
+
+/** The second reading, or null when the reply was not one. */
+export function parseProofCheck(reply: string): ProofCheck | null {
+  const object = objectIn(reply);
+  if (typeof object.needsRunning !== "boolean") return null;
+  return { needsRunning: object.needsRunning, why: asString(object.why) };
+}
+
+/**
  * One test case, written the way a tester writes one: a starting state, an
  * action, and the result that must follow.
  *

@@ -8,6 +8,7 @@ import {
   fixableFindings,
   parseBrief,
   parsePlan,
+  parseProofCheck,
   readReview,
   parseSolution,
   parseSurvey,
@@ -15,6 +16,7 @@ import {
   uncoveredCases,
   uncoveredCriteria,
   DESIGN_PROMPT,
+  PROOF_CHECK_PROMPT,
   REVIEW_PROMPT,
   UNDERSTAND_PROMPT,
   type Brief,
@@ -1631,9 +1633,10 @@ async function verify(context: Context, set: Setter, get: Getter): Promise<Phase
  * The cheap gate goes first: the checks are fast, and code that does not
  * compile has nothing to say to a nine-minute browser suite. Whatever this
  * change broke goes back to the agent with the evidence attached and is
- * measured again, up to three rounds - bounded because an agent that has failed
- * three times at the same test is not one attempt from success, it is looping,
- * and looping unattended is how a run spends a night and a fortune.
+ * measured again, until a round leaves exactly the failures the one before it
+ * left (`stalled`) - an agent that mended nothing in a round is not one attempt
+ * from success, it is looping, and looping unattended is how a run spends a
+ * night and a fortune.
  *
  * A repair round re-runs only the suites that were failing, and a full pass
  * follows once they are green. The old loop paid for every suite in every round
@@ -1814,7 +1817,7 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
  *
  * Aime's half is deterministic: every build task the project declares is run,
  * and a build this change broke goes back to the agent with the output
- * attached, up to the usual three rounds. The agent's half is judgement, so the
+ * attached, until a round mends nothing (`stalled`). The agent's half is judgement, so the
  * agent gets it: how this project deploys (its own CI file, Dockerfile or
  * script; locally when it declares nothing), how to smoke-test what came up,
  * and how to drive the running software through every agreed case. What Aime
@@ -1824,7 +1827,8 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
  * run.
  *
  * The whole second half is skipped when the run's own solution said this change
- * needs no deployment to be proved. That is the one thing that keeps a
+ * needs no deployment to be proved and a second reading of the finished change
+ * agreed (`provedWhereItRuns`). That is the one thing that keeps a
  * one-line change from paying a deployment's price: "done means deployed" is
  * right for a change a person will use and absurd for a renamed constant, where
  * it would either block honest work or be satisfied by a token file - and a
@@ -1869,7 +1873,12 @@ async function buildAndProve(context: Context, set: Setter, get: Getter): Promis
     if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
   }
 
-  if (!needsDeploy(get)) {
+  const proof = await provedWhereItRuns(context, set, get);
+  if (proof.line !== "") {
+    tried.push(proof.line);
+    note(set, "verify", proof.line);
+  }
+  if (!proof.needed) {
     return {
       state: builds.length === 0 ? "skipped" : "passed",
       summary:
@@ -1965,6 +1974,50 @@ async function buildAndProve(context: Context, set: Setter, get: Getter): Promis
  */
 function needsDeploy(get: Getter): boolean {
   return get().solution?.needsDeploy ?? true;
+}
+
+/** Whether the change is proved on the running software, and the line that says so when a second reading decided it. */
+interface ProofDecision {
+  needed: boolean;
+  line: string;
+}
+
+/**
+ * Whether this change is proved on the running software: the plan's answer
+ * when it said yes, and a second reading of the finished diff when it said no
+ * (`ProofCheck` says why a "no" is not taken on its own). A reading that
+ * overturns it is written into the solution, so the report asks for the
+ * evidence the running software leaves.
+ */
+async function provedWhereItRuns(context: Context, set: Setter, get: Getter): Promise<ProofDecision> {
+  if (needsDeploy(get)) return { needed: true, line: "" };
+  const diff = await pendingDiff(context, get);
+  if (diff.trim() === "") return { needed: false, line: "" };
+  await writeChangeDiff(context, diff);
+  const asking = [PROOF_CHECK_PROMPT, PROOF_CHECK_READS_THE_DIFF].join("\n");
+  const check = await tryUntil(ATTEMPTS, async () =>
+    parseProofCheck(await readRepository(context, asking, set, "verify")),
+  );
+  if (check?.needsRunning === false) {
+    return { needed: false, line: translate("run.suitesEnough", { why: check.why }) };
+  }
+  set((slot) => ({ solution: slot.solution === null ? null : { ...slot.solution, needsDeploy: true } }));
+  // No readable answer counts as yes, the way an absent `needsDeploy` does.
+  return {
+    needed: true,
+    line:
+      check === null
+        ? translate("run.proofCheckUnreadable")
+        : translate("run.provedRunningAfterAll", { why: check.why }),
+  };
+}
+
+/** Puts the change where a reader with tools finds it whole, rather than in a prompt it might not fit. */
+async function writeChangeDiff(context: Context, diff: string): Promise<void> {
+  await invoke("write_file", {
+    path: `${context.workRoot.replace(/[\\/]+$/, "")}/${CHANGE_DIFF_FILE}`,
+    content: diff,
+  });
 }
 
 /**
@@ -2086,10 +2139,7 @@ async function reviewOnce(
   diff: string,
   earlier: string,
 ): Promise<Review | null> {
-  await invoke("write_file", {
-    path: `${context.workRoot.replace(/[\\/]+$/, "")}/${REVIEW_DIFF_FILE}`,
-    content: diff,
-  });
+  await writeChangeDiff(context, diff);
   const { survey, rules, solution } = get();
   const screenshots = await screenshotsIn(context.workRoot);
   const asking = [
@@ -2310,8 +2360,8 @@ const SURVEY_FILE_LIMIT = 40;
  * a handful of suites declares them properly.
  */
 const DISCOVERED_SUITE_LIMIT = 5;
-/** Where the reviewer reads the whole change, inside the project's `.aime/`. */
-const REVIEW_DIFF_FILE = ".aime/review/change.diff";
+/** Where a reader of the change - the proof check, the reviewer - finds all of it, inside the project's `.aime/`. */
+const CHANGE_DIFF_FILE = ".aime/review/change.diff";
 /**
  * Readings of a change in one review phase: the first, and two more after
  * fixes. A finding that survives three readers and two rounds of fixing is not
@@ -3249,10 +3299,14 @@ Do not commit anything.
 The findings:`;
 
 const REVIEW_READS_THE_DIFF = `
-The change under review is the file ${REVIEW_DIFF_FILE} - all of it, exactly as git reports it. Read
+The change under review is the file ${CHANGE_DIFF_FILE} - all of it, exactly as git reports it. Read
 that file to its end before you answer, however long it is, and open the files it touches wherever
 the diff alone does not show enough to judge them. A finding's "line" is its line in the changed file
 as it stands now - count from the "+N" of the hunk header, or read the file - never its line in the diff.`;
+
+const PROOF_CHECK_READS_THE_DIFF = `
+The change is the file ${CHANGE_DIFF_FILE}, exactly as git reports it. Read it to its end, and open the
+files it touches wherever the diff alone does not show what a person would meet.`;
 
 const REVIEW_LOOKS_AT_SCREENS = `Screenshots of the change running are below. Open them if you can read images, and
 judge whether the changed screens look like the rest of this app - its components, spacing, type and

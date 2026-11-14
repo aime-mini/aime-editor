@@ -204,8 +204,9 @@ if (prompt.includes("these test suites of this repository failed")) {
     why: "one place to be right, and no caller can forget it; rounding at every screen cannot be enforced",
     decisions: ["withTax returns money, rounded to two places"],
     // This change is proved by driving the built thing, so the delivery half of
-    // the verify step applies and the evidence gate has something to check.
-    needsDeploy: true,
+    // the verify step applies and the evidence gate has something to check -
+    // unless the plan under-rates it, which the second reading has to catch.
+    needsDeploy: mode !== "plannedNoDeploy",
     cases: [
       {
         id: "TC1",
@@ -219,6 +220,10 @@ if (prompt.includes("these test suites of this repository failed")) {
     steps: [{ what: "Round in withTax", files: [named("src/cart.js")], criteria: ["AC1"] }],
     tests: [{ name: "rounds to two places", file: named("test.cjs"), case: "TC1" }],
   });
+} else if (prompt.includes("decide again from what actually changed")) {
+  // The second reading of a plan that said the suites would do: the finished
+  // change alters what the checkout shows, so it is proved where it runs.
+  stream({ needsRunning: true, why: "src/cart.js changes the total the checkout shows" });
 } else if (prompt.includes("Implement this work item")) {
   // The code and its tests in one phase, in that order - which is the order the
   // user works in. "repairs" and "breaks" both break something here; they
@@ -891,6 +896,24 @@ describe("Task run", () => {
       fs.existsSync(path.join(repo, ".aime", "evidence", "TC1.txt")),
       "the sweep took the evidence too, which the default must never do",
     );
+  });
+
+  it("proves on the running software a change the plan thought the suites would cover", async () => {
+    // The plan says no deployment is needed; the finished change alters what a
+    // shopper sees. Skipping the running software on the plan's word would leave
+    // the developer to try the screen by hand.
+    fs.writeFileSync(MODE_FILE, "plannedNoDeploy");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+
+    await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
+    assert.ok(
+      fs.existsSync(path.join(repo, ".aime", "evidence", "deploy", "health.txt")),
+      "the change was never deployed and driven, on the plan's word alone",
+    );
+    const [report] = reportsIn(repo);
+    assert.match(report, /\| TC1 \| AC1 \|.*\| PASS \|/, `the case was not proved: ${report}`);
   });
 
   it("fixes what it broke instead of handing back an unfinished job", async () => {

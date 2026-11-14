@@ -1365,6 +1365,11 @@ export const en = {
   "run.casesUnproven": "{count} case(s) still unproved against the running software after {rounds} rounds",
   "run.nothingToDeploy": "Nothing to build, and no deployment needed to prove this change",
   "run.builtOnly": "{count} build(s) pass; this change needed no deployment to be proved",
+  "run.suitesEnough": "The finished change was read again: the suites prove it - {why}",
+  "run.provedRunningAfterAll":
+    "The finished change was read again: it is proved on the running software after all - {why}",
+  "run.proofCheckUnreadable":
+    "The finished change was read again with no clear answer, so it is proved on the running software",
   "run.testsNeverWritten":
     "{count} planned test(s) still missing after {rounds} rounds - a case with no test cannot be proved",
   "run.testsMissingAttempt": "Attempt {attempt}: still no test file at {detail}",

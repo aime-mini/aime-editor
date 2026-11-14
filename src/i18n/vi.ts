@@ -1359,6 +1359,11 @@ export const vi: Record<TranslationKey, string> = {
   "run.casesUnproven": "Còn {count} case chưa chứng minh được trên phần mềm đang chạy sau {rounds} vòng",
   "run.nothingToDeploy": "Không có gì để build, và thay đổi này không cần deploy để chứng minh",
   "run.builtOnly": "{count} lệnh build xanh; thay đổi này không cần deploy để chứng minh",
+  "run.suitesEnough": "Đã đọc lại thay đổi hoàn chỉnh: các suite đủ chứng minh - {why}",
+  "run.provedRunningAfterAll":
+    "Đã đọc lại thay đổi hoàn chỉnh: vẫn phải chứng minh trên phần mềm đang chạy - {why}",
+  "run.proofCheckUnreadable":
+    "Đọc lại thay đổi hoàn chỉnh không ra câu trả lời rõ, nên chứng minh trên phần mềm đang chạy",
   "run.testsNeverWritten":
     "Còn {count} test trong plan chưa có sau {rounds} vòng - case không có test thì không thể chứng minh",
   "run.testsMissingAttempt": "Lần {attempt}: vẫn chưa có file test ở {detail}",

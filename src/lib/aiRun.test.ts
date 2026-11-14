@@ -5,6 +5,7 @@ import {
   fixableFindings,
   parseBrief,
   parsePlan,
+  parseProofCheck,
   parseReview,
   parseSolution,
   readReview,
@@ -134,6 +135,28 @@ describe("parseSolution", () => {
 
   it("believes an explicit no, which is what keeps a one-line change cheap", () => {
     expect(parseSolution(REPLY.replace("}", ', "needsDeploy": false}'))?.needsDeploy).toBe(false);
+  });
+});
+
+describe("parseProofCheck", () => {
+  it("reads the second answer and what in the change decided it", () => {
+    const reply = '{"needsRunning": true, "why": "src/Checkout.tsx changes the total a shopper sees"}';
+    expect(parseProofCheck(reply)).toEqual({
+      needsRunning: true,
+      why: "src/Checkout.tsx changes the total a shopper sees",
+    });
+  });
+
+  it("takes a plain no as no", () => {
+    expect(
+      parseProofCheck('{"needsRunning": false, "why": "only a pure helper changed"}')?.needsRunning,
+    ).toBe(false);
+  });
+
+  it("has no answer when the reply does not say yes or no", () => {
+    // The caller reads no answer as yes; a word in place of a boolean must not be read as either.
+    expect(parseProofCheck('{"needsRunning": "probably not"}')).toBeNull();
+    expect(parseProofCheck("I could not decide.")).toBeNull();
   });
 });
 
