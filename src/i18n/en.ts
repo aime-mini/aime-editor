@@ -236,6 +236,7 @@ export const en = {
   "ai.queue.remove": "Take this message back",
   "ai.pasteImageFailed": "Could not attach the pasted picture",
   "ai.queue.edit": "Edit this message: it goes back to the box below, to be sent again",
+  "ai.queue.sendNow": "Send now: stop what the AI is doing and send the queue as the next turn",
   "ai.queue.withdrawing": "Taking it back…",
   "ai.jumpToLatest": "Latest",
   "ai.showEarlier": "Show earlier messages ({count} more)",

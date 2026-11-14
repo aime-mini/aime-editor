@@ -187,6 +187,12 @@ pub trait Adapter: Send + Sync {
         None
     }
 
+    /// Whether this stdout line tells the AI that a background task ended - a
+    /// notice the CLI answers on its own, so one more answer is on its way.
+    fn announces_task_end(&self, _event: &Value) -> bool {
+        false
+    }
+
     /// Whether `ToolSet::FilesOnly` is a real constraint at this CLI.
     ///
     /// False by default: a CLI Aime knows only from a configuration file has no
@@ -249,7 +255,17 @@ pub trait Adapter: Send + Sync {
 /// Aime hands a conversation their index to choose from (`lib/knowledge.ts`):
 /// once, and again when a memory changed or the CLI compacted what it had.
 /// One memory per fact, shared by every provider.
-pub const MEMORY_PROMPT: &str = "This project keeps its memory in .aime/memory/, one fact per file. \
+/// For a CLI that takes no message during a turn: once the turn ends nothing
+/// wakes the AI again, so a job it leaves running is one nobody follows.
+/// Measured on Codex 0.146.0 on Windows: a job started with `Start-Process` to
+/// outlive the turn was gone once the CLI exited, and the report the AI had
+/// promised for when it finished could never come.
+pub const TURN_BOUND_PROMPT: &str = "Your turn ends when you stop, and nothing wakes you after it: a \
+job you leave running is followed by no one, and the CLI may stop it as it exits. Wait for every \
+command you start within this turn, however long it takes, and report its result before you stop - \
+never end with a promise to report later.";
+
+pub const MEMORY_PROMPT: &str ="This project keeps its memory in .aime/memory/, one fact per file. \
 Aime hands you the index of every memory in an <aime_memory> block - at the start of a conversation, \
 and again whenever a memory changed; a turn without the block means the index you already have still \
 holds. Open the memories that bear on the request before you act. Write a memory, without being asked, when the user states a \

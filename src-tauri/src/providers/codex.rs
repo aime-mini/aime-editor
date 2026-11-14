@@ -2,6 +2,7 @@ use serde_json::Value;
 
 use super::adapter::{
     explicit, Adapter, ApiKeyRoute, Invocation, Permission, ToolSet, TurnRequest, MEMORY_PROMPT,
+    TURN_BOUND_PROMPT,
 };
 use crate::mcp::{tokenize_command, McpServer, McpServerSpec};
 
@@ -35,10 +36,11 @@ const WINDOWS_SANDBOX_UNELEVATED: &str = "windows.sandbox=unelevated";
 const CODEX_CONFIG: &str = "config.toml";
 
 /// Codex has no `--append-system-prompt`, and overriding its base instructions
-/// file would replace them wholesale — so the journal rule rides along with the
-/// prompt itself (the "prompt-inject" memory strategy).
-fn prompt_with_progress_rule(prompt: &str) -> String {
-    format!("{MEMORY_PROMPT}\n\n---\n\n{prompt}")
+/// file would replace them wholesale — so Aime's rules ride along with the
+/// prompt itself (the "prompt-inject" memory strategy): the journal, and that
+/// nothing outlives the turn.
+fn prompt_with_rules(prompt: &str) -> String {
+    format!("{MEMORY_PROMPT}\n\n{TURN_BOUND_PROMPT}\n\n---\n\n{prompt}")
 }
 
 /// The Windows sandbox to ask for, when this is Windows and the user's own
@@ -191,7 +193,7 @@ impl Adapter for CodexAdapter {
             args.push("--".into());
             args.push(id.into());
         }
-        Invocation::piped(args, prompt_with_progress_rule(req.prompt))
+        Invocation::piped(args, prompt_with_rules(req.prompt))
     }
 
     fn restricts_tools(&self) -> bool {

@@ -37,11 +37,20 @@ const READ_TOOLS: &str = "Read,Glob,Grep";
 /// Measured on 2.1.316 (Sonnet, a 60-second command, a message written 10 s in):
 /// read after 54.8 s without this, after 1.1 s with it - the AI started the
 /// command in the background and still reported its output when it finished.
+///
+/// Backgrounding alone did not keep the user's messages flowing: an AI
+/// following a long test run started it with `nohup … &` and then waited on it
+/// with `for i in $(seq 1 11); do sleep 10; done`, call after call, for hours -
+/// every message sat behind each loop. Hence the rules on waiting and on
+/// detaching: a detached job is one the CLI cannot report the end of.
 const STEERING_PROMPT: &str = "The user can write to you while you work, but a message reaches you only \
 between your tool calls - a command that runs for minutes keeps it waiting all that time. Start any command \
-that may take longer than about 20 seconds - a build, a test suite, a server, a batch job, a sleep - with \
-run_in_background, then end your turn or keep working while it runs; you are told when it finishes. A \
-message the user writes meanwhile is then read at once: answer it before going back to the task.";
+that may take longer than about 20 seconds - a build, a test suite, a server, a batch job - with \
+run_in_background, never with nohup, a trailing ampersand or Start-Process: those detach it, and you would not be \
+told when it ends. Never wait for background work with sleep or a polling loop. To follow a job, watch \
+its output with Monitor or end your turn: you are told when it finishes and when the watch reports, and \
+you answer then. A message the user writes meanwhile is read at once: answer it before going back to the \
+task.";
 
 /// Everything Aime adds to the CLI's own system prompt for a chat turn, as one
 /// line with no double quotes: a CLI installed as a `.cmd` shim is run through
@@ -222,6 +231,14 @@ impl Adapter for ClaudeAdapter {
         Some(event.get("tasks").and_then(Value::as_array).map_or(0, Vec::len))
     }
 
+    /// Measured on 2.1.322: a task that ends prints `task_notification` just
+    /// before the `background_tasks_changed` that drops it, and the CLI then
+    /// answers the notice - a `Monitor` the AI armed is answered when its
+    /// stream ends, and that answer is where it arms the next one.
+    fn announces_task_end(&self, event: &Value) -> bool {
+        event.get("subtype").and_then(Value::as_str) == Some("task_notification")
+    }
+
     fn restricts_tools(&self) -> bool {
         true
     }
@@ -350,9 +367,10 @@ mod tests {
         let appended = &args[at + 1];
         assert!(appended.starts_with(super::MEMORY_PROMPT));
         assert!(appended.contains("run_in_background"));
-        // It travels through `cmd /C` on Windows, where a double quote splits it
-        // and a line break ends the command line.
-        assert!(!appended.contains(['"', '\n', '\r']));
+        assert!(appended.contains("Monitor"));
+        // It travels through `cmd /C` on Windows, where a double quote splits it,
+        // a line break ends the command line and an ampersand starts another.
+        assert!(!appended.contains(['"', '\n', '\r', '&']));
     }
 
     #[test]

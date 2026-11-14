@@ -10,7 +10,9 @@
 //! `Arc`s for that reason: a turn already streaming keeps the adapter it started
 //! with, whatever the file says a moment later.
 
-use super::adapter::{explicit, Adapter, ApiKeyRoute, Invocation, Permission, TurnRequest, MEMORY_PROMPT};
+use super::adapter::{
+    explicit, Adapter, ApiKeyRoute, Invocation, Permission, TurnRequest, MEMORY_PROMPT, TURN_BOUND_PROMPT,
+};
 use crate::mcp::{McpServer, McpServerSpec};
 use serde::Deserialize;
 use std::path::Path;
@@ -165,7 +167,7 @@ impl Adapter for GenericAdapter {
         // An unknown CLI has no permission flags to map onto and no
         // system-prompt hook, so everything Aime needs it to know travels in
         // the prompt - the one channel every CLI accepts.
-        let mut preamble = String::from(MEMORY_PROMPT);
+        let mut preamble = format!("{MEMORY_PROMPT}\n\n{TURN_BOUND_PROMPT}");
         if req.permission == Permission::ReadOnly {
             preamble.push_str(
                 "\n\nDo not modify any file and do not run any command that changes state. \

@@ -30,6 +30,9 @@ const EDIT_QUEUED = "Edit this message: it goes back to the box below, to be sen
 const TYPO = "run the unti tests";
 const CORRECTION = " - I mean unit tests";
 const SESSION_NAME = "Queue and steering checks";
+/** Written while the AI is busy, and sent at once rather than after the work in flight. */
+const URGENT = "stop that and look at the login page";
+const SEND_NOW = "Send now: stop what the AI is doing and send the queue as the next turn";
 const SIGNED_OUT_FILE = path.join(fakeClaudeState, "signed-out");
 
 const playNext = (scenario) => fs.writeFileSync(MODE_FILE, scenario);
@@ -457,6 +460,37 @@ describe("The chat panel while the AI is at work", () => {
       !after.userBubbles.some((bubble) => bubble.trim().endsWith(TYPO)),
       "the message as first written joined the conversation",
     );
+  });
+
+  it("sends a queued message at once by stopping the work in flight, as the next turn of the session", async () => {
+    playNext("slow");
+    const before = calls().length;
+    const waitedOut = (p) => p.answers.filter((answer) => answer.includes("Done waiting.")).length;
+    const waitedBefore = waitedOut(await panel());
+    await type("wait a while");
+    await until((p) => p.activity !== null, "the turn never started");
+    await type(URGENT);
+    await until((p) => p.queuedStates[0] === "handed", "the message was not handed over");
+    // The turn that follows plays a quick answer; the slow command never finishes.
+    playNext("live");
+
+    await (await $(`div.border-dashed button[title="${SEND_NOW}"]`)).click();
+    await until(
+      () => calls().length === before + 2,
+      "the queued message never went out as a turn of its own",
+    );
+    const [, next] = calls().slice(before);
+    assert.ok(next.prompt.includes(URGENT), `the next turn did not carry the queued message: ${next.prompt}`);
+    const resumed = next.args[next.args.indexOf("--resume") + 1];
+    assert.equal(resumed, "fake-session-1", "the next turn left the conversation it was written in");
+    await settle();
+    const after = await panel();
+    assert.deepEqual(after.queued, [], "the message stayed in the queue");
+    assert.ok(
+      after.userBubbles.some((bubble) => bubble.includes(URGENT)),
+      "the message is not in the conversation",
+    );
+    assert.equal(waitedOut(after), waitedBefore, "the stopped command ran to its end");
   });
 
   it("names a session from the list of previous sessions, and keeps the name", async () => {

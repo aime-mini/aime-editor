@@ -355,6 +355,12 @@ interface AiState {
   unqueuePrompt: (id: string) => void;
   /** Takes a queued message back into the composer to be rewritten and sent again. */
   editQueuedPrompt: (id: string) => void;
+  /**
+   * Stops the turn in flight and sends what is queued as the next turn, for
+   * when the AI is busy with something - a long command, a wait - that the
+   * user does not want to sit out.
+   */
+  sendQueuedNow: () => Promise<void>;
   cancel: () => Promise<void>;
   /**
    * Picks an interrupted turn up again: the CLI's own session carries on from
@@ -443,6 +449,12 @@ let choiceThisTurn = { model: "", effort: "" };
 let memoryHandedThisTurn: string | null = null;
 /** The editor's view the AI was last handed in the turn in flight; a message under the same view goes without it. */
 let viewHandedThisTurn: string | null = null;
+/**
+ * The run stopped so that the queue could go out at once. Its exit is the
+ * moment to send: the CLI and everything it started are gone by then, so the
+ * next turn never resumes the session beside a process still writing to it.
+ */
+let runStoppedForQueue: string | null = null;
 /** The choices the CLI has been asked about, answered or still answering, by `expectationKey`. */
 const askedExpectations = new Set<string>();
 
@@ -851,8 +863,14 @@ export const useAi = create<AiState>((set, get) => {
       endTurn();
       void recordChangedFiles();
       void readRanOn();
-      // Only Stop ends a turn without an exit code, and Stop is not listened
-      // for here - so anything but 0 is the CLI or the AI service giving up.
+      if (payload.run_id === runStoppedForQueue) {
+        runStoppedForQueue = null;
+        void persist();
+        sendQueued();
+        return;
+      }
+      // Stop ends a turn without an exit code and is not listened for here,
+      // so anything but 0 is the CLI or the AI service giving up.
       const failed = payload.code !== 0;
       // What the CLI said about it ("API Error: Connection refused …") beats
       // its stderr, which beats a bare exit code.
@@ -1124,6 +1142,13 @@ export const useAi = create<AiState>((set, get) => {
 
     editQueuedPrompt: (id) => {
       takeBack(id, "edit");
+    },
+
+    sendQueuedNow: async () => {
+      const { runId, queued } = get();
+      if (runId === null || queued.length === 0) return;
+      runStoppedForQueue = runId;
+      await invoke("ai_cancel", { runId });
     },
 
     resumeTurn: async (cwd) => {

@@ -506,6 +506,7 @@ export function AiPanel() {
     enqueuePrompt,
     unqueuePrompt,
     editQueuedPrompt,
+    sendQueuedNow,
     providerHealth,
     signedIn,
     checkHealth,
@@ -976,6 +977,7 @@ export function AiPanel() {
                       editQueuedPrompt(id);
                       inputRef.current?.focus();
                     }}
+                    onSendNow={() => void sendQueuedNow()}
                   />
                 </div>
               </div>

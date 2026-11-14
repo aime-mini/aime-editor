@@ -236,6 +236,7 @@ export const vi: Record<TranslationKey, string> = {
   "ai.queue.remove": "Rút lại tin này",
   "ai.pasteImageFailed": "Không đính kèm được ảnh vừa dán",
   "ai.queue.edit": "Sửa tin này: tin quay về ô soạn bên dưới để gửi lại",
+  "ai.queue.sendNow": "Gửi ngay: dừng việc AI đang làm và gửi hàng đợi thành lượt kế tiếp",
   "ai.queue.withdrawing": "Đang rút lại…",
   "ai.jumpToLatest": "Mới nhất",
   "ai.showEarlier": "Xem tin nhắn trước ({count} tin nữa)",

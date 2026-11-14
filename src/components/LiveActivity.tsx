@@ -1,4 +1,4 @@
-import { Clock3, CornerDownRight, Pencil, X } from "lucide-react";
+import { Clock3, CornerDownRight, Pencil, SendHorizontal, X } from "lucide-react";
 import { useT } from "../i18n";
 import type { QueuedPrompt } from "../stores/ai";
 import type { ApiRetry, TurnActivity } from "../lib/types";
@@ -138,19 +138,23 @@ const QUEUED_LABEL = {
  * words, in the place they will take in the conversation, but dashed and
  * labelled: handed over, for the AI to read at its next step, or waiting for
  * the turn to end. Until the AI has read one it can be taken back - a handed
- * one only from a CLI that gives it back (`withdrawable`).
+ * one only from a CLI that gives it back (`withdrawable`) - or sent at once,
+ * which stops the work in flight rather than wait for it.
  */
 export function QueuedPrompts({
   queued,
   withdrawable,
   onRemove,
   onEdit,
+  onSendNow,
 }: {
   queued: QueuedPrompt[];
   withdrawable: boolean;
   onRemove: (id: string) => void;
   /** Takes the message back into the composer, to be rewritten and sent again. */
   onEdit: (id: string) => void;
+  /** Stops the turn in flight and sends the queue as the next one. */
+  onSendNow: () => void;
 }) {
   const t = useT();
   return queued.map((item) => {
@@ -161,36 +165,46 @@ export function QueuedPrompts({
       <div key={item.id} className="flex flex-col items-end gap-1">
         <div className="flex max-w-[92%] items-start gap-2 rounded-lg border border-dashed border-accent/60 bg-accent-soft/40 px-3 py-2 leading-relaxed break-words whitespace-pre-wrap text-fg/80">
           <span className="min-w-0 flex-1">{item.text}</span>
-          {(state === "waiting" || withdrawable) && (
-            <span className="-mr-1 flex shrink-0 items-center gap-0.5">
-              {state === "withdrawing" ? (
-                <Spinner size={12} className="m-0.5 text-muted" />
-              ) : (
-                <>
-                  <button
-                    onClick={() => {
-                      onEdit(item.id);
-                    }}
-                    title={t("ai.queue.edit")}
-                    aria-label={t("ai.queue.edit")}
-                    className={actionClass}
-                  >
-                    <Pencil size={12} />
-                  </button>
-                  <button
-                    onClick={() => {
-                      onRemove(item.id);
-                    }}
-                    title={t("ai.queue.remove")}
-                    aria-label={t("ai.queue.remove")}
-                    className={actionClass}
-                  >
-                    <X size={12} />
-                  </button>
-                </>
-              )}
-            </span>
-          )}
+          <span className="-mr-1 flex shrink-0 items-center gap-0.5">
+            {state === "withdrawing" ? (
+              <Spinner size={12} className="m-0.5 text-muted" />
+            ) : (
+              <>
+                <button
+                  onClick={onSendNow}
+                  title={t("ai.queue.sendNow")}
+                  aria-label={t("ai.queue.sendNow")}
+                  className={actionClass}
+                >
+                  <SendHorizontal size={12} />
+                </button>
+                {(state === "waiting" || withdrawable) && (
+                  <>
+                    <button
+                      onClick={() => {
+                        onEdit(item.id);
+                      }}
+                      title={t("ai.queue.edit")}
+                      aria-label={t("ai.queue.edit")}
+                      className={actionClass}
+                    >
+                      <Pencil size={12} />
+                    </button>
+                    <button
+                      onClick={() => {
+                        onRemove(item.id);
+                      }}
+                      title={t("ai.queue.remove")}
+                      aria-label={t("ai.queue.remove")}
+                      className={actionClass}
+                    >
+                      <X size={12} />
+                    </button>
+                  </>
+                )}
+              </>
+            )}
+          </span>
         </div>
         <span className="flex items-center gap-1 text-[10.5px] text-muted" data-queued={state}>
           {state === "waiting" ? <Clock3 size={10} /> : <CornerDownRight size={10} />}{" "}

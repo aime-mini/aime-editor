@@ -272,13 +272,20 @@ fn close_input_once_read(app: &AppHandle, run_id: &str, read: usize) {
 ///   to that task's notification - an empty `result` - before it has read the
 ///   prompt. Counting that as the answer closed the input before the prompt
 ///   started its server, and the process hung behind it all the same.
+///
+/// The end of the last task is not the end of the turn either: the CLI answers
+/// its notice, and an AI following a long job arms its next `Monitor` in that
+/// answer (measured on 2.1.322). Closed at the notice, the input took no more
+/// messages for as long as the new watch ran - each one queued until the
+/// process exited, which is what Stop then cut short, watch and all.
 #[derive(Default)]
 struct InputGate {
     /// Messages the CLI is done with: read, as its echo says, or taken back
     /// before it was - one taken back is never echoed, and waiting for it
     /// would keep the turn open for good.
     read: usize,
-    /// Whether an answer has come since the last message was read.
+    /// Whether an answer has come since the last message was read, or the
+    /// last background task's end was announced.
     answered: bool,
     background: usize,
 }
@@ -293,6 +300,9 @@ impl InputGate {
         }
         if adapter.withdrew_message(event) {
             self.read += 1;
+        }
+        if adapter.announces_task_end(event) {
+            self.answered = false;
         }
         if let Some(count) = adapter.background_tasks(event) {
             self.background = count;
@@ -863,6 +873,11 @@ mod tests {
         pub fn finished() -> Value {
             json!({ "type": "system", "subtype": "background_tasks_changed", "tasks": [] })
         }
+        /// Printed just before `finished`, for the AI to answer.
+        pub fn notice() -> Value {
+            json!({ "type": "system", "subtype": "task_notification", "task_id": "bp0ezkwwf",
+                    "status": "completed" })
+        }
         pub fn answer() -> Value {
             json!({ "type": "result", "subtype": "success", "result": "STARTED" })
         }
@@ -903,7 +918,37 @@ mod tests {
         );
         assert_eq!(gate.closes_after(&claude, &background_run::read()), None);
         assert_eq!(gate.closes_after(&claude, &background_run::answer()), None);
-        assert_eq!(gate.closes_after(&claude, &background_run::finished()), Some(2));
+        assert_eq!(gate.closes_after(&claude, &background_run::notice()), None);
+        assert_eq!(
+            gate.closes_after(&claude, &background_run::finished()),
+            None,
+            "the CLI answers the notice: the input waits for that answer"
+        );
+        assert_eq!(gate.closes_after(&claude, &background_run::answer()), Some(2));
+    }
+
+    #[test]
+    fn a_watch_armed_in_answer_to_the_last_one_ending_keeps_the_input_open() {
+        let claude = claude::ClaudeAdapter;
+        let mut gate = InputGate::default();
+        for event in [
+            background_run::read(),
+            background_run::started(),
+            background_run::answer(),
+            background_run::notice(),
+            background_run::finished(),
+            background_run::started(),
+        ] {
+            assert_eq!(gate.closes_after(&claude, &event), None);
+        }
+        assert_eq!(
+            gate.closes_after(&claude, &background_run::answer()),
+            None,
+            "the second watch still runs: a message written now must reach the AI"
+        );
+        assert_eq!(gate.closes_after(&claude, &background_run::notice()), None);
+        assert_eq!(gate.closes_after(&claude, &background_run::finished()), None);
+        assert_eq!(gate.closes_after(&claude, &background_run::answer()), Some(1));
     }
 
     #[test]
