@@ -105,6 +105,45 @@ export function notAgreed(agreed: readonly DeployStep[], revised: readonly Deplo
   return revised.map((step) => !known.has(key(step)));
 }
 
+/** The account's resources as Aime read them, and whether the list is whole. */
+export interface Inventory {
+  resources: readonly CloudResource[];
+  /** The cloud's listing stopped short: a name missing from it proves nothing. */
+  truncated: boolean;
+}
+
+/**
+ * Whether these steps deploy onto something already running - which decides
+ * whether the keep rule applies, so it is Aime's to decide from the account's
+ * own resource list, never the AI's to declare. Existing when the AI says so,
+ * when the plan's target is a resource on the list, or when any step names one
+ * (a positional or a flag's value: `run deploy web`, `--name web`). A list that
+ * stopped short counts everything as existing, because there a new-looking
+ * name may be a running service the listing never reached. Erring this way
+ * only ever asks for the merging flags; erring the other way replaces a
+ * running service's settings.
+ */
+export function targetsExisting(
+  target: DeployPlan["target"],
+  steps: readonly DeployStep[],
+  inventory: Inventory,
+): boolean {
+  if (target.existing || inventory.truncated) return true;
+  if (target.resourceId !== null && inventory.resources.some((one) => one.id === target.resourceId)) {
+    return true;
+  }
+  return resourceNamedBy(steps, inventory.resources) !== undefined;
+}
+
+/** The first resource on the list that a step names, as a positional or as a flag's value. */
+export function resourceNamedBy(
+  steps: readonly DeployStep[],
+  resources: readonly CloudResource[],
+): CloudResource | undefined {
+  const words = new Set(steps.flatMap((step) => step.args.filter((arg) => !arg.startsWith("-"))));
+  return resources.find((one) => words.has(one.name) || (one.cliName !== "" && words.has(one.cliName)));
+}
+
 /** A file the AI wants in the repository before the steps run. */
 export interface PlannedFile {
   path: string;

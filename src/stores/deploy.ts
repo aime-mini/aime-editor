@@ -17,6 +17,8 @@ import {
   planPrompt,
   readLine,
   STAGED_DIR,
+  targetsExisting,
+  type Inventory,
   type StagedFile,
   steerPrompt,
   surveyPrompt,
@@ -35,7 +37,7 @@ import { recipeOf } from "../lib/deployDialect";
 import type { PlannedRead } from "../lib/cloudReads";
 import { allOutput, execCancel, type CommandOutcome } from "../lib/exec";
 import { formatProviderError } from "../lib/providerErrors";
-import { slotOf, useCloud, type CloudAccount } from "./cloud";
+import { slotOf, useCloud, type CloudAccount, type CloudResource } from "./cloud";
 import { failedTo } from "./notices";
 import { useWorkspace } from "./workspace";
 
@@ -388,8 +390,12 @@ function opsFor(slot: string, set: Set, get: Get): Ops {
 async function survey(ops: Ops): Promise<void> {
   const { cloudId, account } = ops.slot();
   const root = projectRoot();
-  const loaded = useCloud.getState().resources[slotOf(cloudId, account.id)];
-  const inventory = loaded?.kind === "loaded" ? loaded.resources : [];
+  const read = await readInventory(cloudId, account.id);
+  if (read.kind === "failed") {
+    blocked(ops, null, [], translate("deploy.inventoryUnread", { reason: read.reason }));
+    return;
+  }
+  const inventory = read.resources;
   const tooling = await invoke<string[]>("programs_present", { names: TOOLING_TO_REPORT });
 
   ops.note(translate("deploy.readingRepo"));
@@ -409,6 +415,47 @@ async function survey(ops: Ops): Promise<void> {
 
   const answers = await readAll(ops, survey.inspect);
   await writePlan(ops, { survey, answers, tooling });
+}
+
+/**
+ * The account's resource list, read first when it has not been: a plan made
+ * against a list that was never read would take every running service for a
+ * new one. A list already being read is waited for rather than asked twice.
+ */
+async function readInventory(
+  cloudId: string,
+  accountId: string,
+): Promise<{ kind: "loaded"; resources: CloudResource[] } | { kind: "failed"; reason: string }> {
+  const slot = slotOf(cloudId, accountId);
+  const current = useCloud.getState().resources[slot];
+  if (current === undefined) await useCloud.getState().reload(cloudId, accountId);
+  else if (current.kind === "loading") await settled(slot);
+  const state = useCloud.getState().resources[slot];
+  if (state?.kind === "loaded") return { kind: "loaded", resources: state.resources };
+  return { kind: "failed", reason: state?.kind === "failed" ? state.reason : "" };
+}
+
+/** Resolves once the account's resource list is no longer being read. */
+function settled(slot: string): Promise<void> {
+  return new Promise((resolve) => {
+    const stop = useCloud.subscribe((state) => {
+      if (state.resources[slot]?.kind === "loading") return;
+      stop();
+      resolve();
+    });
+  });
+}
+
+/**
+ * The account's resource list as it stands now. One being read again, or one
+ * whose read failed, proves nothing absent, so it counts as a partial list.
+ */
+function inventoryNow(ops: Ops): Inventory {
+  const { cloudId, account } = ops.slot();
+  const state = useCloud.getState().resources[slotOf(cloudId, account.id)];
+  return state?.kind === "loaded"
+    ? { resources: state.resources, truncated: state.truncated }
+    : { resources: [], truncated: true };
 }
 
 /**
@@ -442,7 +489,14 @@ async function writePlan(
     if (plan === null) return;
     const checked = await check(ops, plan, plan.steps, plan.keep, plan.prove);
     if (checked.rejected.length === 0) {
-      const usable: DeployPlan = { ...plan, steps: checked.steps, keep: checked.keep, prove: checked.prove };
+      const existing = targetsExisting(plan.target, checked.steps, inventoryNow(ops));
+      const usable: DeployPlan = {
+        ...plan,
+        target: { ...plan.target, existing },
+        steps: checked.steps,
+        keep: checked.keep,
+        prove: checked.prove,
+      };
       if (usable.prove === null) {
         blocked(ops, usable, [], translate("deploy.noProof"));
         return;
@@ -507,7 +561,8 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
     while (queue.length > 0) {
       const [step, ...rest] = queue;
       show(step);
-      const outcome = await runStep(ops, cloudId, account, plan.target.existing, step, root);
+      const existing = targetsExisting(plan.target, [step], inventoryNow(ops));
+      const outcome = await runStep(ops, cloudId, account, existing, step, root);
       if (outcome === null) return;
       queue = rest;
       if (outcome.code === 0) {
@@ -940,7 +995,9 @@ function check(
 ): Promise<CheckedPlan> {
   return invoke<CheckedPlan>("cloud_check_deploy", {
     cloudId: ops.slot().cloudId,
-    existing: plan.target.existing,
+    // Every step checked is held to the strictest the set calls for; a step
+    // run alone is then never refused for what its check let through.
+    existing: targetsExisting(plan.target, steps, inventoryNow(ops)),
     plan: { steps, keep, prove },
     // This is a deployment, not work on a resource: it may run the commands
     // that put a repository into the cloud, and the CLI may keep a project in

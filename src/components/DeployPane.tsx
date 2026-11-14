@@ -18,6 +18,7 @@ import { translate, useT } from "../i18n";
 import {
   commandLine,
   readLine,
+  resourceNamedBy,
   type DeployNote,
   type DeployPlan,
   type PlannedFile,
@@ -231,10 +232,14 @@ function Confirm({
 }) {
   const t = useT();
   const resources = useCloud((s) => s.resources[slotOf(cloudId, account.id)]);
+  // The resource the plan targets, or else the one its steps name - which is
+  // how Aime knew it was running when the AI did not say so.
   const existing =
-    plan.target.resourceId === null || resources?.kind !== "loaded"
+    resources?.kind !== "loaded"
       ? null
-      : (resources.resources.find((one) => one.id === plan.target.resourceId) ?? null);
+      : (resources.resources.find((one) => one.id === plan.target.resourceId) ??
+        resourceNamedBy(plan.steps, resources.resources) ??
+        null);
   // A planned file the AI never wrote cannot be put in place, so the plan
   // cannot run as agreed: the page asks for a revision instead.
   const unwritten = files.some((file) => file.content === null);
@@ -268,7 +273,11 @@ function Confirm({
           )}
         </dl>
         {plan.target.existing ? (
-          <p className="mt-2 text-[12px]">{t("deploy.targetExisting", { resource: existingLabel })}</p>
+          <p className="mt-2 text-[12px]">
+            {existingLabel === ""
+              ? t("deploy.targetPartialList")
+              : t("deploy.targetExisting", { resource: existingLabel })}
+          </p>
         ) : (
           <p className="mt-2 text-[12px]">{t("deploy.targetNew")}</p>
         )}

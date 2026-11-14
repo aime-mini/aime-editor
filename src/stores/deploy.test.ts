@@ -25,6 +25,8 @@ const calls: { command: string; args: Record<string, unknown> }[] = [];
 const turns: AgentTurnOptions[] = [];
 /** The turns that wrote the plan's files into the staging folder, answered by the mock itself. */
 const fileTurns: AgentTurnOptions[] = [];
+/** What `cloud_resources` answers when the deploy has to read the list itself; null fails it. */
+let listing: CloudResource[] | null = [];
 /** Planned files the AI is scripted to leave unwritten. */
 let unwritten: string[] = [];
 /** Whether the person agrees to rewritten steps the moment they are asked; a test that pins the asking turns it off. */
@@ -139,6 +141,10 @@ vi.mock("@tauri-apps/api/core", () => ({
     switch (command) {
       case "programs_present":
         return Promise.resolve([]);
+      case "cloud_resources":
+        return listing === null
+          ? Promise.reject(new Error("ERROR: (gcloud.asset.search-all-resources) Reauthentication required."))
+          : Promise.resolve({ resources: listing, truncated: false });
       case "read_file":
       case "path_size": {
         const path = String(args.path);
@@ -258,6 +264,7 @@ useDeploy.subscribe((state) => {
 
 beforeEach(() => {
   agreesToRewrites = true;
+  listing = [];
   calls.length = 0;
   turns.length = 0;
   fileTurns.length = 0;
@@ -408,6 +415,40 @@ describe("planning", () => {
     });
     expect(calls.filter((call) => call.command === "cloud_check_deploy")).toHaveLength(2);
     expect(calls.filter((call) => call.command === "cloud_deploy_step")).toHaveLength(0);
+  });
+
+  it("reads the account's resources first when they were never read, and plans against them", async () => {
+    useCloud.setState({ resources: {} });
+    listing = [service];
+    await planned();
+    expect(calls[0]).toMatchObject({
+      command: "cloud_resources",
+      args: { cloudId: "gcp", account: account.id },
+    });
+    expect(turns[0].prompt).toContain("run/Service  web  asia-southeast1");
+  });
+
+  it("plans nothing when the account's resources cannot be read", async () => {
+    useCloud.setState({ resources: {} });
+    listing = null;
+    await useDeploy.getState().start("gcp", account);
+    expect(stage()).toMatchObject({ kind: "blocked" });
+    expect(JSON.stringify(stage())).toContain("Reauthentication required");
+    expect(turns).toHaveLength(0);
+  });
+
+  it("holds a plan the AI called new to the keep rule when a step names a running service", async () => {
+    replies = [
+      SURVEY,
+      JSON.stringify({
+        ...JSON.parse(PLAN),
+        target: { existing: false, resourceId: null, region: "asia-southeast1" },
+      }),
+    ];
+    await planned();
+    const check = calls.find((call) => call.command === "cloud_check_deploy");
+    expect(check?.args.existing).toBe(true);
+    expect(stage()).toMatchObject({ plan: { target: { existing: true } } });
   });
 
   it("stops before the confirm page when the plan cannot be proved", async () => {

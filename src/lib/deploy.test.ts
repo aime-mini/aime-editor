@@ -13,9 +13,11 @@ import {
   parseSurvey,
   planPrompt,
   readLine,
+  resourceNamedBy,
   STAGED_DIR,
   steerPrompt,
   surveyPrompt,
+  targetsExisting,
   urlIn,
   valueAt,
   type DeployPlan,
@@ -786,5 +788,42 @@ describe("filesPrompt", () => {
     // A kubectl step is named as kubectl, not as the cloud's own CLI.
     expect(prompt).toContain("kubectl apply -f k8s.yaml");
     expect(prompt).not.toContain("gcloud apply");
+  });
+});
+
+describe("targetsExisting", () => {
+  const web: CloudResource = {
+    id: "//run.googleapis.com/projects/acme/locations/asia-southeast1/services/web",
+    name: "web",
+    cliName: "web",
+    kind: "run.googleapis.com/Service",
+    location: "asia-southeast1",
+    group: "acme",
+    tags: {},
+  };
+  const fresh = { existing: false, resourceId: null, region: "asia-southeast1" };
+  const step = (...args: string[]): DeployStep => ({ label: "Deploy", args, changes: "" });
+  const whole = { resources: [web], truncated: false };
+
+  it("takes the AI's word when it says the service runs", () => {
+    expect(targetsExisting({ ...fresh, existing: true }, [], whole)).toBe(true);
+  });
+
+  it("finds a running service the AI called new, by the target or by a name a step says", () => {
+    expect(targetsExisting({ ...fresh, resourceId: web.id }, [], whole)).toBe(true);
+    expect(targetsExisting(fresh, [step("run", "deploy", "web", "--source", ".")], whole)).toBe(true);
+    expect(targetsExisting(fresh, [step("webapp", "up", "--name", "web")], whole)).toBe(true);
+    expect(resourceNamedBy([step("run", "deploy", "web")], [web])).toBe(web);
+  });
+
+  it("calls a deploy new only when the whole list holds nothing it names", () => {
+    expect(targetsExisting(fresh, [step("run", "deploy", "shop", "--source", ".")], whole)).toBe(false);
+    // A flag is never a name, even one spelled like a resource.
+    expect(targetsExisting(fresh, [step("run", "deploy", "shop", "--web")], whole)).toBe(false);
+  });
+
+  it("counts everything as existing when the list stopped short", () => {
+    const partial = { resources: [web], truncated: true };
+    expect(targetsExisting(fresh, [step("run", "deploy", "shop")], partial)).toBe(true);
   });
 });

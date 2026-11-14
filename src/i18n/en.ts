@@ -594,6 +594,10 @@ export const en = {
     "Already written and waiting outside the project - open one to read it. Deploy puts exactly these files in place; Cancel throws them away.",
   "deploy.filesUnwritten": "A planned file was never written - ask for a revision",
   "deploy.stagingNotCleared": "Could not remove the deploy files waiting in .aime/deploy/staged",
+  "deploy.inventoryUnread":
+    "The account's resources could not be read, so nothing was planned - a plan made without them would take a running service for a new one. {reason}",
+  "deploy.targetPartialList":
+    "The account's resource list stopped short, so this may land on something already running: every setting a step would replace is held to the merging flags.",
   "deploy.cancelled": "Stopped.",
   "deploy.confirmTitle": "Nothing has run yet. This is what will.",
   "deploy.confirmHint":
