@@ -1391,6 +1391,9 @@ export const en = {
   "run.sweepFailed": "Could not remove, so left in place: {items}",
   "run.unprovedHere":
     "{count} case(s) could not be run on this machine - the report says why and how to check them by hand",
+  "run.ownTestsHeld": "each case's own test passed when run on its own ({count})",
+  "run.ownTestsFailed": "{count} case(s) whose own test never passed on its own: {detail}",
+  "run.ownTestsFixing": "Round {attempt}: the own test of {detail} did not pass on its own",
   "run.agentCancelled": "The coding run was stopped.",
   "run.disputed": "The builder says an agreed criterion cannot hold: {reason}",
   "run.casesRestored": "The builder rewrote {file}; the agreed version is back",

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Brief, Plan, TestCase, TestCases } from "./aiRun";
+import type { CaseRun } from "./caseTests";
 import type { GateVerdict } from "./regressionGate";
 
 /**
@@ -48,6 +49,8 @@ export type CaseGap =
   | "testMissing"
   /** A suite that answered is red, so nothing may be called proved. */
   | "suitesNotGreen"
+  /** The case's own test, run on its own, did not pass - or ran no test at all (`lib/caseTests.ts`). */
+  | "ownTestNotRun"
   /** No artifact made against the running software names this case. */
   | "noEvidence"
   /**
@@ -179,6 +182,8 @@ export function caseOutcomes(
   evidenceRequired: boolean,
   /** Cases the builder said it could not run on this machine, each with the start of its note. */
   unproved: ReadonlyMap<string, string> = new Map(),
+  /** Each case's own test, run on its own; absent for a run that never measured them. */
+  ownRuns?: ReadonlyMap<string, CaseRun>,
 ): Map<string, CaseVerdict> {
   const failing = (verdict?.suites ?? []).flatMap((suite) => [
     ...suite.after.report.failed,
@@ -204,11 +209,13 @@ export function caseOutcomes(
           ? "testMissing"
           : !everythingGreen
             ? "suitesNotGreen"
-            : evidenceRequired && (evidence.get(one.id) ?? []).length === 0
-              ? unproved.has(one.id)
-                ? "cannotRunHere"
-                : "noEvidence"
-              : null;
+            : ownRuns !== undefined && ownRuns.get(one.id)?.held !== true
+              ? "ownTestNotRun"
+              : evidenceRequired && (evidence.get(one.id) ?? []).length === 0
+                ? unproved.has(one.id)
+                  ? "cannotRunHere"
+                  : "noEvidence"
+                : null;
     if (gap === null) {
       outcomes.set(one.id, {
         outcome: "passed",

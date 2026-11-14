@@ -147,6 +147,7 @@ const GAPS: Record<CaseGap, string> = {
   noTestPlanned: "no test cites it",
   testMissing: "its test never appeared in the tree",
   suitesNotGreen: "a suite is red",
+  ownTestNotRun: "its own test did not pass when run on its own",
   noEvidence: "no artifact from the running software names it",
   cannotRunHere: "could not be run on this machine",
 };

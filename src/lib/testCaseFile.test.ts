@@ -146,6 +146,19 @@ describe("caseOutcomes", () => {
     expect(held).toEqual({ outcome: "passed", gap: null, provedBy: "tests" });
   });
 
+  it("will not call a case proved when its own test did not pass on its own", () => {
+    // The suite is green and the file exists - and the case's own filter ran nothing.
+    const ranNothing = new Map([["TC1", { held: false, ran: 0 }]]);
+    const held = caseOutcomes(CASES, PLAN, GREEN, IN_TREE, HAS_PROOF, DEPLOYED, new Map(), ranNothing).get(
+      "TC1",
+    );
+    expect(held).toEqual({ outcome: "unknown", gap: "ownTestNotRun" });
+    const ran = new Map([["TC1", { held: true, ran: 1 }]]);
+    expect(
+      caseOutcomes(CASES, PLAN, GREEN, IN_TREE, HAS_PROOF, DEPLOYED, new Map(), ran).get("TC1")?.outcome,
+    ).toBe("passed");
+  });
+
   it("will not call a case proved without an artifact from the running software", () => {
     const held = caseOutcomes(CASES, PLAN, GREEN, IN_TREE, NO_PROOF, DEPLOYED).get("TC1");
     expect(held).toEqual({ outcome: "unknown", gap: "noEvidence" });

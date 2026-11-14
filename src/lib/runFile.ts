@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { TaskDef } from "../stores/tasks";
 import type { Brief, Criterion, Plan, Review, SetAside, Solution, Survey, TestCases } from "./aiRun";
 import type { Radius } from "./blastRadius";
+import type { CaseRun } from "./caseTests";
 import type { RuleFile } from "./projectRules";
 import type { LedgerGap } from "./requirementLedger";
 import type { CheckPass } from "./qualityGate";
@@ -126,6 +127,8 @@ export interface SavedRun {
   ledger?: LedgerGap[];
   /** What the run made for its own use, and whether it was taken back. Optional: older runs kept no such record. */
   footprint?: Footprint;
+  /** Each case's own test as last run on its own. Optional: older runs never measured them. */
+  caseRuns?: Record<string, CaseRun>;
 }
 
 /**

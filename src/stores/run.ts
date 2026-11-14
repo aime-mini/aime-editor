@@ -33,6 +33,16 @@ import { agentTurn, cancelAgentTurn, failureOf } from "../lib/agentTurn";
 import { troubleIn } from "../lib/turnTrouble";
 import { baselineKey, keepBaseline, keptBaseline } from "../lib/baselineCache";
 import { footprintRules, formatBytes, sweepRun, type SweepReport } from "../lib/runSweep";
+import {
+  caseRunOf,
+  caseTestsFileOf,
+  declareCaseTestsRule,
+  parseCaseTests,
+  undeclaredCases,
+  type CaseRun,
+  type CaseTest,
+} from "../lib/caseTests";
+import { readTestOutput } from "../lib/testReport";
 import { aiOneshot } from "../lib/aiOneshot";
 import {
   auditPrompt,
@@ -269,6 +279,8 @@ interface Artifacts {
   yourEdits: string[];
   /** What the run made for its own use, for the sweep to take back (`lib/runSweep.ts`). */
   footprint: Footprint;
+  /** Each case's own test as Aime last ran it on its own, by case id (`lib/caseTests.ts`). */
+  caseRuns: Record<string, CaseRun>;
 }
 
 const NOTHING_YET: Artifacts = {
@@ -293,6 +305,7 @@ const NOTHING_YET: Artifacts = {
   undo: null,
   yourEdits: [],
   footprint: { turns: [], swept: false },
+  caseRuns: {},
 };
 
 /**
@@ -921,6 +934,7 @@ function slotFrom(saved: SavedRun, home: string, interrupted: boolean): RunSlot 
     yourEdits: saved.yourEdits ?? [],
     // A run journaled before footprints made nothing it recorded; there is nothing to sweep.
     footprint: saved.footprint ?? { turns: [], swept: true },
+    caseRuns: saved.caseRuns ?? {},
   };
 }
 
@@ -1131,6 +1145,7 @@ function artifactsOf(slot: RunSlot): Artifacts {
     undo: slot.undo,
     yourEdits: slot.yourEdits,
     footprint: slot.footprint,
+    caseRuns: slot.caseRuns,
   };
 }
 
@@ -1784,7 +1799,11 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
   // the reader made at the gate included, and the dossier quotes them.
   await agreedCases(context.workRoot, get, set);
   const remembered = await projectMemory(context, get().radius?.changing ?? []);
-  const prompt = [IMPLEMENT_PROMPT, ...(remembered === null ? [] : [remembered])].join("\n\n");
+  const prompt = [
+    IMPLEMENT_PROMPT,
+    declareCaseTestsRule(context.workRoot, context.id),
+    ...(remembered === null ? [] : [remembered]),
+  ].join("\n\n");
 
   const tried: string[] = [];
   // The signature of each round's shortfall, so a round that changed nothing
@@ -1816,7 +1835,9 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
     }
 
     const missing = testsNotWritten(plan, await existingFiles(context.workRoot));
-    if (missing.length === 0) {
+    const cases = get().cases;
+    const undeclared = cases === null ? [] : undeclaredCases(cases, await declaredCaseTests(context));
+    if (missing.length === 0 && undeclared.length === 0) {
       return {
         state: "passed",
         summary: translate("run.implemented", { tests: plan.tests.length }),
@@ -1827,18 +1848,25 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
     // Every criterion has a case and every case has a test, agreed on the page
     // the reader approved - so a case with no test file is a requirement this
     // change does not cover, and the run may not walk past it.
-    const signature = missing.map((test) => test.file).join("|");
-    const detail = missing.map((test) => `- ${test.file} :: ${test.name}`);
+    const signature = [...missing.map((test) => test.file), ...undeclared].join("|");
+    const missingLines = missing.map((test) => `- ${test.file} :: ${test.name}`);
+    const undeclaredLines = undeclared.map((id) => `- ${id}`);
     if (stalled(rounds, signature) || round === MAX_ROUNDS) {
       return {
         state: "blocked",
-        summary: translate("run.testsNeverWritten", { count: missing.length, rounds: round }),
-        detail: [...tried, ...detail].join("\n"),
+        summary: translate("run.testsNeverWritten", {
+          count: missing.length + undeclared.length,
+          rounds: round,
+        }),
+        detail: [...tried, ...missingLines, ...undeclaredLines].join("\n"),
       };
     }
     rounds.push(signature);
     tried.push(translate("run.testsMissingAttempt", { attempt: round, detail: signature }));
-    owed = [TESTS_MISSING, ...detail].join("\n");
+    owed = [
+      ...(missing.length > 0 ? [TESTS_MISSING, ...missingLines] : []),
+      ...(undeclared.length > 0 ? [CASE_TESTS_UNDECLARED, ...undeclaredLines] : []),
+    ].join("\n");
   }
   // Unreachable: the loop returns on every path out of its last round. Here so
   // a future edit cannot fall through into a silent pass.
@@ -1859,15 +1887,119 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
  * different sentences.
  */
 async function verify(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
-  const measured = await measureAndMend(context, set, get);
-  if (measured.state === "blocked") return measured;
-  const proved = await buildAndProve(context, set, get);
-  if (proved.state === "blocked") return proved;
+  const tried: string[] = [];
+  const rounds: string[] = [];
+  for (let round = 1; round <= MAX_ROUNDS; round += 1) {
+    const measured = await measureAndMend(context, set, get);
+    if (measured.state === "blocked") return measured;
+    const own = await runOwnTests(context, set, get);
+    if (own.failing.length === 0) {
+      const proved = await buildAndProve(context, set, get);
+      if (proved.state === "blocked") return proved;
+      return {
+        state: measured.state === "skipped" && proved.state === "skipped" ? "skipped" : "passed",
+        summary: [measured.summary, own.summary, proved.summary].filter((line) => line !== "").join(" · "),
+        detail: [...tried, measured.detail ?? "", proved.detail ?? ""]
+          .filter((line) => line !== "")
+          .join("\n"),
+      };
+    }
+    // A test that passes in the suite but not on its own - or never runs at
+    // all - proves nothing about its case; it goes back like any failure, and
+    // the suites are measured again after the fix.
+    const ids = own.failing.map((failure) => failure.id).join(", ");
+    if (stalled(rounds, ids) || round === MAX_ROUNDS) {
+      return {
+        state: "blocked",
+        summary: translate("run.ownTestsFailed", { count: own.failing.length, detail: ids }),
+        detail: [...tried, ...own.failing.map(ownFailureLine)].join("\n"),
+      };
+    }
+    rounds.push(ids);
+    tried.push(translate("run.ownTestsFixing", { attempt: round, detail: ids }));
+    note(set, "verify", tried[tried.length - 1]);
+    const prompt = [
+      OWN_TESTS_PROMPT,
+      `(${caseTestsFileOf(context.workRoot, context.id)})`,
+      ...own.failing.map(ownFailureLine),
+    ];
+    const halt = haltedBy(await runAgent(context, prompt.join("\n\n"), set, get, "verify"));
+    if (halt !== null) return halt;
+  }
+  // Unreachable: the loop returns on every path out of its last round.
+  return { state: "blocked", summary: translate("run.ownTestsFailed", { count: 0, detail: "" }) };
+}
+
+/** A case whose own test did not hold, with what its run said. */
+interface OwnFailure {
+  id: string;
+  command: string;
+  output: string;
+}
+
+function ownFailureLine(failure: OwnFailure): string {
+  return failure.command === ""
+    ? `- ${failure.id}: no command runs its test on its own`
+    : `- ${failure.id}: $ ${failure.command}\n${failure.output}`;
+}
+
+/** How much of one case's own run the builder is shown. */
+const OWN_OUTPUT_LIMIT = 2_000;
+
+/**
+ * Runs every case's own test on its own, with the command the builder
+ * declared, and records what each showed (`lib/caseTests.ts` says why the
+ * suite's verdict cannot stand in for this).
+ */
+async function runOwnTests(
+  context: Context,
+  set: Setter,
+  get: Getter,
+): Promise<{ summary: string; failing: OwnFailure[] }> {
+  const { cases } = get();
+  if (cases === null) return { summary: "", failing: [] };
+  const declared = await declaredCaseTests(context);
+  const runs: Record<string, CaseRun> = {};
+  const failing: OwnFailure[] = [];
+  for (const one of cases.cases) {
+    const test = declared.find((candidate) => candidate.case === one.id);
+    if (test === undefined) {
+      failing.push({ id: one.id, command: "", output: "" });
+      continue;
+    }
+    const outcome = await runCommand(set, "verify")(
+      commandIdFor(context.id)(),
+      test.command,
+      folderUnder(context.workRoot, test.dir),
+      SUITE_TIMEOUT_MS,
+    );
+    const output = allOutput(outcome);
+    const run = caseRunOf(readTestOutput(output, outcome.code));
+    runs[one.id] = run;
+    if (!run.held)
+      failing.push({ id: one.id, command: test.command, output: output.slice(-OWN_OUTPUT_LIMIT) });
+  }
+  set({ caseRuns: runs });
   return {
-    state: measured.state === "skipped" && proved.state === "skipped" ? "skipped" : "passed",
-    summary: [measured.summary, proved.summary].filter((line) => line !== "").join(" · "),
-    detail: [measured.detail ?? "", proved.detail ?? ""].filter((line) => line !== "").join("\n"),
+    summary: failing.length === 0 ? translate("run.ownTestsHeld", { count: cases.cases.length }) : "",
+    failing,
   };
+}
+
+/** The commands the builder declared for each case; none when it declared nothing readable. */
+async function declaredCaseTests(context: Context): Promise<CaseTest[]> {
+  try {
+    return parseCaseTests(
+      await invoke<string>("read_file", { path: caseTestsFileOf(context.workRoot, context.id) }),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** A folder named relative to the run's root. */
+function folderUnder(root: string, dir: string): string {
+  return dir === "." || dir === "" ? root : `${root.replace(/[\\/]+$/, "")}/${dir}`;
 }
 
 /**
@@ -2589,7 +2721,16 @@ async function report(context: Context, set: Setter, get: Getter): Promise<Phase
   const outcomes =
     state.cases === null
       ? new Map<string, CaseVerdict>()
-      : caseOutcomes(state.cases, state.plan, state.verdict, written, proof, evidenceRequired, unproved);
+      : caseOutcomes(
+          state.cases,
+          state.plan,
+          state.verdict,
+          written,
+          proof,
+          evidenceRequired,
+          unproved,
+          new Map(Object.entries(state.caseRuns)),
+        );
   if (unproved.size > 0) update(set, (run) => ({ ...run, handChecks: unproved.size }));
   const proved = [...outcomes.values()].filter((verdict) => verdict.outcome === "passed").length;
 
@@ -3423,6 +3564,14 @@ Run the failing tests when you are done. Do not commit anything.
 `;
 
 /** Sent back with the test files the plan promised and the tree does not have. */
+const CASE_TESTS_UNDECLARED = `No command in your case-tests file runs these cases' tests on their own. Declare one
+for each - a file filter and a test-name filter in this project's runner:`;
+
+const OWN_TESTS_PROMPT = `Each agreed case's own test was run on its own, with the command you declared, and these
+did not pass - or ran no test at all. A case is proved only by its own test passing on its own.
+Fix the test, or the command that should run it - never the agreed case - so that it runs and asserts
+what the case's "then" says. The file of commands is the one in brackets below.`;
+
 const TESTS_MISSING = `The plan named a test for every case, and these files are not in the tree. Write
 each one, in the file named, asserting the behaviour its case describes - a case with no test cannot be
 reported as proved:`;

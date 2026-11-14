@@ -181,6 +181,7 @@ const mode = fs.existsSync(${JSON.stringify(MODE_FILE)})
 
 // The ticket's one requirement, as the criteria must quote it.
 const TICKET_SENTENCE = "withTax must round to two decimal places";
+const SECOND_TICKET_SENTENCE = "Totals must carry their currency code";
 // What the second reader holds against a first answer: the limit is a minimum too.
 const NEVER_FEWER = ", and never fewer";
 
@@ -218,10 +219,11 @@ if (prompt.includes("Check another reader's understanding of a ticket")) {
   // out of the same JSON object.
   stream({
     goal: "Round the total to two places",
-    // Quoting the ticket's own sentence: Aime checks the quote against it.
-    criteria: [
-      { id: "AC1", text: "WHEN withTax is called, THE SYSTEM SHALL round to two decimal places", quote: TICKET_SENTENCE },
-    ],
+    // Quoting the ticket's own sentence: Aime checks the quote against it - so
+    // the second item's run quotes the second item's ticket.
+    criteria: prompt.includes(SECOND_TICKET_SENTENCE)
+      ? [{ id: "AC1", text: "THE SYSTEM SHALL show the currency code on every total", quote: SECOND_TICKET_SENTENCE }]
+      : [{ id: "AC1", text: "WHEN withTax is called, THE SYSTEM SHALL round to two decimal places", quote: TICKET_SENTENCE }],
     questions: [],
     files: [named("src/cart.js"), ...(mode === "crossRepo" ? ["api/server.js"] : [])],
     patterns: ["plain ES modules, no framework - src/checkout.js"],
@@ -301,6 +303,13 @@ if (prompt.includes("Check another reader's understanding of a ticket")) {
   // The file the plan named. Aime checks it exists before the phase may pass,
   // which is the mechanical half of "the tests were actually written".
   fs.writeFileSync(shop("test.cjs"), TEST_WITH_ROUNDING);
+  // Each case's own command, which Aime runs on its own. "noOwnTest" declares a
+  // filter that runs nothing and still exits green - the mistake that check is for.
+  const caseTests = prompt.match(/Also write (\S+case-tests\.json)/)[1];
+  fs.mkdirSync(path.dirname(caseTests), { recursive: true });
+  if (mode === "noOwnTest") fs.writeFileSync(shop("no-tests.cjs"), 'console.log("Tests  0 passed (0)");\n');
+  const own = mode === "noOwnTest" ? "node no-tests.cjs" : "node test.cjs";
+  fs.writeFileSync(caseTests, JSON.stringify({ tests: [{ case: "TC1", command: own, dir: inProduct ? "shop" : "." }] }));
   // And the kind of droppings an agent leaves behind: an untracked scratch
   // file, which the cleanup button must offer and the baseline snapshot must
   // not blame on anything that was already there.
@@ -324,6 +333,11 @@ if (prompt.includes("Check another reader's understanding of a ticket")) {
     fs.writeFileSync(here("api", "server.js"), "export const port = 8081;\n");
   }
   process.stdout.write("done\n");
+} else if (prompt.includes("is proved only by its own test passing on its own")) {
+  // Told its case's own test ran nothing: it points the command at the real test.
+  const caseTests = prompt.match(/\((\S+case-tests\.json)\)/)[1];
+  fs.writeFileSync(caseTests, JSON.stringify({ tests: [{ case: "TC1", command: "node test.cjs", dir: inProduct ? "shop" : "." }] }));
+  process.stdout.write("pointed TC1 at its test\n");
 } else if (prompt.includes("Your change made a path slower.")) {
   // Linear again, and still right.
   fs.writeFileSync(shop("src", "cart.js"), SOUND);
@@ -1059,6 +1073,20 @@ describe("Task run", () => {
     assert.doesNotMatch(report, /\| PASS/, `a case nobody ran was reported as passed: ${report}`);
   });
 
+  it("does not call a case proved by its own test until that test runs on its own and passes", async () => {
+    fs.writeFileSync(MODE_FILE, "noOwnTest");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+    await waitForText("did not pass on its own", "a case whose own filter ran nothing was let through", 240_000);
+    await waitForText("finished, and every gate agreed", "the run never finished once the test ran", 240_000);
+    const verify = await phaseRow("Test it until the bugs are out");
+    assert.match(verify, /own test passed when run on its own \(1\)/, verify);
+    const [journal] = journalsIn(repo);
+    assert.equal(journal.caseRuns?.TC1?.held, true, JSON.stringify(journal.caseRuns));
+    assert.ok((journal.caseRuns?.TC1?.ran ?? 0) >= 1, `TC1's own run ran no test: ${JSON.stringify(journal.caseRuns)}`);
+  });
+
   it("closes a gap a second reading of the ticket finds, before the plan is agreed", async () => {
     fs.writeFileSync(MODE_FILE, "ledgerFixed");
     repo = freshRepo(repo);
@@ -1435,7 +1463,7 @@ ${suite.output}`,
 
     await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
     const [report] = reportsIn(repo);
-    assert.match(report, /\| PASS \|/, `the case was not proved end to end: ${report}`);
+    assert.match(report, /\| PASS — on the running software \|/, `the case was not proved end to end: ${report}`);
   });
 
   it("starts the server a suite needs instead of blaming the change for a refused connection", async () => {
@@ -1459,7 +1487,7 @@ ${suite.output}`,
     await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
     const [report] = reportsIn(repo);
     assert.match(report, /kept up while they ran: `npm run serve`, answering on http:\/\/127\.0\.0\.1:47813/);
-    assert.match(report, /\| PASS \|/, `the case was not proved with the server up: ${report}`);
+    assert.match(report, /\| PASS — on the running software \|/, `the case was not proved with the server up: ${report}`);
     assert.equal(await portOpen(SERVICE_PORT), false, "the server outlived the run");
   });
 
