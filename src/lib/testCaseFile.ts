@@ -49,12 +49,21 @@ export type CaseGap =
   /** A suite that answered is red, so nothing may be called proved. */
   | "suitesNotGreen"
   /** No artifact made against the running software names this case. */
-  | "noEvidence";
+  | "noEvidence"
+  /**
+   * The builder could not run this case on this machine - a real identity
+   * provider, a payment gateway - and wrote why, with the steps a person takes.
+   */
+  | "cannotRunHere";
 
 /** A case's outcome, and — when it is unproven — the first reason it is. */
 export interface CaseVerdict {
   outcome: CaseOutcome;
   gap: CaseGap | null;
+  /** For a pass, what earned it: the running software, or the tests alone where nothing had to run. */
+  provedBy?: "runningSoftware" | "tests";
+  /** For a case that could not run here: the start of the builder's note on why, and how a person checks it. */
+  note?: string;
 }
 
 function pathIn(root: string, file: string): string {
@@ -168,6 +177,8 @@ export function caseOutcomes(
   existingFiles: ReadonlySet<string>,
   evidence: ReadonlyMap<string, string[]>,
   evidenceRequired: boolean,
+  /** Cases the builder said it could not run on this machine, each with the start of its note. */
+  unproved: ReadonlyMap<string, string> = new Map(),
 ): Map<string, CaseVerdict> {
   const failing = (verdict?.suites ?? []).flatMap((suite) => [
     ...suite.after.report.failed,
@@ -194,9 +205,20 @@ export function caseOutcomes(
           : !everythingGreen
             ? "suitesNotGreen"
             : evidenceRequired && (evidence.get(one.id) ?? []).length === 0
-              ? "noEvidence"
+              ? unproved.has(one.id)
+                ? "cannotRunHere"
+                : "noEvidence"
               : null;
-    outcomes.set(one.id, gap === null ? { outcome: "passed", gap: null } : { outcome: "unknown", gap });
+    if (gap === null) {
+      outcomes.set(one.id, {
+        outcome: "passed",
+        gap: null,
+        provedBy: evidenceRequired ? "runningSoftware" : "tests",
+      });
+    } else {
+      const note = gap === "cannotRunHere" ? unproved.get(one.id) : undefined;
+      outcomes.set(one.id, { outcome: "unknown", gap, ...(note === undefined ? {} : { note }) });
+    }
   }
   return outcomes;
 }

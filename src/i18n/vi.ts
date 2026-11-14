@@ -1288,6 +1288,8 @@ export const vi: Record<TranslationKey, string> = {
   "run.waiting": "Đang chờ anh",
   "run.goOn": "Duyệt - chạy tiếp",
   "run.blocked": "Dừng ở đây",
+  "run.doneWithHandChecks":
+    "Đã xong - nhưng {count} case không chạy được trên máy này và cần kiểm tay; báo cáo ghi cách kiểm",
   "run.done": "Xong, và mọi cổng đều đồng ý",
   "run.cancelled": "Bị dừng bằng tay.",
   "run.failed": "Không chạy hết được - pha ở trên nói vì sao.",
@@ -1381,6 +1383,7 @@ export const vi: Record<TranslationKey, string> = {
   "run.swept":
     "Đã tự dọn: giải phóng {freed} file của chính nó, gỡ {docker} đối tượng Docker và {tools} thứ đã cài, không để lại tiến trình nào các lượt AI đã bật",
   "run.sweepFailed": "Không gỡ được nên vẫn còn: {items}",
+  "run.unprovedHere": "{count} case không chạy được trên máy này - báo cáo ghi lý do và cách kiểm tay",
   "run.agentCancelled": "Lượt code đã bị dừng.",
   "run.disputed": "Người làm báo một AC đã thống nhất không thể đạt: {reason}",
   "run.casesRestored": "Người làm đã sửa {file}; bản đã thống nhất được đặt lại",

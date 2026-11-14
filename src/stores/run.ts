@@ -89,6 +89,8 @@ import {
   DEPLOY_PROOF_DIR,
   EVIDENCE_DIR,
   screenshotsIn,
+  unprovedCases,
+  UNPROVED_SUFFIX,
 } from "../lib/evidenceFile";
 import {
   compare,
@@ -2153,16 +2155,25 @@ async function buildAndProve(context: Context, set: Setter, get: Getter): Promis
     if (halt !== null) return halt;
 
     const evidence = await caseEvidence(context.workRoot, caseIds, since);
-    const missing = (cases?.cases ?? []).filter((one) => (evidence.get(one.id) ?? []).length === 0);
+    const unproved = await unprovedCases(context.workRoot, caseIds, since);
+    // A case the builder could not run on this machine, and said why, is no
+    // longer owed: asking again would not make the identity provider local.
+    const missing = (cases?.cases ?? []).filter(
+      (one) => (evidence.get(one.id) ?? []).length === 0 && !unproved.has(one.id),
+    );
     const proofs = await deployProof(context.workRoot, since);
+    // With every case unprovable here there is nothing that runs to show answering.
+    const nothingRuns = caseIds.length > 0 && unproved.size === caseIds.length;
     // The screens are measured once there is something deployed to measure,
     // and only then: a layout fix on top of an unproved deployment is noise.
-    const layout = proofs.length > 0 && missing.length === 0 ? await measureScreens(context, set) : null;
+    const layout =
+      (proofs.length > 0 || nothingRuns) && missing.length === 0 ? await measureScreens(context, set) : null;
     if (layout !== null && layout.problems.length === 0) {
       return {
         state: "passed",
         summary: [
-          translate("run.delivered", { proved: caseIds.length, total: caseIds.length }),
+          translate("run.delivered", { proved: caseIds.length - unproved.size, total: caseIds.length }),
+          unproved.size === 0 ? "" : translate("run.unprovedHere", { count: unproved.size }),
           layout.pages === 0 ? "" : translate("run.layoutHeld", { count: layout.pages }),
         ]
           .filter(Boolean)
@@ -2178,7 +2189,7 @@ async function buildAndProve(context: Context, set: Setter, get: Getter): Promis
     // names the ones it could not, and the loop ends only when a round leaves
     // exactly what the last one left.
     const short = [
-      proofs.length === 0 ? translate("run.deliverNoProofShort") : "",
+      proofs.length === 0 && !nothingRuns ? translate("run.deliverNoProofShort") : "",
       missing.map((one) => one.id).join(", "),
       unfit.length === 0 ? "" : translate("run.layoutShort", { count: unfit.length }),
     ]
@@ -2201,7 +2212,7 @@ async function buildAndProve(context: Context, set: Setter, get: Getter): Promis
     }
     proofRounds.push(signature);
     owed = [
-      ...(proofs.length === 0 ? [NO_DEPLOY_PROOF] : []),
+      ...(proofs.length === 0 && !nothingRuns ? [NO_DEPLOY_PROOF] : []),
       ...(missing.length > 0 ? [EVIDENCE_MISSING, ...missing.map(oneLine)] : []),
       ...(unfit.length > 0 ? [LAYOUT_PROMPT, ...unfit] : []),
     ].join("\n");
@@ -2567,10 +2578,19 @@ async function report(context: Context, set: Setter, get: Getter): Promise<Phase
           state.run.startedAt,
         );
   const evidenceRequired = needsDeploy(get);
+  const unproved =
+    state.cases === null
+      ? new Map<string, string>()
+      : await unprovedCases(
+          context.workRoot,
+          state.cases.cases.map((one) => one.id),
+          state.run.startedAt,
+        );
   const outcomes =
     state.cases === null
       ? new Map<string, CaseVerdict>()
-      : caseOutcomes(state.cases, state.plan, state.verdict, written, proof, evidenceRequired);
+      : caseOutcomes(state.cases, state.plan, state.verdict, written, proof, evidenceRequired, unproved);
+  if (unproved.size > 0) update(set, (run) => ({ ...run, handChecks: unproved.size }));
   const proved = [...outcomes.values()].filter((verdict) => verdict.outcome === "passed").length;
 
   const markdown = renderReport({
@@ -3486,13 +3506,22 @@ function deliverPrompt(cases: TestCases | null, get: Getter): string {
 }
 
 const DELIVER_PROMPT = `The change is written and the gates so far agree. Now finish it the way a team
-calls finished: build it, deploy it, and prove it works where it runs.
+calls finished: build it, run it, and prove it works where it runs - on THIS machine.
 
-How to deploy is your call, because you read this project: the way it already declares - its CI
-pipeline, Dockerfile, compose file or deploy script - is the way to use. When it declares nothing,
-build what it produces and deploy that locally: start the built server, install the packaged library
-into a scratch consumer, open the built app. Never invent credentials, and never push to a shared
-environment the project did not configure.
+Run it locally, never anywhere shared: no cloud account, no staging or production environment, no
+registry, not even one the project's CI pipeline deploys to - those belong to other people, and a run
+does not touch them. Read how the project builds and starts (its Dockerfile, compose file, scripts,
+CI steps) and do the same here: start the built server, install the packaged library into a scratch
+consumer, open the built app.
+
+What it needs from a cloud runs locally in its place: AWS services through moto (pip install
+"moto[server]", then moto_server), Azure Storage through Azurite (npm install -g azurite), Google
+Cloud through the gcloud emulators, a database in a local container or a portable build. Point the
+app at them with the configuration the project already reads (environment variables, a local
+settings file), and use made-up credentials - never real ones, never invented ones that look real.
+Install whatever is missing without asking: a runtime, an emulator, a headless browser. Prefer a
+portable or project-local install over a system one, and follow the rules below about where it goes.
+Show progress; do not ask permission.
 
 Then prove it, and leave the proof on disk - Aime believes files, not reports:
 - Save proof that the deployed thing answered under ${DEPLOY_PROOF_DIR}/: the health endpoint's
@@ -3502,8 +3531,12 @@ Then prove it, and leave the proof on disk - Aime believes files, not reports:
   what it printed. A case proved by a test gets that test run's own output, captured to a file -
   not a sentence you wrote about it.
 - One artifact per case under ${EVIDENCE_DIR}/, named after it: TC1.png, TC2-response.json, TC3.txt.
-- Install what you need to drive things - a headless browser, a driver - preferring what the project
-  already uses. Show progress, do not ask permission.
+- A case that cannot be run on this machine even so - it needs a real identity provider, a payment
+  gateway, hardware - gets ${EVIDENCE_DIR}/<case id>${UNPROVED_SUFFIX} instead: first line, why it
+  cannot run here; then the exact steps a person takes to check it, and what they should see. It is
+  reported as unproven, never as a pass, so use it only for what truly cannot run here.
+- If the change shows on a screen, also open the screens around it that use the same code, so a
+  change that breaks a neighbour is seen.
 
 If the change shows on a screen, say where, so Aime can open it at a phone's, a tablet's and a
 desktop's width and measure it itself. Write ${SCREENS_FILE}:

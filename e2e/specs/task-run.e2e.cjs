@@ -349,7 +349,16 @@ if (prompt.includes("Check another reader's understanding of a ticket")) {
   }
 // Matched on a phrase that sits on ONE line of the prompt: the prompts are
 // wrapped template literals, and a phrase spanning a wrap point never matches.
-} else if (prompt.includes("build it, deploy it, and prove it works where it runs")) {
+} else if (prompt.includes("and prove it works where it runs") && mode === "cannotRunLocally") {
+  // Nothing of this change can run on the machine: the builder says so, case by
+  // case, with the steps a person takes - and leaves no evidence to mistake for proof.
+  fs.mkdirSync(here(".aime", "evidence"), { recursive: true });
+  fs.writeFileSync(
+    here(".aime", "evidence", "TC1.unproved.md"),
+    "Needs the shop's real payment gateway.\n1. Check out a cart of 25 with the test card.\n2. The receipt shows 27.50.\n",
+  );
+  process.stdout.write("could not run it here\n");
+} else if (prompt.includes("and prove it works where it runs")) {
   // The delivery half of verify: deploy proof plus one artifact per case,
   // which is what the gate reads off the disk - stdout proves nothing to it.
   fs.mkdirSync(here(".aime", "evidence", "deploy"), { recursive: true });
@@ -965,7 +974,7 @@ describe("Task run", () => {
     const [report] = reportsIn(repo);
     assert.ok(report, "the run left no report behind");
     assert.match(report, /\| TC1 \| AC1 \|/, `the case table is missing its row: ${report}`);
-    assert.match(report, /\| PASS \|/, `the case was not recorded as proved: ${report}`);
+    assert.match(report, /\| PASS — on the running software \|/, `the case was not recorded as proved: ${report}`);
 
     // The delivery evidence is real files Aime checked, not a claim:
     // one artifact named after the case, and proof the deployed thing answered.
@@ -1008,7 +1017,7 @@ describe("Task run", () => {
       "the change was never deployed and driven, on the plan's word alone",
     );
     const [report] = reportsIn(repo);
-    assert.match(report, /\| TC1 \| AC1 \|.*\| PASS \|/, `the case was not proved: ${report}`);
+    assert.match(report, /\| TC1 \| AC1 \|.*\| PASS — on the running software \|/, `the case was not proved: ${report}`);
   });
 
   it("reuses what it measured on a clean commit instead of running every suite again", async () => {
@@ -1032,6 +1041,22 @@ describe("Task run", () => {
       "the second run on the same clean commit measured every suite again",
       120_000,
     );
+  });
+
+  it("says a case could not be run on this machine, with why, instead of calling it proved", async () => {
+    fs.writeFileSync(MODE_FILE, "cannotRunLocally");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+    await waitForText("could not be run on this machine", "the run never said a case could not run here", 240_000);
+    await waitForText("need checking by hand", "a finished run with a case nobody ran read as fully proved", 240_000);
+    const [report] = reportsIn(repo);
+    assert.match(
+      report,
+      /\| TC1 \| AC1 \|.*unproven — could not be run on this machine: Needs the shop's real payment gateway\./,
+      report,
+    );
+    assert.doesNotMatch(report, /\| PASS/, `a case nobody ran was reported as passed: ${report}`);
   });
 
   it("closes a gap a second reading of the ticket finds, before the plan is agreed", async () => {

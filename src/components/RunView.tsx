@@ -171,7 +171,12 @@ export function RunView() {
         )}
         {ending !== null && (
           <div ref={gate}>
-            <Ending ending={ending} onApprove={() => void approvePlan()} onResume={() => void resume()} />
+            <Ending
+              ending={ending}
+              handChecks={run.handChecks ?? 0}
+              onApprove={() => void approvePlan()}
+              onResume={() => void resume()}
+            />
           </div>
         )}
 
@@ -590,10 +595,13 @@ function endingLabel(saved: SavedRun): TranslationKey {
 /** How a run stopped, and the one button that answers it. */
 function Ending({
   ending,
+  handChecks,
   onApprove,
   onResume,
 }: {
   ending: Run["ended"];
+  /** Cases left for a person to check by hand: a finished run then says so instead of "every gate agreed". */
+  handChecks: number;
   onApprove: () => void;
   onResume: () => void;
 }) {
@@ -645,6 +653,16 @@ function Ending({
           <ShieldAlert size={14} /> {t("run.blocked")}
         </p>
         <p className="mt-1 text-[12.5px] text-fg/90">{ending.why}</p>
+      </div>
+    );
+  }
+
+  if (ending.kind === "done" && handChecks > 0) {
+    return (
+      <div className="mt-4 rounded-lg border border-warn/50 px-4 py-3">
+        <p className="flex items-center gap-2 text-[13px] font-medium text-warn">
+          <ShieldAlert size={14} /> {t("run.doneWithHandChecks", { count: handChecks })}
+        </p>
       </div>
     );
   }

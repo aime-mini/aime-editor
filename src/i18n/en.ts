@@ -1292,6 +1292,8 @@ export const en = {
   "run.goOn": "Approved - carry on",
   "run.blocked": "Stopped here",
   "run.done": "Finished, and every gate agreed",
+  "run.doneWithHandChecks":
+    "Finished - but {count} case(s) could not be run on this machine and need checking by hand; the report says how",
   "run.cancelled": "Stopped by hand.",
   "run.failed": "It could not finish - the phase above says why.",
   "run.interrupted": "This run was cut off",
@@ -1387,6 +1389,8 @@ export const en = {
   "run.swept":
     "Cleaned up after itself: {freed} of its own files freed, {docker} Docker object(s) and {tools} install(s) removed, and nothing its AI turns started left running",
   "run.sweepFailed": "Could not remove, so left in place: {items}",
+  "run.unprovedHere":
+    "{count} case(s) could not be run on this machine - the report says why and how to check them by hand",
   "run.agentCancelled": "The coding run was stopped.",
   "run.disputed": "The builder says an agreed criterion cannot hold: {reason}",
   "run.casesRestored": "The builder rewrote {file}; the agreed version is back",

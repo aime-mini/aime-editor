@@ -133,6 +133,11 @@ export interface Run {
   current: PhaseId | null;
   /** Set when the run ended, so the panel can say how. */
   ended: RunEnding | null;
+  /**
+   * Cases the run could not prove on this machine and left for a person to
+   * check by hand, so a finished run never reads as fully proved when it is not.
+   */
+  handChecks?: number;
 }
 
 export type RunEnding =

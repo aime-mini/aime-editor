@@ -113,7 +113,17 @@ const DEPLOYED = true;
 describe("caseOutcomes", () => {
   it("calls a case proved only when every condition holds at once", () => {
     const proved = caseOutcomes(CASES, PLAN, GREEN, IN_TREE, HAS_PROOF, DEPLOYED);
-    expect(proved.get("TC1")).toEqual({ outcome: "passed", gap: null });
+    expect(proved.get("TC1")).toEqual({ outcome: "passed", gap: null, provedBy: "runningSoftware" });
+  });
+
+  it("calls a case the builder could not run here unproven, carrying why", () => {
+    const why = new Map([["TC1", "Needs the real identity provider.\n1. Sign in as ..."]]);
+    const held = caseOutcomes(CASES, PLAN, GREEN, IN_TREE, NO_PROOF, DEPLOYED, why).get("TC1");
+    expect(held).toEqual({
+      outcome: "unknown",
+      gap: "cannotRunHere",
+      note: "Needs the real identity provider.\n1. Sign in as ...",
+    });
   });
 
   it("will not call a case proved when the test file is not in the tree", () => {
@@ -133,7 +143,7 @@ describe("caseOutcomes", () => {
     // A renamed constant has no running software to photograph. Holding its
     // cases at "unproven" forever would teach a reader to ignore the column.
     const held = caseOutcomes(CASES, PLAN, GREEN, IN_TREE, NO_PROOF, false).get("TC1");
-    expect(held).toEqual({ outcome: "passed", gap: null });
+    expect(held).toEqual({ outcome: "passed", gap: null, provedBy: "tests" });
   });
 
   it("will not call a case proved without an artifact from the running software", () => {

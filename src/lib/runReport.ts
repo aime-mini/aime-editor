@@ -148,6 +148,7 @@ const GAPS: Record<CaseGap, string> = {
   testMissing: "its test never appeared in the tree",
   suitesNotGreen: "a suite is red",
   noEvidence: "no artifact from the running software names it",
+  cannotRunHere: "could not be run on this machine",
 };
 
 /**
@@ -173,9 +174,17 @@ const PASS_MEANS = {
 /** One outcome as the table spells it, with the reason where there is one. */
 function mark(verdict: CaseVerdict | undefined): string {
   if (verdict === undefined) return "unproven";
-  if (verdict.outcome === "passed") return "PASS";
+  if (verdict.outcome === "passed") {
+    return verdict.provedBy === "tests" ? "PASS — by its tests" : "PASS — on the running software";
+  }
   if (verdict.outcome === "failed") return "FAIL";
-  return verdict.gap === null ? "unproven" : `unproven — ${GAPS[verdict.gap]}`;
+  if (verdict.gap === null) return "unproven";
+  const why = `unproven — ${GAPS[verdict.gap]}`;
+  // The note's first line is its reason; the steps a person takes are in the note file.
+  const reason = verdict.note?.split("\n").find((line) => line.trim() !== "");
+  return reason === undefined
+    ? why
+    : `${why}: ${reason.trim()} (how to check it by hand: its .unproved.md note)`;
 }
 
 /**

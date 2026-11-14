@@ -68,9 +68,44 @@ export async function caseEvidence(
 ): Promise<Map<string, string[]>> {
   const found = new Map<string, string[]>(caseIds.map((id) => [id, []]));
   for (const entry of await filesUnder(`${base(root)}/${EVIDENCE_DIR}`)) {
-    if (!isFresh(entry, since)) continue;
+    if (!isFresh(entry, since) || isUnprovedNote(entry.name)) continue;
     const id = caseOf(entry.name, caseIds);
     if (id !== null) found.get(id)?.push(entry.path);
+  }
+  return found;
+}
+
+/**
+ * What the builder writes for a case it could not prove on this machine, named
+ * `TC2.unproved.md`: why, and the exact steps a person would take. Never
+ * evidence - a note that a case was not proved cannot prove it.
+ */
+export const UNPROVED_SUFFIX = ".unproved.md";
+
+function isUnprovedNote(name: string): boolean {
+  return name.toLowerCase().endsWith(UNPROVED_SUFFIX);
+}
+
+/** How much of an "unproved here" note the report carries; the file itself has the rest. */
+const UNPROVED_NOTE_CHARS = 600;
+
+/** The cases the builder said it could not prove on this machine, each with the start of its note. */
+export async function unprovedCases(
+  root: string,
+  caseIds: readonly string[],
+  since: number,
+): Promise<Map<string, string>> {
+  const found = new Map<string, string>();
+  for (const entry of await filesUnder(`${base(root)}/${EVIDENCE_DIR}`)) {
+    if (!isFresh(entry, since) || !isUnprovedNote(entry.name)) continue;
+    const id = caseOf(entry.name, caseIds);
+    if (id === null) continue;
+    try {
+      const note = await invoke<string>("read_file", { path: entry.path });
+      found.set(id, note.trim().slice(0, UNPROVED_NOTE_CHARS));
+    } catch (error: unknown) {
+      found.set(id, `(the note could not be read: ${String(error)})`);
+    }
   }
   return found;
 }

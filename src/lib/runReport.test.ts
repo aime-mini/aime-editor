@@ -93,6 +93,22 @@ describe("renderReport", () => {
     );
   });
 
+  it("says how each pass was earned, and why a case could not be run here", () => {
+    expect(reportOf({ outcome: "passed", gap: null, provedBy: "tests" })).toContain(
+      "| PASS — by its tests |",
+    );
+    expect(reportOf({ outcome: "passed", gap: null, provedBy: "runningSoftware" })).toContain(
+      "| PASS — on the running software |",
+    );
+    const page = reportOf({
+      outcome: "unknown",
+      gap: "cannotRunHere",
+      note: "Needs the real payment gateway.\n1. Pay with the test card ...",
+    });
+    expect(page).toContain("unproven — could not be run on this machine: Needs the real payment gateway.");
+    expect(page).not.toContain("| PASS");
+  });
+
   it("says what PASS meant in this run, and never more than that", () => {
     // A change that was never deployed has no running software to photograph,
     // so printing the longer set of conditions would be the report claiming a
