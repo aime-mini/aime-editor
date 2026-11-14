@@ -108,6 +108,28 @@ const READ_COMMANDS: [&str; 8] = [
     "version",
 ];
 
+/// Refuses a `kubectl get` of Secrets: unlike the cloud CLIs' `describe`
+/// commands, it answers with the data itself (base64 is an encoding, not a
+/// lock), and a deploy's reads go to the AI as text. `describe secret` is left
+/// alone - it shows each key's size, never its value.
+pub(super) fn refuse_secret_values(args: &[String]) -> Result<(), String> {
+    let [command, rest @ ..] = args else {
+        return Ok(());
+    };
+    let names_secrets = rest.iter().filter(|arg| !arg.starts_with('-')).any(|arg| {
+        arg.to_lowercase()
+            .split(',')
+            .any(|kind| kind.starts_with("secret"))
+    });
+    if command == "get" && names_secrets {
+        return Err(format!(
+            "`{PROGRAM} get` on Secrets answers with their data, and a deploy never reads a secret's value: \
+             what it reads goes to the AI. Use `{PROGRAM} describe secret <name>` to see which keys it holds."
+        ));
+    }
+    Ok(())
+}
+
 /// How `kubectl` is asked for JSON; `gcloud` spells the same thing `--format`.
 pub(super) fn json_flags() -> [&'static str; 2] {
     ["--output", "json"]
@@ -165,6 +187,34 @@ mod tests {
             assert!(!serves(elsewhere));
             let refused = refuse_unless_deploying(elsewhere, "apply").expect_err("not this cloud");
             assert!(refused.contains(elsewhere), "unhelpful: {refused}");
+        }
+    }
+
+    #[test]
+    fn a_secret_s_data_is_never_read_but_what_it_holds_may_be_described() {
+        let words = |line: &str| line.split(' ').map(String::from).collect::<Vec<_>>();
+        for reading_values in [
+            "get secrets -o json",
+            "get secret db-password",
+            "get secret/db-password",
+            "get pods,secrets",
+        ] {
+            let refused = refuse_secret_values(&words(reading_values)).expect_err(reading_values);
+            assert!(
+                refused.contains("describe secret"),
+                "no way on offered: {refused}"
+            );
+        }
+        for reading_around in [
+            "describe secret db-password",
+            "get pods",
+            "get deployment shop -o json",
+            "logs shop-1",
+        ] {
+            assert!(
+                refuse_secret_values(&words(reading_around)).is_ok(),
+                "{reading_around}"
+            );
         }
     }
 

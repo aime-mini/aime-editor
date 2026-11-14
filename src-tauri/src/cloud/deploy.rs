@@ -36,7 +36,7 @@
 //! clouds have both (`lib/deployDialect.ts` holds that split).
 
 use super::dialect::{Dialect, Grant, Proof};
-use super::reads::{check_read_allowing, is_command_word, is_safe_value, PlannedRead};
+use super::reads::{check_read_allowing, is_command_word, is_safe_value, PlannedRead, ReadPurpose};
 use super::{k8s, program_for, quiet, read_cli_checked, CloudAccount};
 use crate::exec::{run_program, CommandOutcome, ExecState, Limits};
 use crate::program::Program;
@@ -343,6 +343,7 @@ pub async fn cloud_deploy_read(
     if read.program == k8s::PROGRAM {
         let command = read.args.first().map(String::as_str).unwrap_or_default();
         k8s::refuse_unless_reading(&cloud_id, command)?;
+        k8s::refuse_secret_values(&read.args)?;
         let mut args = read.args.clone();
         args.extend(k8s::json_flags().map(String::from));
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -351,12 +352,28 @@ pub async fn cloud_deploy_read(
             .map_err(|failure| failure.message);
     }
     let checked = check_read_allowing(&own, &cloud_id, NO_KIND, &read, &LOCATION_FLAGS).await?;
+    refuse_secret_read(&checked)?;
     let mut args = scoped_for_run(&app, &checked.args, &account, dialect, None)?;
     args.extend(dialect.json.map(String::from));
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
     read_cli_checked(&own, &borrowed)
         .await
         .map_err(|failure| failure.message)
+}
+
+/// Refuses a read the checker marked as one that hands over a secret's value.
+/// What a deploy reads goes into the AI's prompt, so a value read here would
+/// leave the machine; the overview's own reads skip such reads for the same
+/// reason (`cloud_prove_read`).
+fn refuse_secret_read(read: &PlannedRead) -> Result<(), String> {
+    if read.purpose == ReadPurpose::Secret {
+        return Err(format!(
+            "`{}` reads a secret's value, and a deploy never does: what it reads goes to the AI. \
+             Read what describes the secret instead - its name, versions, when it rotates.",
+            read.args.join(" ")
+        ));
+    }
+    Ok(())
 }
 
 /// Asks the deployed service itself, so "running" is something Aime saw.
@@ -880,6 +897,30 @@ fn head_of(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deploy_never_reads_a_secret_s_value_and_says_what_to_read_instead() {
+        let read = |purpose: ReadPurpose, args: &[&str]| PlannedRead {
+            purpose,
+            label: String::new(),
+            args: args.iter().map(|arg| (*arg).to_string()).collect(),
+            program: String::new(),
+        };
+        let value = read(
+            ReadPurpose::Secret,
+            &["secrets", "versions", "access", "latest", "--secret=db"],
+        );
+        let refused = refuse_secret_read(&value).expect_err("a secret's value went to the AI");
+        assert!(
+            refused.contains("describes the secret"),
+            "no way on offered: {refused}"
+        );
+        assert!(refuse_secret_read(&read(
+            ReadPurpose::Overview,
+            &["run", "services", "describe", "shop"]
+        ))
+        .is_ok());
+    }
 
     fn step(args: &[&str]) -> DeployStep {
         under("", args)
