@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { failureOf } from "./agentTurn";
 
-const outcome = (stderr: string, text: string) => ({ code: 1, text, costUsd: null, stderr, sessionId: null });
+const outcome = (stderr: string, text: string) => ({
+  code: 1,
+  text,
+  costUsd: null,
+  stderr,
+  errors: "",
+  sessionId: null,
+});
 
 describe("failureOf", () => {
   it("says why in the CLI's own last error line", () => {

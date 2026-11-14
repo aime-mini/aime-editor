@@ -604,7 +604,9 @@ function Ending({
         <p className="flex items-center gap-2 text-[13px] font-medium text-accent">
           <CirclePause size={14} /> {t("run.interrupted")}
         </p>
-        <p className="mt-1 text-[12.5px] text-fg/90">{t("run.interruptedWhy")}</p>
+        <p className="mt-1 text-[12.5px] whitespace-pre-wrap text-fg/90">
+          {ending.why ?? t("run.interruptedWhy")}
+        </p>
         <button
           onClick={onResume}
           className="mt-2.5 flex items-center gap-1.5 rounded bg-accent-strong px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90"

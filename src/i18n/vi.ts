@@ -1369,6 +1369,11 @@ export const vi: Record<TranslationKey, string> = {
   "run.planIncomplete": "{count} test case không có chỗ nào chứng minh - plan chưa phủ hết thứ đã chốt",
   "run.planWaiting": "Đọc cách làm, test case và plan bên dưới. Chưa có file nào bị sửa.",
   "run.noPlan": "Chưa có plan nào được duyệt để làm theo.",
+  "run.pausedSignIn":
+    "AI CLI cần đăng nhập lại: {reason}. Đăng nhập (nút chìa khoá ở panel AI chạy lệnh login của nó), rồi bấm Chạy tiếp - lượt chạy tiếp tục từ đúng bước này.",
+  "run.pausedUnreachable":
+    "Không kết nối được dịch vụ AI trong một lúc lâu: {reason}. Mọi việc đã xong vẫn được giữ; bấm Chạy tiếp khi dịch vụ trả lời lại.",
+  "run.unreachableRetry": "Không kết nối được dịch vụ AI ({reason}) - thử lại sau {seconds} giây",
   "run.agentCancelled": "Lượt code đã bị dừng.",
   "run.disputed": "Người làm báo một AC đã thống nhất không thể đạt: {reason}",
   "run.casesRestored": "Người làm đã sửa {file}; bản đã thống nhất được đặt lại",

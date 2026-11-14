@@ -1375,6 +1375,11 @@ export const en = {
     "{count} test case(s) have nowhere to be proved - the plan does not cover what was agreed",
   "run.planWaiting": "Read the approach, the test cases and the plan below. Nothing has been written yet.",
   "run.noPlan": "There is no approved plan to work from.",
+  "run.pausedSignIn":
+    "The AI CLI needs signing in again: {reason}. Sign in (the key button in the AI panel runs its login), then carry on - the run picks up at this step.",
+  "run.pausedUnreachable":
+    "The AI service could not be reached for some time: {reason}. Everything finished so far is kept; carry on once it answers again.",
+  "run.unreachableRetry": "The AI service could not be reached ({reason}) - trying again in {seconds} s",
   "run.agentCancelled": "The coding run was stopped.",
   "run.disputed": "The builder says an agreed criterion cannot hold: {reason}",
   "run.casesRestored": "The builder rewrote {file}; the agreed version is back",

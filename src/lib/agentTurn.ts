@@ -66,6 +66,8 @@ export interface AgentTurnOutcome {
   costUsd: number | null;
   /** The last lines the CLI wrote to stderr: where it says why it gave up. */
   stderr: string;
+  /** The errors the CLI reported in its own stream - Codex says why it gave up there, not on stderr. */
+  errors: string;
   /**
    * The session the turn ran in, for a later turn to carry on; null for a CLI
    * that reports none, whose every turn then starts fresh.
@@ -90,7 +92,7 @@ export function failureOf(outcome: AgentTurnOutcome): string {
       .map((line) => line.trim())
       .filter((line) => line !== "")
       .at(-1) ?? "";
-  const reason = lastLine(outcome.stderr) || lastLine(outcome.text);
+  const reason = lastLine(outcome.errors) || lastLine(outcome.stderr) || lastLine(outcome.text);
   const code = `the AI CLI exited with ${String(outcome.code)}`;
   return reason === "" ? code : `${code}: ${reason.slice(0, REASON_CHARS)}`;
 }
@@ -135,6 +137,7 @@ export async function agentTurn(options: AgentTurnOptions): Promise<AgentTurnOut
   let said = "";
   let cost: number | null = null;
   let session: string | null = null;
+  const errors: string[] = [];
   const held: StreamPayload[] = [];
   const heldErr: StderrPayload[] = [];
   const stderr: string[] = [];
@@ -158,6 +161,7 @@ export async function agentTurn(options: AgentTurnOptions): Promise<AgentTurnOut
       // session on knows where its last turn's total stood.
       if (one.kind === "done" && one.sessionCostUsd !== undefined) cost = one.sessionCostUsd;
       if (one.kind === "session-info") session = one.sessionId;
+      if (one.kind === "error") errors.push(one.message);
       if (one.kind === "tool-call") options.onToolCall?.(`${one.name} ${one.detail}`.trim());
     }
   };
@@ -214,7 +218,14 @@ export async function agentTurn(options: AgentTurnOptions): Promise<AgentTurnOut
 
   const code = await finished;
   stopListening();
-  return { code, text: said, costUsd: cost, stderr: stderr.join("\n"), sessionId: session };
+  return {
+    code,
+    text: said,
+    costUsd: cost,
+    stderr: stderr.join("\n"),
+    errors: errors.join("\n"),
+    sessionId: session,
+  };
 }
 
 /** Ends a turn; the CLI's exit then arrives through the turn's own listener. */

@@ -29,7 +29,8 @@ import {
   type TestCase,
   type TestCases,
 } from "../lib/aiRun";
-import { agentTurn, cancelAgentTurn } from "../lib/agentTurn";
+import { agentTurn, cancelAgentTurn, failureOf } from "../lib/agentTurn";
+import { troubleIn } from "../lib/turnTrouble";
 import { aiOneshot } from "../lib/aiOneshot";
 import {
   auditPrompt,
@@ -997,6 +998,18 @@ async function drive(id: string, start: PhaseId, context: Context, set: Setter, 
     try {
       result = await runPhase(at, context, set, get);
     } catch (error: unknown) {
+      if (error instanceof TurnPaused) {
+        // Not the work's fault and not a verdict: the run waits where it is,
+        // everything it finished kept, to be carried on from this phase.
+        update(set, (run) => ({
+          ...run,
+          current: at,
+          ended: { kind: "interrupted", phase: at, why: error.message },
+        }));
+        note(set, at, error.message, "problem");
+        rest();
+        return;
+      }
       result = { state: "blocked", summary: translate("run.error", { detail: String(error) }) };
     }
     // The project closed under this run: its slot is gone, its journal already
@@ -3477,6 +3490,59 @@ async function runCli(
   permission: "readOnly" | "full",
   sessionId: string | null = null,
 ): Promise<{ code: number | null; text: string; sessionId: string | null }> {
+  for (let attempt = 0; ; attempt += 1) {
+    const outcome = await oneTurn(context, prompt, set, phase, permission, sessionId);
+    if (outcome.code === null || outcome.code === 0) return outcome;
+    const trouble = troubleIn([outcome.errors, outcome.stderr, outcome.text].join("\n"));
+    if (trouble === null) return outcome;
+    const reason = failureOf(outcome);
+    if (trouble === "signIn") throw new TurnPaused(translate("run.pausedSignIn", { reason }));
+    const wait = UNREACHABLE_WAITS_MS.at(attempt);
+    if (wait === undefined) throw new TurnPaused(translate("run.pausedUnreachable", { reason }));
+    note(set, phase, translate("run.unreachableRetry", { reason, seconds: wait / 1000 }), "problem");
+    // Stopped while waiting: that is a Stop, answered the way a stopped turn is.
+    if (!(await waitWhileDriving(context.id, wait))) return { ...outcome, code: null };
+  }
+}
+
+/**
+ * The AI service could not be reached: how long to wait before each new try,
+ * about seventeen minutes in all - long enough for a dropped connection or a
+ * busy service to come back, short enough that a run does not sit on a dead
+ * network all night. After the last, the run pauses for a person.
+ */
+const UNREACHABLE_WAITS_MS = [30_000, 120_000, 300_000, 600_000];
+
+/** How often a wait looks again at whether the run was stopped. */
+const STOP_POLL_MS = 1_000;
+
+/** Waits, unless the run is stopped first; true when the whole wait was had. */
+async function waitWhileDriving(runId: string, ms: number): Promise<boolean> {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (engines.get(runId)?.driving !== true) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(STOP_POLL_MS, until - Date.now())));
+  }
+  return engines.get(runId)?.driving === true;
+}
+
+/**
+ * A turn that could not be had for a reason no repair can fix - a sign-in
+ * that ran out, a service gone for longer than the run waits. Thrown out of
+ * the phase, so the run pauses where it is rather than reading the silence as
+ * an answer (`drive`).
+ */
+class TurnPaused extends Error {}
+
+/** One AI CLI turn on the run's behalf, its log lines and its Stop wired up. */
+async function oneTurn(
+  context: Context,
+  prompt: string,
+  set: Setter,
+  phase: PhaseId,
+  permission: "readOnly" | "full",
+  sessionId: string | null,
+) {
   const engine = engineFor(context.id);
   const outcome = await agentTurn({
     prompt,

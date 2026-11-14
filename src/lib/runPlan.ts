@@ -141,9 +141,11 @@ export type RunEnding =
   | { kind: "waiting"; phase: PhaseId; question: string }
   /**
    * Cut off rather than ended: the app closed, the machine slept, the network
-   * went. Read back from the journal, and offered to be carried on.
+   * went, the AI CLI's sign-in ran out. Offered to be carried on from `phase`;
+   * `why` is what cut it off, when the run knows - a journal read back after
+   * the app closed does not.
    */
-  | { kind: "interrupted"; phase: PhaseId }
+  | { kind: "interrupted"; phase: PhaseId; why?: string }
   | { kind: "cancelled" }
   /** Something broke that is not the change's fault. */
   | { kind: "failed"; phase: PhaseId; error: string };

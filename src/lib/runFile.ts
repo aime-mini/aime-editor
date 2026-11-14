@@ -256,7 +256,8 @@ function withQuotes(saved: SavedRun): SavedRun {
 
 /** Whether this run was interrupted rather than finished. */
 export function wasInterrupted(saved: SavedRun): boolean {
-  return saved.run.current !== null && saved.run.ended === null;
+  const { current, ended } = saved.run;
+  return current !== null && (ended === null || ended.kind === "interrupted");
 }
 
 /** The same run with its command output cut down to what is worth keeping. */

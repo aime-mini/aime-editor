@@ -59,6 +59,8 @@ const keysFile = path.join(configDir, "api-keys.json");
  * quadratic).
  */
 const MODE_FILE = path.join(os.tmpdir(), "aime-run-probe-mode.txt");
+/** How many times the probe was asked to implement, for the mode that fails the first time. */
+const TRIES_FILE = path.join(os.tmpdir(), "aime-run-probe-tries.txt");
 const PROBE_SCRIPT = path.join(os.tmpdir(), "aime-run-probe.cjs");
 
 /**
@@ -253,6 +255,19 @@ if (prompt.includes("Check another reader's understanding of a ticket")) {
   // The second reading of a plan that said the suites would do: the finished
   // change alters what the checkout shows, so it is proved where it runs.
   stream({ needsRunning: true, why: "src/cart.js changes the total the checkout shows" });
+} else if (prompt.includes("Implement this work item") && mode === "signedOut") {
+  // What Claude Code prints when its login is gone.
+  process.stdout.write("Not logged in · Please run /login\n");
+  process.exit(1);
+} else if (
+  prompt.includes("Implement this work item") &&
+  mode === "flaky" &&
+  !fs.existsSync(${JSON.stringify(TRIES_FILE)})
+) {
+  // The network drops on the first try: Claude Code 2.1.286's words for a closed port.
+  fs.writeFileSync(${JSON.stringify(TRIES_FILE)}, "1");
+  process.stdout.write("API Error: Connection refused - a firewall or proxy may be blocking it (ECONNREFUSED)\n");
+  process.exit(1);
 } else if (prompt.includes("Implement this work item")) {
   // The code and its tests in one phase, in that order - which is the order the
   // user works in. "repairs" and "breaks" both break something here; they
@@ -826,6 +841,7 @@ describe("Task run", () => {
     restore(keysFile, saved.keys);
     fs.rmSync(PROBE_SCRIPT, { force: true });
     fs.rmSync(MODE_FILE, { force: true });
+    fs.rmSync(TRIES_FILE, { force: true });
     board.server?.close();
     try {
       fs.rmSync(repo, { recursive: true, force: true });
@@ -1057,6 +1073,39 @@ ${suite.output}`,
     await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
     const agreed = fs.readFileSync(path.join(repo, ".aime", "test-cases.json"), "utf8");
     assert.match(agreed, /TC1/, `the agreement was left as the builder rewrote it: ${agreed}`);
+  });
+
+  it("waits for an AI service that cannot be reached and tries again, instead of reading the silence as an answer", async () => {
+    fs.rmSync(TRIES_FILE, { force: true });
+    fs.writeFileSync(MODE_FILE, "flaky");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+    await waitForText("The AI service could not be reached", "the dropped connection was not seen for what it is");
+    await waitForText("finished, and every gate agreed", "the run did not carry on once the service answered", 240_000);
+  });
+
+  it("pauses for a sign-in that ran out, and carries on from the same step once signed in", async () => {
+    fs.writeFileSync(MODE_FILE, "signedOut");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+    await waitForText("The AI CLI needs signing in again", "a lost sign-in did not pause the run", 120_000);
+    // The journal is what a reopened app offers to carry on from.
+    let paused = null;
+    await browser.waitUntil(
+      () => {
+        [paused] = journalsIn(repo);
+        return paused?.run?.ended?.kind === "interrupted";
+      },
+      { timeout: 30_000, timeoutMsg: `the pause never reached the journal: ${JSON.stringify(paused?.run?.ended)}` },
+    );
+    assert.equal(paused.run.current, "implement", "the pause did not keep the step it happened in");
+
+    // Signed in again: the same step runs, and the run goes to its end.
+    fs.writeFileSync(MODE_FILE, "sound");
+    await (await $("button*=Carry on")).click();
+    await waitForText("finished, and every gate agreed", "the run did not carry on after the sign-in", 240_000);
   });
 
   it("fixes the project's own check when the change breaks it", async () => {
