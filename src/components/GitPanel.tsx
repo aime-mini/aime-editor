@@ -13,7 +13,6 @@ import {
   GitBranchPlus,
   GitMerge,
   History,
-  Loader2,
   Minus,
   MoreHorizontal,
   Pencil,
@@ -43,6 +42,7 @@ import { Panel, PanelGroup } from "react-resizable-panels";
 import { ContextMenu, SEPARATOR, type MenuItem } from "./ContextMenu";
 import { PromptModal } from "./PromptModal";
 import { ResizeHandle } from "./ResizeHandle";
+import { Spinner } from "./Spinner";
 
 /**
  * One of the three remote buttons, which says on itself that it is working.
@@ -70,7 +70,7 @@ function RemoteButton({
       disabled={busy}
       className="rounded p-1 text-muted hover:bg-elevated hover:text-fg disabled:text-accent"
     >
-      {busy ? <Loader2 size={12} className="animate-spin" /> : icon}
+      {busy ? <Spinner size={12} /> : icon}
     </button>
   );
 }
@@ -976,7 +976,7 @@ export function GitPanel() {
 
         {git.busyLabel !== null && (
           <div className="flex items-center gap-1.5 px-0.5 text-[11px] text-accent">
-            <Loader2 size={11} className="animate-spin" />
+            <Spinner size={11} />
             <span className="truncate">{git.busyLabel}</span>
           </div>
         )}
@@ -1006,7 +1006,7 @@ export function GitPanel() {
                 title={t("git.aiMessage")}
                 className="absolute right-1.5 bottom-2.5 rounded p-1 text-accent hover:bg-panel disabled:opacity-50"
               >
-                {git.generating ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                {git.generating ? <Spinner size={13} /> : <Sparkles size={13} />}
               </button>
             )}
           </div>
@@ -1020,7 +1020,7 @@ export function GitPanel() {
                 title={t("git.reviewHint")}
                 className="flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-muted hover:border-accent hover:text-fg disabled:opacity-50"
               >
-                {git.reviewing ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
+                {git.reviewing ? <Spinner size={13} /> : <ShieldCheck size={13} />}
                 {t("git.review")}
               </button>
             )}

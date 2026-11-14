@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { KeyRound, Loader2, Plug, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { KeyRound, Plug, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { useT } from "../i18n";
 import { MCP_CATALOG, MCP_GROUP_LABELS, resolveTarget, type McpCatalogGroup } from "../lib/mcpCatalog";
 import { searchMcpServers, type McpSearchResult } from "../lib/mcpRegistry";
@@ -9,6 +9,7 @@ import { useAi } from "../stores/ai";
 import { runInTerminal } from "../stores/terminals";
 import { useTrackers } from "../stores/trackers";
 import { useWorkspace } from "../stores/workspace";
+import { Spinner } from "./Spinner";
 
 /** Mirror of the Rust `McpServer` (mcp.rs). */
 interface McpServer {
@@ -199,7 +200,7 @@ export function McpModal({ onClose }: { onClose: () => void }) {
             className="rounded p-1 text-muted hover:bg-elevated hover:text-fg disabled:opacity-40"
             title={t("mcp.refresh")}
           >
-            {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            {loading ? <Spinner size={14} /> : <RefreshCw size={14} />}
           </button>
           <button onClick={onClose} className="rounded p-1 text-muted hover:bg-elevated hover:text-fg">
             <X size={14} />
@@ -389,7 +390,7 @@ export function McpModal({ onClose }: { onClose: () => void }) {
               disabled={!form.name.trim() || !form.target.trim() || adding}
               className="flex items-center gap-1.5 rounded-lg bg-accent-strong px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
             >
-              {adding ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+              {adding ? <Spinner size={12} /> : <Plus size={12} />}
               {t("mcp.add")}
             </button>
           </div>

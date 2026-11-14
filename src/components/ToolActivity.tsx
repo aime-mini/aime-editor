@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { ChevronRight, CircleX, Loader2, Wrench } from "lucide-react";
+import { ChevronRight, CircleX, Wrench } from "lucide-react";
 import { useT } from "../i18n";
 import type { BackgroundTask, MessagePart, ToolStep } from "../lib/types";
 import { formatElapsed, useSecondsSince } from "./useSecondsSince";
+import { Spinner } from "./Spinner";
 
 export type ToolPart = Extract<MessagePart, { kind: "tool" }>;
 
@@ -102,7 +103,7 @@ function ToolChip({ part, running }: { part: ToolPart; running: boolean }) {
         title={part.detail}
       >
         {running ? (
-          <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+          <Spinner size={11} className="shrink-0 text-accent" />
         ) : part.status === "failed" ? (
           <CircleX size={11} className="shrink-0 text-danger" />
         ) : (
@@ -161,7 +162,7 @@ export function BackgroundNotice({ tasks }: { tasks: BackgroundTask[] }) {
       role="status"
       className="flex max-w-[92%] items-start gap-2 rounded-md border border-line bg-panel px-2.5 py-1.5 text-[11px] text-muted"
     >
-      <Loader2 size={12} className="mt-0.5 shrink-0 animate-spin text-accent" />
+      <Spinner size={12} className="mt-0.5 shrink-0 text-accent" />
       <div className="flex min-w-0 flex-col gap-0.5">
         <span className="text-fg">
           {tasks.length === 1

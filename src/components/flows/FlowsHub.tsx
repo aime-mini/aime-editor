@@ -3,7 +3,6 @@ import {
   Copy,
   Download,
   KeyRound,
-  Loader2,
   LogIn,
   Pencil,
   Play,
@@ -27,6 +26,7 @@ import { ABILITIES } from "./abilities";
 import { ConnectionsDialog } from "./ConnectionsDialog";
 import { RunDialog } from "./RunDialog";
 import { outcomeOf, useNewestRuns } from "./useNewestRuns";
+import { Spinner } from "../Spinner";
 
 /**
  * The flows of this project, as the design's first screen: one sentence is
@@ -213,8 +213,7 @@ export function FlowsHub() {
             className="flex shrink-0 items-center gap-1.5 rounded-md bg-accent-strong px-3 py-2 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-40"
             data-flows-draw
           >
-            {drawing ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}{" "}
-            {t("flows.hub.draw")}
+            {drawing ? <Spinner size={13} /> : <Sparkles size={13} />} {t("flows.hub.draw")}
           </button>
         </div>
       </section>

@@ -39,6 +39,7 @@ import {
 } from "../stores/cloud";
 import { ServiceBadge, TIER_LABELS } from "./CloudMap";
 import { runInTerminal } from "../stores/terminals";
+import { Spinner } from "./Spinner";
 
 /**
  * One resource, opened: what it is, how it is configured, how to connect to it.
@@ -492,7 +493,7 @@ function ReadBlock({ resource, read }: { resource: CloudResource; read: PlannedR
 function AnswerStatus({ answer, rows }: { answer: AnswerState | undefined; rows: PropertyRow[] }) {
   const t = useT();
   if (answer === undefined) return null;
-  if (answer.kind === "loading") return <Loader2 size={12} className="shrink-0 animate-spin text-muted" />;
+  if (answer.kind === "loading") return <Spinner size={12} className="shrink-0 text-muted" />;
   if (answer.kind === "failed") return <TriangleAlert size={12} className="shrink-0 text-danger" />;
   if (answer.kind === "absent") return <Minus size={12} className="shrink-0 text-muted" />;
   return (
@@ -787,7 +788,10 @@ export function Note({
     tone === "danger" ? "border-danger/40 bg-danger/10 text-danger" : "border-line bg-bg/60 text-muted";
   return (
     <p className={`flex items-start gap-2 rounded-md border px-2.5 py-2 ${colour}`}>
-      {createElement(icon, { size: 13, className: `mt-px shrink-0 ${spin ? "animate-spin" : ""}` })}
+      {/* The box turns, not the SVG: see `Spinner`. */}
+      <span className={`mt-px inline-flex shrink-0 ${spin ? "animate-spin" : ""}`}>
+        {createElement(icon, { size: 13 })}
+      </span>
       <span className="min-w-0 whitespace-pre-wrap break-words">{children}</span>
     </p>
   );

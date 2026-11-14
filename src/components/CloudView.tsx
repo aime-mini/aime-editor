@@ -61,6 +61,7 @@ import { useLayout } from "../stores/layout";
 import { runInTerminal } from "../stores/terminals";
 import { useWorkspace } from "../stores/workspace";
 import { failedTo } from "../stores/notices";
+import { Spinner } from "./Spinner";
 
 /**
  * The cloud panel: a console, not a settings page.
@@ -202,7 +203,7 @@ function CloudTab({ cloud, active, onClick }: { cloud: CloudStatus; active: bool
         active ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg"
       }`}
     >
-      {probing ? <Loader2 size={10} className="animate-spin text-muted" /> : <CloudDot cloud={cloud} />}
+      {probing ? <Spinner size={10} className="text-muted" /> : <CloudDot cloud={cloud} />}
       {cloud.label}
       <button
         onClick={(event) => {
@@ -444,7 +445,7 @@ function AccountRow({
 
 /** Loaded, loading, failed or not yet asked - one dot, four states. */
 function StateDot({ state }: { state: ResourceState | undefined }) {
-  if (state?.kind === "loading") return <Loader2 size={9} className="shrink-0 animate-spin text-muted" />;
+  if (state?.kind === "loading") return <Spinner size={9} className="shrink-0 text-muted" />;
   const tone = state === undefined ? "bg-line" : state.kind === "loaded" ? "bg-ok" : "bg-danger";
   return <span className={`size-2 shrink-0 rounded-full ${tone}`} />;
 }
@@ -552,7 +553,7 @@ function DeployButton({ cloud, account, slot }: { cloud: CloudStatus; account: C
       title={hasProject ? t("deploy.buttonTitle") : t("deploy.needsProject")}
       className="flex shrink-0 items-center gap-1.5 rounded border border-accent/60 px-2 py-1 text-accent hover:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-50"
     >
-      {busy ? <Loader2 size={11} className="animate-spin" /> : <Rocket size={11} />}
+      {busy ? <Spinner size={11} /> : <Rocket size={11} />}
       {t("deploy.button")}
     </button>
   );
@@ -576,7 +577,7 @@ function DiscoverButton({ cloud }: { cloud: CloudStatus }) {
       title={hasProject ? t("cloud.discover") : t("cloud.needsProject")}
       className="flex shrink-0 items-center gap-1.5 rounded border border-line px-2 py-1 text-muted hover:border-accent hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
     >
-      {busy ? <Loader2 size={11} className="animate-spin" /> : <Radar size={11} />}
+      {busy ? <Spinner size={11} /> : <Radar size={11} />}
       {t("cloud.discoverShort")}
     </button>
   );
@@ -759,7 +760,7 @@ function SignInButton({ cloud, account }: { cloud: CloudStatus; account: CloudAc
       title={account.signIn}
       className="flex items-center gap-1.5 rounded bg-accent-strong px-3 py-1.5 font-medium text-white hover:opacity-90 disabled:opacity-60"
     >
-      {busy ? <Loader2 size={12} className="animate-spin" /> : <LogIn size={12} />}
+      {busy ? <Spinner size={12} /> : <LogIn size={12} />}
       {t("cloud.signInRun", { command: commandLabel(account.signIn) })}
     </button>
   );
@@ -1362,7 +1363,10 @@ function EmptyState({
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
-      {createElement(icon, { size: 32, className: `text-muted opacity-60 ${spin ? "animate-spin" : ""}` })}
+      {/* The box turns, not the SVG: see `Spinner`. */}
+      <span className={`inline-flex text-muted opacity-60 ${spin ? "animate-spin" : ""}`}>
+        {createElement(icon, { size: 32 })}
+      </span>
       <p className="max-w-md text-[13px] text-muted">{title}</p>
       {detail !== undefined && <code className="text-[11px] text-muted opacity-70">{detail}</code>}
       {children}

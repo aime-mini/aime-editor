@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
-import { Check, Loader2, Sparkles, TriangleAlert, X } from "lucide-react";
+import { Check, Sparkles, TriangleAlert, X } from "lucide-react";
 import { useT } from "../i18n";
 import { useSetup, type SetupLine } from "../stores/setup";
+import { Spinner } from "./Spinner";
 
 /** Each kind of line reads differently, and the log is easier to skim for it. */
 const LINE_CLASS: Record<SetupLine["kind"], string> = {
@@ -76,7 +77,7 @@ export function SetupProgressModal() {
         <div className="flex items-center gap-2 border-t border-line px-4 py-2 text-[12px]">
           {running ? (
             <span className="flex items-center gap-1.5 text-muted">
-              <Loader2 size={12} className="animate-spin" />
+              <Spinner size={12} />
               {t("setup.progressHint")}
             </span>
           ) : cancelled ? (

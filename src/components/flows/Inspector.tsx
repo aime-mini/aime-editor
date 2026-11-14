@@ -4,7 +4,6 @@ import {
   ChevronRight,
   CircleHelp,
   FlaskConical,
-  Loader2,
   Plus,
   Sparkles,
   Trash2,
@@ -35,6 +34,7 @@ import { useTasks } from "../../stores/tasks";
 import { abilityOf } from "./abilities";
 import { DataView, LogView } from "./StepData";
 import { StepGuide, useStepGuideOpen } from "./StepGuide";
+import { Spinner } from "../Spinner";
 
 /**
  * The selected step, as the design draws it: what kind of step and a "?"
@@ -189,7 +189,7 @@ export function Inspector({
                       }`}
                       data-flow-compile
                     >
-                      {compiling ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                      {compiling ? <Spinner size={12} /> : <Sparkles size={12} />}
                       {t("flows.inspector.compile")}
                     </button>
                   </div>
@@ -240,8 +240,7 @@ export function Inspector({
                     className="flex shrink-0 items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[11.5px] whitespace-nowrap text-muted hover:border-accent hover:text-fg disabled:opacity-50"
                     data-flow-try
                   >
-                    {trying ? <Loader2 size={12} className="animate-spin" /> : <FlaskConical size={12} />}{" "}
-                    {t("flows.inspector.try")}
+                    {trying ? <Spinner size={12} /> : <FlaskConical size={12} />} {t("flows.inspector.try")}
                   </button>
                   <span className="text-[10.5px] text-muted">
                     {lastRun === undefined

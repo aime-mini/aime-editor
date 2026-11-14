@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { CornerDownLeft, ExternalLink, GitBranch, Loader2, Sparkles } from "lucide-react";
+import { CornerDownLeft, ExternalLink, GitBranch, Sparkles } from "lucide-react";
 import { translate, useI18n, useT } from "../i18n";
 import { branchNameFor, readableId, whenText } from "../lib/workItems";
 import { Markdown } from "./Markdown";
@@ -17,6 +17,7 @@ import {
 import { PromptModal } from "./PromptModal";
 import { Waiting } from "./Waiting";
 import { failedTo } from "../stores/notices";
+import { Spinner } from "./Spinner";
 
 /**
  * A read that is still out, or one that has answered - with `null` for an answer
@@ -355,7 +356,7 @@ function Conversation({
             disabled={draft.trim() === "" || sending}
             className="flex items-center gap-1.5 rounded bg-accent-strong px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {sending ? <Loader2 size={12} className="animate-spin" /> : <CornerDownLeft size={12} />}
+            {sending ? <Spinner size={12} /> : <CornerDownLeft size={12} />}
             {t("tracker.comment")}
           </button>
           <span className="text-[11px] text-muted">{t("tracker.commentHint")}</span>

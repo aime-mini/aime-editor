@@ -5,7 +5,6 @@ import {
   Circle,
   CircleDashed,
   GitBranch,
-  Loader2,
   Square,
   UserRound,
   X,
@@ -19,6 +18,7 @@ import { FlowsBreadcrumb } from "./Breadcrumb";
 import { FlowCanvas } from "./FlowCanvas";
 import { AskCard, CostCard } from "./RunCards";
 import { RunStepPanel } from "./RunStepPanel";
+import { Spinner } from "../Spinner";
 
 /**
  * A run as it happens, laid out the way it was designed (screens 04-06): the
@@ -179,7 +179,7 @@ function Status({ run }: { run: RunView }) {
           className={`${pill} ${waiting ? "bg-pink-400/15 text-pink-400" : "bg-accent-soft text-accent"}`}
           data-flow-status="running"
         >
-          {waiting ? <UserRound size={11} /> : <Loader2 size={11} className="animate-spin" />}
+          {waiting ? <UserRound size={11} /> : <Spinner size={11} />}
           {doing} · <RunClock since={run.startedAt} />
         </span>
       );
@@ -330,7 +330,7 @@ function StateIcon({ state }: { state: StepState }) {
     case "done":
       return <CheckCircle2 size={size} className={`${box} text-ok`} />;
     case "running":
-      return <Loader2 size={size} className={`${box} animate-spin text-accent`} />;
+      return <Spinner size={size} className={`${box} text-accent`} />;
     case "waiting":
       return <UserRound size={size} className={`${box} text-pink-400`} />;
     case "failed":

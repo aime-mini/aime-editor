@@ -1,10 +1,11 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { CheckCircle2, CircleDashed, Globe, Loader2, UserRound, Wand2, XCircle } from "lucide-react";
+import { CheckCircle2, CircleDashed, Globe, UserRound, Wand2, XCircle } from "lucide-react";
 import { useT } from "../../i18n";
 import { needsCompiling } from "../../lib/flows/compiler";
 import { ERROR_PORT, OUT_PORT, stepReachesOut, type Step } from "../../lib/flows/model";
 import type { StepState } from "../../stores/flows";
 import { abilityOf } from "./abilities";
+import { Spinner } from "../Spinner";
 
 /** What the canvas hands each node: the step, and in a run its state. */
 export interface StepNodeData extends Record<string, unknown> {
@@ -134,7 +135,7 @@ export function StepNode({ data, selected }: NodeProps & { data: StepNodeData })
 function StateMark({ state }: { state?: StepState }) {
   switch (state) {
     case "running":
-      return <Loader2 size={13} className="shrink-0 animate-spin text-accent" />;
+      return <Spinner size={13} className="shrink-0 text-accent" />;
     case "waiting":
       return <UserRound size={13} className="shrink-0 text-pink-400" />;
     case "done":

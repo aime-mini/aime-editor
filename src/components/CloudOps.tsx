@@ -5,6 +5,7 @@ import { destroys, fillable, fillOp, opCommand, type ProposedOp } from "../lib/c
 import { dialectOf } from "../lib/deployDialect";
 import { slotOf, useCloud, type CloudResource } from "../stores/cloud";
 import { CopyButton, Note, Rejected } from "./CloudDetail";
+import { Spinner } from "./Spinner";
 
 /**
  * The work a developer can do to one resource, from inside Aime.
@@ -265,7 +266,7 @@ function OpOutput() {
     <section className="flex flex-col gap-1.5 rounded-lg border border-accent/40 bg-panel p-2.5">
       <div className="flex items-center gap-2">
         {running.code === null ? (
-          <Loader2 size={12} className="shrink-0 animate-spin text-accent" />
+          <Spinner size={12} className="shrink-0 text-accent" />
         ) : (
           <Play size={12} className={running.code === 0 ? "text-ok" : "text-danger"} />
         )}

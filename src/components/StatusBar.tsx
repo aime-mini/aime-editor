@@ -14,7 +14,6 @@ import {
   GitBranch,
   Hammer,
   Languages,
-  Loader2,
   Moon,
   PackageCheck,
   ShieldCheck,
@@ -42,6 +41,7 @@ import { INLINE_AI_MODES, useSettings } from "../stores/settings";
 import { useTheme } from "../stores/theme";
 import { useWorkspace } from "../stores/workspace";
 import { ContextMenu, SEPARATOR, type MenuItem } from "./ContextMenu";
+import { Spinner } from "./Spinner";
 
 const TASK_ICONS: Record<TaskKind, typeof Play> = {
   run: Play,
@@ -116,7 +116,7 @@ function InlineAiChip() {
       }
       className={`flex items-center gap-1 rounded px-1 hover:bg-elevated hover:text-fg ${tone}`}
     >
-      {state.kind === "thinking" ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+      {state.kind === "thinking" ? <Spinner size={11} /> : <Sparkles size={11} />}
       {t(`settings.inlineAi.${mode}.short`)}
     </button>
   );
@@ -189,7 +189,7 @@ export function StatusBar() {
             : t("tasks.trying", { command: trying })
           : t(TASK_LABELS[kind]),
         icon: looking ? (
-          <Loader2 size={13} className="animate-spin text-accent" />
+          <Spinner size={13} className="text-accent" />
         ) : (
           <Icon size={13} className="text-muted" />
         ),
@@ -294,7 +294,7 @@ export function StatusBar() {
       <div className="flex shrink-0 items-center gap-3">
         {running && (
           <span className="flex items-center gap-1 text-accent">
-            <Loader2 size={11} className="animate-spin" /> {t("status.aiRunning")}
+            <Spinner size={11} /> {t("status.aiRunning")}
           </span>
         )}
         {/* A setup run outlives its modal - closing that window backgrounds the
@@ -307,7 +307,7 @@ export function StatusBar() {
             title={t("setup.progressHint")}
             className="flex items-center gap-1 text-accent"
           >
-            <Loader2 size={11} className="animate-spin" />
+            <Spinner size={11} />
             {t("setup.progressTitle", { subject: setupSubject ?? "" })}
           </button>
         )}
@@ -326,7 +326,7 @@ export function StatusBar() {
             title={languageChipTitle(t, lsp, openLanguage, { restoring: lspRestoring, loading: lspLoading })}
           >
             {lsp.kind === "starting" || lspRestoring || lspLoading ? (
-              <Loader2 size={11} className="animate-spin" />
+              <Spinner size={11} />
             ) : (
               <Braces size={11} />
             )}

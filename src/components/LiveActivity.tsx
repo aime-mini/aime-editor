@@ -1,8 +1,9 @@
-import { Clock3, CornerDownRight, Loader2, Pencil, X } from "lucide-react";
+import { Clock3, CornerDownRight, Pencil, X } from "lucide-react";
 import { useT } from "../i18n";
 import type { QueuedPrompt } from "../stores/ai";
 import type { ApiRetry, TurnActivity } from "../lib/types";
 import { formatElapsed, useSecondsFrom } from "./useSecondsSince";
+import { Spinner } from "./Spinner";
 
 /** Below this a count of characters reads better whole. */
 const THOUSAND = 1_000;
@@ -44,12 +45,12 @@ export function LiveActivity({
       <span className="flex w-4 shrink-0 justify-center text-accent">
         {/* Not the thinking dots: those stand where the answer's words will appear. */}
         {activity.kind === "tool" ? (
-          <Loader2 size={13} className="animate-spin" />
+          <Spinner size={13} />
         ) : (
           <span className="size-2 animate-pulse rounded-full bg-accent" />
         )}
       </span>
-      <span className="shrink-0 animate-shimmer font-medium text-shimmer">{label}</span>
+      <ShimmerText text={label} />
       {detail && (
         <span className="min-w-0 truncate font-mono text-[11px] text-muted" title={detail}>
           · {shortDetail(detail)}
@@ -59,6 +60,25 @@ export function LiveActivity({
         {formatElapsed(seconds)}
       </span>
     </div>
+  );
+}
+
+/**
+ * Text with a highlight passing through it, left to right (`shimmer-window`
+ * and `shimmer-text` in index.css): the dim words, and over them a window that
+ * shows a bright copy of the same words as it crosses.
+ */
+function ShimmerText({ text }: { text: string }) {
+  return (
+    <span className="relative shrink-0 overflow-hidden font-medium whitespace-nowrap text-muted">
+      {text}
+      <span
+        aria-hidden
+        className="absolute inset-y-0 left-0 w-1/3 animate-shimmer-window overflow-hidden [mask-image:linear-gradient(90deg,transparent,black_40%,black_60%,transparent)]"
+      >
+        <span className="block w-[300%] animate-shimmer-text text-fg">{text}</span>
+      </span>
+    </span>
   );
 }
 
@@ -144,7 +164,7 @@ export function QueuedPrompts({
           {(state === "waiting" || withdrawable) && (
             <span className="-mr-1 flex shrink-0 items-center gap-0.5">
               {state === "withdrawing" ? (
-                <Loader2 size={12} className="m-0.5 animate-spin text-muted" />
+                <Spinner size={12} className="m-0.5 text-muted" />
               ) : (
                 <>
                   <button

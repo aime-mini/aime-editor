@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Download, Loader2, X } from "lucide-react";
+import { Download, X } from "lucide-react";
 import { useT } from "../i18n";
 import { useSettings } from "../stores/settings";
+import { Spinner } from "./Spinner";
 
 type Phase = "idle" | "downloading" | "failed";
 
@@ -73,7 +74,7 @@ export function UpdateNotice() {
         disabled={phase === "downloading"}
         className="flex shrink-0 items-center gap-1.5 rounded-md bg-accent-strong px-2.5 py-1 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-60"
       >
-        {phase === "downloading" && <Loader2 size={11} className="animate-spin" />}
+        {phase === "downloading" && <Spinner size={11} />}
         {phase === "downloading" ? t("update.installing") : t("update.install")}
       </button>
       <button

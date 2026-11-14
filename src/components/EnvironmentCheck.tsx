@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, ChevronDown, ChevronRight, Copy, Download, Loader2, TriangleAlert, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, Download, TriangleAlert, X } from "lucide-react";
 import { useT } from "../i18n";
 import { supportedLanguageCount } from "../lib/languages";
 import { useLayout } from "../stores/layout";
 import { useLsp } from "../stores/lsp";
 import { loggedAs } from "../stores/notices";
+import { Spinner } from "./Spinner";
 
 /** TypeScript, JavaScript, HTML, CSS and JSON: Monaco brings their services. */
 const BUILT_IN_INTELLISENSE = 5;
@@ -201,7 +202,7 @@ export function EnvironmentCheck() {
   if (tools === null) {
     return (
       <p className="mt-6 flex items-center justify-center gap-2 text-[11px] text-muted">
-        <Loader2 size={12} className="animate-spin" /> {t("env.checking")}
+        <Spinner size={12} /> {t("env.checking")}
       </p>
     );
   }
@@ -230,7 +231,7 @@ export function EnvironmentCheck() {
         <Marker size={11} className="shrink-0 opacity-60" />
         {autoSetup === "running" ? (
           <>
-            <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+            <Spinner size={11} className="shrink-0 text-accent" />
             {t("env.settingUp")}
           </>
         ) : blocking.length > 0 ? (

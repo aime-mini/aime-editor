@@ -7,7 +7,6 @@ import {
   CircleDot,
   Download,
   ExternalLink,
-  Loader2,
   Pencil,
   Play,
   Plug,
@@ -30,6 +29,7 @@ import { useSetup } from "../stores/setup";
 import { useWorkspace } from "../stores/workspace";
 import { ContextMenu } from "./ContextMenu";
 import { failedTo } from "../stores/notices";
+import { Spinner } from "./Spinner";
 
 /**
  * Languages Aime means to debug, and the tool each one is waiting on.
@@ -435,7 +435,7 @@ function StartRow() {
             disabled={busy}
             className="flex w-full items-center justify-center gap-1.5 rounded-md bg-accent-strong px-2 py-1 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
-            {busy ? <Loader2 size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
+            {busy ? <Spinner size={12} /> : <ShieldCheck size={12} />}
             {busy ? t("debug.verifying") : t("debug.verify")}
           </button>
         ) : (
@@ -480,7 +480,7 @@ function StartRow() {
             disabled={busy}
             className="flex w-full items-center justify-center gap-1.5 rounded-md bg-accent-strong px-2 py-1 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
-            {busy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+            {busy ? <Spinner size={12} /> : <Download size={12} />}
             {busy ? t("debug.downloading") : t("debug.download")}
           </button>
         ) : (
@@ -499,7 +499,7 @@ function StartRow() {
           title={resolved.target.program}
           className="flex w-full items-center justify-center gap-1.5 rounded-md bg-accent-strong px-2 py-1 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
         >
-          {status.kind === "starting" ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+          {status.kind === "starting" ? <Spinner size={12} /> : <Play size={12} />}
           <span className="truncate">{t("debug.startTarget", { target: resolved.target.label })}</span>
         </button>
       </div>

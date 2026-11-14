@@ -1,4 +1,4 @@
-import { Loader2 } from "lucide-react";
+import { Spinner } from "./Spinner";
 
 /**
  * One line saying that something is on its way.
@@ -10,7 +10,7 @@ import { Loader2 } from "lucide-react";
 export function Waiting({ label }: { label: string }) {
   return (
     <p className="flex items-center gap-1.5 text-[12px] text-muted">
-      <Loader2 size={12} className="animate-spin" /> {label}
+      <Spinner size={12} /> {label}
     </p>
   );
 }

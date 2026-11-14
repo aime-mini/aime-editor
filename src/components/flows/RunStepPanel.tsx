@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Check, Loader2, RotateCcw, Sparkles } from "lucide-react";
+import { Check, RotateCcw, Sparkles } from "lucide-react";
 import { useT } from "../../i18n";
 import type { Step } from "../../lib/flows/model";
 import { stepInputIn, useFlows, type RunView, type StepView } from "../../stores/flows";
 import { failedTo } from "../../stores/notices";
 import { abilityOf } from "./abilities";
 import { DataView, LogView } from "./StepData";
+import { Spinner } from "../Spinner";
 
 type Tab = "input" | "output" | "log" | "error";
 
@@ -138,7 +139,7 @@ function FailureReading({ run, step, error }: { run: RunView; step: Step; error:
             className={`${ghost} mt-2`}
             data-flow-read-failure
           >
-            {busy === "reading" ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+            {busy === "reading" ? <Spinner size={12} /> : <Sparkles size={12} />}
             {t("flows.failure.read")}
           </button>
         ) : (
@@ -156,7 +157,7 @@ function FailureReading({ run, step, error }: { run: RunView; step: Step; error:
               className={ghost}
               data-flow-apply-reading
             >
-              {busy === "applying" ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+              {busy === "applying" ? <Spinner size={12} /> : <Check size={12} />}
               {t("flows.failure.apply")}
             </button>
           )}

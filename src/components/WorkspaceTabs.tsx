@@ -1,11 +1,12 @@
 import { useRef, useState } from "react";
-import { AppWindow, FolderOpen, Loader2, Plus, X } from "lucide-react";
+import { AppWindow, FolderOpen, Plus, X } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { translate, useT } from "../i18n";
 import { tabName, useWorkspaceTabs, type WorkspaceTab } from "../stores/workspaceTabs";
 import { ContextMenu } from "./ContextMenu";
 import { PromptModal } from "./PromptModal";
 import { useTabReorder } from "./useTabReorder";
+import { Spinner } from "./Spinner";
 
 /**
  * The workspaces of this window as a thin strip of tabs along its top edge.
@@ -80,7 +81,7 @@ export function WorkspaceTabs() {
                 className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
               >
                 {loading ? (
-                  <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+                  <Spinner size={11} className="shrink-0 text-accent" />
                 ) : (
                   <FolderOpen size={11} className={`shrink-0 ${current ? "text-accent" : ""}`} />
                 )}
@@ -165,7 +166,7 @@ function OpeningTab({ name }: { name: string }) {
       className="fixed inset-0 z-30 flex items-center justify-center bg-bg/70 backdrop-blur-[2px]"
     >
       <div className="flex items-center gap-3 rounded-lg border border-line bg-panel px-5 py-3 text-sm text-fg shadow-lg">
-        <Loader2 size={18} className="shrink-0 animate-spin text-accent" />
+        <Spinner size={18} className="shrink-0 text-accent" />
         <span className="max-w-80 truncate">{t("tabs.opening", { name })}</span>
       </div>
     </div>

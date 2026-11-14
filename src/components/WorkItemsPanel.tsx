@@ -6,7 +6,6 @@ import {
   ChevronRight,
   ExternalLink,
   GitBranch,
-  Loader2,
   MoreHorizontal,
   Plug,
   RefreshCw,
@@ -51,6 +50,7 @@ import { ContextMenu, SEPARATOR, type MenuItem } from "./ContextMenu";
 import { PromptModal } from "./PromptModal";
 import { Waiting } from "./Waiting";
 import { failedTo } from "../stores/notices";
+import { Spinner } from "./Spinner";
 
 /**
  * The work assigned to whoever is sitting here, and the two moves that tie it to
@@ -246,7 +246,7 @@ export function WorkItemsPanel() {
           {active.label}
         </p>
         <IconButton
-          icon={loading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+          icon={loading ? <Spinner size={13} /> : <RefreshCw size={13} />}
           label={t("tracker.refresh")}
           onClick={() => void useTrackers.getState().refresh()}
         />
@@ -896,7 +896,7 @@ function ConnectForm({ initial, onConnected }: { initial: Fields; onConnected: (
         disabled={!ready}
         className="flex items-center justify-center gap-1.5 rounded bg-accent-strong px-2 py-1.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {connecting ? <Loader2 size={12} className="animate-spin" /> : <Plug size={12} />}
+        {connecting ? <Spinner size={12} /> : <Plug size={12} />}
         {connecting ? t("tracker.connecting") : t("tracker.connect")}
       </button>
 

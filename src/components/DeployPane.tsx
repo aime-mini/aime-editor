@@ -24,6 +24,7 @@ import { slotOf, useCloud, type CloudAccount } from "../stores/cloud";
 import { useDeploy, type DeployLogLine, type StepRun } from "../stores/deploy";
 import { CopyButton, Note } from "./CloudDetail";
 import { failedTo } from "../stores/notices";
+import { Spinner } from "./Spinner";
 
 /**
  * The deploy in front of an account's resources: what the AI found, the plan
@@ -379,7 +380,7 @@ function Steer({ notes, onSteer }: { notes: DeployNote[]; onSteer: (note: string
       <Notes notes={notes} />
       {waiting && (
         <p className="mb-2 flex items-baseline gap-2 pl-5 text-[11.5px] text-muted">
-          <Loader2 size={12} className="mt-0.5 shrink-0 animate-spin" />
+          <Spinner size={12} className="mt-0.5 shrink-0" />
           {t("deploy.steerPending")}
         </p>
       )}
@@ -557,7 +558,7 @@ function Mark({ state }: { state: StepRun["state"] }) {
     case "failed":
       return <X size={13} className="mt-0.5 shrink-0 text-danger" />;
     case "running":
-      return <Loader2 size={13} className="mt-0.5 shrink-0 animate-spin text-accent" />;
+      return <Spinner size={13} className="mt-0.5 shrink-0 text-accent" />;
     default:
       return <Circle size={13} className="mt-0.5 shrink-0 text-muted opacity-50" />;
   }

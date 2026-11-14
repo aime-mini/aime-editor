@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, ChevronDown, ChevronRight, Loader2, Pencil, Sparkles, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Pencil, Sparkles, X } from "lucide-react";
 import { useT } from "../i18n";
 import {
   parseConflicts,
@@ -15,6 +15,7 @@ import { inRepository } from "../lib/repositories";
 import { useAi } from "../stores/ai";
 import { useGit } from "../stores/git";
 import { useWorkspace } from "../stores/workspace";
+import { Spinner } from "./Spinner";
 
 const CONTEXT_LINES = 3;
 const AI_CONTEXT_CHARS = 1_500;
@@ -220,7 +221,7 @@ function ConflictCard({
             disabled={aiBusy}
             className="flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-[11px] text-accent hover:border-accent disabled:opacity-50"
           >
-            {aiBusy ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+            {aiBusy ? <Spinner size={11} /> : <Sparkles size={11} />}
             {t("git.aiResolve")}
           </button>
         )}
@@ -355,7 +356,7 @@ export function ConflictView({ relativePath }: { relativePath: string }) {
             disabled={aiBusy !== null}
             className="flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-[11px] text-accent hover:border-accent disabled:opacity-50"
           >
-            {aiBusy !== null ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+            {aiBusy !== null ? <Spinner size={11} /> : <Sparkles size={11} />}
             {t("git.aiResolveAll")}
           </button>
         )}

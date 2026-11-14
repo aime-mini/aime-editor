@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Eye, FolderOpen, Loader2, Paperclip, Play, X } from "lucide-react";
+import { Eye, FolderOpen, Paperclip, Play, X } from "lucide-react";
 import { useT } from "../../i18n";
 import { needsCompiling } from "../../lib/flows/compiler";
 import type { Flow, InputBundle, InputHint, InputItem } from "../../lib/flows/model";
@@ -8,6 +8,7 @@ import { isWithin, relativeTo } from "../../lib/repositories";
 import { useFlows } from "../../stores/flows";
 import { failedTo } from "../../stores/notices";
 import { TrustDialog } from "./TrustDialog";
+import { Spinner } from "../Spinner";
 
 /**
  * Running a flow: a composer like the chat box - type, attach files and
@@ -246,8 +247,8 @@ export function RunDialog({ slug, flow, onClose }: { slug: string; flow: Flow; o
             className="flex items-center gap-1.5 rounded px-3 py-1.5 font-medium text-white bg-accent-strong hover:opacity-90 disabled:opacity-50"
             data-flow-start
           >
-            {starting ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}{" "}
-            {t("flows.run.go")} <kbd className="ml-1 text-[10px] opacity-70">Ctrl+Enter</kbd>
+            {starting ? <Spinner size={12} /> : <Play size={12} />} {t("flows.run.go")}{" "}
+            <kbd className="ml-1 text-[10px] opacity-70">Ctrl+Enter</kbd>
           </button>
         </div>
       </div>

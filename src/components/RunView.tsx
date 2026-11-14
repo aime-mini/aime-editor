@@ -6,7 +6,6 @@ import {
   CircleDashed,
   CirclePause,
   GitBranch,
-  Loader2,
   FileText,
   History as HistoryIcon,
   Play,
@@ -32,6 +31,7 @@ import {
 } from "../lib/runPlan";
 import { PHASE_LABELS, useRun } from "../stores/run";
 import { failedTo } from "../stores/notices";
+import { Spinner } from "./Spinner";
 
 /**
  * A Task Run while it runs, and after.
@@ -107,7 +107,7 @@ export function RunView() {
                       active ? "border-accent text-accent" : "border-line text-muted hover:border-accent"
                     }`}
                   >
-                    {one.run.current !== null && <Loader2 size={10} className="shrink-0 animate-spin" />}
+                    {one.run.current !== null && <Spinner size={10} className="shrink-0" />}
                     <span className="truncate">{one.run.itemTitle}</span>
                   </button>
                 );
@@ -671,7 +671,7 @@ function Mark({ state }: { state: PhaseState }) {
     case "running":
       return (
         <span className={`${shell} border-accent text-accent`}>
-          <Loader2 size={11} className="animate-spin" />
+          <Spinner size={11} />
         </span>
       );
     case "passed":

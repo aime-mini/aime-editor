@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { CreditCard, ExternalLink, Loader2 } from "lucide-react";
+import { CreditCard, ExternalLink } from "lucide-react";
 import { useT } from "../i18n";
 import type { BillingOff } from "../lib/cloudErrors";
 import { runInTerminal } from "../stores/terminals";
+import { Spinner } from "./Spinner";
 
 /** A billing account `gcloud` can see, as `cloud/gcp.rs` answers it. */
 interface BillingAccount {
@@ -72,7 +73,7 @@ export function BillingOffNote({ off, project }: { off: BillingOff; project: str
       </p>
       {accounts === null && !failed && (
         <p className="flex items-center gap-1.5 text-[11px] text-muted">
-          <Loader2 size={11} className="animate-spin" /> {t("cloud.billingLooking")}
+          <Spinner size={11} /> {t("cloud.billingLooking")}
         </p>
       )}
       <div className="flex flex-wrap items-center justify-center gap-2">

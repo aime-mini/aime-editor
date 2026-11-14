@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { KeyRound, Loader2, Mail, ShieldCheck, Trash2, X } from "lucide-react";
+import { KeyRound, Mail, ShieldCheck, Trash2, X } from "lucide-react";
 import { useT } from "../../i18n";
 import { useFlows } from "../../stores/flows";
 import { failedTo } from "../../stores/notices";
+import { Spinner } from "../Spinner";
 
 /**
  * The connections a flow may name: an API token or password kept in the OS
@@ -253,7 +254,7 @@ export function ConnectionsDialog({ onClose }: { onClose: () => void }) {
               className="flex items-center gap-1.5 self-end rounded px-3 py-1.5 font-medium text-white bg-accent-strong hover:opacity-90 disabled:opacity-50"
               data-flows-connection-add
             >
-              {busy ? <Loader2 size={12} className="animate-spin" /> : null}{" "}
+              {busy ? <Spinner size={12} /> : null}{" "}
               {kind === "oauth" ? t("flows.connections.signIn") : t("flows.connections.add")}
             </button>
           </div>

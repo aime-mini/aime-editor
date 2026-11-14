@@ -15,7 +15,6 @@ import {
   Paperclip,
   Plug,
   Plus,
-  Loader2,
   RefreshCw,
   SendHorizontal,
   Shield,
@@ -65,6 +64,7 @@ import { useChatWindow } from "./useChatWindow";
 import { formatElapsed, useSecondsSince } from "./useSecondsSince";
 import { failedTo, loggedAs } from "../stores/notices";
 import { pastedImages, savePastedImage } from "../lib/pastedImages";
+import { Spinner } from "./Spinner";
 
 /**
  * The three permission levels, in the order the shield chip cycles through.
@@ -312,7 +312,7 @@ function TurnChanges({ message, index }: { message: ChatMessage; index: number }
         className="flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-muted hover:border-warn hover:text-warn disabled:opacity-40"
         title={t("ai.turnUndoHint")}
       >
-        {undoing ? <Loader2 size={10} className="animate-spin" /> : <Undo2 size={10} />}
+        {undoing ? <Spinner size={10} /> : <Undo2 size={10} />}
         {t("ai.turnUndo")}
       </button>
     </div>

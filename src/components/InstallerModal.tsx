@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Check, Download, Loader2, TriangleAlert, X } from "lucide-react";
+import { Check, Download, TriangleAlert, X } from "lucide-react";
 import { useT } from "../i18n";
 import { useCloud } from "../stores/cloud";
 import { useLsp } from "../stores/lsp";
+import { Spinner } from "./Spinner";
 
 interface InstallLine {
   toolId: string;
@@ -153,7 +154,7 @@ export function InstallerModal({ tools, onClose }: { tools: string[]; onClose: (
         <div className="flex items-center gap-2 border-t border-line px-4 py-2 text-[12px]">
           {running ? (
             <span className="flex items-center gap-1.5 text-muted">
-              <Loader2 size={12} className="animate-spin" />
+              <Spinner size={12} />
               {t("install.progress", { done: String(results.length), total: String(tools.length) })}
             </span>
           ) : failures.length === 0 ? (

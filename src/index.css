@@ -116,17 +116,35 @@
    * the conversation - a subtle mark there reads as a frozen app - so its light
    * travels, and a bar sweeps along its edge.
    */
-  --animate-shimmer: shimmer 2.2s linear infinite;
+  --animate-shimmer-window: shimmer-window 2.2s linear infinite;
+  --animate-shimmer-text: shimmer-text 2.2s linear infinite;
   --animate-sweep: sweep 1.6s ease-in-out infinite;
 }
 
-/* A highlight passing through text, left to right; the gradient lives on `.text-shimmer`. */
-@keyframes shimmer {
+/*
+ * A highlight passing through text, left to right. Two boxes move in step: a
+ * window a third as wide as the text crosses it, and a bright copy of the text
+ * inside the window moves back by the same distance, so its words stay over the
+ * dim ones. Both are transforms, which the compositor runs; a gradient clipped
+ * to the text and moved by background-position repaints the line on the main
+ * thread at every frame instead (measured in WebView2 157: 10-20% of a core for
+ * as long as the AI works).
+ */
+@keyframes shimmer-window {
   from {
-    background-position: 100% 0;
+    transform: translateX(-100%);
   }
   to {
-    background-position: -100% 0;
+    transform: translateX(300%);
+  }
+}
+
+@keyframes shimmer-text {
+  from {
+    transform: translateX(33.333%);
+  }
+  to {
+    transform: translateX(-100%);
   }
 }
 
@@ -138,20 +156,6 @@
   to {
     transform: translateX(350%);
   }
-}
-
-.text-shimmer {
-  background-image: linear-gradient(
-    90deg,
-    var(--text-muted) 0%,
-    var(--text-muted) 38%,
-    var(--text) 50%,
-    var(--text-muted) 62%,
-    var(--text-muted) 100%
-  );
-  background-size: 200% 100%;
-  background-clip: text;
-  color: transparent;
 }
 
 /* One dot of the thinking wave; the three are offset by their animation-delay. */
@@ -251,11 +255,16 @@
 @media (prefers-reduced-motion: reduce) {
   .animate-thinking,
   .animate-caret,
-  .animate-shimmer,
+  .animate-shimmer-window,
+  .animate-shimmer-text,
   .animate-sweep,
   .animate-spin,
   .animate-pulse {
     animation: none;
+  }
+  /* A highlight that cannot travel would only light a third of the words. */
+  .animate-shimmer-window {
+    display: none;
   }
   /* The logo is drawn complete rather than not at all. */
   .aime-mark * {

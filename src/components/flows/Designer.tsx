@@ -5,7 +5,6 @@ import {
   FlaskConical,
   History as HistoryIcon,
   LayoutGrid,
-  Loader2,
   Maximize2,
   MousePointerSquareDashed,
   Play,
@@ -49,6 +48,7 @@ import { Palette, PaletteGhostCard } from "./Palette";
 import { RunDialog } from "./RunDialog";
 import { DesignerGuide, SelectionPanel } from "./StepGuide";
 import { usePaletteDrag } from "./usePaletteDrag";
+import { Spinner } from "../Spinner";
 
 /** How long after the last edit the flow file is written. */
 const SAVE_AFTER_MS = 600;
@@ -508,8 +508,7 @@ export function Designer({ slug }: { slug: string }) {
           title={t("flows.designer.editByDescriptionHint")}
           data-flow-edit-by-description
         >
-          {drawing ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}{" "}
-          {t("flows.designer.editByDescription")}
+          {drawing ? <Spinner size={12} /> : <Sparkles size={12} />} {t("flows.designer.editByDescription")}
         </button>
         <button
           onClick={() => {

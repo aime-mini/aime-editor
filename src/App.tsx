@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { AppWindow, FolderOpen, FolderPlus, GitBranch, Loader2, X } from "lucide-react";
+import { AppWindow, FolderOpen, FolderPlus, GitBranch, X } from "lucide-react";
 
 /**
  * The whole editor, loaded the moment a project is - and not before.
@@ -57,6 +57,7 @@ import { usePlugins } from "./stores/plugins";
 import { useRecent } from "./stores/recent";
 import { useWorkspace } from "./stores/workspace";
 import { loggedAs } from "./stores/notices";
+import { Spinner } from "./components/Spinner";
 
 const openNewWindow = () => invoke("open_new_window");
 
@@ -177,7 +178,7 @@ function WelcomeScreen() {
                     className={actionButton}
                     title={t("welcome.cloneHint")}
                   >
-                    {cloning ? <Loader2 size={16} className="animate-spin" /> : <GitBranch size={16} />}
+                    {cloning ? <Spinner size={16} /> : <GitBranch size={16} />}
                     {t("welcome.clone")}
                   </button>
                   <button

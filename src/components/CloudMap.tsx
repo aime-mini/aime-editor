@@ -4,7 +4,6 @@ import {
   Boxes,
   ChevronDown,
   ChevronUp,
-  Loader2,
   MapPin,
   TriangleAlert,
   Waypoints,
@@ -27,6 +26,7 @@ import {
 } from "../lib/cloudMap";
 import { linksOf, type CloudLink } from "../lib/cloudLinks";
 import { readAnswersOf, useCloud, type CloudResource } from "../stores/cloud";
+import { Spinner } from "./Spinner";
 
 /**
  * What is deployed in one account, drawn as applications rather than listed.
@@ -499,7 +499,7 @@ function TraceButton({ app }: { app: AppGroup }) {
   if (tracing !== null) {
     return (
       <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted">
-        <Loader2 size={12} className="animate-spin" />
+        <Spinner size={12} />
         {t("cloud.tracing", { done: tracing.done, total: tracing.total })}
       </span>
     );

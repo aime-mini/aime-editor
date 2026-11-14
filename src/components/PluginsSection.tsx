@@ -1,10 +1,11 @@
 import { useEffect } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { CircleDot, FolderOpen, Loader2, Play, Puzzle, Square } from "lucide-react";
+import { CircleDot, FolderOpen, Play, Puzzle, Square } from "lucide-react";
 import { translate, useT } from "../i18n";
 import { PLUGIN_API_VERSION } from "../lib/plugins/protocol";
 import { usePlugins, type InstalledPlugin, type PluginState } from "../stores/plugins";
 import { failedTo } from "../stores/notices";
+import { Spinner } from "./Spinner";
 
 /**
  * The plugins this machine has, what each one may reach, and a way to stop one.
@@ -165,7 +166,7 @@ function StateChip({ state }: { state: PluginState }) {
   if (state.kind === "starting") {
     return (
       <span className="mt-0.5 flex shrink-0 items-center gap-1 text-[10.5px] text-muted">
-        <Loader2 size={10} className="animate-spin" /> {t("plugins.state.starting")}
+        <Spinner size={10} /> {t("plugins.state.starting")}
       </span>
     );
   }
