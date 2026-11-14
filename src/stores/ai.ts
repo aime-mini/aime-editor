@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { translate } from "../i18n";
 import { createEventParser, type EventParser } from "../lib/aiParsers";
 import { fingerprint } from "../lib/fingerprint";
+import { processNames } from "../lib/processNames";
 import type { Focus } from "../lib/knowledge";
 import { memoryFor } from "../lib/knowledgeStore";
 import {
@@ -44,6 +45,30 @@ interface StreamPayload {
 interface ExitPayload {
   run_id: string;
   code: number | null;
+}
+
+/** A process a finished turn left running (`providers/left_running.rs`). */
+export interface LeftProcess {
+  pid: number;
+  name: string;
+}
+
+interface LeftRunningPayload {
+  run_id: string;
+  /** Empty once the last of them has ended. */
+  processes: LeftProcess[];
+}
+
+/**
+ * What the last turn of a session left running when its CLI exited - a test
+ * suite the AI started in the background and said it would report on. Aime
+ * follows it, and once the last of it ends, tells the AI in that session.
+ */
+export interface LeftRunning {
+  runId: string;
+  /** The session the turn belongs to; the news goes there and nowhere else. */
+  localId: string;
+  processes: LeftProcess[];
 }
 
 /** Mirror of the Rust `ProviderSummary` (providers/mod.rs). */
@@ -273,6 +298,8 @@ interface AiState {
   backgroundTasks: BackgroundTask[];
   /** The CLI cannot reach the AI service and is retrying on its own; null otherwise. */
   retrying: ApiRetry | null;
+  /** What the last finished turn left running and Aime is following; null when nothing is. */
+  leftRunning: LeftRunning | null;
   /** What the live turn is doing right now; null when no turn runs. */
   activity: TurnActivity | null;
   /**
@@ -361,6 +388,8 @@ interface AiState {
    * user does not want to sit out.
    */
   sendQueuedNow: () => Promise<void>;
+  /** Stops following what the last turn left running; the processes run on, the AI is not told. */
+  stopFollowing: () => void;
   cancel: () => Promise<void>;
   /**
    * Picks an interrupted turn up again: the CLI's own session carries on from
@@ -455,6 +484,8 @@ let viewHandedThisTurn: string | null = null;
  * next turn never resumes the session beside a process still writing to it.
  */
 let runStoppedForQueue: string | null = null;
+/** The turn that ended last here, and its session; only its leftovers are followed by this store. */
+let lastEnded: { runId: string; localId: string } | null = null;
 /** The choices the CLI has been asked about, answered or still answering, by `expectationKey`. */
 const askedExpectations = new Set<string>();
 
@@ -851,6 +882,31 @@ export const useAi = create<AiState>((set, get) => {
     useComposer.getState().prepend(queued.map((item) => item.text).join("\n\n"));
   };
 
+  /**
+   * Takes in news of what a finished turn left running. Running processes
+   * are shown; once the last one ends, the AI is told in the turn's session -
+   * as the next turn, or queued behind the one running now.
+   */
+  const followLeftRunning = ({ run_id: runId, processes }: LeftRunningPayload) => {
+    const followed = get().leftRunning;
+    if (processes.length > 0) {
+      if (followed?.runId === runId) {
+        set({ leftRunning: { ...followed, processes } });
+      } else if (lastEnded?.runId === runId) {
+        if (followed !== null) void invoke("ai_unfollow", { runId: followed.runId });
+        set({ leftRunning: { ...lastEnded, processes } });
+      }
+      return;
+    }
+    if (followed?.runId !== runId) return;
+    set({ leftRunning: null });
+    const { localId, projectRoot, running } = get();
+    if (followed.localId !== localId || projectRoot === null) return;
+    const ended = translate("ai.leftRunningEnded", { processes: processNames(followed.processes) });
+    if (running) get().enqueuePrompt(ended, {});
+    else void get().sendPrompt(ended, projectRoot);
+  };
+
   const ensureListeners = async () => {
     if (listenersReady) return;
     listenersReady = true;
@@ -860,6 +916,7 @@ export const useAi = create<AiState>((set, get) => {
     });
     await listen<ExitPayload>("ai:exit", ({ payload }) => {
       if (payload.run_id !== get().runId) return;
+      lastEnded = { runId: payload.run_id, localId: get().localId };
       endTurn();
       void recordChangedFiles();
       void readRanOn();
@@ -883,6 +940,9 @@ export const useAi = create<AiState>((set, get) => {
       if (failed) returnQueued();
       else sendQueued();
     });
+    await listen<LeftRunningPayload>("ai:left-running", ({ payload }) => {
+      followLeftRunning(payload);
+    });
     await listen<StreamPayload>("ai:stderr", ({ payload }) => {
       if (typeof payload.event === "string" && payload.event.trim()) {
         lastStderrLine = payload.event.trim();
@@ -903,6 +963,7 @@ export const useAi = create<AiState>((set, get) => {
     memoryIndex: null,
     backgroundTasks: [],
     retrying: null,
+    leftRunning: null,
     activity: null,
     queued: [],
     interrupted: false,
@@ -1149,6 +1210,13 @@ export const useAi = create<AiState>((set, get) => {
       if (runId === null || queued.length === 0) return;
       runStoppedForQueue = runId;
       await invoke("ai_cancel", { runId });
+    },
+
+    stopFollowing: () => {
+      const followed = get().leftRunning;
+      if (followed === null) return;
+      set({ leftRunning: null });
+      void invoke("ai_unfollow", { runId: followed.runId });
     },
 
     resumeTurn: async (cwd) => {

@@ -4,6 +4,7 @@ pub mod claude;
 pub mod codex;
 pub mod generic;
 pub mod keys;
+pub mod left_running;
 pub mod next_run;
 pub mod ran_on;
 
@@ -25,12 +26,14 @@ use tokio::sync::mpsc;
 
 static RUN_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// Holds kill handles so running processes can be cancelled by run_id, and
-/// the open input of every turn that still takes messages.
+/// Holds kill handles so running processes can be cancelled by run_id, the
+/// open input of every turn that still takes messages, and the finished turns
+/// whose leftover processes are being followed.
 #[derive(Default)]
 pub struct ProviderState {
     kill_senders: Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
     inputs: Mutex<HashMap<String, TurnInput>>,
+    followed: left_running::Followed,
 }
 
 /// The stdin of a conversing turn, held open: lines go to the writer task
@@ -365,6 +368,7 @@ pub async fn ai_send_prompt(
     // Stop has to reach what the agent left running too - a dev server
     // started in the background outlives the CLI otherwise, holding its port.
     crate::exec::lead_own_group(&mut cmd);
+    left_running::mark(&mut cmd, &run_id);
 
     // Structured prefix — the frontend maps it to a localized message (ai.cliMissing).
     let mut child = cmd
@@ -417,11 +421,14 @@ pub async fn ai_send_prompt(
             let mut lines = BufReader::new(stdout).lines();
             let mut gate = InputGate::default();
             let code: Option<i32>;
+            let mut stopped = false;
             loop {
                 tokio::select! {
                     _ = &mut kill_rx => {
                         crate::exec::end_tree(&mut child, pid).await;
+                        left_running::end(&run_id).await;
                         code = None;
+                        stopped = true;
                         break;
                     }
                     line = lines.next_line() => {
@@ -465,6 +472,9 @@ pub async fn ai_send_prompt(
                     code,
                 },
             );
+            if !stopped {
+                left_running::follow(&app, &run_id).await;
+            }
         });
     }
 
@@ -535,6 +545,12 @@ pub fn ai_cancel(state: State<'_, ProviderState>, run_id: String) -> Result<(), 
         let _ = tx.send(());
     }
     Ok(())
+}
+
+/// Stops following what a finished turn left running; the processes run on.
+#[tauri::command]
+pub fn ai_unfollow(state: State<'_, ProviderState>, run_id: String) {
+    state.followed.stop(&run_id);
 }
 
 /// One-shot AI call (e.g. commit-message generation) — separate from the chat

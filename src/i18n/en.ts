@@ -237,6 +237,12 @@ export const en = {
   "ai.pasteImageFailed": "Could not attach the pasted picture",
   "ai.queue.edit": "Edit this message: it goes back to the box below, to be sent again",
   "ai.queue.sendNow": "Send now: stop what the AI is doing and send the queue as the next turn",
+  "ai.leftRunningOne": "Following a process the AI left running: {processes} - the AI is told when it ends",
+  "ai.leftRunning":
+    "Following {count} processes the AI left running: {processes} - the AI is told when they end",
+  "ai.leftRunningStop": "Stop following - the processes keep running",
+  "ai.leftRunningEnded":
+    "The processes you left running when your last turn ended have all finished ({processes}). Check what they produced and carry on with what you said you would do once they finished.",
   "ai.queue.withdrawing": "Taking it back…",
   "ai.jumpToLatest": "Latest",
   "ai.showEarlier": "Show earlier messages ({count} more)",

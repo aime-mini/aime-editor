@@ -237,6 +237,11 @@ export const vi: Record<TranslationKey, string> = {
   "ai.pasteImageFailed": "Không đính kèm được ảnh vừa dán",
   "ai.queue.edit": "Sửa tin này: tin quay về ô soạn bên dưới để gửi lại",
   "ai.queue.sendNow": "Gửi ngay: dừng việc AI đang làm và gửi hàng đợi thành lượt kế tiếp",
+  "ai.leftRunningOne": "Đang theo dõi một tiến trình AI để chạy nền: {processes} - xong là AI được báo",
+  "ai.leftRunning": "Đang theo dõi {count} tiến trình AI để chạy nền: {processes} - xong hết là AI được báo",
+  "ai.leftRunningStop": "Thôi theo dõi - các tiến trình vẫn chạy tiếp",
+  "ai.leftRunningEnded":
+    "Các tiến trình bạn để chạy nền khi kết thúc lượt trước đã xong hết ({processes}). Hãy xem kết quả của chúng và làm tiếp phần việc bạn đã nói sẽ làm khi chúng xong.",
   "ai.queue.withdrawing": "Đang rút lại…",
   "ai.jumpToLatest": "Mới nhất",
   "ai.showEarlier": "Xem tin nhắn trước ({count} tin nữa)",

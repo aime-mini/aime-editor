@@ -173,6 +173,7 @@ pub fn run() {
             terminal::term_kill,
             providers::ai_send_prompt,
             providers::ai_cancel,
+            providers::ai_unfollow,
             providers::ai_steer,
             providers::ai_withdraw,
             providers::ai_oneshot,

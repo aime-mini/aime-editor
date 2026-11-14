@@ -59,6 +59,7 @@ import { BackgroundNotice, ToolRun, type ToolPart } from "./ToolActivity";
 import { TurnRecovery } from "./TurnRecovery";
 import { useSignIn } from "./useSignIn";
 import { LiveActivity, QueuedPrompts } from "./LiveActivity";
+import { LeftRunning } from "./LeftRunning";
 import { useStickToBottom } from "./useStickToBottom";
 import { useChatWindow } from "./useChatWindow";
 import { formatElapsed, useSecondsSince } from "./useSecondsSince";
@@ -507,6 +508,8 @@ export function AiPanel() {
     unqueuePrompt,
     editQueuedPrompt,
     sendQueuedNow,
+    leftRunning,
+    stopFollowing,
     providerHealth,
     signedIn,
     checkHealth,
@@ -1057,6 +1060,9 @@ export function AiPanel() {
                   </ProviderNotice>
                 )}
               </div>
+            )}
+            {leftRunning?.localId === localId && (
+              <LeftRunning processes={leftRunning.processes} onStop={stopFollowing} />
             )}
             {running && activity && (
               <LiveActivity

@@ -14,6 +14,7 @@
  * turn. The folder lives outside the repository: a file written inside it
  * makes Vite reload the page under test.
  */
+const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -166,6 +167,8 @@ const LIVE_ANSWER_LINES = 150;
 const LIVE_LINE_MS = 80;
 const SLOW_COMMAND = "sleep 10";
 const SLOW_COMMAND_MS = 10_000;
+/** How long the job the `detached` scenario leaves behind runs on after the turn. */
+const DETACHED_JOB_MS = 6_000;
 const SIGNED_OUT = "Failed to authenticate: OAuth session expired and could not be refreshed";
 
 /** What a flow's AI step says: JSON when asked for one, else prose the executor reads. */
@@ -272,6 +275,22 @@ const SCENARIOS = {
     await pause(SLOW_COMMAND_MS);
     takeUp();
     say("Done waiting.");
+    result(0, 0.05);
+  },
+
+  /**
+   * A job started detached and left behind when the turn ends, the way Codex
+   * 0.146 runs `Start-Process`: by the time the answer is in, the job is a
+   * child of nothing and carries on with the environment it inherited.
+   */
+  async detached({ say, tool, result }) {
+    tool("toolu_detached", "Bash", { command: "nohup npm test &", description: "Run the tests in the background" });
+    spawn(process.execPath, ["-e", `setTimeout(() => {}, ${DETACHED_JOB_MS})`], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    }).unref();
+    say("The tests are running in the background; I will report once they finish.");
     result(0, 0.05);
   },
 

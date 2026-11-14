@@ -35,6 +35,11 @@ const SESSION_NAME = "Queue and steering checks";
 const URGENT = "stop that and look at the login page";
 const SEND_NOW = "Send now: stop what the AI is doing and send the queue as the next turn";
 const SIGNED_OUT_FILE = path.join(fakeClaudeState, "signed-out");
+/** What the AI is told once the job it left running has ended. */
+const LEFT_RUNNING_ENDED = "The processes you left running when your last turn ended have all finished";
+const STOP_FOLLOWING = "Stop following - the processes keep running";
+/** The `detached` scenario's job runs this long; a turn it caused would have started by then. */
+const DETACHED_JOB_OUTLIVED_MS = 10_000;
 
 const playNext = (scenario) => fs.writeFileSync(MODE_FILE, scenario);
 const lines = (file) =>
@@ -85,6 +90,7 @@ function panel() {
       running: document.querySelector('button[title="Stop"]') !== null,
       background: [...document.querySelectorAll('[role="status"]')].map(textOf),
       answers: [...document.querySelectorAll("div.flex-col.items-start")].map(textOf),
+      leftRunning: document.querySelector("[data-left-running]")?.textContent ?? null,
     };
   });
 }
@@ -492,6 +498,37 @@ describe("The chat panel while the AI is at work", () => {
       "the message is not in the conversation",
     );
     assert.equal(waitedOut(after), waitedBefore, "the stopped command ran to its end");
+  });
+
+  it("follows a job the AI left running when its turn ended, and tells the AI once it ends", async () => {
+    playNext("detached");
+    const before = calls().length;
+    await type("run the tests in the background");
+    const following = await until((p) => p.leftRunning !== null, "nothing was followed after the turn ended");
+    assert.match(following.leftRunning, /node/i, "the line does not name the job that runs on");
+    assert.equal(following.running, false, "the turn had not ended while its job was followed");
+    playNext("resume");
+
+    await until(() => calls().length === before + 2, "the AI was never told that the job ended");
+    const [, told] = calls().slice(before);
+    assert.ok(told.prompt.includes(LEFT_RUNNING_ENDED), `the next turn did not say the job ended: ${told.prompt}`);
+    const resumed = told.args[told.args.indexOf("--resume") + 1];
+    assert.equal(resumed, "fake-session-1", "the news went to another conversation");
+    await settle();
+    assert.equal((await panel()).leftRunning, null, "the line stayed after the job ended");
+  });
+
+  it("stops following when asked: the job runs on and the AI is not told", async () => {
+    playNext("detached");
+    const before = calls().length;
+    await type("run them once more");
+    await until((p) => p.leftRunning !== null, "nothing was followed after the turn ended");
+    await (await $(`button[title="${STOP_FOLLOWING}"]`)).click();
+    await until((p) => p.leftRunning === null, "the line stayed after following stopped");
+
+    // Proving that no turn starts takes waiting out the job it would follow.
+    await browser.pause(DETACHED_JOB_OUTLIVED_MS);
+    assert.equal(calls().length, before + 1, "the AI was told about a job no longer followed");
   });
 
   it("names a session from the list of previous sessions, and keeps the name", async () => {
