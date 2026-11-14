@@ -1394,6 +1394,15 @@ export const en = {
   "run.ownTestsHeld": "each case's own test passed when run on its own ({count})",
   "run.ownTestsFailed": "{count} case(s) whose own test never passed on its own: {detail}",
   "run.ownTestsFixing": "Round {attempt}: the own test of {detail} did not pass on its own",
+  "run.blindChecking":
+    "Setting the change aside ({files} file(s)) to run each case's test on the code before it",
+  "run.blindHeld":
+    "each changed case's test fails without the change ({changed}) and each kept case's passes on the code before it ({kept})",
+  "run.blindFixing": "Round {attempt}: the test of {detail} cannot tell the change apart",
+  "run.blindFailed": "{count} case(s) whose test never told the change apart: {detail}",
+  "run.blindSkipped": "tests were not run without the change: not done yet across several repositories",
+  "run.heldOutStuck":
+    "Part of the change could not be put back: {detail}. It is kept in {folder}; move those files back before going on.",
   "run.agentCancelled": "The coding run was stopped.",
   "run.disputed": "The builder says an agreed criterion cannot hold: {reason}",
   "run.casesRestored": "The builder rewrote {file}; the agreed version is back",

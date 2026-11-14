@@ -1387,6 +1387,14 @@ export const vi: Record<TranslationKey, string> = {
   "run.ownTestsHeld": "test riêng của từng case đều xanh khi chạy một mình ({count})",
   "run.ownTestsFailed": "{count} case có test riêng không bao giờ xanh khi chạy một mình: {detail}",
   "run.ownTestsFixing": "Vòng {attempt}: test riêng của {detail} không xanh khi chạy một mình",
+  "run.blindChecking": "Tạm gỡ thay đổi ra ({files} file) để chạy test của từng case trên code trước khi đổi",
+  "run.blindHeld":
+    "test của từng case changed đều đỏ khi không có thay đổi ({changed}) và test của từng case kept đều xanh trên code cũ ({kept})",
+  "run.blindFixing": "Vòng {attempt}: test của {detail} không phân biệt được có hay không có thay đổi",
+  "run.blindFailed": "{count} case có test không bao giờ phân biệt được có hay không có thay đổi: {detail}",
+  "run.blindSkipped": "chưa chạy test trên code trước khi đổi: chưa hỗ trợ lượt chạy nhiều repo",
+  "run.heldOutStuck":
+    "Không trả lại được một phần thay đổi: {detail}. Nó được giữ ở {folder}; hãy chuyển các file đó về trước khi chạy tiếp.",
   "run.agentCancelled": "Lượt code đã bị dừng.",
   "run.disputed": "Người làm báo một AC đã thống nhất không thể đạt: {reason}",
   "run.casesRestored": "Người làm đã sửa {file}; bản đã thống nhất được đặt lại",

@@ -3,8 +3,24 @@ import { caseRunOf, parseCaseTests, undeclaredCases } from "./caseTests";
 
 const CASES = {
   cases: [
-    { id: "TC1", criterion: "AC1", prove: "unit test", given: "", when: "", then: "" },
-    { id: "TC2", criterion: "AC1", prove: "unit test", given: "", when: "", then: "" },
+    {
+      id: "TC1",
+      criterion: "AC1",
+      prove: "unit test",
+      given: "",
+      when: "",
+      then: "",
+      kind: "changed" as const,
+    },
+    {
+      id: "TC2",
+      criterion: "AC1",
+      prove: "unit test",
+      given: "",
+      when: "",
+      then: "",
+      kind: "changed" as const,
+    },
   ],
   raw: "",
 };

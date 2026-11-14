@@ -160,7 +160,7 @@ Answer ONLY with JSON, no prose and no code fence:
  "why": "why this way, and what you rejected to get here",
  "decisions": ["what this locks in - a data shape, an error path, a permission, a query"],
  "needsDeploy": true,
- "cases": [{"id": "TC1", "criterion": "AC1", "prove": "how this case gets checked",
+ "cases": [{"id": "TC1", "criterion": "AC1", "prove": "how this case gets checked", "kind": "changed",
             "given": "the starting state", "when": "the action", "then": "what must be true after"}],
  "steps": [{"what": "...", "files": ["src/x.ts"], "criteria": ["AC1"]}],
  "tests": [{"name": "what the test proves", "file": "src/x.test.ts", "case": "TC1"}]}
@@ -187,6 +187,11 @@ The test cases - write them as a tester would, before any code exists:
   it, and a pure function does not need a browser.
 - "then" must be observable: a value, a status, a message on screen, a row in a table. Not "it works".
 - Keep each case to one behaviour. Two behaviours in one case is a case that cannot fail cleanly.
+- "kind" is "changed" for behaviour this change adds or alters, and "kept" for behaviour that works
+  today and must keep working. Add a "kept" case for each behaviour of the dependent files listed below
+  that this change could break and that no existing test covers; give it the criterion it protects.
+  Aime runs every case's test on the code before the change too: a "changed" test must fail there, a
+  "kept" test must pass there.
 
 The plan:
 - Every case above must appear in at least one test's "case".
@@ -259,7 +264,15 @@ export interface TestCase {
   given: string;
   when: string;
   then: string;
+  /**
+   * "changed" for behaviour this change adds or alters - its test has to fail
+   * on the code before the change; "kept" for behaviour that is there today and
+   * must stay - its test has to pass on the code before the change too.
+   */
+  kind: CaseKind;
 }
+
+export type CaseKind = "changed" | "kept";
 
 export interface TestCases {
   cases: TestCase[];
@@ -438,6 +451,8 @@ export function parseTestCases(reply: string): TestCases | null {
         given: asString(row.given),
         when: asString(row.when),
         then: asString(row.then),
+        // Absent reads as "changed": the stricter check, since its test has to fail without the change.
+        kind: row.kind === "kept" ? ("kept" as const) : ("changed" as const),
       };
     })
     // A case missing its action or its expected result is not a case: nothing

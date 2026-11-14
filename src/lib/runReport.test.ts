@@ -34,6 +34,7 @@ const CASES: TestCases = {
       given: "Vietnamese is chosen",
       when: "the app is reloaded",
       then: "the picker still reads Vietnamese | not English",
+      kind: "changed" as const,
     },
   ],
   raw: "",

@@ -107,7 +107,14 @@ export async function loadTestCases(root: string): Promise<TestCases | null> {
   try {
     const text = await invoke<string>("read_file", { path: pathIn(root, TEST_CASES_JSON) });
     const parsed = JSON.parse(text) as { cases?: unknown };
-    const cases = Array.isArray(parsed.cases) ? (parsed.cases as TestCase[]) : [];
+    // A case written before cases had a kind, or edited by hand without one, is
+    // read as "changed": its test then has to tell the change apart.
+    const cases = Array.isArray(parsed.cases)
+      ? (parsed.cases as (Omit<TestCase, "kind"> & { kind?: unknown })[]).map((one): TestCase => ({
+          ...one,
+          kind: one.kind === "kept" ? "kept" : "changed",
+        }))
+      : [];
     const complete = cases.filter(
       (one) => typeof one.id === "string" && typeof one.then === "string" && one.then !== "",
     );

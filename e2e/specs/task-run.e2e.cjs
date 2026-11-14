@@ -304,7 +304,9 @@ if (prompt.includes("Check another reader's understanding of a ticket")) {
   fs.writeFileSync(shop("src", "cart.js"), source);
   // The file the plan named. Aime checks it exists before the phase may pass,
   // which is the mechanical half of "the tests were actually written".
-  fs.writeFileSync(shop("test.cjs"), TEST_WITH_ROUNDING);
+  // "blindTest" writes a test that asserts nothing: green with the change and
+  // without it, which is what running it on the code before the change catches.
+  fs.writeFileSync(shop("test.cjs"), mode === "blindTest" ? 'console.log("Tests  1 passed (1)");\n' : TEST_WITH_ROUNDING);
   // Each case's own command, which Aime runs on its own. "noOwnTest" declares a
   // filter that runs nothing and still exits green - the mistake that check is for.
   const caseTests = prompt.match(/Also write (\S+case-tests\.json)/)[1];
@@ -335,6 +337,10 @@ if (prompt.includes("Check another reader's understanding of a ticket")) {
     fs.writeFileSync(here("api", "server.js"), "export const port = 8081;\n");
   }
   process.stdout.write("done\n");
+} else if (prompt.includes("These tests cannot tell the change apart")) {
+  // Told its test passes without the change: it writes one that asserts the rounding.
+  fs.writeFileSync(shop("test.cjs"), TEST_WITH_ROUNDING);
+  process.stdout.write("the test asserts the rounding now\n");
 } else if (prompt.includes("is proved only by its own test passing on its own")) {
   // Told its case's own test ran nothing: it points the command at the real test.
   const caseTests = prompt.match(/\((\S+case-tests\.json)\)/)[1];
@@ -1097,6 +1103,24 @@ describe("Task run", () => {
     const [journal] = journalsIn(repo);
     assert.equal(journal.caseRuns?.TC1?.held, true, JSON.stringify(journal.caseRuns));
     assert.ok((journal.caseRuns?.TC1?.ran ?? 0) >= 1, `TC1's own run ran no test: ${JSON.stringify(journal.caseRuns)}`);
+  });
+
+  it("runs each case's test without the change, and sends back a test that cannot tell the difference", async () => {
+    fs.writeFileSync(MODE_FILE, "blindTest");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+    await waitForText("cannot tell the change apart", "a test that asserts nothing was let through", 240_000);
+    await waitForText("finished, and every gate agreed", "the run never finished once the test was fixed", 240_000);
+    const verify = await phaseRow("Test it until the bugs are out");
+    assert.match(verify, /each changed case's test fails without the change \(1\)/, verify);
+    // The change went back exactly as it was, and nothing was left set aside.
+    assert.match(fs.readFileSync(path.join(repo, "src", "cart.js"), "utf8"), /Math\.round/, "the change was not put back");
+    const [journal] = journalsIn(repo);
+    assert.ok(
+      !fs.existsSync(path.join(repo, ".aime", "runs", journal.run.id, "held-out")),
+      "the change's set-aside folder was left behind",
+    );
   });
 
   it("closes a gap a second reading of the ticket finds, before the plan is agreed", async () => {

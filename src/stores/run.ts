@@ -42,7 +42,9 @@ import {
   type CaseRun,
   type CaseTest,
 } from "../lib/caseTests";
+import type { CaseKind } from "../lib/aiRun";
 import { readTestOutput } from "../lib/testReport";
+import { heldOutFolderOf, putChangeBack, setChangeAside, type HeldState } from "../lib/heldOut";
 import { aiOneshot } from "../lib/aiOneshot";
 import {
   auditPrompt,
@@ -1026,6 +1028,26 @@ async function drive(id: string, start: PhaseId, context: Context, set: Setter, 
   update(set, (run) => ({ ...run, ended: null }));
   const engine = engineFor(id);
   engine.drivingSince = Date.now();
+  // A check cut off while the change was set aside (`withoutTheChange`) left
+  // it in the run's folder; it goes back before any phase reads the tree.
+  const stuck = await putChangeBack(context.workRoot, id);
+  if (stuck.length > 0) {
+    update(set, (run) => ({
+      ...run,
+      current: null,
+      ended: {
+        kind: "failed",
+        phase: run.current ?? start,
+        error: translate("run.heldOutStuck", {
+          detail: stuck.join("; "),
+          folder: heldOutFolderOf(context.workRoot, id),
+        }),
+      },
+    }));
+    engine.driving = false;
+    journal(context, get);
+    return;
+  }
 
   const rest = () => {
     journal(context, get);
@@ -1894,16 +1916,37 @@ async function verify(context: Context, set: Setter, get: Getter): Promise<Phase
     const measured = await measureAndMend(context, set, get);
     if (measured.state === "blocked") return measured;
     const own = await runOwnTests(context, set, get);
-    if (own.failing.length === 0) {
+    const blind = own.failing.length === 0 ? await withoutTheChange(context, set, get) : null;
+    if (blind !== null && blind.failing.length === 0) {
       const proved = await buildAndProve(context, set, get);
       if (proved.state === "blocked") return proved;
       return {
         state: measured.state === "skipped" && proved.state === "skipped" ? "skipped" : "passed",
-        summary: [measured.summary, own.summary, proved.summary].filter((line) => line !== "").join(" · "),
+        summary: [measured.summary, own.summary, blind.summary, proved.summary]
+          .filter((line) => line !== "")
+          .join(" · "),
         detail: [...tried, measured.detail ?? "", proved.detail ?? ""]
           .filter((line) => line !== "")
           .join("\n"),
       };
+    }
+    if (blind !== null) {
+      // Each case's test ran and passed, but some cannot tell the change apart.
+      const ids = blind.failing.map((failure) => failure.id).join(", ");
+      if (stalled(rounds, `blind:${ids}`) || round === MAX_ROUNDS) {
+        return {
+          state: "blocked",
+          summary: translate("run.blindFailed", { count: blind.failing.length, detail: ids }),
+          detail: [...tried, ...blind.failing.map(blindLine)].join("\n"),
+        };
+      }
+      rounds.push(`blind:${ids}`);
+      tried.push(translate("run.blindFixing", { attempt: round, detail: ids }));
+      note(set, "verify", tried[tried.length - 1]);
+      const asking = [BLIND_TESTS_PROMPT, ...blind.failing.map(blindLine)].join("\n\n");
+      const halt = haltedBy(await runAgent(context, asking, set, get, "verify"));
+      if (halt !== null) return halt;
+      continue;
     }
     // A test that passes in the suite but not on its own - or never runs at
     // all - proves nothing about its case; it goes back like any failure, and
@@ -1929,6 +1972,98 @@ async function verify(context: Context, set: Setter, get: Getter): Promise<Phase
   }
   // Unreachable: the loop returns on every path out of its last round.
   return { state: "blocked", summary: translate("run.ownTestsFailed", { count: 0, detail: "" }) };
+}
+
+/** A case whose test cannot tell the change apart, and which way it is wrong. */
+interface BlindCase {
+  id: string;
+  kind: CaseKind;
+  command: string;
+}
+
+function blindLine(failure: BlindCase): string {
+  return failure.kind === "changed"
+    ? `- ${failure.id} ("changed"): $ ${failure.command} still passes on the code before the change`
+    : `- ${failure.id} ("kept"): $ ${failure.command} fails on the code before the change`;
+}
+
+/**
+ * Runs every case's own test on the code as it was before the change: a
+ * "changed" case's test has to fail there and a "kept" case's has to pass. A
+ * test that passes with the feature taken out asserts nothing about it, and a
+ * test of kept behaviour that fails on the old code is not testing what was
+ * kept. The change is set aside for this and put back exactly
+ * (`lib/heldOut.ts`); a run across several repositories is not checked this
+ * way yet, and says so.
+ */
+async function withoutTheChange(
+  context: Context,
+  set: Setter,
+  get: Getter,
+): Promise<{ summary: string; failing: BlindCase[] }> {
+  const { cases, plan } = get();
+  if (cases === null) return { summary: "", failing: [] };
+  if (spansWorkspace(context)) return { summary: translate("run.blindSkipped"), failing: [] };
+  const testFiles = new Set((plan?.tests ?? []).map((test) => test.file));
+  const status = await invoke<GitStatus>("git_status", { root: context.workRoot });
+  const change = status.files.flatMap((file): { path: string; state: HeldState }[] => {
+    if (file.path.startsWith(".aime/") || testFiles.has(file.path)) return [];
+    const codes = `${file.staged}${file.unstaged}`;
+    if (codes.includes("?") || codes.includes("A")) return [{ path: file.path, state: "added" }];
+    if (codes.includes("R") && file.orig_path !== null) {
+      return [
+        { path: file.path, state: "added" },
+        { path: file.orig_path, state: "deleted" },
+      ];
+    }
+    return [{ path: file.path, state: codes.includes("D") ? "deleted" : "modified" }];
+  });
+  if (change.length === 0) return { summary: "", failing: [] };
+
+  const declared = await declaredCaseTests(context);
+  const failing: BlindCase[] = [];
+  note(set, "verify", translate("run.blindChecking", { files: change.length }));
+  let interrupted: unknown = null;
+  try {
+    await setChangeAside(context.workRoot, context.id, change);
+    for (const one of cases.cases) {
+      const test = declared.find((candidate) => candidate.case === one.id);
+      if (test === undefined) continue;
+      const outcome = await runCommand(set, "verify")(
+        commandIdFor(context.id)(),
+        test.command,
+        folderUnder(context.workRoot, test.dir),
+        SUITE_TIMEOUT_MS,
+      );
+      const held = caseRunOf(readTestOutput(allOutput(outcome), outcome.code)).held;
+      if (one.kind === "changed" ? held : !held)
+        failing.push({ id: one.id, kind: one.kind, command: test.command });
+    }
+  } catch (error: unknown) {
+    interrupted = error;
+  }
+  // Back in place before anything else happens, whether the tests ran or not.
+  const stuck = await putChangeBack(context.workRoot, context.id);
+  if (stuck.length > 0) {
+    // Never carry on over a change that is not back where it was.
+    throw new Error(
+      translate("run.heldOutStuck", {
+        detail: stuck.join("; "),
+        folder: heldOutFolderOf(context.workRoot, context.id),
+      }),
+    );
+  }
+  if (interrupted !== null) {
+    // Tauri commands reject with the backend's message as a string.
+    if (interrupted instanceof Error) throw interrupted;
+    throw new Error(typeof interrupted === "string" ? interrupted : JSON.stringify(interrupted));
+  }
+  const changed = cases.cases.filter((one) => one.kind === "changed").length;
+  return {
+    summary:
+      failing.length === 0 ? translate("run.blindHeld", { changed, kept: cases.cases.length - changed }) : "",
+    failing,
+  };
 }
 
 /** A case whose own test did not hold, with what its run said. */
@@ -3613,6 +3748,12 @@ Run the failing tests when you are done. Do not commit anything.
 /** Sent back with the test files the plan promised and the tree does not have. */
 const CASE_TESTS_UNDECLARED = `No command in your case-tests file runs these cases' tests on their own. Declare one
 for each - a file filter and a test-name filter in this project's runner:`;
+
+const BLIND_TESTS_PROMPT = `Aime set your change aside and ran each case's own test on the code as it was before
+it. These tests cannot tell the change apart: a "changed" case's test that still passes without the
+change asserts nothing about it, and a "kept" case's test that fails on the old code is not testing the
+behaviour that was kept. Rewrite each test so it asserts exactly what its case's "then" says - never
+change the agreed case. Your change is back in place as you left it.`;
 
 const OWN_TESTS_PROMPT = `Each agreed case's own test was run on its own, with the command you declared, and these
 did not pass - or ran no test at all. A case is proved only by its own test passing on its own.

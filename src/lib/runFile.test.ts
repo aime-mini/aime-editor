@@ -55,7 +55,17 @@ function fullRun(id: string, ended: boolean) {
     radius: { changing: ["src/cart.js"], dependents: ["src/checkout.js"], unknown: [] },
     solution: { how: "h", why: "w", decisions: ["d"], needsDeploy: true, raw: "{}" },
     cases: {
-      cases: [{ id: "TC1", criterion: "AC1", prove: "a unit test", given: "g", when: "w", then: "t" }],
+      cases: [
+        {
+          id: "TC1",
+          criterion: "AC1",
+          prove: "a unit test",
+          given: "g",
+          when: "w",
+          then: "t",
+          kind: "changed" as const,
+        },
+      ],
       raw: "{}",
     },
     plan: { steps: [], tests: [{ name: "n", file: "test.cjs", case: "TC1" }], raw: "{}" },
