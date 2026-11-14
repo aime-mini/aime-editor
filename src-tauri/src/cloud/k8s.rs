@@ -26,6 +26,8 @@
 //!   stops a deploy deleting a cluster's workloads; `REFUSED_WORDS` does, as it
 //!   does for `gcloud`.
 
+use std::path::{Path, PathBuf};
+
 /// The one command this module is the gate for.
 pub(super) const PROGRAM: &str = "kubectl";
 
@@ -71,6 +73,79 @@ pub(super) const BUNDLED_PYTHON: [&str; 2] = ["components", "copy-bundled-python
 
 /// The environment variable that tells the Cloud SDK which Python to run on.
 pub(super) const PYTHON_ENV: &str = "CLOUDSDK_PYTHON";
+
+/// Where both `kubectl` and `gcloud container clusters get-credentials` take
+/// their kubeconfig from; gcloud's own help: *You can provide an alternate path
+/// by setting the KUBECONFIG environment variable.*
+pub(super) const KUBECONFIG: &str = "KUBECONFIG";
+
+/// The folder, under Aime's app data, that holds one kubeconfig per account.
+const KUBECONFIG_DIR: &str = "deploy-kubeconfig";
+
+/// The kubeconfig a deploy to this account writes and reads.
+///
+/// Aime's own rather than the person's `~/.kube/config`, for two reasons. A
+/// `get-credentials` step rewrites the current context of whatever file it is
+/// given, so a deploy would otherwise leave the person's own `kubectl` pointed
+/// at a cluster they never chose. And `kubectl` then reaches only a cluster
+/// this account's deploys fetched credentials for: measured on kubectl
+/// v1.29.2, pointed at a file that does not exist it asks `localhost:8080` and
+/// fails - it never falls back to the person's own config, where the current
+/// context may well be production somewhere else.
+pub(super) fn kubeconfig_for(app_data: &Path, account_id: &str) -> PathBuf {
+    let folder: String = account_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    app_data.join(KUBECONFIG_DIR).join(folder).join("config")
+}
+
+/// Flags that would point `kubectl` at something other than the cluster this
+/// deploy fetched credentials for - another file, context, server or identity.
+/// The kubeconfig is Aime's to give (`kubeconfig_for`), so none of them is
+/// the AI's to say.
+const RETARGETING_FLAGS: [&str; 10] = [
+    "--kubeconfig",
+    "--context",
+    "--cluster",
+    "--server",
+    "-s",
+    "--user",
+    "--token",
+    "--as",
+    "--as-group",
+    "--insecure-skip-tls-verify",
+];
+
+/// `kubectl apply --prune` deletes every object the manifest no longer names,
+/// which is a removal wearing the word `apply`.
+const PRUNE: &str = "--prune";
+
+/// Refuses a `kubectl` line that would reach past the deploy's own cluster, or
+/// delete through `--prune`. A flag is matched with or without `=value`.
+pub(super) fn refuse_retargeting(args: &[String]) -> Result<(), String> {
+    for arg in args {
+        let flag = arg.split('=').next().unwrap_or_default();
+        if flag == PRUNE {
+            return Err(format!(
+                "`{PRUNE}` deletes what the manifest no longer names; a deployment only adds and updates"
+            ));
+        }
+        if RETARGETING_FLAGS.contains(&flag) {
+            return Err(format!(
+                "`{flag}` points `{PROGRAM}` away from the cluster this deploy fetched credentials for; \
+                 Aime hands `{PROGRAM}` that cluster itself, through the `get-credentials` step"
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// The first words a deploy step may say to `kubectl`.
 ///
@@ -179,6 +254,51 @@ pub(super) fn refuse_unless_deploying(cloud_id: &str, command: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kubectl_never_says_which_cluster_itself_nor_prunes() {
+        let words = |line: &str| line.split(' ').map(String::from).collect::<Vec<_>>();
+        for retargeting in [
+            "apply --filename k8s.yaml --context prod",
+            "get pods --kubeconfig=/home/jane/.kube/config",
+            "apply --filename k8s.yaml --server https://example.com",
+            "get pods -s https://example.com",
+            "apply --filename k8s.yaml --as system:admin",
+            "apply --filename k8s.yaml --prune --all",
+            "apply --filename k8s.yaml --prune=true",
+        ] {
+            assert!(
+                refuse_retargeting(&words(retargeting)).is_err(),
+                "let through: {retargeting}"
+            );
+        }
+        for deploying in [
+            "apply --filename k8s.yaml",
+            "rollout status deployment/web --namespace shop",
+            "get pods --selector app=web",
+        ] {
+            assert_eq!(
+                refuse_retargeting(&words(deploying)),
+                Ok(()),
+                "refused: {deploying}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_account_has_a_kubeconfig_of_its_own_under_aime_s_data() {
+        let app_data = Path::new("app-data");
+        let shop = kubeconfig_for(app_data, "acme-shop");
+        assert_eq!(
+            shop,
+            app_data.join(KUBECONFIG_DIR).join("acme-shop").join("config")
+        );
+        assert_ne!(shop, kubeconfig_for(app_data, "acme-billing"));
+        // An id is a folder name, never a path: nothing in it climbs out.
+        let odd = kubeconfig_for(app_data, "../../etc");
+        assert!(odd.starts_with(app_data.join(KUBECONFIG_DIR)));
+        assert_eq!(odd.parent().and_then(Path::file_name), Some("______etc".as_ref()));
+    }
 
     #[test]
     fn kubectl_belongs_to_google_clouds_clusters_and_to_no_other_cloud() {

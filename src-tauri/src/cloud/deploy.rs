@@ -37,14 +37,15 @@
 
 use super::dialect::{Dialect, Grant, Proof};
 use super::reads::{check_read_allowing, is_command_word, is_safe_value, PlannedRead, ReadPurpose};
-use super::{k8s, program_for, quiet, read_cli_checked, CloudAccount};
+use super::{k8s, output_checked, program_for, quiet, read_cli_checked, CloudAccount};
 use crate::exec::{run_program, CommandOutcome, ExecState, Limits};
 use crate::program::Program;
 use crate::providers::cli_command;
 use crate::trackers::connector::TrackerError;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 /// One command the deploy runs, in the AI's plan.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -291,6 +292,7 @@ pub async fn cloud_deploy_step(
     let program = step_program(&request.cloud_id, &own, dialect, &request.step)?;
     let runs_kubectl = program == k8s::PROGRAM;
     if runs_kubectl {
+        k8s::refuse_retargeting(&request.step.args)?;
         // The kubeconfig a `get-credentials` step wrote names the auth plugin
         // as its provider, so without it every call fails on the exec step
         // before it reaches the cluster. Aime fetches what is missing rather
@@ -313,6 +315,11 @@ pub async fn cloud_deploy_step(
     };
     let mut command = cli_command(&program, &args);
     quiet(&mut command);
+    if k8s::serves(&request.cloud_id) {
+        // `get-credentials` writes this file and `kubectl` reads it; every step
+        // gets it, since a `gcloud` step that is not `get-credentials` ignores it.
+        command.env(k8s::KUBECONFIG, account_kubeconfig(&app, &request.account)?);
+    }
     let label = format!("{program} {}", args.join(" "));
     run_program(
         &app,
@@ -324,6 +331,18 @@ pub async fn cloud_deploy_step(
         Limits::log(Some(STEP_TIMEOUT_MS)),
     )
     .await
+}
+
+/// This account's own kubeconfig (`k8s::kubeconfig_for`), with its folder made
+/// so `get-credentials` has somewhere to write it.
+fn account_kubeconfig(app: &AppHandle, account: &CloudAccount) -> Result<PathBuf, String> {
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let path = k8s::kubeconfig_for(&app_data, &account.id);
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder)
+            .map_err(|e| format!("could not make the deploy's kubeconfig folder: {e}"))?;
+    }
+    Ok(path)
 }
 
 /// Runs one read of a deploy - a `keep` before and after, the `prove` at the
@@ -344,10 +363,13 @@ pub async fn cloud_deploy_read(
         let command = read.args.first().map(String::as_str).unwrap_or_default();
         k8s::refuse_unless_reading(&cloud_id, command)?;
         k8s::refuse_secret_values(&read.args)?;
+        k8s::refuse_retargeting(&read.args)?;
         let mut args = read.args.clone();
         args.extend(k8s::json_flags().map(String::from));
-        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-        return read_cli_checked(k8s::PROGRAM, &borrowed)
+        let mut kubectl = cli_command(k8s::PROGRAM, &args);
+        quiet(&mut kubectl);
+        kubectl.env(k8s::KUBECONFIG, account_kubeconfig(&app, &account)?);
+        return output_checked(k8s::PROGRAM, kubectl)
             .await
             .map_err(|failure| failure.message);
     }

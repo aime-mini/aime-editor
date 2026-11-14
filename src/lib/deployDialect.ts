@@ -114,7 +114,9 @@ const GCLOUD_RULES = [
     "that is how you look at a cluster when a step fails. It needs an earlier " +
     "`gcloud container clusters get-credentials` step to point it at the cluster; it takes NO `--project` " +
     "or `--account` (Aime adds those to `gcloud` only, and `kubectl` refuses them); write every flag in " +
-    "its long form as two tokens (`--filename`, `k8s/deployment.yaml`). Aime installs " +
+    "its long form as two tokens (`--filename`, `k8s/deployment.yaml`). Aime gives `kubectl` the cluster " +
+    "that step fetched credentials for, through a kubeconfig of its own: never pass `--context`, " +
+    "`--kubeconfig`, `--cluster`, `--server`, `--user`, `--token` or `--as`, and never `--prune`. Aime installs " +
     "`gke-gcloud-auth-plugin` itself when it is missing, so do not plan that.",
   "- `args` are the arguments after `gcloud`, one token each, in the order the CLI takes them: command " +
     "words, then positionals, then flags. A flag and its value are two tokens (`--region`, `asia-southeast1`), " +

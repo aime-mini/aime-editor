@@ -1000,6 +1000,15 @@ pub(super) fn quiet(cmd: &mut tokio::process::Command) {
 pub(crate) async fn read_cli_checked(command: &str, args: &[&str]) -> Result<String, CliFailure> {
     let mut cmd = cli_command(command, args.iter().copied());
     quiet(&mut cmd);
+    output_checked(command, cmd).await
+}
+
+/// Runs a command already built - its environment set by the caller - and
+/// answers its stdout, or its stderr as the failure.
+pub(crate) async fn output_checked(
+    command: &str,
+    mut cmd: tokio::process::Command,
+) -> Result<String, CliFailure> {
     let output = cmd.output().await.map_err(|e| CliFailure {
         code: None,
         message: format!("Could not run `{command}`: {e}"),
