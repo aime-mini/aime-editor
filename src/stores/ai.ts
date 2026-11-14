@@ -79,6 +79,8 @@ export interface ProviderSummary {
   installCommand: string;
   parser: string;
   textField: string;
+  /** For jsonl: the field carrying the CLI's session id; "" when it reports none. */
+  sessionField: string;
   /** A message written during a turn reaches the AI in that turn, not only as the next. */
   steers: boolean;
   /** A message handed over that way can be taken back until the AI reads it. */
@@ -1158,6 +1160,7 @@ export const useAi = create<AiState>((set, get) => {
         id: get().providerId,
         parser: provider?.parser,
         textField: provider?.textField,
+        sessionField: provider?.sessionField,
       });
       try {
         const runId = await invoke<string>("ai_send_prompt", {

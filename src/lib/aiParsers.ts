@@ -16,6 +16,7 @@ export function createEventParser(provider: {
   id: string;
   parser?: string;
   textField?: string;
+  sessionField?: string;
 }): EventParser {
   switch (provider.parser ?? provider.id) {
     case "claude":
@@ -23,9 +24,9 @@ export function createEventParser(provider: {
     case "codex":
       return createCodexParser();
     case "jsonl":
-      return createGenericParser("jsonl", provider.textField ?? "text");
+      return createGenericParser("jsonl", provider.textField ?? "text", provider.sessionField ?? "");
     default:
       // Anything else is a configured CLI whose output is simply its answer.
-      return createGenericParser("plain", "text");
+      return createGenericParser("plain", "text", "");
   }
 }

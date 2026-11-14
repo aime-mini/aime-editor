@@ -37,6 +37,12 @@ const SCHEMA = [
   '- `parser` ("plain" | "jsonl"): "plain" means everything the CLI prints is the answer. Use "jsonl" ' +
     "only if the CLI emits one JSON object per line, and then set `textField` to the field holding the text.",
   '- `textField` (string): for `jsonl`, the field carrying assistant text (default "text").',
+  "- `sessionField` (string): for `jsonl`, the field a line carries the CLI's session id in, if it reports " +
+    'one (Gemini CLI: `"session_id"` on its `init` line). With `resumeArgs`, it lets a conversation carry on.',
+  "- `permissionArgs` (object): the CLI's own flags for how much a turn may do - " +
+    '`{"readOnly": [...], "edits": [...], "full": [...]}`, e.g. Gemini CLI\'s `["--approval-mode", "plan"]` / ' +
+    '`["--approval-mode", "auto_edit"]` / `["--approval-mode", "yolo"]`. Without it, a CLI run unattended ' +
+    "may refuse to edit files.",
   '- `login` (string): the CLI\'s own sign-in command, run in an Aime terminal, e.g. "gemini auth login".',
   '- `install` (string): how to install the CLI, e.g. "npm install -g @google/gemini-cli".',
   "- `apiKeyEnv` (string): the environment variable the CLI reads an API key from, if it reads one. " +

@@ -607,6 +607,8 @@ pub struct ProviderSummary {
     pub parser: String,
     /// For jsonl: the field carrying assistant text.
     pub text_field: String,
+    /// For jsonl: the field carrying the CLI's session id; empty when it reports none.
+    pub session_field: String,
     /// Whether a message written during a turn reaches the AI in that turn
     /// (`ai_steer`), rather than only as the next one.
     pub steers: bool,
@@ -650,6 +652,7 @@ pub fn list_providers() -> Vec<ProviderSummary> {
             install_command: "npm install -g @anthropic-ai/claude-code".into(),
             parser: "claude".into(),
             text_field: String::new(),
+            session_field: String::new(),
             steers: steers(&claude::ClaudeAdapter),
             withdraws: withdraws(&claude::ClaudeAdapter),
             api_key_route: claude::ClaudeAdapter.api_key_route(),
@@ -661,6 +664,7 @@ pub fn list_providers() -> Vec<ProviderSummary> {
             install_command: "npm install -g @openai/codex".into(),
             parser: "codex".into(),
             text_field: String::new(),
+            session_field: String::new(),
             steers: steers(&codex::CodexAdapter),
             withdraws: withdraws(&codex::CodexAdapter),
             api_key_route: codex::CodexAdapter.api_key_route(),
@@ -676,6 +680,7 @@ pub fn list_providers() -> Vec<ProviderSummary> {
             generic::ParserKind::Jsonl => "jsonl".into(),
         },
         text_field: adapter.config.text_field.clone(),
+        session_field: adapter.config.session_field.clone(),
         steers: steers(adapter.as_ref()),
         withdraws: withdraws(adapter.as_ref()),
         api_key_route: adapter.api_key_route(),
@@ -691,10 +696,17 @@ const PROVIDERS_TEMPLATE: &str = r#"[
     "id": "gemini",
     "displayName": "Gemini CLI",
     "command": "gemini",
-    "args": ["-p", "{prompt}"],
-    "promptStdin": false,
-    "resumeArgs": [],
-    "parser": "plain",
+    "args": ["--output-format", "stream-json", "--skip-trust"],
+    "promptStdin": true,
+    "resumeArgs": ["--resume", "{sessionId}"],
+    "parser": "jsonl",
+    "textField": "content",
+    "sessionField": "session_id",
+    "permissionArgs": {
+      "readOnly": ["--approval-mode", "plan"],
+      "edits": ["--approval-mode", "auto_edit"],
+      "full": ["--approval-mode", "yolo"]
+    },
     "login": "gemini auth login",
     "apiKeyEnv": "GEMINI_API_KEY",
     "install": "npm install -g @google/gemini-cli",
@@ -1037,6 +1049,8 @@ mod tests {
             resume_args: vec![],
             parser: generic::ParserKind::Plain,
             text_field: String::new(),
+            session_field: String::new(),
+            permission_args: generic::PermissionArgs::default(),
             login: String::new(),
             install: String::new(),
             memory: generic::MemoryStrategy::default(),
@@ -1087,6 +1101,25 @@ mod tests {
 
     /// A prompt lost on the way is worse than a refusal, because the CLI
     /// answers from nothing and exits 0. All three conditions have to hold.
+    #[test]
+    fn the_providers_template_reads_as_a_working_gemini_config() {
+        let configs: Vec<ProviderConfig> =
+            serde_json::from_str(PROVIDERS_TEMPLATE).expect("the template is valid providers.json");
+        let gemini = &configs[0];
+        // Measured on gemini-cli 0.68.0: a prompt on stdin, stream-json lines,
+        // the session on the `init` line, `--resume <id>`, `--approval-mode`;
+        // headless in a folder it was never told to trust it exits 55 and
+        // drops the approval mode, unless given `--skip-trust`.
+        assert!(gemini.prompt_stdin);
+        assert!(gemini.args.contains(&"--skip-trust".to_string()));
+        assert_eq!(gemini.parser, generic::ParserKind::Jsonl);
+        assert_eq!(gemini.text_field, "content");
+        assert_eq!(gemini.session_field, "session_id");
+        assert_eq!(gemini.resume_args, ["--resume", "{sessionId}"]);
+        assert_eq!(gemini.permission_args.full, ["--approval-mode", "yolo"]);
+        assert_eq!(gemini.permission_args.read_only, ["--approval-mode", "plan"]);
+    }
+
     #[test]
     fn only_a_multi_line_argument_through_a_shell_loses_the_prompt() {
         let multi_line = vec!["-p".to_string(), "line one\nline two".to_string()];

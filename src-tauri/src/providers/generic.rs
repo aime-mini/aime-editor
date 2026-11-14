@@ -63,6 +63,17 @@ pub struct ProviderConfig {
     /// For `jsonl`: the field carrying assistant text.
     #[serde(default = "default_text_field")]
     pub text_field: String,
+    /// For `jsonl`: the field naming the session a line belongs to (Gemini CLI
+    /// 0.68: `session_id`, on its `init` line). Read, it lets a conversation -
+    /// and a task run's builder - carry on in the CLI's session through
+    /// `resumeArgs`. Empty = the CLI reports none, and every turn starts fresh.
+    #[serde(default)]
+    pub session_field: String,
+    /// Arguments added to a turn by how much it may do. A configured CLI's
+    /// permission flags are its own (Gemini CLI 0.68: `--approval-mode
+    /// plan|auto_edit|yolo`); with none, the limit travels in the prompt only.
+    #[serde(default)]
+    pub permission_args: PermissionArgs,
     /// Command that signs the user in, run in a terminal on request.
     #[serde(default)]
     pub login: String,
@@ -108,6 +119,28 @@ pub struct ProviderConfig {
 
 fn default_text_field() -> String {
     "text".to_string()
+}
+
+/// A configured CLI's own arguments for each level of `Permission`.
+#[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionArgs {
+    #[serde(default)]
+    pub read_only: Vec<String>,
+    #[serde(default)]
+    pub edits: Vec<String>,
+    #[serde(default)]
+    pub full: Vec<String>,
+}
+
+impl PermissionArgs {
+    fn for_level(&self, permission: Permission) -> &[String] {
+        match permission {
+            Permission::ReadOnly => &self.read_only,
+            Permission::Edits => &self.edits,
+            Permission::Full => &self.full,
+        }
+    }
 }
 
 /// Adapter over one configured CLI.
@@ -185,6 +218,13 @@ impl Adapter for GenericAdapter {
         let prompt = format!("{preamble}\n\n---\n\n{}", req.prompt);
 
         let mut args = expand(&self.config.args, &prompt, req.session_id, req.model);
+        args.extend(
+            self.config
+                .permission_args
+                .for_level(req.permission)
+                .iter()
+                .cloned(),
+        );
         if let Some(session_id) = req.session_id {
             args.extend(expand(
                 &self.config.resume_args,
@@ -317,7 +357,7 @@ fn guard() -> RwLockWriteGuard<'static, Vec<Arc<GenericAdapter>>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{expand, GenericAdapter, MemoryStrategy, ParserKind, ProviderConfig};
+    use super::{expand, GenericAdapter, MemoryStrategy, ParserKind, PermissionArgs, ProviderConfig};
     use crate::providers::adapter::{Adapter, ApiKeyRoute, Permission, ToolSet, TurnRequest};
 
     fn adapter(args: &[&str], resume: &[&str], parser: ParserKind) -> GenericAdapter {
@@ -330,6 +370,8 @@ mod tests {
                 resume_args: resume.iter().map(|a| (*a).to_string()).collect(),
                 parser,
                 text_field: "text".into(),
+                session_field: String::new(),
+                permission_args: PermissionArgs::default(),
                 login: "demo-cli login".into(),
                 install: String::new(),
                 memory: super::MemoryStrategy::default(),
@@ -450,6 +492,35 @@ mod tests {
         let call = piped.chat_invocation(&turn("hello", None));
         assert_eq!(call.args, vec!["chat".to_string()]);
         assert!(call.stdin.expect("prompt on stdin").ends_with("hello"));
+    }
+
+    #[test]
+    fn a_turn_carries_the_cli_s_own_flags_for_how_much_it_may_do() {
+        let flags = |words: &[&str]| words.iter().map(|w| (*w).to_string()).collect::<Vec<_>>();
+        let mut generic = adapter(&["{prompt}"], &[], ParserKind::Plain);
+        generic.config.permission_args = PermissionArgs {
+            read_only: flags(&["--approval-mode", "plan"]),
+            edits: flags(&["--approval-mode", "auto_edit"]),
+            full: flags(&["--approval-mode", "yolo"]),
+        };
+        let args_at = |permission| {
+            generic
+                .chat_invocation(&TurnRequest {
+                    permission,
+                    ..turn("hi", None)
+                })
+                .args
+        };
+        assert!(args_at(Permission::ReadOnly).ends_with(&flags(&["--approval-mode", "plan"])));
+        assert!(args_at(Permission::Edits).ends_with(&flags(&["--approval-mode", "auto_edit"])));
+        assert!(args_at(Permission::Full).ends_with(&flags(&["--approval-mode", "yolo"])));
+
+        let unconfigured = adapter(&["{prompt}"], &[], ParserKind::Plain);
+        assert_eq!(
+            unconfigured.chat_invocation(&turn("hi", None)).args.len(),
+            1,
+            "a CLI configured with no flags gets none"
+        );
     }
 
     #[test]

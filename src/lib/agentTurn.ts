@@ -128,6 +128,7 @@ export async function agentTurn(options: AgentTurnOptions): Promise<AgentTurnOut
     id: ai.providerId,
     parser: provider?.parser,
     textField: provider?.textField,
+    sessionField: provider?.sessionField,
   });
 
   let runId: string | null = null;

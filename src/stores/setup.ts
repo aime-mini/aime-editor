@@ -204,6 +204,7 @@ export const useSetup = create<SetupState>((set, get) => {
         id: ai.providerId,
         parser: provider?.parser,
         textField: provider?.textField,
+        sessionField: provider?.sessionField,
       });
       lastStderrLine = "";
       onSuccess = job.onSuccess;
