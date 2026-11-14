@@ -457,7 +457,7 @@ describe("readTestOutput", () => {
       "Rounds_down",
       "Never_negative (1)",
     ]);
-    expect(report.total).toBe(10);
+    expect(report.total).toBe(9);
   });
 
   it("does not read dotnet's own `Failed!` summary as a test that failed", () => {
@@ -465,7 +465,7 @@ describe("readTestOutput", () => {
     expect(report.reader).toBe("dotnet");
     expect(report.passed).toBe(true);
     expect(report.failed).toEqual([]);
-    expect(report.total).toBe(6);
+    expect(report.total).toBe(5);
   });
 
   it("says nothing about a dotnet run that never reached the runner", () => {
@@ -525,14 +525,14 @@ describe("readTestOutput", () => {
       "tests/test_cart.py::test_errors",
       "tests/test_setup.py::test_reads_orders",
     ]);
-    expect(report.total).toBe(8);
+    expect(report.total).toBe(7);
   });
 
   it("reads pytest -q, whose summary has no frame around it", () => {
     const report = readTestOutput(PYTEST_QUIET, 1);
     expect(report.reader).toBe("pytest");
     expect(report.failed).toHaveLength(4);
-    expect(report.total).toBe(7);
+    expect(report.total).toBe(6);
   });
 
   it("names the pytest file that would not import, the one thing that ran", () => {
@@ -545,7 +545,32 @@ describe("readTestOutput", () => {
     const report = readTestOutput(PYTEST_PASSING, 0);
     expect(report.reader).toBe("pytest");
     expect(report.failed).toEqual([]);
-    expect(report.total).toBe(2);
+    expect(report.total).toBe(1);
+  });
+
+  // Captured from vitest 3.2.4, Jest 30.0.0 and dotnet test (SDK 10.0.300), a test-name filter
+  // matching one of two tests, then none: the runner exits 0 either way.
+  it("counts only the tests that ran, so a filter that matched nothing is not a pass", () => {
+    const vitestOne = " Test Files  1 passed (1)\n      Tests  1 passed | 1 skipped (2)";
+    const vitestNone = " Test Files  1 skipped (1)\n      Tests  2 skipped (2)";
+    expect(readTestOutput(vitestOne, 0).total).toBe(1);
+    expect(readTestOutput(vitestNone, 0).total).toBe(0);
+
+    const jestOne = "Test Suites: 1 passed, 1 total\nTests:       1 skipped, 1 passed, 2 total";
+    const jestNone = "Test Suites: 1 skipped, 0 of 1 total\nTests:       2 skipped, 2 total";
+    expect(readTestOutput(jestOne, 0).total).toBe(1);
+    expect(readTestOutput(jestNone, 0).total).toBe(0);
+
+    const dotnetNone = [
+      "A total of 1 test files matched the specified pattern.",
+      "No test matches the given testcase filter `FullyQualifiedName~Nothing` in C:\\work\\xt\\bin\\Debug\\net10.0\\xt.dll",
+    ].join("\n");
+    const none = readTestOutput(dotnetNone, 0);
+    expect(none.reader).toBe("dotnet");
+    expect(none.total).toBe(0);
+    const dotnetAll =
+      "Passed!  - Failed:     0, Passed:     2, Skipped:     1, Total:     3, Duration: 23 ms - xt.dll (net10.0)";
+    expect(readTestOutput(dotnetAll, 0).total).toBe(2);
   });
 
   it("leaves each runner's output to its own reader", () => {

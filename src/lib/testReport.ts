@@ -28,7 +28,12 @@ export interface TestReport {
   passed: boolean;
   /** Every failing test the output named, in the order it named them. */
   failed: string[];
-  /** How many tests ran, when the output says; null when it does not. */
+  /**
+   * How many tests ran - passed or failed, never skipped - when the output
+   * says; null when it does not. Skipped tests are left out because a filter
+   * that matches nothing skips everything and exits green (measured: vitest
+   * 3.2, Jest 30.0, dotnet test on SDK 10), and that run proved nothing.
+   */
   total: number | null;
   /**
    * Which reader understood this output, or null when none did — in which case
@@ -118,7 +123,7 @@ const cargoReader: Reader = {
     let total = 0;
     for (const line of lines) {
       const match = CARGO_LINE.exec(line);
-      if (match === null) continue;
+      if (match === null || match[2] === "ignored") continue;
       total += 1;
       if (match[2] === "FAILED") failed.push(match[1]);
     }
@@ -149,7 +154,9 @@ const cargoReader: Reader = {
  * the exit code alone rather than about tests it invented.
  */
 const DOTNET_SUMMARY =
-  /^(?:Passed|Failed)!\s+-\s+Failed:\s+\d+, Passed:\s+\d+, Skipped:\s+\d+, Total:\s+(\d+)/;
+  /^(?:Passed|Failed)!\s+-\s+Failed:\s+(\d+), Passed:\s+(\d+), Skipped:\s+\d+, Total:\s+\d+/;
+/** What dotnet test (SDK 10.0.300) prints, exiting 0 and with no summary, when a `--filter` matches no test. */
+const DOTNET_NO_MATCH = /^No test matches the given testcase filter/;
 /** `Failed!  - Failed: …` is the summary, not a test: the space after the word tells them apart. */
 const DOTNET_FAILURE = /^Failed\s+(.+?)\s+\[[^\]]*\]$/;
 
@@ -160,7 +167,9 @@ const dotnetReader: Reader = {
     const totals = lines
       .map((line) => DOTNET_SUMMARY.exec(line))
       .filter((match) => match !== null)
-      .map((match) => Number(match[1]));
+      .map((match) => Number(match[1]) + Number(match[2]));
+    if (totals.length === 0 && lines.some((line) => DOTNET_NO_MATCH.test(line)))
+      return { failed: [], total: 0 };
     // Without a summary line the run never reached the runner - a build error,
     // or a project with no test assembly - and nothing here may be claimed.
     if (totals.length === 0) return null;
@@ -188,6 +197,11 @@ const VITEST_FAIL = /^FAIL\s+(.+?)\s*$/;
 const VITEST_TOTAL = /^Tests\s+(?:(\d+) failed\s*\|?\s*)?(?:(\d+) passed)?.*\((\d+)\)/;
 const VITEST_NO_TESTS = /^Test Files\s+/;
 
+/** An optional count a regular expression captured: a group that did not match is undefined at run time. */
+function countIn(group: string | undefined): number {
+  return group === undefined ? 0 : Number(group);
+}
+
 const vitestReader: Reader = {
   name: "vitest",
   read: (text) => {
@@ -202,7 +216,7 @@ const vitestReader: Reader = {
       .map((match) => match[1].replace(/\s*>\s*/g, " > "));
     return {
       failed: [...new Set(failed)],
-      total: summary === undefined ? null : Number(summary[3]),
+      total: summary === undefined ? null : countIn(summary[1]) + countIn(summary[2]),
     };
   },
 };
@@ -221,6 +235,8 @@ const vitestReader: Reader = {
  * - because a change that breaks an import breaks every test in that file.
  */
 const JEST_TOTAL = /^Tests:\s+.*?(\d+) total$/;
+const JEST_FAILED = /(\d+) failed/;
+const JEST_PASSED = /(\d+) passed/;
 const JEST_FILE = /^(?:FAIL|PASS)\s+(\S+)/;
 const JEST_FAILURE = /^●\s+(.+)$/;
 
@@ -241,7 +257,9 @@ const jestReader: Reader = {
       const failure = JEST_FAILURE.exec(line);
       if (failure !== null) failed.push(file === "" ? failure[1] : `${file} › ${failure[1]}`);
     }
-    return { failed: [...new Set(failed)], total: Number(summary[1]) };
+    const line = summary[0];
+    const ran = Number(JEST_FAILED.exec(line)?.[1] ?? 0) + Number(JEST_PASSED.exec(line)?.[1] ?? 0);
+    return { failed: [...new Set(failed)], total: ran };
   },
 };
 
@@ -305,7 +323,7 @@ const playwrightReader: Reader = {
 const PYTEST_SUMMARY = /^=*\s*((?:\d+ [a-z]+(?:, )?)+) in [\d.]+s\b/;
 const PYTEST_NOTHING = /^=*\s*no tests ran in [\d.]+s\b/;
 const PYTEST_FAILURE = /^(?:FAILED|ERROR) ([^\s[]+(?:\[[^\]]*\])?)/;
-const PYTEST_COUNTED = new Set(["failed", "passed", "skipped", "error", "errors", "xfailed", "xpassed"]);
+const PYTEST_COUNTED = new Set(["failed", "passed", "error", "errors", "xfailed", "xpassed"]);
 
 const pytestReader: Reader = {
   name: "pytest",
