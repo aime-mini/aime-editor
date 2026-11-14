@@ -22,6 +22,7 @@ import {
   resourceNamedBy,
   type DeployNote,
   type DeployPlan,
+  type DeployStep,
   type StagedFile,
   type Survey,
 } from "../lib/deploy";
@@ -50,6 +51,7 @@ export function DeployPane({ slot }: { slot: string }) {
   const { close, cancel, confirm, dismiss, start, revise, steer, agree } = useDeploy();
   if (deploy === undefined) return null;
   const { stage, account, cloudId, log, notes, spentUsd } = deploy;
+  const lineOf = (step: DeployStep) => commandLine(cloudId, step, account);
   // A page that waits for the person has its own Stop beside its Go.
   const live =
     stage.kind !== "confirm" &&
@@ -133,7 +135,7 @@ export function DeployPane({ slot }: { slot: string }) {
 
         {(stage.kind === "deploying" || stage.kind === "proving") && (
           <>
-            <Steps steps={stage.steps} />
+            <Steps steps={stage.steps} lineOf={lineOf} />
             <div className="mt-5">
               <Steer
                 notes={notes}
@@ -165,7 +167,7 @@ export function DeployPane({ slot }: { slot: string }) {
                 {stage.kept > 0 && ` ${t("deploy.kept", { count: stage.kept })}`}
               </p>
             </div>
-            <Steps steps={stage.steps} />
+            <Steps steps={stage.steps} lineOf={lineOf} />
             <Exchange notes={notes} />
             <AgainOrClose
               onAgain={() => void start(cloudId, account)}
@@ -198,7 +200,7 @@ export function DeployPane({ slot }: { slot: string }) {
             />
             {stage.steps.length > 0 && (
               <div className="mt-4">
-                <Steps steps={stage.steps} />
+                <Steps steps={stage.steps} lineOf={lineOf} />
               </div>
             )}
             <Exchange notes={notes} />
@@ -447,7 +449,7 @@ function Reconfirm({
   const unwritten = stage.files.some((file) => file.content === null);
   return (
     <div className="space-y-5">
-      {done.length > 0 && <Steps steps={done} />}
+      {done.length > 0 && <Steps steps={done} lineOf={(step) => commandLine(cloudId, step, account)} />}
       <Section title={t("deploy.reconfirmTitle")} hint={`${stage.why} ${t("deploy.reconfirmHint")}`}>
         <ol className="space-y-2">
           {stage.revised.map((step, index) => (
@@ -686,8 +688,11 @@ function Command({ text }: { text: string }) {
   );
 }
 
-/** The steps with their marks, while the deploy runs and after. */
-function Steps({ steps }: { steps: StepRun[] }) {
+/**
+ * The steps with their marks, while the deploy runs and after - each with the
+ * command it ran, so a command a fix swapped in is read here, not only in the log.
+ */
+function Steps({ steps, lineOf }: { steps: StepRun[]; lineOf: (step: DeployStep) => string }) {
   const t = useT();
   return (
     <section>
@@ -696,7 +701,12 @@ function Steps({ steps }: { steps: StepRun[] }) {
         {steps.map((run, index) => (
           <li key={`${String(index)}-${run.step.label}`} className="flex items-start gap-2 text-[12px]">
             <Mark state={run.state} />
-            <span className={run.state === "pending" ? "text-muted" : ""}>{run.step.label}</span>
+            <span className="min-w-0 flex-1">
+              <span className={run.state === "pending" ? "text-muted" : ""}>{run.step.label}</span>
+              <code className="block truncate font-mono text-[10.5px] text-muted" title={lineOf(run.step)}>
+                {lineOf(run.step)}
+              </code>
+            </span>
           </li>
         ))}
       </ol>
