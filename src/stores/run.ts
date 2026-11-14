@@ -32,6 +32,7 @@ import {
 import { agentTurn, cancelAgentTurn, failureOf } from "../lib/agentTurn";
 import { troubleIn } from "../lib/turnTrouble";
 import { baselineKey, keepBaseline, keptBaseline } from "../lib/baselineCache";
+import { footprintRules, formatBytes, sweepRun, type SweepReport } from "../lib/runSweep";
 import { aiOneshot } from "../lib/aiOneshot";
 import {
   auditPrompt,
@@ -134,6 +135,7 @@ import {
   RUNS_DIR,
   saveRun,
   wasInterrupted,
+  type Footprint,
   type SavedRun,
 } from "../lib/runFile";
 import {
@@ -263,6 +265,8 @@ interface Artifacts {
    * was working: every check from then on measured their edit too.
    */
   yourEdits: string[];
+  /** What the run made for its own use, for the sweep to take back (`lib/runSweep.ts`). */
+  footprint: Footprint;
 }
 
 const NOTHING_YET: Artifacts = {
@@ -286,6 +290,7 @@ const NOTHING_YET: Artifacts = {
   othersAtStart: [],
   undo: null,
   yourEdits: [],
+  footprint: { turns: [], swept: false },
 };
 
 /**
@@ -539,12 +544,16 @@ export const useRun = create<RunState>((set, get) => ({
     if (shown === null) return;
     const id = shown.run.id;
     await stopEngine(id);
-    opsFor(id).set((current) => ({
+    const ops = opsFor(id);
+    const stoppedAt = shown.run.current ?? "understand";
+    ops.set((current) => ({
       run: {
         ...abandonRest(current.run, current.run.current ?? "understand", "cancelled", ""),
         ended: { kind: "cancelled" },
       },
     }));
+    // Stopped is over: what the run made for itself goes, as for any run that ends.
+    await cleanUp({ workRoot: shown.workRoot, id }, ops.get, ops.set, stoppedAt);
   },
 
   resume: async () => {
@@ -908,6 +917,8 @@ function slotFrom(saved: SavedRun, home: string, interrupted: boolean): RunSlot 
     othersAtStart: saved.othersAtStart ?? [],
     undo: saved.undo ?? null,
     yourEdits: saved.yourEdits ?? [],
+    // A run journaled before footprints made nothing it recorded; there is nothing to sweep.
+    footprint: saved.footprint ?? { turns: [], swept: true },
   };
 }
 
@@ -1051,6 +1062,7 @@ async function drive(id: string, start: PhaseId, context: Context, set: Setter, 
     // reviewer that found something has found something, not grounds to throw
     // away a change whose tests all pass.
     if (!mayContinue(at, result)) {
+      await cleanUp(context, get, set, at);
       update(set, (run) => ({
         ...abandonRest(run, at, "skipped", ""),
         ended: { kind: "blocked", phase: at, why: result.summary },
@@ -1116,6 +1128,7 @@ function artifactsOf(slot: RunSlot): Artifacts {
     othersAtStart: slot.othersAtStart,
     undo: slot.undo,
     yourEdits: slot.yourEdits,
+    footprint: slot.footprint,
   };
 }
 
@@ -1686,6 +1699,47 @@ function coverageLines(ticket: Ticket, brief: Brief): string[] {
     }
     return translate("run.coverageMissing", { sentence: line.sentence });
   });
+}
+
+/**
+ * Takes back everything the run made for its own use, once: the processes its
+ * AI turns left running, its labelled Docker objects, what it installed, its
+ * scratch folder (`lib/runSweep.ts`). Answers the line the log and the report
+ * say it with; empty when the run was already swept.
+ */
+async function cleanUp(
+  where: Pick<Context, "workRoot" | "id">,
+  get: Getter,
+  set: Setter,
+  phase: PhaseId,
+): Promise<string> {
+  const { footprint } = get();
+  if (footprint.swept) return "";
+  const nextId = commandIdFor(where.id);
+  const report = await sweepRun({
+    root: where.workRoot,
+    runId: where.id,
+    turns: footprint.turns,
+    run: (command, cwd) => runCommand(set, phase)(nextId(), command, cwd, SWEEP_COMMAND_TIMEOUT_MS),
+  });
+  set({ footprint: { ...footprint, swept: true } });
+  const line = sweptLine(report);
+  note(set, phase, line, report.failed.length > 0 ? "problem" : "note");
+  return line;
+}
+
+/** How long one cleanup command may take; removing an image or an SDK is not instant. */
+const SWEEP_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
+
+function sweptLine(report: SweepReport): string {
+  const done = translate("run.swept", {
+    freed: formatBytes(report.freedBytes),
+    docker: report.docker,
+    tools: report.uninstalled,
+  });
+  return report.failed.length === 0
+    ? done
+    : `${done}\n${translate("run.sweepFailed", { items: report.failed.join("; ") })}`;
 }
 
 /** One case as a line, for the pages and the prompts that quote it. */
@@ -2481,6 +2535,7 @@ async function report(context: Context, set: Setter, get: Getter): Promise<Phase
   if (strayed.length > 0) {
     return { state: "blocked", summary: translate("run.strayed", { repositories: strayed.join(", ") }) };
   }
+  const swept = await cleanUp(context, get, set, "report");
   const state = get();
   const evidence = await collectEvidence(context.workRoot, state.run.startedAt);
   set({ evidence });
@@ -2550,6 +2605,7 @@ async function report(context: Context, set: Setter, get: Getter): Promise<Phase
         ? ""
         : translate("run.reportYourEdits", { files: state.yourEdits.join(", ") }),
       committed,
+      swept,
       translate("run.reportSaved", { file: `${RUNS_DIR}/${state.run.id}.md` }),
     ]
       .filter((line) => line !== "")
@@ -3668,6 +3724,7 @@ async function oneTurn(
     },
     onStarted: (runId) => {
       engine.agentRun = runId;
+      set((slot) => ({ footprint: { ...slot.footprint, turns: [...slot.footprint.turns, runId] } }));
     },
   });
   engine.agentRun = null;
@@ -3725,7 +3782,12 @@ async function runAgent(
   const engine = engineFor(context.id);
   const session = builderIsWarm(context.id) ? (engine.builder?.sessionId ?? null) : null;
   note(set, phase, translate(session === null ? "run.builderFresh" : "run.builderCarriesOn"));
-  const asking = [session === null ? dossierOf(context, get) : "", prompt, MENDING_RULES]
+  const asking = [
+    session === null ? dossierOf(context, get) : "",
+    prompt,
+    MENDING_RULES,
+    footprintRules(context.workRoot, context.id),
+  ]
     .filter(Boolean)
     .join("\n\n");
   const agreed = await casesOnDisk(context.workRoot);

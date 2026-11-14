@@ -1384,6 +1384,9 @@ export const en = {
     "The run has been working for {hours} hours without finishing, so it paused rather than keep going round. Everything it finished is kept; carry on to give it another spell.",
   "run.baselineReused":
     "The suites and checks of this commit were measured {minutes} min ago, on a clean tree - reused instead of run again",
+  "run.swept":
+    "Cleaned up after itself: {freed} of its own files freed, {docker} Docker object(s) and {tools} install(s) removed, and nothing its AI turns started left running",
+  "run.sweepFailed": "Could not remove, so left in place: {items}",
   "run.agentCancelled": "The coding run was stopped.",
   "run.disputed": "The builder says an agreed criterion cannot hold: {reason}",
   "run.casesRestored": "The builder rewrote {file}; the agreed version is back",

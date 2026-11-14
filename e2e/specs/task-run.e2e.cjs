@@ -61,6 +61,10 @@ const keysFile = path.join(configDir, "api-keys.json");
 const MODE_FILE = path.join(os.tmpdir(), "aime-run-probe-mode.txt");
 /** How many times the probe was asked to implement, for the mode that fails the first time. */
 const TRIES_FILE = path.join(os.tmpdir(), "aime-run-probe-tries.txt");
+/** Where the littering probe notes the pid of the process it leaves behind. */
+const LEFTOVER_PID_FILE = path.join(os.tmpdir(), "aime-run-probe-leftover.pid");
+/** Written by the remove command the littering probe lists: proof the sweep ran it. */
+const UNINSTALLED_MARKER = path.join(os.tmpdir(), "aime-run-probe-uninstalled.txt").replace(/\\/g, "/");
 const PROBE_SCRIPT = path.join(os.tmpdir(), "aime-run-probe.cjs");
 
 /**
@@ -269,10 +273,27 @@ if (prompt.includes("Check another reader's understanding of a ticket")) {
   process.stdout.write("API Error: Connection refused - a firewall or proxy may be blocking it (ECONNREFUSED)\n");
   process.exit(1);
 } else if (prompt.includes("Implement this work item")) {
+  // What a real builder leaves behind when it proves a change: test data in its
+  // scratch folder, a process still running, a tool it installed.
+  if (mode === "litters" || mode === "littersBreaks") {
+    const scratch = prompt.match(/goes under (\S+\/scratch)/)[1];
+    const list = prompt.match(/listed in\s+(\S+installed\.json)/)[1];
+    fs.mkdirSync(scratch, { recursive: true });
+    fs.writeFileSync(path.join(scratch, "test-data.bin"), Buffer.alloc(1024 * 1024));
+    const leftover = require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 600000)"], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    leftover.unref();
+    fs.writeFileSync(${JSON.stringify(LEFTOVER_PID_FILE)}, String(leftover.pid));
+    const remove = "node -e \"require('fs').writeFileSync('" + ${JSON.stringify(UNINSTALLED_MARKER)} + "', 'removed')\"";
+    fs.writeFileSync(list, JSON.stringify({ installed: [{ what: "a test emulator", remove }] }));
+  }
   // The code and its tests in one phase, in that order - which is the order the
   // user works in. "repairs" and "breaks" both break something here; they
   // differ in what the repair rounds do about it afterwards.
-  const breaks = mode === "breaks" || mode === "repairs" || mode === "disputes";
+  const breaks = mode === "breaks" || mode === "repairs" || mode === "disputes" || mode === "littersBreaks";
   const source = breaks
     ? BREAKS
     : { sloppy: SLOPPY, slow: SLOW }[mode] ?? SOUND;
@@ -842,6 +863,8 @@ describe("Task run", () => {
     fs.rmSync(PROBE_SCRIPT, { force: true });
     fs.rmSync(MODE_FILE, { force: true });
     fs.rmSync(TRIES_FILE, { force: true });
+    fs.rmSync(LEFTOVER_PID_FILE, { force: true });
+    fs.rmSync(UNINSTALLED_MARKER, { force: true });
     board.server?.close();
     try {
       fs.rmSync(repo, { recursive: true, force: true });
@@ -1129,6 +1152,54 @@ ${suite.output}`,
     fs.writeFileSync(MODE_FILE, "sound");
     await (await $("button*=Carry on")).click();
     await waitForText("finished, and every gate agreed", "the run did not carry on after the sign-in", 240_000);
+  });
+
+  /** Whether a process is still alive; signal 0 asks without touching it. */
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /** Everything the littering probe left must be gone once the run has ended, however it ended. */
+  async function assertSwept(dir) {
+    const [journal] = journalsIn(dir);
+    const scratch = path.join(dir, ".aime", "runs", journal.run.id, "scratch");
+    await browser.waitUntil(() => !fs.existsSync(scratch), {
+      timeout: 60_000,
+      timeoutMsg: `the run's scratch folder is still on the disk: ${scratch}`,
+    });
+    assert.ok(fs.existsSync(UNINSTALLED_MARKER), "what the run listed as installed was never removed");
+    const pid = Number(fs.readFileSync(LEFTOVER_PID_FILE, "utf8"));
+    await browser.waitUntil(() => !alive(pid), {
+      timeout: 30_000,
+      timeoutMsg: `the process the run's AI turn left behind is still running (pid ${String(pid)})`,
+    });
+    assert.equal(journal.footprint?.swept, true, "the journal does not record the sweep");
+  }
+
+  it("cleans up after itself when it finishes: scratch, installs and what its AI turns left running", async () => {
+    fs.rmSync(UNINSTALLED_MARKER, { force: true });
+    fs.writeFileSync(MODE_FILE, "litters");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+    await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
+    await waitForText("Cleaned up after itself", "the run never said it cleaned up");
+    await assertSwept(repo);
+  });
+
+  it("cleans up after itself when it is blocked too", async () => {
+    fs.rmSync(UNINSTALLED_MARKER, { force: true });
+    fs.writeFileSync(MODE_FILE, "littersBreaks");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+    await waitForText("Cleaned up after itself", "a blocked run left what it made behind", 300_000);
+    await assertSwept(repo);
   });
 
   it("fixes the project's own check when the change breaks it", async () => {

@@ -124,6 +124,18 @@ export interface SavedRun {
    * journaled before the ledger was checked has none on record.
    */
   ledger?: LedgerGap[];
+  /** What the run made for its own use, and whether it was taken back. Optional: older runs kept no such record. */
+  footprint?: Footprint;
+}
+
+/**
+ * What a run makes for itself that the sweep has to find again
+ * (`lib/runSweep.ts`): the AI turns it started - what they leave running
+ * carries their id - and whether the sweep has run.
+ */
+export interface Footprint {
+  turns: string[];
+  swept: boolean;
 }
 
 const VERSION = 5;

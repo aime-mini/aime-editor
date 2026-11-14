@@ -1378,6 +1378,9 @@ export const vi: Record<TranslationKey, string> = {
     "Lượt chạy đã làm {hours} giờ mà chưa xong nên tạm dừng thay vì cứ quay vòng. Mọi việc đã xong vẫn được giữ; bấm Chạy tiếp để cho nó thêm một đợt.",
   "run.baselineReused":
     "Bộ test và luật kiểm của commit này đã được đo {minutes} phút trước trên tree sạch - dùng lại thay vì chạy lại",
+  "run.swept":
+    "Đã tự dọn: giải phóng {freed} file của chính nó, gỡ {docker} đối tượng Docker và {tools} thứ đã cài, không để lại tiến trình nào các lượt AI đã bật",
+  "run.sweepFailed": "Không gỡ được nên vẫn còn: {items}",
   "run.agentCancelled": "Lượt code đã bị dừng.",
   "run.disputed": "Người làm báo một AC đã thống nhất không thể đạt: {reason}",
   "run.casesRestored": "Người làm đã sửa {file}; bản đã thống nhất được đặt lại",

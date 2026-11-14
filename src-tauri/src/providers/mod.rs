@@ -547,6 +547,22 @@ pub fn ai_cancel(state: State<'_, ProviderState>, run_id: String) -> Result<(), 
     Ok(())
 }
 
+/// Ends whatever these turns left running - the processes they started, still
+/// carrying their mark (`left_running`) - and stops following them. For a task
+/// run cleaning up after itself: its turns are done, and nothing they started
+/// is the user's.
+#[tauri::command]
+pub async fn ai_end_left_running(
+    state: State<'_, ProviderState>,
+    run_ids: Vec<String>,
+) -> Result<(), String> {
+    for run_id in &run_ids {
+        state.followed.stop(run_id);
+        left_running::end(run_id).await;
+    }
+    Ok(())
+}
+
 /// Stops following what a finished turn left running; the processes run on.
 #[tauri::command]
 pub fn ai_unfollow(state: State<'_, ProviderState>, run_id: String) {

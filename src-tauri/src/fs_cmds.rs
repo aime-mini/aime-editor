@@ -305,6 +305,27 @@ pub async fn delete_path(path: String) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+/// How many bytes a file or a folder holds, everything below it counted - what
+/// deleting it would give back. A link is counted as itself, never followed:
+/// following one could count a whole drive, or count a folder twice.
+#[tauri::command]
+pub async fn path_size(path: String) -> Result<u64, String> {
+    crate::background::off_main_thread(move || bytes_under(Path::new(&path))).await?
+}
+
+fn bytes_under(path: &Path) -> Result<u64, String> {
+    let meta = fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.is_dir() {
+        return Ok(meta.len());
+    }
+    let mut total = 0;
+    for entry in fs::read_dir(path).map_err(|e| format!("{}: {e}", path.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        total += bytes_under(&entry.path())?;
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -314,6 +335,19 @@ mod tests {
         let path = std::env::temp_dir().join(name);
         fs::remove_file(&path).ok();
         path
+    }
+
+    #[tokio::test]
+    async fn a_folder_s_size_is_every_file_below_it() {
+        let dir = std::env::temp_dir().join("aime-path-size");
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(dir.join("nested")).expect("folders");
+        fs::write(dir.join("a.bin"), [0u8; 1000]).expect("a");
+        fs::write(dir.join("nested").join("b.bin"), [0u8; 234]).expect("b");
+
+        let size = super::path_size(dir.to_string_lossy().to_string()).await;
+        fs::remove_dir_all(&dir).ok();
+        assert_eq!(size, Ok(1234));
     }
 
     const MARKED: &[u8] = b"\xEF\xBB\xBFusing Nop.Core.Caching;\n";
