@@ -115,6 +115,8 @@ export interface PhaseResult {
   detail?: string;
   startedAt?: number;
   endedAt?: number;
+  /** What the phase's AI turns cost, as their CLIs reported it; absent when none said. */
+  costUsd?: number;
 }
 
 /** A whole run, as the panel shows it and as it is written to disk. */

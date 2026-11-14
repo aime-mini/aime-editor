@@ -1374,6 +1374,10 @@ export const vi: Record<TranslationKey, string> = {
   "run.pausedUnreachable":
     "Không kết nối được dịch vụ AI trong một lúc lâu: {reason}. Mọi việc đã xong vẫn được giữ; bấm Chạy tiếp khi dịch vụ trả lời lại.",
   "run.unreachableRetry": "Không kết nối được dịch vụ AI ({reason}) - thử lại sau {seconds} giây",
+  "run.brake":
+    "Lượt chạy đã làm {hours} giờ mà chưa xong nên tạm dừng thay vì cứ quay vòng. Mọi việc đã xong vẫn được giữ; bấm Chạy tiếp để cho nó thêm một đợt.",
+  "run.baselineReused":
+    "Bộ test và luật kiểm của commit này đã được đo {minutes} phút trước trên tree sạch - dùng lại thay vì chạy lại",
   "run.agentCancelled": "Lượt code đã bị dừng.",
   "run.disputed": "Người làm báo một AC đã thống nhất không thể đạt: {reason}",
   "run.casesRestored": "Người làm đã sửa {file}; bản đã thống nhất được đặt lại",

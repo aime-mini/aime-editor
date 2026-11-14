@@ -1380,6 +1380,10 @@ export const en = {
   "run.pausedUnreachable":
     "The AI service could not be reached for some time: {reason}. Everything finished so far is kept; carry on once it answers again.",
   "run.unreachableRetry": "The AI service could not be reached ({reason}) - trying again in {seconds} s",
+  "run.brake":
+    "The run has been working for {hours} hours without finishing, so it paused rather than keep going round. Everything it finished is kept; carry on to give it another spell.",
+  "run.baselineReused":
+    "The suites and checks of this commit were measured {minutes} min ago, on a clean tree - reused instead of run again",
   "run.agentCancelled": "The coding run was stopped.",
   "run.disputed": "The builder says an agreed criterion cannot hold: {reason}",
   "run.casesRestored": "The builder rewrote {file}; the agreed version is back",

@@ -31,6 +31,7 @@ import {
 } from "../lib/aiRun";
 import { agentTurn, cancelAgentTurn, failureOf } from "../lib/agentTurn";
 import { troubleIn } from "../lib/turnTrouble";
+import { baselineKey, keepBaseline, keptBaseline } from "../lib/baselineCache";
 import { aiOneshot } from "../lib/aiOneshot";
 import {
   auditPrompt,
@@ -365,11 +366,20 @@ interface RunState {
  * the other one's process.
  */
 interface Engine {
-  inFlight: { kind: "command" | "agent"; id: string } | null;
+  /** Every command started for the run, so Stop reaches the ones running side by side. */
+  commands: Set<string>;
+  /** The AI turn in flight, by its run id. */
+  agentRun: string | null;
   /** True from start to the run's resting place; guards dismissal and rivals. */
   driving: boolean;
+  /** When the run was last set driving - started, or carried on - for the brake (`RUN_BRAKE_MS`). */
+  drivingSince: number;
   /** The builder's session, while carrying it on is worth it (`runAgent`). */
   builder: { sessionId: string; lastTurnAt: number } | null;
+  /** The running cost each session has reported so far, so a resumed turn is charged only its own share. */
+  sessionCosts: Map<string, number>;
+  /** What the phase in flight has cost so far. */
+  phaseCostUsd: number;
 }
 
 const engines = new Map<string, Engine>();
@@ -377,7 +387,15 @@ const engines = new Map<string, Engine>();
 function engineFor(id: string): Engine {
   const found = engines.get(id);
   if (found !== undefined) return found;
-  const fresh: Engine = { inFlight: null, driving: false, builder: null };
+  const fresh: Engine = {
+    commands: new Set(),
+    agentRun: null,
+    driving: false,
+    drivingSince: Date.now(),
+    builder: null,
+    sessionCosts: new Map(),
+    phaseCostUsd: 0,
+  };
   engines.set(id, fresh);
   return fresh;
 }
@@ -392,9 +410,10 @@ function engineFor(id: string): Engine {
 async function stopEngine(id: string): Promise<void> {
   const engine = engines.get(id);
   if (engine === undefined) return;
-  if (engine.inFlight?.kind === "command") await execCancel(engine.inFlight.id);
-  if (engine.inFlight?.kind === "agent") await cancelAgentTurn(engine.inFlight.id);
-  engine.inFlight = null;
+  await Promise.all([...engine.commands].map((command) => execCancel(command)));
+  engine.commands.clear();
+  if (engine.agentRun !== null) await cancelAgentTurn(engine.agentRun);
+  engine.agentRun = null;
   engine.driving = false;
 }
 
@@ -977,12 +996,13 @@ async function drive(id: string, start: PhaseId, context: Context, set: Setter, 
   // old hold forward is what made a resumed run stop again the instant its
   // first phase finished.
   update(set, (run) => ({ ...run, ended: null }));
+  const engine = engineFor(id);
+  engine.drivingSince = Date.now();
 
   const rest = () => {
     journal(context, get);
     refreshHistory(context.home);
-    const engine = engines.get(id);
-    if (engine !== undefined) engine.driving = false;
+    engine.driving = false;
   };
 
   while (phase !== null) {
@@ -994,6 +1014,7 @@ async function drive(id: string, start: PhaseId, context: Context, set: Setter, 
     note(set, at, translate(PHASE_LABELS[at]));
 
     const started = Date.now();
+    engine.phaseCostUsd = 0;
     let result: PhaseResult;
     try {
       result = await runPhase(at, context, set, get);
@@ -1015,7 +1036,12 @@ async function drive(id: string, start: PhaseId, context: Context, set: Setter, 
     // The project closed under this run: its slot is gone, its journal already
     // marks it interrupted, and there is nothing left to write to.
     if (!Object.hasOwn(useRun.getState().slots, id)) return;
-    result = { ...result, startedAt: started, endedAt: Date.now() };
+    result = {
+      ...result,
+      startedAt: started,
+      endedAt: Date.now(),
+      ...(engine.phaseCostUsd > 0 ? { costUsd: engine.phaseCostUsd } : {}),
+    };
     update(set, (run) => ({ ...run, results: { ...run.results, [at]: result } }));
     // Written after every phase, so a lid closing here costs this phase and
     // nothing before it.
@@ -1187,18 +1213,9 @@ async function takeBaseline(context: Context, set: Setter, get: Getter): Promise
   set({ untrackedBefore: await untrackedNow(gitRootOf(context)) });
   if (spansWorkspace(context)) set({ othersAtStart: await othersNow(context, [context.tree]) });
 
-  const nextId = commandIdFor(context.id);
   const tasks = await tasksOfRun(context, get);
-  const suites = await settleEnvironment(
-    tasks,
-    await runSuitesIn(tasks, context, set, "understand", null),
-    context,
-    set,
-    get,
-  );
-  set({ baseline: suites });
-  const checks = await runChecks(tasks, context.workRoot, nextId, runCommand(set, "understand"));
-  set({ checks });
+  const { suites, checks } = await measureBaseline(context, tasks, set, get);
+  set({ baseline: suites, checks });
 
   const declared = testTasksOf(tasks).length;
   if (declared > 0 && measured(suites).length === 0) {
@@ -1229,6 +1246,69 @@ async function takeBaseline(context: Context, set: Setter, get: Getter): Promise
       .filter(Boolean)
       .join("\n"),
   };
+}
+
+/**
+ * Every suite and check as the tree stands. Read back from the last run on the
+ * same clean commit when there is one (`lib/baselineCache.ts` says when that
+ * holds), and otherwise measured - the checks beside the suites rather than
+ * after them, since neither changes the tree.
+ */
+async function measureBaseline(
+  context: Context,
+  tasks: TaskDef[],
+  set: Setter,
+  get: Getter,
+): Promise<{ suites: Baseline; checks: CheckPass }> {
+  const key = await cleanTreeKey(get, tasks);
+  if (key !== null) {
+    const kept = await keptBaseline(context.home, key, Date.now());
+    if (kept !== null) {
+      set({ environment: kept.environment });
+      const minutes = Math.round((Date.now() - kept.takenAt) / 60_000);
+      note(set, "understand", translate("run.baselineReused", { minutes }));
+      return { suites: kept.baseline, checks: kept.checks };
+    }
+  }
+  const [first, checks] = await Promise.all([
+    runSuitesIn(tasks, context, set, "understand", null),
+    runChecks(tasks, context.workRoot, commandIdFor(context.id), runCommand(set, "understand")),
+  ]);
+  const suites = await settleEnvironment(tasks, first, context, set, get);
+  if (key !== null) {
+    await keepBaseline(context.home, {
+      key,
+      takenAt: Date.now(),
+      baseline: suites,
+      checks,
+      environment: get().environment,
+    });
+  }
+  return { suites, checks };
+}
+
+/**
+ * What a baseline of this run's trees would be kept under: their commits and
+ * the commands it runs. Null when any tree has a change no commit holds - the
+ * baseline then has to measure it - or its commit cannot be read.
+ */
+async function cleanTreeKey(get: Getter, tasks: TaskDef[]): Promise<string | null> {
+  const heads: string[] = [];
+  for (const { tree } of treesOf(get())) {
+    try {
+      const status = await invoke<GitStatus>("git_status", { root: tree });
+      // Aime's own folder is not the project's code, and the run has just written to it.
+      if (status.files.some((file) => !file.path.startsWith(".aime/"))) return null;
+      // A repository with no commit yet has no history to name the tree by.
+      const head = (await invoke<{ hash: string }[]>("git_log", { root: tree, limit: 1 })).at(0);
+      if (head === undefined) return null;
+      heads.push(head.hash);
+    } catch {
+      // Not a repository Aime can read: measured afresh, which is never wrong.
+      return null;
+    }
+  }
+  return baselineKey(heads, tasks);
 }
 
 /**
@@ -3450,11 +3530,16 @@ const EARLIER_REVIEW = `This change has been reviewed before. The author worked 
  * right handle — and only that run's handle. */
 function commandIdFor(runId: string): () => string {
   return () => {
-    const id = `${runId}-cmd-${String(Date.now())}`;
-    engineFor(runId).inFlight = { kind: "command", id };
+    // A counter rather than the clock: commands started side by side in the
+    // same millisecond would otherwise share one handle.
+    commandSerial += 1;
+    const id = `${runId}-cmd-${String(commandSerial)}`;
+    engineFor(runId).commands.add(id);
     return id;
   };
 }
+
+let commandSerial = 0;
 
 /** Runs a command for a phase, feeding its output into the run's log. */
 function runCommand(set: Setter, phase: PhaseId) {
@@ -3490,8 +3575,13 @@ async function runCli(
   permission: "readOnly" | "full",
   sessionId: string | null = null,
 ): Promise<{ code: number | null; text: string; sessionId: string | null }> {
+  const engine = engineFor(context.id);
   for (let attempt = 0; ; attempt += 1) {
+    if (Date.now() - engine.drivingSince > RUN_BRAKE_MS) {
+      throw new TurnPaused(translate("run.brake", { hours: RUN_BRAKE_MS / 3_600_000 }));
+    }
     const outcome = await oneTurn(context, prompt, set, phase, permission, sessionId);
+    engine.phaseCostUsd += turnCost(engine, outcome);
     if (outcome.code === null || outcome.code === 0) return outcome;
     const trouble = troubleIn([outcome.errors, outcome.stderr, outcome.text].join("\n"));
     if (trouble === null) return outcome;
@@ -3503,6 +3593,27 @@ async function runCli(
     // Stopped while waiting: that is a Stop, answered the way a stopped turn is.
     if (!(await waitWhileDriving(context.id, wait))) return { ...outcome, code: null };
   }
+}
+
+/**
+ * How long a run may drive before it pauses for a person, counted afresh each
+ * time it is carried on. Not a budget for an ordinary task, which takes
+ * minutes to an hour: a brake for a run that keeps going round - fixing one
+ * thing and breaking another - and would otherwise spend the night. A run that
+ * reaches it pauses with everything kept, and Carry on gives it another spell.
+ */
+const RUN_BRAKE_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * What a turn cost on its own. A CLI reports its session's running total, so
+ * a turn that carried a session on is charged only what the total grew by.
+ */
+function turnCost(engine: Engine, outcome: { costUsd: number | null; sessionId: string | null }): number {
+  if (outcome.costUsd === null) return 0;
+  if (outcome.sessionId === null) return outcome.costUsd;
+  const before = engine.sessionCosts.get(outcome.sessionId) ?? 0;
+  engine.sessionCosts.set(outcome.sessionId, outcome.costUsd);
+  return Math.max(0, outcome.costUsd - before);
 }
 
 /**
@@ -3556,10 +3667,10 @@ async function oneTurn(
       note(set, phase, line, "output");
     },
     onStarted: (runId) => {
-      engine.inFlight = { kind: "agent", id: runId };
+      engine.agentRun = runId;
     },
   });
-  engine.inFlight = null;
+  engine.agentRun = null;
   return outcome;
 }
 

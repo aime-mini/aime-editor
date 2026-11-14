@@ -32,6 +32,7 @@ import {
 import { PHASE_LABELS, useRun } from "../stores/run";
 import { failedTo } from "../stores/notices";
 import { Spinner } from "./Spinner";
+import { formatElapsed } from "./useSecondsSince";
 
 /**
  * A Task Run while it runs, and after.
@@ -203,6 +204,7 @@ export function RunView() {
                     <span className="shrink-0 text-[10px] tracking-wide text-muted uppercase">
                       {t(WORKER_LABELS[phase.worker])}
                     </span>
+                    {result !== undefined && <PhaseSpend result={result} />}
                     {result?.detail !== undefined &&
                       (expanded ? (
                         <ChevronDown size={11} className="shrink-0 text-muted" />
@@ -667,6 +669,18 @@ function Ending({
 }
 
 /** One phase's state as a mark, coloured only where colour means something. */
+/** How long a finished phase took and what its AI turns cost, beside its name. */
+function PhaseSpend({ result }: { result: PhaseResult }) {
+  if (result.startedAt === undefined || result.endedAt === undefined) return null;
+  const seconds = Math.round((result.endedAt - result.startedAt) / 1000);
+  return (
+    <span className="ml-auto shrink-0 text-[10.5px] text-muted tabular-nums">
+      {formatElapsed(seconds)}
+      {result.costUsd === undefined ? "" : ` · $${result.costUsd.toFixed(2)}`}
+    </span>
+  );
+}
+
 function Mark({ state }: { state: PhaseState }) {
   const shell = "flex size-5 shrink-0 items-center justify-center rounded-full border";
   switch (state) {

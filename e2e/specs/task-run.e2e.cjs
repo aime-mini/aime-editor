@@ -988,6 +988,29 @@ describe("Task run", () => {
     assert.match(report, /\| TC1 \| AC1 \|.*\| PASS \|/, `the case was not proved: ${report}`);
   });
 
+  it("reuses what it measured on a clean commit instead of running every suite again", async () => {
+    fs.writeFileSync(MODE_FILE, "sound");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+    await waitForText("finished, and every gate agreed", "the first run never finished", 240_000);
+    // Each finished phase says how long it took.
+    assert.match(await phaseRow("Understand the task and the code"), /\d+s/, "no time beside a finished phase");
+
+    // Back to the commit the first run measured, with nothing uncommitted.
+    gitIn(repo, "reset", "--hard");
+    gitIn(repo, "clean", "-fd");
+    await (await $('button[title="Work items"]')).click();
+    const row = await rowFor(12);
+    await row.moveTo();
+    await (await $('button[title="Work on this with AI"]')).click();
+    await waitForText(
+      "reused instead of run again",
+      "the second run on the same clean commit measured every suite again",
+      120_000,
+    );
+  });
+
   it("closes a gap a second reading of the ticket finds, before the plan is agreed", async () => {
     fs.writeFileSync(MODE_FILE, "ledgerFixed");
     repo = freshRepo(repo);
