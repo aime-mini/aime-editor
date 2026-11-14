@@ -61,6 +61,8 @@ const keysFile = path.join(configDir, "api-keys.json");
 const MODE_FILE = path.join(os.tmpdir(), "aime-run-probe-mode.txt");
 /** How many times the probe was asked to implement, for the mode that fails the first time. */
 const TRIES_FILE = path.join(os.tmpdir(), "aime-run-probe-tries.txt");
+/** The last prompt the reviewer was given, as the probe received it. */
+const REVIEW_PROMPT_FILE = path.join(os.tmpdir(), "aime-run-probe-review.txt");
 /** Where the littering probe notes the pid of the process it leaves behind. */
 const LEFTOVER_PID_FILE = path.join(os.tmpdir(), "aime-run-probe-leftover.pid");
 /** Written by the remove command the littering probe lists: proof the sweep ran it. */
@@ -391,6 +393,8 @@ if (prompt.includes("Check another reader's understanding of a ticket")) {
   }
   process.stdout.write("delivered\n");
 } else if (prompt.includes("Review this change")) {
+  // Kept for the spec to read what the reviewer was handed.
+  fs.writeFileSync(${JSON.stringify(REVIEW_PROMPT_FILE)}, prompt);
   // An agent with read-only tools now, so its answer arrives as a streamed event.
   const again = prompt.includes("This change has been reviewed before");
   const flagged = mode === "reviewSecurity" && !again;
@@ -886,6 +890,7 @@ describe("Task run", () => {
     fs.rmSync(PROBE_SCRIPT, { force: true });
     fs.rmSync(MODE_FILE, { force: true });
     fs.rmSync(TRIES_FILE, { force: true });
+    fs.rmSync(REVIEW_PROMPT_FILE, { force: true });
     fs.rmSync(LEFTOVER_PID_FILE, { force: true });
     fs.rmSync(UNINSTALLED_MARKER, { force: true });
     board.server?.close();
@@ -989,6 +994,13 @@ describe("Task run", () => {
     assert.ok(report, "the run left no report behind");
     assert.match(report, /\| TC1 \| AC1 \|/, `the case table is missing its row: ${report}`);
     assert.match(report, /\| PASS — on the running software \|/, `the case was not recorded as proved: ${report}`);
+
+    // The reviewer was handed what to check the change against: the evidence to
+    // open beside each case's "then", and what the language server says uses
+    // the files the diff really edits.
+    const reviewed = fs.readFileSync(REVIEW_PROMPT_FILE, "utf8");
+    assert.match(reviewed, /TC1 \(then: it answers 27\.5[^)]*\): .*TC1\.txt/, "the reviewer was not handed TC1's evidence");
+    assert.match(reviewed, /use what the change edits[\s\S]*checkout\.js/, "the reviewer was not told what uses the change");
 
     // The delivery evidence is real files Aime checked, not a claim:
     // one artifact named after the case, and proof the deployed thing answered.

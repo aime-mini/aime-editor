@@ -116,6 +116,19 @@ export async function deployProof(root: string, since: number): Promise<string[]
   return entries.filter((entry) => isFresh(entry, since)).map((entry) => entry.path);
 }
 
+/**
+ * The repository-relative paths a unified diff touches, each once, in the order
+ * it names them - the files the change really edited, whatever the plan said.
+ */
+export function pathsInDiff(diff: string): string[] {
+  const paths: string[] = [];
+  for (const line of diff.split("\n")) {
+    const match = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+    if (match !== null && !paths.includes(match[2])) paths.push(match[2]);
+  }
+  return paths;
+}
+
 /** What a screenshot is called, for the reviewer who is pointed at them. */
 const IMAGE = /\.(png|jpe?g|webp)$/i;
 

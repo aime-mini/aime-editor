@@ -26,11 +26,23 @@ import { invoke } from "@tauri-apps/api/core";
 export const RULE_FILES = [
   "AGENTS.md",
   "CLAUDE.md",
+  // Gemini CLI's context file (its docs, 0.68.0).
+  "GEMINI.md",
   "ARCHITECTURE.md",
   "docs/ARCHITECTURE.md",
   "CONTRIBUTING.md",
   ".cursorrules",
   ".github/copilot-instructions.md",
+] as const;
+
+/**
+ * Folders whose every file of one kind is a rule file: Cursor's project rules
+ * (`.cursor/rules/*.mdc`) and GitHub Copilot's path-specific instructions
+ * (`.github/instructions/NAME.instructions.md`), as each tool's docs name them.
+ */
+export const RULE_FOLDERS = [
+  { folder: ".cursor/rules", ending: ".mdc" },
+  { folder: ".github/instructions", ending: ".instructions.md" },
 ] as const;
 
 /**
@@ -47,8 +59,9 @@ const TOTAL_LIMIT = 12_000;
 /** One rule file, as much of it as is carried. */
 export interface RuleFile {
   path: string;
+  /** Its opening, or nothing once the budget is spent - the file is then named and not quoted. */
   text: string;
-  /** True when the file was longer than what is carried. */
+  /** True when the file was longer than what is carried: the AI is told to read the rest itself. */
   truncated: boolean;
 }
 
@@ -64,8 +77,7 @@ export async function readProjectRules(root: string): Promise<RuleFile[]> {
   const base = root.replace(/[\\/]+$/, "");
   const found: RuleFile[] = [];
   let budget = TOTAL_LIMIT;
-  for (const path of RULE_FILES) {
-    if (budget <= 0) break;
+  for (const path of [...RULE_FILES, ...(await filesInRuleFolders(base))]) {
     let whole: string;
     try {
       whole = await invoke<string>("read_file", { path: `${base}/${path}` });
@@ -74,7 +86,9 @@ export async function readProjectRules(root: string): Promise<RuleFile[]> {
     }
     const trimmed = whole.trim();
     if (trimmed === "") continue;
-    const room = Math.min(PER_FILE_LIMIT, budget);
+    // Past the budget a rule file is still named: the AI reads it itself, since
+    // a rule nobody mentioned is a rule nobody follows.
+    const room = Math.max(0, Math.min(PER_FILE_LIMIT, budget));
     const text = trimmed.slice(0, room);
     found.push({ path, text, truncated: trimmed.length > room });
     // Charged by what was actually carried, not by the room it was offered:
@@ -83,6 +97,26 @@ export async function readProjectRules(root: string): Promise<RuleFile[]> {
     budget -= text.length;
   }
   return found;
+}
+
+/** The rule files in the rule folders, in name order; a folder the project does not have holds none. */
+async function filesInRuleFolders(base: string): Promise<string[]> {
+  const files: string[] = [];
+  for (const { folder, ending } of RULE_FOLDERS) {
+    let entries: { name: string; is_dir: boolean }[];
+    try {
+      entries = await invoke<{ name: string; is_dir: boolean }[]>("list_dir", { path: `${base}/${folder}` });
+    } catch {
+      continue;
+    }
+    files.push(
+      ...entries
+        .filter((entry) => !entry.is_dir && entry.name.toLowerCase().endsWith(ending))
+        .map((entry) => `${folder}/${entry.name}`)
+        .sort(),
+    );
+  }
+  return files;
 }
 
 /**
@@ -99,8 +133,16 @@ export function rulesBlock(files: readonly RuleFile[]): string[] {
     "from the code - where they and the code disagree, follow these and say so in your final message:",
     ...files.flatMap((file) => [
       "",
-      `--- ${file.path}${file.truncated ? " (first part)" : ""} ---`,
-      file.text,
+      `--- ${file.path}${carriedNote(file)} ---`,
+      ...(file.text === "" ? [] : [file.text]),
     ]),
   ];
+}
+
+/** What a heading says about how much of its file is below it. */
+function carriedNote(file: RuleFile): string {
+  if (!file.truncated) return "";
+  return file.text === ""
+    ? " (not quoted here - open and read the whole file before you write code)"
+    : " (its first part - open the file and read the rest before you write code)";
 }

@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-const { caseEvidence, caseOf, deployProof } = await import("./evidenceFile");
+const { caseEvidence, caseOf, deployProof, pathsInDiff } = await import("./evidenceFile");
 
 interface Entry {
   name: string;
@@ -34,6 +34,25 @@ function file(name: string, over: Partial<Entry> = {}): Entry {
 
 beforeEach(() => {
   invoke.mockReset();
+});
+
+describe("pathsInDiff", () => {
+  it("names every file a diff edits, once, in its order", () => {
+    const diff = [
+      "diff --git a/src/cart.js b/src/cart.js",
+      "--- a/src/cart.js",
+      "+++ b/src/cart.js",
+      "@@ -1 +1 @@",
+      "diff --git a/test.cjs b/test.cjs",
+      "new file mode 100644",
+      "diff --git a/src/cart.js b/src/cart.js",
+    ].join("\n");
+    expect(pathsInDiff(diff)).toEqual(["src/cart.js", "test.cjs"]);
+  });
+
+  it("names a renamed file by where it is now", () => {
+    expect(pathsInDiff("diff --git a/src/old.ts b/src/new.ts")).toEqual(["src/new.ts"]);
+  });
 });
 
 describe("caseOf", () => {

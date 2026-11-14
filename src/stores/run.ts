@@ -99,6 +99,7 @@ import {
   DEPLOY_PROOF_DIR,
   EVIDENCE_DIR,
   screenshotsIn,
+  pathsInDiff,
   unprovedCases,
   UNPROVED_SUFFIX,
 } from "../lib/evidenceFile";
@@ -2536,6 +2537,8 @@ async function reviewOnce(
     REVIEW_PROMPT,
     SECURITY_RULES,
     REVIEW_READS_THE_DIFF,
+    ...(await reachOfChange(context, get, diff)),
+    ...(await evidenceToCheck(context, get)),
     ...(brief === null
       ? []
       : [
@@ -2557,6 +2560,50 @@ async function reviewOnce(
     ...(earlier === "" ? [] : ["", earlier]),
   ].join("\n");
   return tryUntil(ATTEMPTS, async () => readReview(await readRepository(context, asking, set, "review")));
+}
+
+/**
+ * What the change really reaches, asked of the language server again for the
+ * files the diff edits - the plan's list was a forecast, and a fix in a file it
+ * never named reaches callers nobody was told to protect. Files edited outside
+ * the plan are named too: that is where a reviewer looks hardest.
+ */
+async function reachOfChange(context: Context, get: Getter, diff: string): Promise<string[]> {
+  const edited = pathsInDiff(diff).filter((path) => !path.startsWith(".aime/"));
+  if (edited.length === 0) return [];
+  const planned = new Set((get().plan?.steps ?? []).flatMap((step) => step.files));
+  const outside = edited.filter((path) => !planned.has(path));
+  const { languageServerProbe } = await import("../lib/lsp/impact");
+  const probeRoot = spansWorkspace(context) ? context.workRoot : context.tree;
+  const reach = await radiusFrom(edited, languageServerProbe(probeRoot));
+  return [
+    ...(reach.dependents.length === 0
+      ? []
+      : ["", REVIEW_GUARDS_DEPENDENTS, ...reach.dependents.map((path) => `- ${path}`)]),
+    ...(outside.length === 0
+      ? []
+      : ["", REVIEW_LOOKS_OUTSIDE_THE_PLAN, ...outside.map((path) => `- ${path}`)]),
+  ];
+}
+
+/**
+ * The evidence each case left, for the reviewer to open: Aime checked that the
+ * files exist, are fresh and are not empty, and only a reader can check that a
+ * screenshot shows what the case says it should.
+ */
+async function evidenceToCheck(context: Context, get: Getter): Promise<string[]> {
+  const { cases, run } = get();
+  if (cases === null) return [];
+  const evidence = await caseEvidence(
+    context.workRoot,
+    cases.cases.map((one) => one.id),
+    run.startedAt,
+  );
+  const lines = cases.cases.flatMap((one) => {
+    const files = evidence.get(one.id) ?? [];
+    return files.length === 0 ? [] : [`- ${one.id} (then: ${one.then}): ${files.join(", ")}`];
+  });
+  return lines.length === 0 ? [] : ["", REVIEW_OPENS_THE_EVIDENCE, ...lines];
 }
 
 /** What the next reader is told about the last round: what was found, and what the author said to it. */
@@ -3757,6 +3804,17 @@ const REVIEW_HOLDS_THE_AGREEMENT = `What the change must do - the acceptance cri
 and the agreed test cases. A criterion or case the change does not carry out, or carries out
 differently, is a finding of kind "correctness" that names its id; so is a criterion the change
 satisfies only by weakening a test.`;
+
+const REVIEW_GUARDS_DEPENDENTS = `These files use what the change edits - the language server named them from the diff as it
+stands. Open the ones the change could break and check they still work as they did; a break is a
+"correctness" finding in that file.`;
+
+const REVIEW_LOOKS_OUTSIDE_THE_PLAN = `The change also edits these files, which the agreed plan never named. Ask of each why it had
+to change; an edit with no reason in the agreement is a finding.`;
+
+const REVIEW_OPENS_THE_EVIDENCE = `The evidence each case left from the running software. Open every file - read the response,
+look at the screenshot - and check it shows what the case's "then" says. Evidence that does not show it,
+or shows something else, is a "correctness" finding that names the case.`;
 
 const REVIEW_LOOKS_AT_SCREENS = `Screenshots of the change running are below. Open them if you can read images, and
 judge whether the changed screens look like the rest of this app - its components, spacing, type and

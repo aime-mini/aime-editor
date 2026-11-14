@@ -13,8 +13,13 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 const { readProjectRules, rulesBlock, RULE_FILES } = await import("./projectRules");
 
 /** Answers `read_file` from a map of path suffix to content; the rest are missing. */
-function onDisk(files: Record<string, string>): void {
+function onDisk(files: Record<string, string>, folders: Record<string, string[]> = {}): void {
   invoke.mockImplementation((command: string, args: { path: string }) => {
+    if (command === "list_dir") {
+      const listed = Object.entries(folders).find(([name]) => args.path.endsWith(name));
+      if (listed === undefined) return Promise.reject(new Error("no such folder"));
+      return Promise.resolve(listed[1].map((name) => ({ name, is_dir: false })));
+    }
     if (command !== "read_file") throw new Error(`unexpected command ${command}`);
     const found = Object.entries(files).find(([name]) => args.path.endsWith(name));
     if (found === undefined) return Promise.reject(new Error("no such file"));
@@ -62,8 +67,29 @@ describe("readProjectRules", () => {
 
     const carried = found.reduce((sum, one) => sum + one.text.length, 0);
     expect(carried).toBe(12_000);
-    // A prompt that spends everything on rules has nothing left for the code.
-    expect(found.length).toBeLessThan(RULE_FILES.length);
+    // A prompt that spends everything on rules has nothing left for the code -
+    // but a rule file past the budget is still named, for the AI to read itself.
+    expect(found).toHaveLength(RULE_FILES.length);
+    const named = found.filter((one) => one.text === "");
+    expect(named.length).toBeGreaterThan(0);
+    expect(named.every((one) => one.truncated)).toBe(true);
+  });
+
+  it("reads Cursor's rule files and Copilot's instruction files from their folders", async () => {
+    onDisk(
+      { ".cursor/rules/layers.mdc": "no invoke in components", "api.instructions.md": "REST only" },
+      {
+        ".cursor/rules": ["layers.mdc", "notes.txt"],
+        ".github/instructions": ["api.instructions.md"],
+      },
+    );
+
+    const found = await readProjectRules("C:/work");
+
+    expect(found.map((one) => one.path)).toEqual([
+      ".cursor/rules/layers.mdc",
+      ".github/instructions/api.instructions.md",
+    ]);
   });
 
   it("skips a file that exists but says nothing", async () => {
@@ -94,7 +120,12 @@ describe("rulesBlock", () => {
 
     expect(block).toContain("--- AGENTS.md ---");
     expect(block).toContain("no invoke in components");
-    expect(block).toContain("--- ARCHITECTURE.md (first part) ---");
+    expect(block).toContain(
+      "--- ARCHITECTURE.md (its first part - open the file and read the rest before you write code) ---",
+    );
+    expect(rulesBlock([{ path: "CONTRIBUTING.md", text: "", truncated: true }]).join("\n")).toContain(
+      "--- CONTRIBUTING.md (not quoted here - open and read the whole file before you write code) ---",
+    );
     // The model has to know these outrank what it would infer from the code.
     expect(block).toContain("They outrank your defaults");
   });
