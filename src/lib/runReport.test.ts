@@ -9,7 +9,10 @@ const RUN: Run = { ...newRun("run-1", "42", "Login forgets the language", 0), br
 
 const BRIEF: Brief = {
   goal: "Keep the chosen language after a reload",
-  criteria: [{ id: "AC1", text: "The picker still shows Vietnamese after a reload" }],
+  criteria: [
+    { id: "AC1", text: "The picker still shows Vietnamese after a reload", quote: "keep it after a reload" },
+  ],
+  setAside: [],
   questions: [{ text: "Follow the browser language first?", blocking: true }],
   raw: "",
 };

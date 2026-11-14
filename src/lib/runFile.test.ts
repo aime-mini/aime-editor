@@ -38,7 +38,13 @@ function fullRun(id: string, ended: boolean) {
       current: ended ? null : ("implement" as const),
       ended: ended ? ({ kind: "done" } as const) : null,
     },
-    brief: { goal: "g", criteria: [{ id: "AC1", text: "t" }], questions: [], raw: "{}" },
+    brief: {
+      goal: "g",
+      criteria: [{ id: "AC1", text: "t", quote: "q" }],
+      setAside: [],
+      questions: [],
+      raw: "{}",
+    },
     survey: {
       files: ["src/cart.js"],
       patterns: ["p - src/x.js"],

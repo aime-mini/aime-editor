@@ -173,7 +173,33 @@ const mode = fs.existsSync(${JSON.stringify(MODE_FILE)})
   ? fs.readFileSync(${JSON.stringify(MODE_FILE)}, "utf8").trim()
   : "sound";
 
-if (prompt.includes("these test suites of this repository failed")) {
+// The ticket's one requirement, as the criteria must quote it.
+const TICKET_SENTENCE = "withTax must round to two decimal places";
+// What the second reader holds against a first answer: the limit is a minimum too.
+const NEVER_FEWER = ", and never fewer";
+
+if (prompt.includes("Check another reader's understanding of a ticket")) {
+  // The second reader, run one-shot with the ticket and the criteria only.
+  // "ledgerFixed" misses the limit until the criteria were revised once;
+  // "ledgerStuck" keeps missing it, so the reader has to see it.
+  const revised = prompt.includes(NEVER_FEWER);
+  const misses = mode === "ledgerStuck" || (mode === "ledgerFixed" && !revised);
+  process.stdout.write(
+    JSON.stringify(
+      misses
+        ? { missed: [{ quote: TICKET_SENTENCE, why: "two places is a minimum as well as a maximum" }], misread: [] }
+        : { missed: [], misread: [] },
+    ),
+  );
+} else if (prompt.includes("The acceptance criteria you drew from this ticket left the gaps")) {
+  const text = "WHEN withTax is called, THE SYSTEM SHALL round to two decimal places";
+  process.stdout.write(
+    JSON.stringify({
+      criteria: [{ id: "AC1", text: mode === "ledgerFixed" ? text + NEVER_FEWER : text, quote: TICKET_SENTENCE }],
+      notRequirements: [],
+    }),
+  );
+} else if (prompt.includes("these test suites of this repository failed")) {
   // What the suites need running: the sample's own server script, on the port
   // its test reaches. Aime has to start it, wait for the port and stop it.
   stream({
@@ -186,7 +212,10 @@ if (prompt.includes("these test suites of this repository failed")) {
   // out of the same JSON object.
   stream({
     goal: "Round the total to two places",
-    criteria: [{ id: "AC1", text: "withTax rounds to two decimal places" }],
+    // Quoting the ticket's own sentence: Aime checks the quote against it.
+    criteria: [
+      { id: "AC1", text: "WHEN withTax is called, THE SYSTEM SHALL round to two decimal places", quote: TICKET_SENTENCE },
+    ],
     questions: [],
     files: [named("src/cart.js"), ...(mode === "crossRepo" ? ["api/server.js"] : [])],
     patterns: ["plain ES modules, no framework - src/checkout.js"],
@@ -739,6 +768,23 @@ function reportsIn(dir) {
     .map((name) => fs.readFileSync(path.join(runs, name), "utf8"));
 }
 
+/**
+ * What the first phase reported in full - the ticket sentence by sentence and
+ * any gap - as the run journaled it. The panel folds this detail away.
+ */
+async function understandingOnRecord(repo) {
+  let detail = "";
+  await browser.waitUntil(
+    () => {
+      const [journal] = journalsIn(repo);
+      detail = journal?.run?.results?.understand?.detail ?? "";
+      return detail !== "";
+    },
+    { timeout: 30_000, timeoutMsg: "the first phase's detail never reached the journal" },
+  );
+  return detail;
+}
+
 /** Every run this project journaled, as the app wrote it. */
 function journalsIn(dir) {
   const runs = path.join(dir, ".aime", "runs");
@@ -914,6 +960,42 @@ describe("Task run", () => {
     );
     const [report] = reportsIn(repo);
     assert.match(report, /\| TC1 \| AC1 \|.*\| PASS \|/, `the case was not proved: ${report}`);
+  });
+
+  it("closes a gap a second reading of the ticket finds, before the plan is agreed", async () => {
+    fs.writeFileSync(MODE_FILE, "ledgerFixed");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await waitForPhase(
+      "Understand the task and the code",
+      "every sentence of the ticket is carried",
+      "the gap the second reader found was never closed",
+    );
+    const read = await understandingOnRecord(repo);
+    assert.match(read, /\u2713 AC1: \u201CwithTax must round to two decimal places\.\u201D/, read);
+    assert.match(read, /never fewer/, `the revised criterion is not the one on record: ${read}`);
+    await approve(repo);
+    await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
+  });
+
+  it("holds the plan for the reader when the criteria still miss part of the ticket", async () => {
+    fs.writeFileSync(MODE_FILE, "ledgerStuck");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await waitForText(
+      "need your eyes before any code is written",
+      "the run went on past a gap between the ticket and the criteria",
+      240_000,
+    );
+    const ground = await phaseRow("Understand the task and the code");
+    assert.match(ground, /1 gap\(s\) between the ticket and the criteria/, ground);
+    const read = await understandingOnRecord(repo);
+    assert.match(read, /A second reading found this missed: \u201CwithTax must round/, read);
+    assert.equal(
+      fs.readFileSync(path.join(repo, "src", "cart.js"), "utf8").includes("Math.round"),
+      false,
+      "code was written past the gap",
+    );
   });
 
   it("fixes what it broke instead of handing back an unfinished job", async () => {

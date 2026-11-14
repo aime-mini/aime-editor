@@ -1,4 +1,5 @@
 import { asArray, asRecord, asString, objectIn } from "./replyJson";
+import { criteriaIn, setAsideIn } from "./requirementLedger";
 
 /**
  * What a Task Run asks the model, and how the answers are read back.
@@ -13,7 +14,20 @@ import { asArray, asRecord, asString, objectIn } from "./replyJson";
 /** One thing the ticket asks for, numbered so a test can be mapped to it. */
 export interface Criterion {
   id: string;
+  /** What must hold, in "WHEN ..., THE SYSTEM SHALL ..." form. */
   text: string;
+  /**
+   * The ticket's own words this criterion comes from, copied rather than
+   * reworded, so that it can be checked against the ticket
+   * (`lib/requirementLedger.ts`).
+   */
+  quote: string;
+}
+
+/** A ticket sentence that asks for nothing, and why - so leaving it out is a decision, not an oversight. */
+export interface SetAside {
+  quote: string;
+  why: string;
 }
 
 /** What the run understood the ticket to be asking. */
@@ -21,6 +35,8 @@ export interface Brief {
   /** One sentence: what this change is, in the run's own words. */
   goal: string;
   criteria: Criterion[];
+  /** The ticket's sentences that ask for nothing, each with the reason. */
+  setAside: SetAside[];
   /**
    * Things the ticket does not settle. A blocking question stops the run: an
    * hour of confident work in the wrong direction is worse than one question.
@@ -39,7 +55,9 @@ neighbours of every file you name. Do not answer from the wording of the ticket,
 from what projects like this usually do - only from what THIS repository does.
 
 Answer ONLY with JSON, no prose and no code fence:
-{"goal": "one sentence", "criteria": [{"id": "AC1", "text": "..."}],
+{"goal": "one sentence",
+ "criteria": [{"id": "AC1", "text": "WHEN ..., THE SYSTEM SHALL ...", "quote": "the ticket's own words"}],
+ "notRequirements": [{"quote": "the ticket's own words", "why": "why it asks for nothing"}],
  "questions": [{"text": "...", "blocking": true}],
  "files": ["src/x.ts"],
  "patterns": ["what the rule is, and the file you saw it in"],
@@ -48,6 +66,13 @@ Answer ONLY with JSON, no prose and no code fence:
 
 Rules:
 - Every acceptance criterion must be checkable by a test. Split anything vague into checkable parts.
+- Write each criterion as "WHEN <trigger>, THE SYSTEM SHALL <response>", or "THE SYSTEM SHALL ..." for
+  what always holds. Keep every limit, number, format and error case the ticket states.
+- "quote" is copied from the ticket character for character: the sentence, or the part of it the
+  criterion comes from. Never reworded - it is checked against the ticket.
+- Every sentence of the ticket that asks for something is quoted by at least one criterion. A sentence
+  that asks for nothing - background, a link, a greeting - goes in "notRequirements" with why. A
+  ticket with no description: its title is the requirement.
 - A question is "blocking" only when you cannot pick a reasonable default and being wrong would
   waste the whole change. Prefer a sensible default over a question.
 - If the item is clear, return an empty questions array.
@@ -340,19 +365,13 @@ function asKind(value: unknown): FindingKind {
 export function parseBrief(reply: string): Brief | null {
   const object = objectIn(reply);
   const goal = asString(object.goal);
-  const criteria = asArray(object.criteria)
-    .map((entry, index) => {
-      const row = asRecord(entry);
-      const text = asString(row.text);
-      // An unnumbered criterion still needs a handle, or no test can cite it.
-      return { id: asString(row.id) || `AC${String(index + 1)}`, text };
-    })
-    .filter((criterion) => criterion.text !== "");
+  const criteria = criteriaIn(object.criteria);
   if (goal === "" || criteria.length === 0) return null;
 
   return {
     goal,
     criteria,
+    setAside: setAsideIn(object.notRequirements),
     questions: asArray(object.questions)
       .map((entry) => {
         const row = asRecord(entry);

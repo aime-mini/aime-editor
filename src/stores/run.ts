@@ -30,6 +30,18 @@ import {
   type TestCases,
 } from "../lib/aiRun";
 import { agentTurn, cancelAgentTurn } from "../lib/agentTurn";
+import { aiOneshot } from "../lib/aiOneshot";
+import {
+  auditPrompt,
+  coverageOf,
+  describeGap,
+  mechanicalGaps,
+  parseAudit,
+  parseRevision,
+  revisePrompt,
+  type LedgerGap,
+  type Ticket,
+} from "../lib/requirementLedger";
 import { radiusFrom, radiusIsComplete, type Radius } from "../lib/blastRadius";
 import { allOutput, execCancel, type CommandOutcome } from "../lib/exec";
 import {
@@ -183,6 +195,12 @@ export type Autonomy =
 interface Artifacts {
   /** What the ticket was understood to ask for. */
   brief: Brief | null;
+  /**
+   * What stayed unsettled between the ticket and the criteria after both
+   * checks (`lib/requirementLedger.ts`); the plan waits on it whatever the
+   * run's autonomy.
+   */
+  ledger: LedgerGap[];
   /** The files to change and the conventions around them, read from the code. */
   survey: Survey | null;
   /** What the language server said depends on the files about to change. */
@@ -246,6 +264,7 @@ interface Artifacts {
 
 const NOTHING_YET: Artifacts = {
   brief: null,
+  ledger: [],
   survey: null,
   radius: null,
   solution: null,
@@ -847,6 +866,7 @@ function slotFrom(saved: SavedRun, home: string, interrupted: boolean): RunSlot 
     tree: saved.tree ?? home,
     workRoot: saved.workRoot ?? saved.tree ?? home,
     brief: saved.brief,
+    ledger: saved.ledger ?? [],
     survey: saved.survey,
     radius: saved.radius,
     solution: saved.solution,
@@ -1035,6 +1055,7 @@ function journalSlot(home: string, slot: RunSlot): void {
 function artifactsOf(slot: RunSlot): Artifacts {
   return {
     brief: slot.brief,
+    ledger: slot.ledger,
     survey: slot.survey,
     radius: slot.radius,
     solution: slot.solution,
@@ -1245,9 +1266,11 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
   });
   if (answer === null) return { state: "blocked", summary: translate("run.briefUnreadable") };
 
-  const { brief, found } = answer;
+  const ticket: Ticket = { title: context.item.title, description: description?.description ?? "" };
+  const { brief, gaps } = await settleCriteria(context, ticket, answer.brief, set);
+  const { found } = answer;
   const files = found.files.slice(0, SURVEY_FILE_LIMIT);
-  set({ brief, survey: { ...found, files } });
+  set({ brief, ledger: gaps, survey: { ...found, files } });
   await remember(context, "understand", conventionsLearned(found, today()));
   const trees = spansWorkspace(context) ? await joinReachedTrees(context, files, set, get) : NONE_JOINED;
 
@@ -1324,6 +1347,9 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
       ground.note,
       trees.joined.length > 0 ? translate("run.treesJoined", { repositories: trees.joined.join(", ") }) : "",
       read,
+      gaps.length > 0
+        ? translate("run.ledgerGaps", { count: gaps.length })
+        : translate("run.ledgerCovered", { criteria: brief.criteria.length, aside: brief.setAside.length }),
     ]
       .filter(Boolean)
       .join(" · "),
@@ -1333,6 +1359,10 @@ async function understand(context: Context, set: Setter, get: Getter): Promise<P
         ? []
         : [translate("run.rulesRead", { files: rules.map((one) => one.path).join(", ") }), ""]),
       ...brief.criteria.map((one) => `${one.id}. ${one.text}`),
+      "",
+      translate("run.coverageHeading"),
+      ...coverageLines(ticket, brief),
+      ...(gaps.length > 0 ? ["", translate("run.gapsHeading"), ...gaps.map(gapLine)] : []),
       ...(open.length > 0 ? ["", translate("run.assumed")] : []),
       ...open.map((question) => `- ${question.text}`),
       "",
@@ -1444,7 +1474,9 @@ async function design(context: Context, set: Setter, get: Getter): Promise<Phase
     };
   }
 
+  const gaps = get().ledger;
   const detail = [
+    ...(gaps.length > 0 ? [translate("run.gapsHeading"), ...gaps.map(gapLine), ""] : []),
     answer.solution.how,
     "",
     `${translate("run.why")}: ${answer.solution.why}`,
@@ -1463,7 +1495,12 @@ async function design(context: Context, set: Setter, get: Getter): Promise<Phase
 
   // The autonomy switch is the reader's own setting, so it lives on the store
   // rather than on any one run - and it holds every run it applies to.
-  if (useRun.getState().autonomy === "reviewPlan") {
+  // A gap between the ticket and the criteria holds the plan even on
+  // autopilot: every later gate proves the code against the criteria, so this
+  // is the one mistake none of them can see.
+  if (gaps.length > 0) {
+    hold(set, "design", translate("run.ledgerWaiting", { count: gaps.length }));
+  } else if (useRun.getState().autonomy === "reviewPlan") {
     hold(set, "design", translate("run.planWaiting"));
   }
   return {
@@ -1475,6 +1512,84 @@ async function design(context: Context, set: Setter, get: Getter): Promise<Phase
     }),
     detail,
   };
+}
+
+/**
+ * Holds the criteria against the ticket until nothing between them is
+ * unsettled, or a round settles nothing more (`lib/requirementLedger.ts` says
+ * why there are two checks). Neither reads the repository: a round costs one
+ * small call with the ticket and the criteria in it, not another reading of
+ * the code.
+ */
+async function settleCriteria(
+  context: Context,
+  ticket: Ticket,
+  first: Brief,
+  set: Setter,
+): Promise<{ brief: Brief; gaps: LedgerGap[] }> {
+  let brief = first;
+  let gaps: LedgerGap[] = [];
+  const rounds: string[] = [];
+  for (let round = 1; round <= ATTEMPTS; round += 1) {
+    gaps = mechanicalGaps(ticket, brief);
+    if (gaps.length === 0) gaps = await secondReading(context, ticket, brief);
+    if (gaps.length === 0) break;
+    const signature = gaps.map(describeGap).join("|");
+    if (round === ATTEMPTS || stalled(rounds, signature)) break;
+    rounds.push(signature);
+    note(set, "understand", translate("run.ledgerRevising", { count: gaps.length, attempt: round }));
+    try {
+      const revised = parseRevision(await aiOneshot(revisePrompt(ticket, brief, gaps), context.workRoot));
+      if (revised !== null) brief = { ...brief, ...revised };
+    } catch (error: unknown) {
+      // The gaps stand as they are: the reader meets them at the plan.
+      note(set, "understand", translate("run.ledgerReviseFailed", { detail: String(error) }), "problem");
+      break;
+    }
+  }
+  return { brief, gaps };
+}
+
+/**
+ * The second reader: the ticket and the criteria, nothing else. A reading that
+ * could not be had is a gap of its own, never a clean bill.
+ */
+async function secondReading(context: Context, ticket: Ticket, brief: Brief): Promise<LedgerGap[]> {
+  try {
+    const found = parseAudit(await aiOneshot(auditPrompt(ticket, brief), context.workRoot));
+    return found ?? [{ kind: "unread", detail: translate("run.auditUnreadable") }];
+  } catch (error: unknown) {
+    return [{ kind: "unread", detail: String(error) }];
+  }
+}
+
+/** A gap as the reader is told it. */
+function gapLine(gap: LedgerGap): string {
+  switch (gap.kind) {
+    case "unsourced":
+      return translate("run.gap.unsourced", { id: gap.id, quote: gap.quote });
+    case "uncovered":
+      return translate("run.gap.uncovered", { sentence: gap.sentence });
+    case "missed":
+      return translate("run.gap.missed", { quote: gap.quote, why: gap.why });
+    case "misread":
+      return translate("run.gap.misread", { id: gap.id, why: gap.why });
+    case "unread":
+      return translate("run.gap.unread", { detail: gap.detail });
+  }
+}
+
+/** The ticket sentence by sentence, each with what answered it. */
+function coverageLines(ticket: Ticket, brief: Brief): string[] {
+  return coverageOf(ticket, brief).map((line) => {
+    if (line.criteria.length > 0) {
+      return translate("run.coverageCited", { ids: line.criteria.join(", "), sentence: line.sentence });
+    }
+    if (line.setAside !== null) {
+      return translate("run.coverageAside", { why: line.setAside, sentence: line.sentence });
+    }
+    return translate("run.coverageMissing", { sentence: line.sentence });
+  });
 }
 
 /** One case as a line, for the pages and the prompts that quote it. */

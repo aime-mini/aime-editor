@@ -1330,6 +1330,24 @@ export const vi: Record<TranslationKey, string> = {
   "run.verdictOnly":
     "Aime không đọc được suite của dự án này theo từng test, nên các cổng chỉ nói bằng exit code.",
   "run.briefUnreadable": "Không chuyển được yêu cầu thành tiêu chí kiểm được.",
+  "run.ledgerCovered":
+    "mọi câu của ticket đều có AC hoặc được ghi là không phải yêu cầu ({criteria} AC, {aside} câu không phải yêu cầu)",
+  "run.ledgerGaps": "{count} chỗ chưa khớp giữa ticket và AC - plan chờ bạn xem",
+  "run.ledgerRevising": "Đang lấp {count} chỗ chưa khớp giữa ticket và AC (vòng {attempt})",
+  "run.ledgerReviseFailed": "Không sửa được AC: {detail}",
+  "run.ledgerWaiting":
+    "{count} chỗ chưa khớp giữa ticket và AC cần bạn xem trước khi viết dòng code nào. Đọc danh sách ở đầu plan, sửa ticket hoặc test case nếu cần, rồi duyệt.",
+  "run.auditUnreadable": "người đọc thứ hai không trả lời đúng dạng",
+  "run.coverageHeading": "Ticket, từng câu một:",
+  "run.coverageCited": "✓ {ids}: \u201C{sentence}\u201D",
+  "run.coverageAside": "– không phải yêu cầu ({why}): \u201C{sentence}\u201D",
+  "run.coverageMissing": "✗ chưa có AC: \u201C{sentence}\u201D",
+  "run.gapsHeading": "Chưa khớp giữa ticket và AC:",
+  "run.gap.unsourced": "{id} trích những chữ không có trong ticket: \u201C{quote}\u201D",
+  "run.gap.uncovered": "Chưa AC nào mang câu: \u201C{sentence}\u201D",
+  "run.gap.missed": "Người đọc thứ hai thấy bị sót: \u201C{quote}\u201D - {why}",
+  "run.gap.misread": "{id} có thể nói khác ticket: {why}",
+  "run.gap.unread": "Không làm được lần đọc thứ hai: {detail}",
   "run.understood": "{criteria} tiêu chí nghiệm thu, {files} file sẽ sửa, {dependents} chỗ phụ thuộc",
   "run.understoodPartly":
     "{criteria} tiêu chí nghiệm thu, {files} file sẽ sửa, {dependents} chỗ phụ thuộc, {unknown} file chưa có câu trả lời đáng tin",

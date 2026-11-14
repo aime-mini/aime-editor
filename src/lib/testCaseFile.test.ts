@@ -8,9 +8,10 @@ import { caseOutcomes, renderTestCases, testsNotWritten } from "./testCaseFile";
 const BRIEF: Brief = {
   goal: "Keep the chosen language after a reload",
   criteria: [
-    { id: "AC1", text: "The picker still shows Vietnamese after a reload" },
-    { id: "AC2", text: "The choice survives a new sign-in" },
+    { id: "AC1", text: "The picker still shows Vietnamese after a reload", quote: "keep it after a reload" },
+    { id: "AC2", text: "The choice survives a new sign-in", quote: "and after signing in again" },
   ],
+  setAside: [],
   questions: [],
   raw: "",
 };

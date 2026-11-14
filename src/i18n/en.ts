@@ -1333,6 +1333,24 @@ export const en = {
   "run.verdictOnly":
     "Aime cannot read this project's runners test by test, so the gates will speak by exit code alone.",
   "run.briefUnreadable": "The item could not be turned into checkable criteria.",
+  "run.ledgerCovered":
+    "every sentence of the ticket is carried by a criterion or set aside ({criteria} criteria, {aside} set aside)",
+  "run.ledgerGaps": "{count} gap(s) between the ticket and the criteria - the plan waits for you",
+  "run.ledgerRevising": "Closing {count} gap(s) between the ticket and the criteria (round {attempt})",
+  "run.ledgerReviseFailed": "The criteria could not be revised: {detail}",
+  "run.ledgerWaiting":
+    "{count} gap(s) between the ticket and the criteria need your eyes before any code is written. Read them above the plan, fix the ticket or the cases if needed, then approve.",
+  "run.auditUnreadable": "the second reader's reply was not an answer",
+  "run.coverageHeading": "The ticket, sentence by sentence:",
+  "run.coverageCited": "✓ {ids}: \u201C{sentence}\u201D",
+  "run.coverageAside": "– not a requirement ({why}): \u201C{sentence}\u201D",
+  "run.coverageMissing": "✗ no criterion: \u201C{sentence}\u201D",
+  "run.gapsHeading": "Not settled between the ticket and the criteria:",
+  "run.gap.unsourced": "{id} quotes words that are not in the ticket: \u201C{quote}\u201D",
+  "run.gap.uncovered": "No criterion carries: \u201C{sentence}\u201D",
+  "run.gap.missed": "A second reading found this missed: \u201C{quote}\u201D - {why}",
+  "run.gap.misread": "{id} may not say what the ticket says: {why}",
+  "run.gap.unread": "The second reading could not be done: {detail}",
   "run.understood":
     "{criteria} acceptance criteria, {files} file(s) to change, {dependents} depending on them",
   "run.understoodPartly":

@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { TaskDef } from "../stores/tasks";
-import type { Brief, Plan, Review, Solution, Survey, TestCases } from "./aiRun";
+import type { Brief, Criterion, Plan, Review, SetAside, Solution, Survey, TestCases } from "./aiRun";
 import type { Radius } from "./blastRadius";
 import type { RuleFile } from "./projectRules";
+import type { LedgerGap } from "./requirementLedger";
 import type { CheckPass } from "./qualityGate";
 import type { Baseline, GateVerdict, SuiteRun } from "./regressionGate";
 import type { Run } from "./runPlan";
@@ -118,6 +119,11 @@ export interface SavedRun {
    * correctly as "worked in the project itself".
    */
   workRoot?: string;
+  /**
+   * What stayed unsettled between the ticket and the criteria. Optional: a run
+   * journaled before the ledger was checked has none on record.
+   */
+  ledger?: LedgerGap[];
 }
 
 const VERSION = 5;
@@ -197,7 +203,7 @@ async function readRun(path: string): Promise<SavedRun | null> {
     // A file from an older shape is ignored rather than half-read: a run rebuilt
     // out of fields that moved would be worse than not offering it at all.
     if (saved.version !== VERSION || saved.run === undefined) return null;
-    return saved as SavedRun;
+    return withQuotes(saved as SavedRun);
   } catch {
     return null;
   }
@@ -222,6 +228,30 @@ export async function forgetRun(root: string, id: string): Promise<void> {
   } catch {
     // Already gone, which is the state this asks for.
   }
+}
+
+/** A brief as an older journal wrote it, before criteria quoted the ticket. */
+type OlderBrief = Omit<Brief, "criteria" | "setAside"> & {
+  criteria: (Omit<Criterion, "quote"> & { quote?: string })[];
+  setAside?: SetAside[];
+};
+
+/**
+ * A run journaled before criteria quoted the ticket, read as exactly that: no
+ * quotes and nothing set aside. Anything that checks the ledger again then
+ * finds gaps, never a coverage that was not there.
+ */
+function withQuotes(saved: SavedRun): SavedRun {
+  const brief = saved.brief as OlderBrief | null;
+  if (brief === null) return saved;
+  return {
+    ...saved,
+    brief: {
+      ...brief,
+      criteria: brief.criteria.map((one) => ({ ...one, quote: one.quote ?? "" })),
+      setAside: brief.setAside ?? [],
+    },
+  };
 }
 
 /** Whether this run was interrupted rather than finished. */
