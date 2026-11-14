@@ -8,6 +8,7 @@
  * opening a project starts it. Run with `npm run test:e2e:fake-claude`.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 const { workspace, fakeClaudeState } = require("../wdio.fake-claude.cjs");
@@ -58,7 +59,7 @@ describe("Aime learns a project before anyone asks", () => {
       localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: folder, openedAt: Date.now() }]));
       return before;
     }, workspace);
-    await browser.refresh();
+    await reloadOnWelcome();
     await browser.waitUntil(async () => (await $("body").getText()).includes("RECENT"), { timeout: 30_000 });
     await (await $(`span=${workspace.split(/[\\/]/).pop()}`)).click();
     await browser.waitUntil(async () => (await $("body").getText()).includes("hello.ts"), {

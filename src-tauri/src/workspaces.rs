@@ -177,15 +177,27 @@ impl Workspaces {
         }
     }
 
-    /// The folder a workspace's page opens: for the first workspace, the one
-    /// the app was launched on, on every load; for a tab, the one it was
-    /// opened on, once - a page loading again starts on the welcome screen.
+    /// The folder a workspace's page opens: the one a tab was opened on, at its
+    /// first load; at any later load, the one it had open. A page loads again
+    /// when the dev server it came from reconnects - after the machine slept -
+    /// and must come back on its folder rather than on the welcome screen. The
+    /// first workspace starts on the folder the app was launched on.
     pub fn initial_folder(&self, label: &str) -> Option<String> {
         let mut registry = self.lock();
+        if let Some(folder) = registry.pending.remove(label) {
+            return Some(folder);
+        }
+        if let Some(folder) = registry
+            .members
+            .get(label)
+            .and_then(|member| member.folder.clone())
+        {
+            return Some(folder);
+        }
         if registry.first.as_deref() == Some(label) {
             return registry.launch_folder.clone();
         }
-        registry.pending.remove(label)
+        None
     }
 
     /// Reads which folders were open together the last time the app ran.
@@ -552,9 +564,8 @@ fn bring_back(state: &Workspaces, window: &str, anchor: &str, folder: &str) {
 ///
 /// A folder opened in a window of one tab brings back the tabs it was last
 /// open with. Async so that writing the record down stays off the main thread.
-/// A tab opened on a folder says "nothing" once before its page has asked
-/// for that folder; its tab keeps the folder's name meanwhile, rather than
-/// flashing the welcome screen's.
+/// A page says what it has open only once it has opened its `initial_folder`,
+/// so a page loading again never reports the empty moment before that.
 #[tauri::command]
 pub async fn workspace_register(
     app: AppHandle,
@@ -566,9 +577,6 @@ pub async fn workspace_register(
     let (window, before, alone) = {
         let mut registry = state.lock();
         let window = registry.window_of(label)?;
-        if folder.is_none() && registry.pending.contains_key(label) {
-            return Ok(());
-        }
         let before = registry
             .members
             .get_mut(label)
@@ -1007,6 +1015,43 @@ mod tests {
         );
         assert_eq!(registry.folders_of("main", None), ["a", "b"]);
         assert_eq!(registry.folders_of("main", Some("editor-2")), ["a"]);
+    }
+
+    #[test]
+    fn a_page_that_loads_again_comes_back_on_the_folder_it_had_open() {
+        let state = Workspaces::default();
+        {
+            let mut registry = state.lock();
+            registry.join("editor-1", "main", None);
+            registry.pending.insert("editor-1".into(), "a".into());
+            registry.join("editor-2", "main", None);
+        }
+        assert_eq!(state.initial_folder("editor-1").as_deref(), Some("a"));
+        state.lock().members.get_mut("editor-1").expect("a member").folder = Some("a".into());
+        assert_eq!(
+            state.initial_folder("editor-1").as_deref(),
+            Some("a"),
+            "a reloaded tab started on the welcome screen"
+        );
+        assert_eq!(
+            state.initial_folder("editor-2"),
+            None,
+            "a tab with nothing open opened something"
+        );
+    }
+
+    #[test]
+    fn the_first_workspace_reloads_on_what_it_opened_since_the_launch_folder() {
+        let state = Workspaces::default();
+        {
+            let mut registry = state.lock();
+            registry.join("editor-1", "main", None);
+            registry.first = Some("editor-1".into());
+            registry.launch_folder = Some("launched".into());
+        }
+        assert_eq!(state.initial_folder("editor-1").as_deref(), Some("launched"));
+        state.lock().members.get_mut("editor-1").expect("a member").folder = Some("later".into());
+        assert_eq!(state.initial_folder("editor-1").as_deref(), Some("later"));
     }
 
     #[test]

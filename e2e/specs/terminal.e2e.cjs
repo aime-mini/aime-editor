@@ -6,6 +6,7 @@
  * be unit-tested - a PTY, an event bridge and xterm.js only meet in the app.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const { workspace } = require("../wdio.conf.cjs");
 
 /** What xterm has actually painted, row by row (it renders into the DOM). */
@@ -59,7 +60,7 @@ describe("Terminal", () => {
     await browser.execute((path) => {
       localStorage.setItem("aime.recentFolders", JSON.stringify([{ path, openedAt: Date.now() }]));
     }, workspace);
-    await browser.refresh();
+    await reloadOnWelcome();
     await waitForText("RECENT", "the welcome screen never rendered");
     await (await $(`span=${workspace.split(/[\\/]/).pop()}`)).click();
     await waitForText("hello.ts", "the workspace never opened");

@@ -9,6 +9,7 @@
  * The repository is created here and thrown away here.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -71,7 +72,7 @@ async function open(dir) {
     localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: recent, openedAt: Date.now() }]));
     localStorage.setItem("aime.theme", "dark");
   }, dir);
-  await browser.refresh();
+  await reloadOnWelcome();
   await waitForText("recent", "the welcome screen never rendered");
   await (await $(`span=${dir.split(/[\\/]/).pop()}`)).click();
 }

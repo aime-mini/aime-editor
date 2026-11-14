@@ -73,8 +73,17 @@ function register(folder: string | null): void {
   });
 }
 
-// This workspace's tab carries whatever folder it has open, as it changes.
-register(useWorkspace.getState().rootPath);
+/**
+ * Tells the backend what this workspace has open, once its page has opened
+ * whatever it starts on. Not sooner: a page loading again has nothing open
+ * yet, and saying so would make the backend forget the folder it is about to
+ * hand back.
+ */
+export function announceWorkspaceFolder(): void {
+  register(useWorkspace.getState().rootPath);
+}
+
+// From then on, this workspace's tab carries whatever folder it has open, as it changes.
 useWorkspace.subscribe((state, previous) => {
   if (state.rootPath !== previous.rootPath) register(state.rootPath);
 });

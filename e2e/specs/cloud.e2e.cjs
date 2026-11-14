@@ -19,6 +19,7 @@
  * the text of the whole page, which would pass on a word appearing anywhere.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -164,7 +165,7 @@ describe("Cloud", () => {
       // says something true, and a cloud without a tab says nothing at all.
       localStorage.removeItem("aime.cloud.shown");
     }, project);
-    await browser.refresh();
+    await reloadOnWelcome();
     await browser.waitUntil(async () => (await $("body").getText()).toLowerCase().includes("recent"), {
       timeout: 30_000,
       timeoutMsg: "the welcome screen never rendered",

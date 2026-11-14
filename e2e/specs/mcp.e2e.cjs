@@ -7,6 +7,7 @@
  * fails here instead of in a screenshot from a user.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const { workspace } = require("../wdio.conf.cjs");
 
 /** CSS can upper-case what it renders, so matching ignores case. */
@@ -33,7 +34,7 @@ describe("MCP dialog", () => {
     await browser.execute((path) => {
       localStorage.setItem("aime.recentFolders", JSON.stringify([{ path, openedAt: Date.now() }]));
     }, workspace);
-    await browser.refresh();
+    await reloadOnWelcome();
     await waitForText("RECENT");
     await (await $(`span=${workspace.split(/[\\/]/).pop()}`)).click();
     await waitForText("hello.ts", "the workspace never opened");

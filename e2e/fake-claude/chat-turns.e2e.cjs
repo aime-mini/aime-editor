@@ -10,6 +10,7 @@
  * failures happen on cue. Run with `npm run test:e2e:fake-claude`.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 const { workspace, fakeClaudeState } = require("../wdio.fake-claude.cjs");
@@ -168,7 +169,7 @@ describe("A chat turn that is more than one answer, or did not finish", () => {
       localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: folder, openedAt: Date.now() }]));
       return before;
     }, workspace);
-    await browser.refresh();
+    await reloadOnWelcome();
     await openWorkspace();
   });
 
@@ -365,7 +366,7 @@ describe("A chat turn that is more than one answer, or did not finish", () => {
     await send("review it again");
     await until((p) => p.background.length === 1, "the long turn never started");
     // The frontend going away mid-turn is what closing the app does to it.
-    await browser.refresh();
+    await reloadOnWelcome();
     await openWorkspace();
     await until((p) => p.cutOff && p.continueButtons === 1, "the cut-off turn was not offered back");
 

@@ -14,6 +14,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { resizeAppWindow } = require("../support/appWindow.cjs");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 
 function project(name) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `aime-${name}-`));
@@ -27,7 +28,7 @@ async function openFromRecent(folder) {
     localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: recent, openedAt: Date.now() }]));
     localStorage.setItem("aime.locale", "en");
   }, folder);
-  await browser.refresh();
+  await reloadOnWelcome();
   await browser.waitUntil(async () => (await $("body").getText()).toLowerCase().includes("recent"), {
     timeout: 30_000,
   });
@@ -253,6 +254,45 @@ describe("Workspace tabs", () => {
     });
   });
 
+  it("brings every tab back on its folder when the pages load again, as they do after the machine slept", async () => {
+    await openFromRecent(first);
+    const firstLabel = (await tabsNow()).active;
+    const secondLabel = await openTab(second);
+
+    // The dev server reloads every page when its connection comes back.
+    for (const label of [firstLabel, secondLabel]) {
+      await inWorkspace(label);
+      await browser.execute(() => {
+        location.reload();
+      });
+    }
+    for (const [label, file] of [
+      [secondLabel, "second.txt"],
+      [firstLabel, "first.txt"],
+    ]) {
+      await inWorkspace(label);
+      await browser.waitUntil(async () => (await $("body").getText()).includes(file), {
+        timeout: 60_000,
+        interval: 250,
+        timeoutMsg: `${label} came back without its folder`,
+      });
+    }
+    const { tabs } = await tabsNow();
+    assert.deepEqual(
+      tabs.map((tab) => tab.folder),
+      [first, second],
+      "a tab lost its folder in the strip",
+    );
+
+    await browser.execute((label) => {
+      void window.__TAURI_INTERNALS__.invoke("workspace_close", { label });
+    }, secondLabel);
+    await browser.waitUntil(async () => (await tabsNow()).tabs.length === 1, {
+      timeout: 20_000,
+      timeoutMsg: "closing the second tab left it in the strip",
+    });
+  });
+
   it("brings back the tabs a folder was open with when it is reopened after a restart", async () => {
     await openFromRecent(first);
     await openTab(second);
@@ -342,10 +382,12 @@ describe("Workspace tabs", () => {
       },
       { timeout: 30_000, interval: 250, timeoutMsg: "the woken tab never took the closed one's place" },
     );
-    assert.ok(
-      (await $("body").getText()).includes("second.txt"),
-      "the woken tab did not open its own folder",
-    );
+    // A tab counts as painted at its first frame; its file tree is listed after that.
+    await browser.waitUntil(async () => (await $("body").getText()).includes("second.txt"), {
+      timeout: 15_000,
+      interval: 250,
+      timeoutMsg: "the woken tab did not open its own folder",
+    });
   });
 
   it("keeps what one tab's terminal prints and one tab's folder does to that tab", async () => {

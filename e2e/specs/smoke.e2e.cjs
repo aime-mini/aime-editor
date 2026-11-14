@@ -10,6 +10,7 @@
  * reopening a recent project is a path users take every day anyway.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -59,7 +60,7 @@ describe("Aime", () => {
     await browser.execute((path) => {
       localStorage.setItem("aime.recentFolders", JSON.stringify([{ path, openedAt: Date.now() }]));
     }, workspace);
-    await browser.refresh();
+    await reloadOnWelcome();
     await waitForText("RECENT", "the welcome screen never rendered");
   });
 

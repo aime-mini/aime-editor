@@ -38,6 +38,7 @@
  * spec touches a real repository.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const { execFileSync, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -619,7 +620,7 @@ async function open(dir) {
     localStorage.setItem("aime.provider", "run-probe");
     localStorage.setItem("aime.theme", "dark");
   }, dir);
-  await browser.refresh();
+  await reloadOnWelcome();
   await waitForText("recent", "the welcome screen never rendered");
   await (await $(`span=${dir.split(/[\\/]/).pop()}`)).click();
 }
@@ -1022,7 +1023,7 @@ ${suite.output}`,
   it("keeps the run on file, so it can be read again after a reload", async () => {
     // The run just finished in this project. Reload the app, open the project
     // again and ask for the runs: what a person comes back to a week later.
-    await browser.refresh();
+    await reloadOnWelcome();
     await waitForText("recent", "the welcome screen never rendered");
     await (await $(`span=${repo.split(/[\\/]/).pop()}`)).click();
     // The status bar, not the tree: the sidebar comes back on the view it was left on.

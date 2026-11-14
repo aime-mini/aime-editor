@@ -10,6 +10,7 @@
  * that timing, so this spec is the regression net, not the proof.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const { workspace } = require("../wdio.conf.cjs");
 
 const folder = workspace.split(/[\\/]/).pop();
@@ -54,7 +55,7 @@ describe("Terminal after closing and reopening the folder", () => {
     await browser.execute((path) => {
       localStorage.setItem("aime.recentFolders", JSON.stringify([{ path, openedAt: Date.now() }]));
     }, workspace);
-    await browser.refresh();
+    await reloadOnWelcome();
     await waitForText("RECENT", "the welcome screen never rendered");
     await (await $(`span=${folder}`)).click();
     await waitForText("hello.ts", "the workspace never opened");

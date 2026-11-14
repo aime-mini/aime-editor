@@ -13,6 +13,7 @@ const { strict: assert } = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 const { workspace, fakeClaudeState } = require("../wdio.fake-claude.cjs");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 
 const MODE_FILE = path.join(fakeClaudeState, "mode.txt");
 const CALLS_FILE = path.join(fakeClaudeState, "calls.jsonl");
@@ -133,7 +134,7 @@ describe("The chat panel while the AI is at work", () => {
       localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: folder, openedAt: Date.now() }]));
       return before;
     }, workspace);
-    await browser.refresh();
+    await reloadOnWelcome();
     await openWorkspace();
   });
 

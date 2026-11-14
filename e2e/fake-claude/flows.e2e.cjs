@@ -13,6 +13,7 @@
  * Run with `npm run test:e2e:fake-claude -- --spec e2e/fake-claude/flows.e2e.cjs`.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 const { workspace, fakeClaudeState } = require("../wdio.fake-claude.cjs");
@@ -142,7 +143,7 @@ describe("Flows", () => {
       localStorage.setItem("aime.locale", "en");
       localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: folder, openedAt: Date.now() }]));
     }, workspace);
-    await browser.refresh();
+    await reloadOnWelcome();
     await browser.waitUntil(async () => (await $("body").getText()).includes("RECENT"), { timeout: 30_000 });
     await (await $(`span=${workspace.split(/[\\/]/).pop()}`)).click();
     await browser.waitUntil(async () => (await $("body").getText()).includes("hello.ts"), {

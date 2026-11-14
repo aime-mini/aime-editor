@@ -8,6 +8,7 @@
  * shape as a user switching branches in a terminal.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -195,7 +196,7 @@ async function openFolder(dir) {
   await browser.execute((folder) => {
     localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: folder, openedAt: Date.now() }]));
   }, dir);
-  await browser.refresh();
+  await reloadOnWelcome();
   await waitForText("RECENT", "the welcome screen never rendered");
   await (await $(`span=${path.basename(dir)}`)).click();
 }

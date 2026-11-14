@@ -20,6 +20,7 @@
  * stand-in for the built-in CLI on PATH.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -195,7 +196,7 @@ describe("The chat panel while the AI is still answering", () => {
       workspace,
       PROBE_ID,
     );
-    await browser.refresh();
+    await reloadOnWelcome();
     await waitForText("RECENT", "the welcome screen never rendered");
     await (await $(`span=${workspace.split(/[\\/]/).pop()}`)).click();
     await waitForText("hello.ts", "the workspace never opened");

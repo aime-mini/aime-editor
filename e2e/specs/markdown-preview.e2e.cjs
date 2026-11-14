@@ -9,6 +9,7 @@
  * `lib/markdownDocument.test.ts`.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 const { workspace } = require("../wdio.conf.cjs");
@@ -99,7 +100,7 @@ describe("A Markdown file in its Preview", () => {
     await browser.execute((folder) => {
       localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: folder, openedAt: Date.now() }]));
     }, workspace);
-    await browser.refresh();
+    await reloadOnWelcome();
     await browser.waitUntil(async () => (await $("body").getText()).includes("RECENT"), {
       timeout: 30_000,
       timeoutMsg: "the welcome screen never rendered",

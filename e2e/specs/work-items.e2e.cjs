@@ -21,6 +21,7 @@
  * out, including the case where they did not exist.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -284,7 +285,7 @@ async function open(dir) {
   await browser.execute((recent) => {
     localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: recent, openedAt: Date.now() }]));
   }, dir);
-  await browser.refresh();
+  await reloadOnWelcome();
   await waitForText("recent", "the welcome screen never rendered");
   await (await $(`span=${dir.split(/[\\/]/).pop()}`)).click();
 }

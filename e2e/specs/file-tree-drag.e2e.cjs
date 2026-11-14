@@ -16,6 +16,7 @@
  * OS-level drag.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -182,7 +183,7 @@ describe("Dragging in the file tree", () => {
     await browser.execute((recent) => {
       localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: recent, openedAt: Date.now() }]));
     }, project);
-    await browser.refresh();
+    await reloadOnWelcome();
     await waitForText("RECENT", "the welcome screen never rendered");
     await (await $(`span=${path.basename(project)}`)).click();
     await waitForText("moved.js", "the project never opened");

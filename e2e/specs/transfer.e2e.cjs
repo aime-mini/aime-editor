@@ -11,6 +11,7 @@
  * are checked to be there.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -56,7 +57,7 @@ async function openFromRecent(folder) {
     localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: recent, openedAt: Date.now() }]));
     localStorage.setItem("aime.locale", "en");
   }, folder);
-  await browser.refresh();
+  await reloadOnWelcome();
   await browser.waitUntil(async () => (await $("body").getText()).toLowerCase().includes("recent"), {
     timeout: 30_000,
   });

@@ -11,6 +11,7 @@
  * by running a turn: the suite must stay free and must not need a signed-in CLI.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const { workspace } = require("../wdio.conf.cjs");
 
 const LONG_COMMAND =
@@ -106,7 +107,7 @@ describe("Chat layout", () => {
     // a chip that insists on a fixed 13rem only draws past the edge once the
     // panel is narrower than the chip. This is the window the bug was seen in.
     await browser.setWindowSize(NARROW_WINDOW.width, NARROW_WINDOW.height);
-    await browser.refresh();
+    await reloadOnWelcome();
     await waitForText("RECENT", "the welcome screen never rendered");
     await (await $(`span=${workspace.split(/[\\/]/).pop()}`)).click();
     await waitForText("hello.ts", "the workspace never opened");

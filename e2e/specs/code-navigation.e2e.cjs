@@ -17,6 +17,7 @@
  * cross-file jumps are clicked in the context menu, the way they were tried.
  */
 const { execFileSync } = require("node:child_process");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -266,7 +267,7 @@ async function openFolder(folder) {
   await browser.execute((recent) => {
     localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: recent, openedAt: Date.now() }]));
   }, folder);
-  await browser.refresh();
+  await reloadOnWelcome();
   await browser.waitUntil(async () => (await $("body").getText()).toLowerCase().includes("recent"), {
     timeout: 30_000,
     timeoutMsg: "the welcome screen never rendered",

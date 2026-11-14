@@ -12,6 +12,7 @@
  * work the user had not committed before the turn has to survive the undo.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -114,7 +115,7 @@ describe("Undoing an AI turn across repositories", () => {
       product,
       PROBE_ID,
     );
-    await browser.refresh();
+    await reloadOnWelcome();
     await waitForText("recent", "the welcome screen never rendered");
     await (await $(`span=${path.basename(product)}`)).click();
     await waitForText("Frontend", "the product folder never opened");

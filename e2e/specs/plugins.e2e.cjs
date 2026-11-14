@@ -8,6 +8,7 @@
  * way a person would.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -93,7 +94,7 @@ async function open(dir) {
   await browser.execute((recent) => {
     localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: recent, openedAt: Date.now() }]));
   }, dir);
-  await browser.refresh();
+  await reloadOnWelcome();
   await waitForText("RECENT", "the welcome screen never rendered");
   await (await $(`span=${dir.split(/[\\/]/).pop()}`)).click();
   await waitForText(dir, `the status bar never reported ${dir} as the open project`);

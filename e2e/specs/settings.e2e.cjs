@@ -7,6 +7,7 @@
  * stays free and works on a machine with no CLI signed in.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const { workspace } = require("../wdio.conf.cjs");
 
 async function waitForText(text, message) {
@@ -36,7 +37,7 @@ describe("Settings", () => {
       localStorage.setItem("aime.recentFolders", JSON.stringify([{ path, openedAt: Date.now() }]));
       localStorage.removeItem("aime.settings");
     }, workspace);
-    await browser.refresh();
+    await reloadOnWelcome();
     await waitForText("RECENT", "the welcome screen never rendered");
     await (await $(`span=${workspace.split(/[\\/]/).pop()}`)).click();
     await waitForText("hello.ts", "the workspace never opened");

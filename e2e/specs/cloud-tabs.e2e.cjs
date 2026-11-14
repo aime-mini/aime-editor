@@ -13,6 +13,7 @@
  * probes this leans on are the ones the panel already runs to fill its dots.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const { workspace } = require("../wdio.conf.cjs");
 
 const CLOUD_BUTTON = 'button[title="Clouds - accounts, applications and what is running in them"]';
@@ -93,7 +94,7 @@ describe("Cloud tabs", () => {
       localStorage.setItem("aime.locale", "en");
       localStorage.setItem("aime.theme", "dark");
     }, workspace);
-    await browser.refresh();
+    await reloadOnWelcome();
     await openWorkspace();
   });
 
@@ -164,7 +165,7 @@ describe("Cloud tabs", () => {
   });
 
   it("still shows the same tabs after a restart, without asking again", async () => {
-    await browser.refresh();
+    await reloadOnWelcome();
     await openWorkspace();
     await openPanel();
 

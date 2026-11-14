@@ -9,6 +9,7 @@
  * Windows only, like the rest of this suite: tauri-driver drives WebView2.
  */
 const { strict: assert } = require("node:assert");
+const { reloadOnWelcome } = require("../support/welcome.cjs");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -69,7 +70,7 @@ async function openProject() {
     localStorage.setItem("aime.recentFolders", JSON.stringify([{ path: recent, openedAt: Date.now() }]));
     localStorage.setItem("aime.settings", JSON.stringify({ autoSave: false }));
   }, project);
-  await browser.refresh();
+  await reloadOnWelcome();
   await waitForText("RECENT", "the welcome screen never rendered");
   await (await $(`span=${path.basename(project)}`)).click();
   await waitForText(project, "the project never opened");

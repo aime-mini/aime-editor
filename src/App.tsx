@@ -49,7 +49,7 @@ import { StatusBar } from "./components/StatusBar";
 import { Notices } from "./components/Notices";
 import { UpdateNotice } from "./components/UpdateNotice";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
-import { useWorkspaceTabs } from "./stores/workspaceTabs";
+import { announceWorkspaceFolder, useWorkspaceTabs } from "./stores/workspaceTabs";
 import { useAi } from "./stores/ai";
 import { useDebug } from "./stores/debug";
 import { useLayout } from "./stores/layout";
@@ -332,8 +332,12 @@ export default function App() {
         loggedAs("initial-folder")(error);
         return null;
       });
-      if (folder && useWorkspace.getState().rootPath === null) {
-        await useWorkspace.getState().adoptFolder(folder);
+      try {
+        if (folder && useWorkspace.getState().rootPath === null) {
+          await useWorkspace.getState().adoptFolder(folder);
+        }
+      } finally {
+        announceWorkspaceFolder();
       }
       await loadWorkbench().catch(loggedAs("workbench-load"));
     };
