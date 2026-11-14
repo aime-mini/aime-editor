@@ -405,19 +405,34 @@ export function planPrompt(input: {
   return lines.join("\n");
 }
 
-/** The files-only edits turn that writes what the plan asked for. */
+/**
+ * Where a deploy's files wait for the person, inside the project's own `.aime/`.
+ * They are written here before the confirm page, so the page can show what
+ * each one says, and moved into the project only once the deploy is agreed.
+ */
+export const STAGED_DIR = ".aime/deploy/staged";
+
+/** The files-only edits turn that writes what the plan asked for, into `STAGED_DIR`. */
 export function filesPrompt(cloudId: string, files: PlannedFile[], plan: DeployPlan): string {
   const { program } = dialectOf(cloudId);
   return [
-    "Write these files into this repository, exactly as the deployment plan below needs them. Write the " +
-      "files and nothing else: do not run anything, do not change other files, do not commit.",
+    `Write these files exactly as the deployment plan below needs them - each under ${STAGED_DIR}/ at its ` +
+      `own path (${STAGED_DIR}/Dockerfile for Dockerfile), never in place: the person reads them before the ` +
+      "deploy is agreed, and Aime puts them in place only then. Write the files and nothing else: do not " +
+      "run anything, do not change other files, do not commit.",
     "",
     ...files.map((file) => `- ${file.path}: ${file.why}`),
     "",
     "The plan:",
     plan.summary,
-    ...plan.steps.map((step) => `- ${step.label}: ${program} ${step.args.join(" ")}`),
+    ...plan.steps.map((step) => stepLine(step, program)),
   ].join("\n");
+}
+
+/** One planned file as the person reads it at the confirm page; null content when the AI did not write it. */
+export interface StagedFile {
+  path: string;
+  content: string | null;
 }
 
 /**
@@ -688,8 +703,22 @@ function asKeep(value: unknown): KeepRead[] {
 
 function asFile(value: unknown): PlannedFile[] {
   const raw = asRecord(value);
-  const path = asString(raw.path);
-  return path === "" ? [] : [{ path, why: asString(raw.why) }];
+  const path = insideProject(asString(raw.path));
+  return path === null ? [] : [{ path, why: asString(raw.why) }];
+}
+
+/**
+ * A planned file's path as one inside the project - forward slashes, no `./` -
+ * or null for one that could land anywhere else: absolute, on another drive, or
+ * climbing out with `..`. Aime writes these paths itself, so the plan cannot
+ * name a file outside the folder the person is deploying.
+ */
+export function insideProject(path: string): string | null {
+  const parts = path.trim().replaceAll("\\", "/").split("/");
+  const absolute = parts[0] === "" || /^[A-Za-z]:$/.test(parts[0] ?? "");
+  if (absolute || parts.includes("..")) return null;
+  const kept = parts.filter((part) => part !== "" && part !== ".");
+  return kept.length === 0 ? null : kept.join("/");
 }
 
 function asProve(value: unknown, urlFromRead: boolean): ProveRead | null {

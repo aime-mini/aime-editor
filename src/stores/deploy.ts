@@ -16,6 +16,8 @@ import {
   parseSurvey,
   planPrompt,
   readLine,
+  STAGED_DIR,
+  type StagedFile,
   steerPrompt,
   surveyPrompt,
   urlIn,
@@ -34,6 +36,7 @@ import type { PlannedRead } from "../lib/cloudReads";
 import { allOutput, execCancel, type CommandOutcome } from "../lib/exec";
 import { formatProviderError } from "../lib/providerErrors";
 import { slotOf, useCloud, type CloudAccount } from "./cloud";
+import { failedTo } from "./notices";
 import { useWorkspace } from "./workspace";
 
 /**
@@ -67,7 +70,15 @@ export type DeployStage =
    * for them again would cost the same CLI calls to learn the same thing. A
    * revision re-runs the PLAN step only.
    */
-  | { kind: "confirm"; survey: Survey; plan: DeployPlan; answers: ReadAnswer[]; tooling: string[] }
+  | {
+      kind: "confirm";
+      survey: Survey;
+      plan: DeployPlan;
+      answers: ReadAnswer[];
+      tooling: string[];
+      /** The plan's files as written, for the person to read before agreeing (`STAGED_DIR`). */
+      files: StagedFile[];
+    }
   | { kind: "deploying"; plan: DeployPlan; steps: StepRun[] }
   /**
    * The AI rewrote the steps still to run - after a failure, or when the person
@@ -267,6 +278,7 @@ export const useDeploy = create<DeployState>((set, get) => ({
     // simply not going ahead.
     const current = get().slots[slot];
     if (current?.stage.kind === "confirm") {
+      await clearStaging(projectRoot());
       opsFor(slot, set, get).stage({
         kind: "blocked",
         plan: current.stage.plan,
@@ -435,10 +447,12 @@ async function writePlan(
         blocked(ops, usable, [], translate("deploy.noProof"));
         return;
       }
+      const files = await stageFiles(ops, root, usable);
+      if (files === null) return;
       // The answer lands against the question that prompted it, so the page
       // reads as an exchange rather than as a plan that silently changed.
       ops.answer(usable.reply);
-      ops.stage({ kind: "confirm", survey, plan: usable, answers, tooling });
+      ops.stage({ kind: "confirm", survey, plan: usable, answers, tooling, files });
       return;
     }
     rejected = checked.rejected;
@@ -471,9 +485,12 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
   show(null);
 
   if (plan.files.length > 0) {
-    ops.note(translate("deploy.writingFiles", { count: plan.files.length }));
-    const written = await turn(ops, root, filesPrompt(cloudId, plan.files, plan), "edits");
-    if (written === null) return;
+    const placed = await placeStagedFiles(root, plan);
+    if (placed.length > 0) {
+      blocked(ops, plan, show(null), translate("deploy.filesNotPlaced", { detail: placed.join("; ") }));
+      return;
+    }
+    ops.note(translate("deploy.filesPlaced", { count: plan.files.length }));
   }
 
   ops.note(translate("deploy.snapshot"));
@@ -596,6 +613,84 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
   blocked(ops, plan, show(null), translate("deploy.cancelled"));
 }
 
+/** A path inside the project, from the project's root and a project-relative path. */
+function inProject(root: string, path: string): string {
+  return `${root.replace(/[\\/]+$/, "")}/${path}`;
+}
+
+/** The staging folder of the project open now. */
+function stagingOf(root: string): string {
+  return inProject(root, STAGED_DIR);
+}
+
+/**
+ * Has the AI write the plan's files into the staging folder and reads them back
+ * for the confirm page - so what goes into the project is read before Deploy is
+ * pressed, not discovered after. Null when the turn was stopped or failed.
+ */
+async function stageFiles(ops: Ops, root: string, plan: DeployPlan): Promise<StagedFile[] | null> {
+  if (plan.files.length === 0) return [];
+  const { cloudId } = ops.slot();
+  await clearStaging(root);
+  ops.note(translate("deploy.writingFiles", { count: plan.files.length }));
+  const written = await turn(ops, root, filesPrompt(cloudId, plan.files, plan), "edits");
+  if (written === null) return null;
+  const staging = stagingOf(root);
+  return Promise.all(
+    plan.files.map(async (file) => {
+      try {
+        return {
+          path: file.path,
+          content: await invoke<string>("read_file", { path: `${staging}/${file.path}` }),
+        };
+      } catch {
+        return { path: file.path, content: null };
+      }
+    }),
+  );
+}
+
+/**
+ * Moves each agreed file from the staging folder into the project, replacing
+ * what was there - the person read and agreed to exactly these bytes. Answers
+ * what could not be placed; nothing that was not staged is written.
+ */
+async function placeStagedFiles(root: string, plan: DeployPlan): Promise<string[]> {
+  const staging = stagingOf(root);
+  const problems: string[] = [];
+  for (const file of plan.files) {
+    const from = `${staging}/${file.path}`;
+    const to = inProject(root, file.path);
+    try {
+      await invoke<number>("path_size", { path: from });
+    } catch {
+      problems.push(translate("deploy.fileNeverWritten", { path: file.path }));
+      continue;
+    }
+    try {
+      await invoke("move_into_place", { from, to });
+    } catch (error: unknown) {
+      problems.push(`${file.path}: ${String(error)}`);
+    }
+  }
+  if (problems.length === 0) await clearStaging(root);
+  return problems;
+}
+
+/**
+ * Empties the staging folder; one that is not there is already empty. A folder
+ * that will not go is said out loud rather than left behind in silence.
+ */
+async function clearStaging(root: string): Promise<void> {
+  const staging = stagingOf(root);
+  const present = await invoke<number>("path_size", { path: staging }).then(
+    () => true,
+    () => false,
+  );
+  if (!present) return;
+  await invoke("delete_path", { path: staging }).catch(failedTo(translate("deploy.stagingNotCleared")));
+}
+
 /**
  * Whether the rewritten steps may run. Steps the person already agreed to - the
  * remainder of the plan, tried again as it was - need no second yes; anything
@@ -614,10 +709,13 @@ async function agreedTo(
   if (!changed.includes(true)) return true;
   ops.note(translate("deploy.reconfirmWaiting", { count: changed.filter(Boolean).length }));
   const steps: StepRun[] = [...ran, ...revised.map((step) => ({ step, state: "pending" as const }))];
-  ops.stage({ kind: "reconfirm", plan, steps, revised, changed, why });
-  const agreedNow = await new Promise<boolean>((resolve) => {
+  // The answer is listened for before the page asks: a yes given the moment
+  // the page appears must not fall into the gap between the two.
+  const answer = new Promise<boolean>((resolve) => {
     ops.engine.agreement = resolve;
   });
+  ops.stage({ kind: "reconfirm", plan, steps, revised, changed, why });
+  const agreedNow = await answer;
   if (!agreedNow) {
     blocked(ops, plan, steps, translate("deploy.cancelled"));
     return false;

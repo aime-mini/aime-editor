@@ -586,6 +586,14 @@ export const en = {
     "The AI CLI needs signing in again: {reason}. Sign in (the key button in the AI panel runs its login), then deploy again.",
   "deploy.unreachable":
     "The AI service could not be reached for some time: {reason}. Nothing more ran; deploy again once it answers.",
+  "deploy.filesPlaced": "The {count} agreed file(s) are in place",
+  "deploy.filesNotPlaced": "The agreed files could not all be put in place, so nothing ran: {detail}",
+  "deploy.fileNeverWritten": "{path} was never written",
+  "deploy.fileMissing": "Not written - this file will not be put in place",
+  "deploy.filesHint":
+    "Already written and waiting outside the project - open one to read it. Deploy puts exactly these files in place; Cancel throws them away.",
+  "deploy.filesUnwritten": "A planned file was never written - ask for a revision",
+  "deploy.stagingNotCleared": "Could not remove the deploy files waiting in .aime/deploy/staged",
   "deploy.cancelled": "Stopped.",
   "deploy.confirmTitle": "Nothing has run yet. This is what will.",
   "deploy.confirmHint":
@@ -605,7 +613,7 @@ export const en = {
   "deploy.keepTitle": "Kept exactly as they are",
   "deploy.keepHint": "Read before and after; a change in any of them stops the deploy and is reported.",
   "deploy.stepsTitle": "Every command, as Aime will run it",
-  "deploy.filesTitle": "Files the AI writes into the repository first",
+  "deploy.filesTitle": "Files the deploy puts into the repository first",
   "deploy.proveTitle": "How it is proved",
   "deploy.proveLine": "GET {path} on the URL that `{command}` answers must return {expect}.",
   "deploy.missingTitle": "Assumed, because the repository does not say",

@@ -585,6 +585,14 @@ export const vi: Record<TranslationKey, string> = {
     "AI CLI cần đăng nhập lại: {reason}. Đăng nhập (nút chìa khoá ở panel AI chạy lệnh login), rồi deploy lại.",
   "deploy.unreachable":
     "Không kết nối được dịch vụ AI trong một lúc lâu: {reason}. Không có gì chạy thêm; hãy deploy lại khi dịch vụ trả lời.",
+  "deploy.filesPlaced": "{count} file đã duyệt đã được đặt vào dự án",
+  "deploy.filesNotPlaced": "Không đặt được hết các file đã duyệt nên chưa có gì chạy: {detail}",
+  "deploy.fileNeverWritten": "{path} chưa từng được viết ra",
+  "deploy.fileMissing": "Chưa được viết - file này sẽ không được đặt vào dự án",
+  "deploy.filesHint":
+    "Đã viết sẵn và đang chờ bên ngoài dự án - mở từng file để đọc. Deploy đặt đúng các file này vào dự án; Huỷ thì bỏ chúng đi.",
+  "deploy.filesUnwritten": "Có file trong kế hoạch chưa được viết - hãy yêu cầu sửa kế hoạch",
+  "deploy.stagingNotCleared": "Không xoá được các file deploy đang chờ trong .aime/deploy/staged",
   "deploy.cancelled": "Đã dừng.",
   "deploy.confirmTitle": "Chưa có gì chạy. Đây là những gì sẽ chạy.",
   "deploy.confirmHint":
@@ -604,7 +612,7 @@ export const vi: Record<TranslationKey, string> = {
   "deploy.keepTitle": "Giữ nguyên đúng như đang có",
   "deploy.keepHint": "Đọc trước và sau; bất kỳ cái nào đổi thì deploy dừng và báo.",
   "deploy.stepsTitle": "Mọi lệnh, đúng như Aime sẽ chạy",
-  "deploy.filesTitle": "File AI sẽ viết vào repo trước",
+  "deploy.filesTitle": "File được đặt vào repo trước khi deploy",
   "deploy.proveTitle": "Kiểm chứng bằng cách nào",
   "deploy.proveLine": "GET {path} trên URL mà `{command}` trả về phải ra {expect}.",
   "deploy.missingTitle": "Giả định, vì repo không nói",

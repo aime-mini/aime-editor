@@ -290,6 +290,17 @@ pub fn rename_path(from: String, to: String) -> Result<(), String> {
     fs::rename(&from, &to).map_err(|e| e.to_string())
 }
 
+/// Moves a file to `to`, creating the folders above it and replacing a file
+/// already there in the same step - the rename is atomic on every platform, so
+/// the old file is never gone before the new one is in its place.
+#[tauri::command]
+pub fn move_into_place(from: String, to: String) -> Result<(), String> {
+    if let Some(parent) = Path::new(&to).parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::rename(&from, &to).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn delete_path(path: String) -> Result<(), String> {
     // A folder can be a whole `node_modules`: seconds of deleting.
@@ -348,6 +359,29 @@ mod tests {
         let size = super::path_size(dir.to_string_lossy().to_string()).await;
         fs::remove_dir_all(&dir).ok();
         assert_eq!(size, Ok(1234));
+    }
+
+    #[test]
+    fn a_file_moved_into_place_replaces_the_one_there_and_makes_its_folders() {
+        let dir = std::env::temp_dir().join("aime-move-into-place");
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(dir.join("staged")).expect("staging");
+        fs::write(dir.join("staged").join("Dockerfile"), "FROM node:22").expect("staged file");
+        fs::write(dir.join("Dockerfile"), "FROM node:18").expect("old file");
+        fs::write(dir.join("staged").join("deploy.yaml"), "kind: Deployment").expect("staged manifest");
+        let path = |name: &str| dir.join(name).to_string_lossy().to_string();
+
+        let replaced = super::move_into_place(path("staged/Dockerfile"), path("Dockerfile"));
+        let nested = super::move_into_place(path("staged/deploy.yaml"), path("k8s/deploy.yaml"));
+        let docker = fs::read_to_string(dir.join("Dockerfile"));
+        let manifest = fs::read_to_string(dir.join("k8s").join("deploy.yaml"));
+        let staged_left = dir.join("staged").join("Dockerfile").exists();
+        fs::remove_dir_all(&dir).ok();
+
+        assert_eq!((replaced, nested), (Ok(()), Ok(())));
+        assert_eq!(docker.expect("placed"), "FROM node:22");
+        assert_eq!(manifest.expect("placed"), "kind: Deployment");
+        assert!(!staged_left, "a moved file stayed behind in the staging folder");
     }
 
     const MARKED: &[u8] = b"\xEF\xBB\xBFusing Nop.Core.Caching;\n";

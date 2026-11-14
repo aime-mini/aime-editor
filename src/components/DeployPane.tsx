@@ -15,7 +15,15 @@ import {
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { translate, useT } from "../i18n";
-import { commandLine, readLine, type DeployNote, type DeployPlan, type Survey } from "../lib/deploy";
+import {
+  commandLine,
+  readLine,
+  type DeployNote,
+  type DeployPlan,
+  type PlannedFile,
+  type StagedFile,
+  type Survey,
+} from "../lib/deploy";
 import { recipeOf } from "../lib/deployDialect";
 import { shortKind } from "../lib/cloudIcons";
 import { billingOff } from "../lib/cloudErrors";
@@ -99,6 +107,7 @@ export function DeployPane({ slot }: { slot: string }) {
             account={account}
             survey={stage.survey}
             plan={stage.plan}
+            files={stage.files}
             notes={notes}
             onGo={() => void confirm(slot)}
             onCancel={() => void cancel(slot)}
@@ -204,6 +213,7 @@ function Confirm({
   account,
   survey,
   plan,
+  files,
   notes,
   onGo,
   onCancel,
@@ -213,6 +223,7 @@ function Confirm({
   account: CloudAccount;
   survey: Survey;
   plan: DeployPlan;
+  files: StagedFile[];
   notes: DeployNote[];
   onGo: () => void;
   onCancel: () => void;
@@ -224,6 +235,9 @@ function Confirm({
     plan.target.resourceId === null || resources?.kind !== "loaded"
       ? null
       : (resources.resources.find((one) => one.id === plan.target.resourceId) ?? null);
+  // A planned file the AI never wrote cannot be put in place, so the plan
+  // cannot run as agreed: the page asks for a revision instead.
+  const unwritten = files.some((file) => file.content === null);
   const existingLabel =
     existing === null
       ? (plan.target.resourceId ?? "")
@@ -283,16 +297,14 @@ function Confirm({
       )}
 
       {plan.files.length > 0 && (
-        <Section title={t("deploy.filesTitle")}>
-          <ul className="space-y-1 text-[12px]">
+        <Section title={t("deploy.filesTitle")} hint={t("deploy.filesHint")}>
+          <ul className="space-y-1.5 text-[12px]">
             {plan.files.map((file) => (
-              <li key={file.path} className="flex items-baseline gap-2">
-                <FileText size={12} className="mt-0.5 shrink-0 text-muted" />
-                <span>
-                  <span className="font-mono">{file.path}</span>
-                  {file.why !== "" && <span className="text-muted"> - {file.why}</span>}
-                </span>
-              </li>
+              <PlannedFileView
+                key={file.path}
+                file={file}
+                content={files.find((staged) => staged.path === file.path)?.content ?? null}
+              />
             ))}
           </ul>
         </Section>
@@ -340,7 +352,9 @@ function Confirm({
       <div className="flex items-center gap-2 border-t border-line pt-4">
         <button
           onClick={onGo}
-          className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white hover:opacity-90"
+          disabled={unwritten}
+          title={unwritten ? t("deploy.filesUnwritten") : undefined}
+          className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Rocket size={13} /> {t("deploy.go")}
         </button>
@@ -352,6 +366,44 @@ function Confirm({
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * One file the plan puts into the project, opened to read what it says - the
+ * exact bytes Deploy will place - or marked when the AI never wrote it.
+ */
+function PlannedFileView({ file, content }: { file: PlannedFile; content: string | null }) {
+  const t = useT();
+  const title = (
+    <span>
+      <span className="font-mono">{file.path}</span>
+      {file.why !== "" && <span className="text-muted"> - {file.why}</span>}
+    </span>
+  );
+  if (content === null) {
+    return (
+      <li className="flex items-baseline gap-2" data-staged-file={file.path} data-staged-missing>
+        <FileText size={12} className="mt-0.5 shrink-0 text-warn" />
+        <span>
+          {title}
+          <span className="block text-[11px] text-warn">{t("deploy.fileMissing")}</span>
+        </span>
+      </li>
+    );
+  }
+  return (
+    <li data-staged-file={file.path}>
+      <details>
+        <summary className="flex cursor-pointer items-baseline gap-2">
+          <FileText size={12} className="mt-0.5 shrink-0 text-muted" />
+          {title}
+        </summary>
+        <pre className="mt-1 max-h-72 overflow-auto rounded-md border border-line bg-elevated px-2.5 py-1.5 font-mono text-[11.5px]">
+          {content}
+        </pre>
+      </details>
+    </li>
   );
 }
 

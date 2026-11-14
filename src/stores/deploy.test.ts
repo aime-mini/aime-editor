@@ -21,8 +21,14 @@ interface StepRequest {
 
 /** Every Tauri command called, in order, with its arguments. */
 const calls: { command: string; args: Record<string, unknown> }[] = [];
-/** What each AI turn asked for, in order. */
+/** What each AI turn asked for, in order - every turn except the ones that write the plan's files. */
 const turns: AgentTurnOptions[] = [];
+/** The turns that wrote the plan's files into the staging folder, answered by the mock itself. */
+const fileTurns: AgentTurnOptions[] = [];
+/** Planned files the AI is scripted to leave unwritten. */
+let unwritten: string[] = [];
+/** Whether the person agrees to rewritten steps the moment they are asked; a test that pins the asking turns it off. */
+let agreesToRewrites = true;
 /** The AI's replies, consumed one per turn. */
 let replies: string[] = [];
 /** Exit codes per step label, consumed in order; a missing entry is a success. */
@@ -133,6 +139,13 @@ vi.mock("@tauri-apps/api/core", () => ({
     switch (command) {
       case "programs_present":
         return Promise.resolve([]);
+      case "read_file":
+      case "path_size": {
+        const path = String(args.path);
+        if (unwritten.some((file) => path.endsWith(`/${file}`)))
+          return Promise.reject(new Error("not found"));
+        return Promise.resolve(command === "path_size" ? 12 : `staged ${path}`);
+      }
       case "cloud_deploy_read": {
         const read = args.read as { label: string };
         const answers = reads[read.label] ?? [];
@@ -195,13 +208,21 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/api/path", () => ({ appDataDir: () => Promise.resolve("C:\\app-data") }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: () => Promise.resolve() }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: () => Promise.resolve(null) }));
-vi.mock("../lib/agentTurn", () => ({
+vi.mock("../lib/agentTurn", async (importOriginal) => ({
+  // The real `haveTurn`: what the deploy does with an answer is part of what is pinned.
+  ...(await importOriginal<typeof import("../lib/agentTurn")>()),
   agentTurn: (options: AgentTurnOptions) => {
+    const answered = (text: string) =>
+      Promise.resolve({ code: 0, text, costUsd: null, stderr: "", errors: "", sessionId: null });
+    if (options.prompt.includes(".aime/deploy/staged/")) {
+      fileTurns.push(options);
+      return answered("written");
+    }
     turns.push(options);
     options.onStarted?.(`run-${String(turns.length)}`);
     const text = replies.shift();
     if (text === undefined) throw new Error("the test scripted no reply for this turn");
-    return Promise.resolve({ code: 0, text });
+    return answered(text);
   },
   cancelAgentTurn: () => Promise.resolve(),
 }));
@@ -230,9 +251,17 @@ async function planned(): Promise<void> {
   expect(stage().kind).toBe("confirm");
 }
 
+/** Stands in for the person at the page that asks about rewritten steps. */
+useDeploy.subscribe((state) => {
+  if (agreesToRewrites && state.slots[SLOT]?.stage.kind === "reconfirm") state.agree(SLOT);
+});
+
 beforeEach(() => {
+  agreesToRewrites = true;
   calls.length = 0;
   turns.length = 0;
+  fileTurns.length = 0;
+  unwritten = [];
   replies = [SURVEY, PLAN];
   exits = {};
   reads = { "describe web": [DESCRIBED] };
@@ -250,6 +279,18 @@ beforeEach(() => {
 });
 
 describe("planning", () => {
+  it("writes the plan's files into the staging folder before the confirm page, for the person to read", async () => {
+    await planned();
+    expect(fileTurns).toHaveLength(1);
+    expect(fileTurns[0].permission).toBe("edits");
+    expect(fileTurns[0].tools).toBe("filesOnly");
+    expect(fileTurns[0].prompt).toContain("- Dockerfile: the repository has none");
+    expect(stage()).toMatchObject({
+      kind: "confirm",
+      files: [{ path: "Dockerfile", content: "staged C:\\proj\\shop/.aime/deploy/staged/Dockerfile" }],
+    });
+  });
+
   it("surveys with files-only read-only turns, runs the reads it asked for, checks the plan, and waits", async () => {
     await planned();
 
@@ -263,7 +304,15 @@ describe("planning", () => {
     expect(turns[1].prompt).toContain("### describe web");
 
     const commands = calls.map((call) => call.command);
-    expect(commands).toEqual(["programs_present", "cloud_deploy_read", "cloud_check_deploy"]);
+    // Then the staging folder is emptied, and the one file written read back for the page.
+    expect(commands).toEqual([
+      "programs_present",
+      "cloud_deploy_read",
+      "cloud_check_deploy",
+      "path_size",
+      "delete_path",
+      "read_file",
+    ]);
     const check = calls[2].args;
     expect(check.cloudId).toBe("gcp");
     expect(check.existing).toBe(true);
@@ -290,7 +339,14 @@ describe("planning", () => {
     expect(turns).toHaveLength(3);
     expect(turns[2].prompt).toContain("use the cheaper tier");
     expect(turns[2].prompt).toContain("What the person asked for");
-    expect(calls.slice(before).map((call) => call.command)).toEqual(["cloud_check_deploy"]);
+    // The revised plan's files are written afresh: the revision may have changed them.
+    expect(calls.slice(before).map((call) => call.command)).toEqual([
+      "cloud_check_deploy",
+      "path_size",
+      "delete_path",
+      "read_file",
+    ]);
+    expect(fileTurns).toHaveLength(2);
     // The note is kept, trimmed, shown in the log in the person's words - and
     // the plan's answer is filed against it, so the page is an exchange and
     // not a plan that quietly changed.
@@ -365,17 +421,20 @@ describe("planning", () => {
 describe("deploying", () => {
   it("writes the files, reads the kept settings, runs every step, proves the URL, and is done", async () => {
     await planned();
-    replies = ["written"];
+    replies = [];
     await useDeploy.getState().confirm(SLOT);
 
     const result = stage();
     expect(result).toMatchObject({ kind: "done", url: "https://web-abc.a.run.app", kept: 1 });
 
-    // The files turn is the one edits turn, and it too has only file tools.
-    const filesTurn = turns[2];
-    expect(filesTurn.permission).toBe("edits");
-    expect(filesTurn.tools).toBe("filesOnly");
-    expect(filesTurn.prompt).toContain("Dockerfile");
+    // The files were written before the confirm page; Deploy only puts them in place.
+    expect(fileTurns).toHaveLength(1);
+    const placed = calls.filter((call) => call.command === "move_into_place").map((call) => call.args);
+    expect(placed).toEqual([
+      { from: "C:\\proj\\shop/.aime/deploy/staged/Dockerfile", to: "C:\\proj\\shop/Dockerfile" },
+    ]);
+    const firstStep = calls.findIndex((call) => call.command === "cloud_deploy_step");
+    expect(calls.findIndex((call) => call.command === "move_into_place")).toBeLessThan(firstStep);
 
     const commands = calls.map((call) => call.command);
     const requests = calls
@@ -395,11 +454,11 @@ describe("deploying", () => {
   it("hands a failed step to the AI with its output and runs the rewritten remainder", async () => {
     await planned();
     exits = { "Deploy from source": [1] };
-    replies = ["written", REVISION];
+    replies = [REVISION];
     await useDeploy.getState().confirm(SLOT);
 
     expect(stage()).toMatchObject({ kind: "done" });
-    const fixTurn = turns[3];
+    const fixTurn = turns[2];
     expect(fixTurn.permission).toBe("edits");
     expect(fixTurn.tools).toBe("filesOnly");
     expect(fixTurn.prompt).toContain("Failed: Deploy from source");
@@ -413,11 +472,34 @@ describe("deploying", () => {
     expect(calls.filter((call) => call.command === "cloud_check_deploy")).toHaveLength(2);
   });
 
+  it("runs no rewritten step the person has not agreed to", async () => {
+    agreesToRewrites = false;
+    await planned();
+    exits = { "Deploy from source": [1] };
+    replies = [REVISION];
+    const deploying = useDeploy.getState().confirm(SLOT);
+    await vi.waitFor(() => {
+      expect(stage().kind).toBe("reconfirm");
+    });
+    expect(stage()).toMatchObject({
+      revised: [{ label: "Deploy with more memory" }],
+      changed: [true],
+    });
+    await useDeploy.getState().cancel(SLOT);
+    await deploying;
+
+    expect(stage()).toMatchObject({ kind: "blocked" });
+    const steps = calls
+      .filter((call) => call.command === "cloud_deploy_step")
+      .map((call) => (call.args.request as StepRequest).step.label);
+    expect(steps).toEqual(["Enable APIs", "Deploy from source"]);
+  });
+
   it("stops rather than loop when the same step fails the same way twice", async () => {
     await planned();
     exits = { "Deploy from source": [1], "Deploy with more memory": [1, 1] };
     const sameAgain = JSON.stringify({ ...JSON.parse(REVISION) });
-    replies = ["written", REVISION, sameAgain, sameAgain];
+    replies = [REVISION, sameAgain, sameAgain];
     await useDeploy.getState().confirm(SLOT);
 
     const result = stage();
@@ -434,7 +516,7 @@ describe("deploying", () => {
     });
     // before: original; prove: changed; after: changed.
     reads = { "describe web": [DESCRIBED, changed, changed] };
-    replies = ["written"];
+    replies = [];
     await useDeploy.getState().confirm(SLOT);
 
     expect(stage()).toMatchObject({
@@ -450,7 +532,7 @@ describe("deploying", () => {
     // a prove that fails asks the path and then the root, so two calls.
     probeStatus = 503;
     rootStatus = 503;
-    replies = ["written", REVISION];
+    replies = [REVISION];
     const unsubscribe = useDeploy.subscribe(() => {
       if (calls.filter((call) => call.command === "cloud_http_probe").length >= 2) {
         probeStatus = 200;
@@ -461,8 +543,8 @@ describe("deploying", () => {
     unsubscribe();
 
     expect(stage()).toMatchObject({ kind: "done" });
-    expect(turns[3].prompt).toContain("The service answered 503, not 200.");
-    expect(turns[3].prompt).toContain("Service Unavailable");
+    expect(turns[2].prompt).toContain("The service answered 503, not 200.");
+    expect(turns[2].prompt).toContain("Service Unavailable");
     // Three, not two: a probe that comes back wrong asks the service's root
     // before any verdict, because a working service with a health path Cloud
     // Run answers itself looks exactly like a service that never started
@@ -480,13 +562,13 @@ describe("deploying", () => {
     await planned();
     probeStatus = 404;
     rootStatus = 200;
-    replies = ["written", REVISION, REVISION];
+    replies = [REVISION, REVISION];
     await useDeploy.getState().confirm(SLOT);
 
     // No fix round at all: deploying again cannot change which paths Cloud Run
     // answers for itself, and every round is another Cloud Build on the bill.
     expect(stage()).toMatchObject({ kind: "blocked" });
-    expect(turns).toHaveLength(3);
+    expect(turns).toHaveLength(2);
     const told = log("problem").join("\n");
     expect(told).toContain("The service answered 404, not 200.");
     expect(told).toContain("https://web-abc.a.run.app - so it is deployed and serving");
@@ -497,7 +579,7 @@ describe("deploying", () => {
     await planned();
     probeStatus = 503;
     rootStatus = 503;
-    replies = ["written", REVISION, REVISION];
+    replies = [REVISION, REVISION];
     await useDeploy.getState().confirm(SLOT);
 
     const told = log("problem").join("\n");
@@ -510,6 +592,22 @@ describe("deploying", () => {
     await useDeploy.getState().cancel(SLOT);
     expect(stage()).toMatchObject({ kind: "blocked", reason: "Stopped." });
     expect(calls.filter((call) => call.command === "cloud_deploy_step")).toHaveLength(0);
+    // The files waiting for a yes are thrown away, and none was put in place.
+    expect(calls.filter((call) => call.command === "move_into_place")).toHaveLength(0);
+    expect(calls.at(-1)).toEqual({
+      command: "delete_path",
+      args: { path: "C:\\proj\\shop/.aime/deploy/staged" },
+    });
+  });
+
+  it("runs nothing when a file the person agreed to was never written", async () => {
+    unwritten = ["Dockerfile"];
+    await planned();
+    expect(stage()).toMatchObject({ files: [{ path: "Dockerfile", content: null }] });
+    await useDeploy.getState().confirm(SLOT);
+    expect(stage()).toMatchObject({ kind: "blocked" });
+    expect(calls.filter((call) => call.command === "cloud_deploy_step")).toHaveLength(0);
+    expect(calls.filter((call) => call.command === "move_into_place")).toHaveLength(0);
   });
 });
 
@@ -522,12 +620,12 @@ describe("deploying", () => {
 describe("speaking while it runs", () => {
   it("takes the words at the end of the step in flight and runs the remainder it rewrote", async () => {
     await planned();
-    replies = ["written", STEER];
+    replies = [STEER];
     saysDuringStep = [{ at: "Enable APIs", say: "  put it in eastasia  " }];
     await useDeploy.getState().confirm(SLOT);
 
     expect(stage()).toMatchObject({ kind: "done" });
-    const steerTurn = turns[3];
+    const steerTurn = turns[2];
     expect(steerTurn.permission).toBe("edits");
     expect(steerTurn.tools).toBe("filesOnly");
     expect(steerTurn.prompt).toContain("> put it in eastasia");
@@ -557,16 +655,16 @@ describe("speaking while it runs", () => {
       ...(JSON.parse(REVISION) as object),
       reply: "The quota is on the other project, so the deploy goes there.",
     });
-    replies = ["written", answered];
+    replies = [answered];
     saysDuringStep = [{ at: "Deploy from source", say: "the quota is on another project" }];
     await useDeploy.getState().confirm(SLOT);
 
     expect(stage()).toMatchObject({ kind: "done" });
-    const fixTurn = turns[3];
+    const fixTurn = turns[2];
     expect(fixTurn.prompt).toContain("Failed: Deploy from source");
     expect(fixTurn.prompt).toContain("> the quota is on another project");
     // One turn, not two: the failure and the person's words are one question.
-    expect(turns).toHaveLength(4);
+    expect(turns).toHaveLength(3);
     expect(useDeploy.getState().slots[SLOT]?.notes.at(-1)?.answered).toBe(
       "The quota is on the other project, so the deploy goes there.",
     );
@@ -574,7 +672,7 @@ describe("speaking while it runs", () => {
 
   it("goes on with the plan that was confirmed when Aime refuses what came back", async () => {
     await planned();
-    replies = ["written", STEER];
+    replies = [STEER];
     saysDuringStep = [{ at: "Enable APIs", say: "put it in eastasia" }];
     refusals = [[{ part: "step", label: "Deploy to eastasia", reason: "the target may not move" }]];
     await useDeploy.getState().confirm(SLOT);
@@ -593,13 +691,13 @@ describe("speaking while it runs", () => {
 
   it("says so when the words arrive with nothing left to steer", async () => {
     await planned();
-    replies = ["written"];
+    replies = [];
     saysDuringProbe = "make it cheaper";
     await useDeploy.getState().confirm(SLOT);
 
     expect(stage()).toMatchObject({ kind: "done" });
     // No turn was spent on a deployment that had already finished.
-    expect(turns).toHaveLength(3);
+    expect(turns).toHaveLength(2);
     expect(useDeploy.getState().slots[SLOT]?.notes).toEqual([
       {
         asked: "make it cheaper",
@@ -615,20 +713,17 @@ describe("speaking while it runs", () => {
     // words the person typed while it was being asked - and it gives up.
     probeStatus = 503;
     rootStatus = 503;
-    replies = [
-      "written",
-      JSON.stringify({ steps: [], files: [], inspect: [], giveUp: "the quota needs a person" }),
-    ];
+    replies = [JSON.stringify({ steps: [], files: [], inspect: [], giveUp: "the quota needs a person" })];
     await useDeploy.getState().confirm(SLOT);
 
     expect(stage()).toMatchObject({ kind: "blocked" });
-    expect(turns[3].prompt).toContain("> use the other region");
+    expect(turns[2].prompt).toContain("> use the other region");
     expect(useDeploy.getState().slots[SLOT]?.notes.at(-1)?.answered).toBe("the quota needs a person");
   });
 
   it("answers what never reached the AI at all when the deployment stops", async () => {
     await planned();
-    replies = ["written"];
+    replies = [];
     saysDuringProbe = "use the other region";
     // Serving on its root but not on the path the plan chose: Aime stops
     // without asking the AI anything, so the question needs an answer of its own.
@@ -637,7 +732,7 @@ describe("speaking while it runs", () => {
     await useDeploy.getState().confirm(SLOT);
 
     expect(stage()).toMatchObject({ kind: "blocked" });
-    expect(turns).toHaveLength(3);
+    expect(turns).toHaveLength(2);
     expect(useDeploy.getState().slots[SLOT]?.notes.at(-1)?.answered).toBe(
       "The deployment stopped before anything could be done about this.",
     );
@@ -645,7 +740,7 @@ describe("speaking while it runs", () => {
 
   it("keeps two things said during one step as one question with one answer", async () => {
     await planned();
-    replies = ["written", STEER];
+    replies = [STEER];
     saysDuringStep = [
       { at: "Enable APIs", say: "that region is wrong" },
       { at: "Enable APIs", say: "use eastasia" },
@@ -653,7 +748,7 @@ describe("speaking while it runs", () => {
     await useDeploy.getState().confirm(SLOT);
 
     // Both reach the AI, in the order they were typed...
-    expect(turns[3].prompt).toContain(["> that region is wrong", "use eastasia"].join("\n"));
+    expect(turns[2].prompt).toContain(["> that region is wrong", "use eastasia"].join("\n"));
     // ...as one question, so neither is left waiting for an answer of its own.
     expect(useDeploy.getState().slots[SLOT]?.notes).toEqual([
       {

@@ -164,6 +164,7 @@ pub fn run() {
             pasted::save_pasted_image,
             fs_cmds::create_dir,
             fs_cmds::rename_path,
+            fs_cmds::move_into_place,
             fs_cmds::delete_path,
             fs_cmds::path_size,
             fs_watch::watch_workspace,

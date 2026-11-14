@@ -3,7 +3,9 @@ import type { CloudAccount, CloudResource } from "../stores/cloud";
 import {
   notAgreed,
   commandLine,
+  filesPrompt,
   fixPrompt,
+  insideProject,
   overwritten,
   parsePlan,
   parseRevision,
@@ -11,6 +13,7 @@ import {
   parseSurvey,
   planPrompt,
   readLine,
+  STAGED_DIR,
   steerPrompt,
   surveyPrompt,
   urlIn,
@@ -746,5 +749,42 @@ describe("notAgreed", () => {
   it("asks nothing when the AI only tries the agreed steps again", () => {
     const agreed = [step("Deploy", ["run", "deploy", "shop"])];
     expect(notAgreed(agreed, agreed)).toEqual([false]);
+  });
+});
+
+describe("insideProject", () => {
+  it("keeps a path inside the project, written the one way", () => {
+    expect(insideProject("Dockerfile")).toBe("Dockerfile");
+    expect(insideProject("./k8s\\deploy.yaml")).toBe("k8s/deploy.yaml");
+    expect(insideProject("  infra//app.yaml ")).toBe("infra/app.yaml");
+  });
+
+  it("refuses a path that could land outside the project", () => {
+    for (const path of ["/etc/passwd", "C:\\Windows\\x", "c:/x", "../outside", "k8s/../../x", "", "."]) {
+      expect(insideProject(path)).toBeNull();
+    }
+  });
+});
+
+describe("filesPrompt", () => {
+  it("has the files written into the staging folder, never in place", () => {
+    const plan: DeployPlan = {
+      summary: "Deploy shop from source",
+      reply: "",
+      target: { existing: false, resourceId: null, region: "asia-southeast1" },
+      proposal: null,
+      keep: [],
+      steps: [
+        { label: "Deploy", args: ["apply", "-f", "k8s.yaml"], changes: "the workload", program: "kubectl" },
+      ],
+      files: [{ path: "Dockerfile", why: "builds the image" }],
+      prove: null,
+    };
+    const prompt = filesPrompt("gcp", [{ path: "Dockerfile", why: "builds the image" }], plan);
+    expect(prompt).toContain(`under ${STAGED_DIR}/`);
+    expect(prompt).toContain("- Dockerfile: builds the image");
+    // A kubectl step is named as kubectl, not as the cloud's own CLI.
+    expect(prompt).toContain("kubectl apply -f k8s.yaml");
+    expect(prompt).not.toContain("gcloud apply");
   });
 });
