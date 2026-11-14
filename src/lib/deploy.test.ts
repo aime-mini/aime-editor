@@ -682,10 +682,17 @@ describe("speaking while it runs", () => {
     expect(parseSteer('{"reply":"It is already in that region.","steps":[]}')).toEqual({
       reply: "It is already in that region.",
       steps: [],
+      files: [],
     });
     expect(
       parseSteer('{"reply":"","steps":[{"label":"Redeploy","args":["run","deploy"],"changes":"x"}]}'),
     ).toMatchObject({ steps: [{ label: "Redeploy" }] });
+    // A changed file alone is an answer: it goes to the person before it goes in.
+    expect(parseSteer('{"reply":"","steps":[],"files":[{"path":"Dockerfile","why":"port 8081"}]}')).toEqual({
+      reply: "",
+      steps: [],
+      files: [{ path: "Dockerfile", why: "port 8081" }],
+    });
     expect(parseSteer('{"reply":"","steps":[]}')).toBeNull();
     expect(parseSteer("I could not do that")).toBeNull();
   });

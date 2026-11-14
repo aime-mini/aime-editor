@@ -20,6 +20,7 @@ import {
   targetsExisting,
   unanswered,
   type Inventory,
+  type PlannedFile,
   type StagedFile,
   steerPrompt,
   surveyPrompt,
@@ -96,6 +97,8 @@ export type DeployStage =
       steps: StepRun[];
       revised: DeployStep[];
       changed: boolean[];
+      /** Files the rewrite changed, staged for the person to read; empty when it changed none. */
+      files: StagedFile[];
       why: string;
     }
   | { kind: "proving"; plan: DeployPlan; steps: StepRun[]; url: string }
@@ -541,7 +544,7 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
   show(null);
 
   if (plan.files.length > 0) {
-    const placed = await placeStagedFiles(root, plan);
+    const placed = await placeStagedFiles(root, plan.files);
     if (placed.length > 0) {
       blocked(ops, plan, show(null), translate("deploy.filesNotPlaced", { detail: placed.join("; ") }));
       return;
@@ -582,8 +585,9 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
         if (asked !== null) {
           const steered = await askSteer(ops, root, plan, asked, ran, queue);
           if (steered === null) return;
-          if (!(await agreedTo(ops, plan, ran, queue, steered, translate("deploy.reconfirmSteer")))) return;
-          queue = steered;
+          if (!(await agreedTo(ops, root, plan, ran, queue, steered, translate("deploy.reconfirmSteer"))))
+            return;
+          queue = steered.steps;
           show(null);
         }
         continue;
@@ -675,10 +679,10 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
       if (!ops.cancelled()) blocked(ops, plan, show(null), translate("deploy.noWayOn"));
       return;
     }
-    ops.note(translate("deploy.revised", { count: revised.length }));
+    ops.note(translate("deploy.revised", { count: revised.steps.length }));
     const why = translate("deploy.reconfirmFix", { label: failed.label });
-    if (!(await agreedTo(ops, plan, ran, queue, revised, why))) return;
-    queue = revised;
+    if (!(await agreedTo(ops, root, plan, ran, queue, revised, why))) return;
+    queue = revised.steps;
   }
   blocked(ops, plan, show(null), translate("deploy.cancelled"));
 }
@@ -705,16 +709,18 @@ async function stageFiles(ops: Ops, root: string, plan: DeployPlan): Promise<Sta
   ops.note(translate("deploy.writingFiles", { count: plan.files.length }));
   const written = await turn(ops, root, filesPrompt(cloudId, plan.files, plan), "edits");
   if (written === null) return null;
+  return readStaged(root, plan.files);
+}
+
+/** The staged files as written - each read back, or marked unwritten when it is not there. */
+function readStaged(root: string, files: readonly PlannedFile[]): Promise<StagedFile[]> {
   const staging = stagingOf(root);
   return Promise.all(
-    plan.files.map(async (file) => {
+    files.map(async (file) => {
       try {
-        return {
-          path: file.path,
-          content: await invoke<string>("read_file", { path: `${staging}/${file.path}` }),
-        };
+        return { ...file, content: await invoke<string>("read_file", { path: `${staging}/${file.path}` }) };
       } catch {
-        return { path: file.path, content: null };
+        return { ...file, content: null };
       }
     }),
   );
@@ -725,10 +731,10 @@ async function stageFiles(ops: Ops, root: string, plan: DeployPlan): Promise<Sta
  * what was there - the person read and agreed to exactly these bytes. Answers
  * what could not be placed; nothing that was not staged is written.
  */
-async function placeStagedFiles(root: string, plan: DeployPlan): Promise<string[]> {
+async function placeStagedFiles(root: string, files: readonly PlannedFile[]): Promise<string[]> {
   const staging = stagingOf(root);
   const problems: string[] = [];
-  for (const file of plan.files) {
+  for (const file of files) {
     const from = `${staging}/${file.path}`;
     const to = inProject(root, file.path);
     try {
@@ -769,26 +775,37 @@ async function clearStaging(root: string): Promise<void> {
  */
 async function agreedTo(
   ops: Ops,
+  root: string,
   plan: DeployPlan,
   ran: StepRun[],
   agreed: DeployStep[],
-  revised: DeployStep[],
+  rewrite: Rewrite,
   why: string,
 ): Promise<boolean> {
+  const { steps: revised, files } = rewrite;
   const changed = notAgreed(agreed, revised);
-  if (!changed.includes(true)) return true;
-  ops.note(translate("deploy.reconfirmWaiting", { count: changed.filter(Boolean).length }));
+  if (!changed.includes(true) && files.length === 0) return true;
+  ops.note(translate("deploy.reconfirmWaiting", { count: changed.filter(Boolean).length + files.length }));
   const steps: StepRun[] = [...ran, ...revised.map((step) => ({ step, state: "pending" as const }))];
   // The answer is listened for before the page asks: a yes given the moment
   // the page appears must not fall into the gap between the two.
   const answer = new Promise<boolean>((resolve) => {
     ops.engine.agreement = resolve;
   });
-  ops.stage({ kind: "reconfirm", plan, steps, revised, changed, why });
+  ops.stage({ kind: "reconfirm", plan, steps, revised, changed, files, why });
   const agreedNow = await answer;
   if (!agreedNow) {
+    await clearStaging(root);
     blocked(ops, plan, steps, translate("deploy.cancelled"));
     return false;
+  }
+  if (files.length > 0) {
+    const problems = await placeStagedFiles(root, files);
+    if (problems.length > 0) {
+      blocked(ops, plan, steps, translate("deploy.filesNotPlaced", { detail: problems.join("; ") }));
+      return false;
+    }
+    ops.note(translate("deploy.filesPlaced", { count: files.length }));
   }
   ops.stage({ kind: "deploying", plan, steps });
   return true;
@@ -901,7 +918,7 @@ async function askFix(
   failed: { label: string; command: string; output: string },
   remaining: DeployStep[],
   asked: string,
-): Promise<DeployStep[] | null> {
+): Promise<Rewrite | null> {
   const { cloudId } = ops.slot();
   // Only when there is a question: a fix round nobody prompted must not file
   // its words against something the person asked pages ago.
@@ -911,6 +928,7 @@ async function askFix(
   let answers: ReadAnswer[] = [];
   let rejected: Rejected[] = [];
   for (let round = 1; round <= MAX_REJECTIONS + 1; round += 1) {
+    await clearStaging(root);
     const reply = await turn(
       ops,
       root,
@@ -936,7 +954,7 @@ async function askFix(
     const checked = await check(ops, plan, revision.steps, [], null);
     if (checked.rejected.length === 0) {
       answerThem(revision.reply || translate("deploy.steerNoWords"));
-      return checked.steps;
+      return { steps: checked.steps, files: await readStaged(root, revision.files) };
     }
     rejected = checked.rejected;
     for (const one of rejected) {
@@ -966,9 +984,11 @@ async function askSteer(
   asked: string,
   ran: StepRun[],
   remaining: DeployStep[],
-): Promise<DeployStep[] | null> {
+): Promise<Rewrite | null> {
   const { cloudId } = ops.slot();
   ops.note(translate("deploy.steering"));
+  const unchanged: Rewrite = { steps: remaining, files: [] };
+  await clearStaging(root);
   const reply = await turn(
     ops,
     root,
@@ -980,12 +1000,13 @@ async function askSteer(
   if (steer === null) {
     ops.problem(translate("deploy.unreadable"));
     ops.answer(translate("deploy.steerUnreadable"));
-    return remaining;
+    return unchanged;
   }
   const said = steer.reply || translate("deploy.steerNoWords");
+  const files = await readStaged(root, steer.files);
   if (steer.steps.length === 0) {
     ops.answer(said);
-    return remaining;
+    return { steps: remaining, files };
   }
   const checked = await check(ops, plan, steer.steps, [], null);
   if (checked.rejected.length > 0) {
@@ -993,11 +1014,19 @@ async function askSteer(
       ops.problem(translate("deploy.rejected", { part: one.part, label: one.label, reason: one.reason }));
     }
     ops.answer(`${said}\n${translate("deploy.steerRefused")}`);
-    return remaining;
+    // Files written for steps that will not run are not put in place either.
+    await clearStaging(root);
+    return unchanged;
   }
   ops.answer(said);
   ops.note(translate("deploy.revised", { count: checked.steps.length }));
-  return checked.steps;
+  return { steps: checked.steps, files };
+}
+
+/** What a rewrite during the run hands back: the steps still to run, and the files it staged. */
+interface Rewrite {
+  steps: DeployStep[];
+  files: StagedFile[];
 }
 
 /** Runs the Rust check for a set of steps and reads, against the plan's target. */

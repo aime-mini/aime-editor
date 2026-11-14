@@ -234,7 +234,7 @@ vi.mock("../lib/agentTurn", async (importOriginal) => ({
   agentTurn: (options: AgentTurnOptions) => {
     const answered = (text: string) =>
       Promise.resolve({ code: 0, text, costUsd: null, stderr: "", errors: "", sessionId: null });
-    if (options.prompt.includes(".aime/deploy/staged/")) {
+    if (options.prompt.startsWith("Write these files")) {
       fileTurns.push(options);
       return answered("written");
     }
@@ -569,6 +569,78 @@ describe("deploying", () => {
 
     expect(stage()).toMatchObject({ kind: "done", kept: 0 });
     expect(log("problem").join("\n")).toContain("Not checked: environment variables");
+  });
+
+  /** A fix that keeps the agreed command and changes a file instead. */
+  const FILE_FIX = JSON.stringify({
+    steps: [
+      {
+        label: "Deploy from source",
+        args: ["run", "deploy", "web", "--source", ".", "--region", "asia-southeast1"],
+        changes: "a new revision",
+      },
+    ],
+    files: [{ path: "Dockerfile", why: "listen on the port Cloud Run gives" }],
+    inspect: [],
+    giveUp: null,
+  });
+
+  it("puts a file a fix changed in place only once the person has read it and agreed", async () => {
+    await planned();
+    exits = { "Deploy from source": [1] };
+    replies = [FILE_FIX];
+    const asked: unknown[] = [];
+    const watch = useDeploy.subscribe((state) => {
+      const current = state.slots[SLOT]?.stage;
+      // Once per page shown: the log grows under a page that stays.
+      if (current?.kind === "reconfirm" && asked.at(-1) !== current.files) asked.push(current.files);
+    });
+    await useDeploy.getState().confirm(SLOT);
+    watch();
+
+    expect(stage()).toMatchObject({ kind: "done" });
+    // Asked even though the command is the agreed one: the file is new.
+    expect(asked).toEqual([
+      [
+        {
+          path: "Dockerfile",
+          why: "listen on the port Cloud Run gives",
+          content: "staged C:\\proj\\shop/.aime/deploy/staged/Dockerfile",
+        },
+      ],
+    ]);
+    const order = calls
+      .map((call) => call.command)
+      .filter((command) => command === "move_into_place" || command === "cloud_deploy_step");
+    // Placed once from the confirm page, once from the fix - and the second
+    // time before the failed step is tried again.
+    expect(order).toEqual([
+      "move_into_place",
+      "cloud_deploy_step",
+      "cloud_deploy_step",
+      "move_into_place",
+      "cloud_deploy_step",
+    ]);
+  });
+
+  it("throws a fix's files away when the person stops at the page that asks", async () => {
+    agreesToRewrites = false;
+    await planned();
+    exits = { "Deploy from source": [1] };
+    replies = [FILE_FIX];
+    const deploying = useDeploy.getState().confirm(SLOT);
+    await vi.waitFor(() => {
+      expect(stage().kind).toBe("reconfirm");
+    });
+    const placedBefore = calls.filter((call) => call.command === "move_into_place").length;
+    await useDeploy.getState().cancel(SLOT);
+    await deploying;
+
+    expect(calls.filter((call) => call.command === "move_into_place")).toHaveLength(placedBefore);
+    expect(calls.at(-1)).toEqual({
+      command: "delete_path",
+      args: { path: "C:\\proj\\shop/.aime/deploy/staged" },
+    });
   });
 
   it("runs no rewritten step the person has not agreed to", async () => {

@@ -600,6 +600,9 @@ export const en = {
     "The account's resource list stopped short, so this may land on something already running: every setting a step would replace is held to the merging flags.",
   "deploy.keepUnanswered":
     "Not checked: {labels} - the setting's path answered nothing before the deploy, so there was nothing to compare",
+  "deploy.reconfirmFilesTitle": "Files it changed",
+  "deploy.reconfirmFilesHint":
+    "Written aside, not yet in the project - open one to read it. They are put in place only if you agree; Stop throws them away.",
   "deploy.cancelled": "Stopped.",
   "deploy.confirmTitle": "Nothing has run yet. This is what will.",
   "deploy.confirmHint":

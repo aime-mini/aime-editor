@@ -216,6 +216,8 @@ export interface Steer {
   reply: string;
   /** The remainder, rewritten in full; empty leaves the confirmed steps as they are. */
   steps: DeployStep[];
+  /** Files it changed, written into `STAGED_DIR` for the person to read first. */
+  files: PlannedFile[];
 }
 
 /** One thing the Rust check refused; mirrors the Rust `Rejected`. */
@@ -468,11 +470,18 @@ export function filesPrompt(cloudId: string, files: PlannedFile[], plan: DeployP
   ].join("\n");
 }
 
-/** One planned file as the person reads it at the confirm page; null content when the AI did not write it. */
-export interface StagedFile {
-  path: string;
+/** A file as the person reads it before agreeing; null content when the AI did not write it. */
+export interface StagedFile extends PlannedFile {
   content: string | null;
 }
+
+/**
+ * How a turn that runs while the deployment does changes a file: staged, never
+ * in place, so nothing reaches the repository before the person has read it.
+ */
+const STAGED_CHANGES =
+  `You may change files - never in place: write each file you change, whole, under ${STAGED_DIR}/ at its ` +
+  "own path, and list it in `files`. Aime shows it to the person and puts it in place once they agree.";
 
 /**
  * The fix loop's question: a step failed (or the service did not answer); here
@@ -492,8 +501,8 @@ export function fixPrompt(input: {
   const recipe = recipeOf(input.cloudId);
   const lines = [
     "A step of the deployment failed. Read what the CLI said, and rewrite the steps still to run so the " +
-      "deployment completes. You may edit files in the repository (files only - no shell, no cloud CLI); " +
-      "Aime runs every command.",
+      "deployment completes. You have no shell and no cloud CLI: Aime runs every command. " +
+      STAGED_CHANGES,
     "",
     "The plan:",
     input.plan.summary,
@@ -519,7 +528,8 @@ export function fixPrompt(input: {
     "Answer:",
     "- `steps`: the steps to run now, from the failed one on - fixed, replaced or added. Same target, same " +
       "service; a different target is a different plan and needs the person again.",
-    "- `files`: files to write or change first, each with `path` and `why`. You write them yourself in this turn.",
+    "- `files`: the files you changed, each with `path` (its place in the repository, not under " +
+      `${STAGED_DIR}/) and \`why\`.`,
     "- `inspect`: reads you need answered before you can decide (logs, the service's state). Aime runs them " +
       "and asks you again with the answers; leave `steps` empty when you ask.",
     "- `giveUp`: a sentence when there is no way on - when the fix needs a person (billing, a quota, a " +
@@ -580,7 +590,7 @@ export function steerPrompt(input: {
     "",
     "Nothing has failed. Aime has paused between two steps to put it to you, and runs whatever you " +
       "answer once it has checked it. You have no shell and no cloud CLI: every command is an " +
-      `\`${dialect.program}\` argument list, and you may edit files in this repository.`,
+      `\`${dialect.program}\` argument list. ${STAGED_CHANGES}`,
     "",
     "The plan they confirmed:",
     input.plan.summary,
@@ -599,6 +609,8 @@ export function steerPrompt(input: {
     "- `steps`: the steps still to run, rewritten - ALL of them in order, including the ones you leave " +
       "as they are. An empty list means the deployment goes on exactly as confirmed, which is the right " +
       "answer whenever what they asked for is already true or cannot be done from here.",
+    `- \`files\`: the files you changed, each with \`path\` (its place in the repository, not under ${STAGED_DIR}/) ` +
+      "and `why`; empty when you changed none.",
     "",
     "RULES:",
     recipe.rules,
@@ -608,7 +620,7 @@ export function steerPrompt(input: {
       "`steps` empty and say so in `reply`.",
     "",
     "Answer with ONLY this JSON, no prose and no code fence:",
-    '{"reply":"…","steps":[]}',
+    '{"reply":"…","steps":[],"files":[]}',
   ].join("\n");
 }
 
@@ -697,14 +709,22 @@ export function parseRevision(reply: string): Revision | null {
   };
   // A reply alone is not a fix: the run is stopped at a failed step and words
   // do not restart it.
-  const saysSomething = revision.steps.length > 0 || revision.inspect.length > 0 || revision.giveUp !== null;
+  const saysSomething =
+    revision.steps.length > 0 ||
+    revision.files.length > 0 ||
+    revision.inspect.length > 0 ||
+    revision.giveUp !== null;
   return saysSomething ? revision : null;
 }
 
 export function parseSteer(reply: string): Steer | null {
   const raw = objectIn(reply);
-  const steer: Steer = { reply: asString(raw.reply), steps: asArray(raw.steps).flatMap(asStep) };
-  return steer.reply === "" && steer.steps.length === 0 ? null : steer;
+  const steer: Steer = {
+    reply: asString(raw.reply),
+    steps: asArray(raw.steps).flatMap(asStep),
+    files: asArray(raw.files).flatMap(asFile),
+  };
+  return steer.reply === "" && steer.steps.length === 0 && steer.files.length === 0 ? null : steer;
 }
 
 function asStep(value: unknown): DeployStep[] {

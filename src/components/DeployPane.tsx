@@ -22,7 +22,6 @@ import {
   resourceNamedBy,
   type DeployNote,
   type DeployPlan,
-  type PlannedFile,
   type StagedFile,
   type Survey,
 } from "../lib/deploy";
@@ -306,17 +305,9 @@ function Confirm({
         </Section>
       )}
 
-      {plan.files.length > 0 && (
+      {files.length > 0 && (
         <Section title={t("deploy.filesTitle")} hint={t("deploy.filesHint")}>
-          <ul className="space-y-1.5 text-[12px]">
-            {plan.files.map((file) => (
-              <PlannedFileView
-                key={file.path}
-                file={file}
-                content={files.find((staged) => staged.path === file.path)?.content ?? null}
-              />
-            ))}
-          </ul>
+          <StagedFiles files={files} />
         </Section>
       )}
 
@@ -383,8 +374,9 @@ function Confirm({
  * One file the plan puts into the project, opened to read what it says - the
  * exact bytes Deploy will place - or marked when the AI never wrote it.
  */
-function PlannedFileView({ file, content }: { file: PlannedFile; content: string | null }) {
+function StagedFileView({ file }: { file: StagedFile }) {
   const t = useT();
+  const { content } = file;
   const title = (
     <span>
       <span className="font-mono">{file.path}</span>
@@ -417,6 +409,17 @@ function PlannedFileView({ file, content }: { file: PlannedFile; content: string
   );
 }
 
+/** Every staged file, each opened to read on its own. */
+function StagedFiles({ files }: { files: StagedFile[] }) {
+  return (
+    <ul className="space-y-1.5 text-[12px]">
+      {files.map((file) => (
+        <StagedFileView key={file.path} file={file} />
+      ))}
+    </ul>
+  );
+}
+
 /**
  * The steps the AI rewrote while the deploy ran, waiting for the person. The
  * ones already run stay above; each rewritten command is shown as it will run,
@@ -438,6 +441,7 @@ function Reconfirm({
 }) {
   const t = useT();
   const done = stage.steps.filter((run) => run.state !== "pending");
+  const unwritten = stage.files.some((file) => file.content === null);
   return (
     <div className="space-y-5">
       {done.length > 0 && <Steps steps={done} />}
@@ -459,10 +463,17 @@ function Reconfirm({
           ))}
         </ol>
       </Section>
+      {stage.files.length > 0 && (
+        <Section title={t("deploy.reconfirmFilesTitle")} hint={t("deploy.reconfirmFilesHint")}>
+          <StagedFiles files={stage.files} />
+        </Section>
+      )}
       <div className="flex items-center gap-2 border-t border-line pt-4">
         <button
           onClick={onGo}
-          className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white hover:opacity-90"
+          disabled={unwritten}
+          title={unwritten ? t("deploy.filesUnwritten") : undefined}
+          className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Rocket size={13} /> {t("deploy.reconfirmGo")}
         </button>

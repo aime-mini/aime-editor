@@ -599,6 +599,9 @@ export const vi: Record<TranslationKey, string> = {
     "Danh sách resource của account bị cắt ngắn, nên lần deploy này có thể rơi vào thứ đang chạy: mọi setting một bước có thể thay thế đều bị buộc dùng cờ gộp.",
   "deploy.keepUnanswered":
     "Chưa kiểm được: {labels} - đường dẫn của setting không trả về gì trước khi deploy, nên không có gì để so",
+  "deploy.reconfirmFilesTitle": "File AI đã sửa",
+  "deploy.reconfirmFilesHint":
+    "Được viết riêng ra ngoài, chưa vào dự án - mở từng file để đọc. Chỉ được đặt vào dự án nếu anh đồng ý; Dừng thì bỏ hết.",
   "deploy.cancelled": "Đã dừng.",
   "deploy.confirmTitle": "Chưa có gì chạy. Đây là những gì sẽ chạy.",
   "deploy.confirmHint":
