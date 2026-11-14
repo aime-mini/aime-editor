@@ -257,7 +257,7 @@ if (prompt.includes("Check another reader's understanding of a ticket")) {
   // The code and its tests in one phase, in that order - which is the order the
   // user works in. "repairs" and "breaks" both break something here; they
   // differ in what the repair rounds do about it afterwards.
-  const breaks = mode === "breaks" || mode === "repairs";
+  const breaks = mode === "breaks" || mode === "repairs" || mode === "disputes";
   const source = breaks
     ? BREAKS
     : { sloppy: SLOPPY, slow: SLOW }[mode] ?? SOUND;
@@ -269,6 +269,8 @@ if (prompt.includes("Check another reader's understanding of a ticket")) {
   // file, which the cleanup button must offer and the baseline snapshot must
   // not blame on anything that was already there.
   fs.writeFileSync(shop("debug-scratch.log"), "temporary notes\n");
+  // A builder that edits the agreement it was handed, to make its own life easier.
+  if (mode === "rewritesCases") fs.writeFileSync(here(".aime", "test-cases.json"), "{}");
   if (mode === "slow") {
     fs.writeFileSync(shop("bench.cjs"), BENCH);
     fs.mkdirSync(here(".aime", "perf"), { recursive: true });
@@ -299,8 +301,16 @@ if (prompt.includes("Check another reader's understanding of a ticket")) {
   // In "repairs" mode it puts back what it broke while keeping the new
   // behaviour; in "breaks" mode it stubbornly does not, which is how the
   // bounded give-up gets proved.
-  if (mode === "repairs") fs.writeFileSync(shop("src", "cart.js"), SOUND);
-  process.stdout.write("tried\n");
+  // Every repair turn here starts without a session, so what was agreed reaches
+  // it only through the dossier; a turn that never saw the criterion cannot
+  // know which half of its change to keep.
+  const toldTheCriterion = prompt.includes("THE SYSTEM SHALL round to two decimal places");
+  if (mode === "repairs" && toldTheCriterion) fs.writeFileSync(shop("src", "cart.js"), SOUND);
+  if (mode === "disputes") {
+    process.stdout.write("Rounding inside withTax changes subtotal too.\nDISPUTED: AC1 cannot hold without changing subtotal\n");
+  } else {
+    process.stdout.write("tried\n");
+  }
 // Matched on a phrase that sits on ONE line of the prompt: the prompts are
 // wrapped template literals, and a phrase spanning a wrap point never matches.
 } else if (prompt.includes("build it, deploy it, and prove it works where it runs")) {
@@ -1025,6 +1035,28 @@ describe("Task run", () => {
       `the suite is still failing after the repair:
 ${suite.output}`,
     );
+  });
+
+  it("stops for a person when the builder says an agreed criterion cannot hold", async () => {
+    fs.writeFileSync(MODE_FILE, "disputes");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+    await waitForText(
+      "The builder says an agreed criterion cannot hold: AC1 cannot hold without changing subtotal",
+      "a disputed criterion was worked around instead of handed to a person",
+      240_000,
+    );
+  });
+
+  it("puts the agreed test cases back when the builder rewrites them", async () => {
+    fs.writeFileSync(MODE_FILE, "rewritesCases");
+    repo = freshRepo(repo);
+    await startRun(repo);
+    await approve(repo);
+    await waitForText("finished, and every gate agreed", "the run never finished", 240_000);
+    const agreed = fs.readFileSync(path.join(repo, ".aime", "test-cases.json"), "utf8");
+    assert.match(agreed, /TC1/, `the agreement was left as the builder rewrote it: ${agreed}`);
   });
 
   it("fixes the project's own check when the change breaks it", async () => {

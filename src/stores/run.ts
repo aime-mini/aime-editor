@@ -115,6 +115,7 @@ import {
   loadTestCases,
   saveTestCases,
   testsNotWritten,
+  TEST_CASES_JSON,
   TEST_CASES_MD,
   type CaseVerdict,
 } from "../lib/testCaseFile";
@@ -366,6 +367,8 @@ interface Engine {
   inFlight: { kind: "command" | "agent"; id: string } | null;
   /** True from start to the run's resting place; guards dismissal and rivals. */
   driving: boolean;
+  /** The builder's session, while carrying it on is worth it (`runAgent`). */
+  builder: { sessionId: string; lastTurnAt: number } | null;
 }
 
 const engines = new Map<string, Engine>();
@@ -373,7 +376,7 @@ const engines = new Map<string, Engine>();
 function engineFor(id: string): Engine {
   const found = engines.get(id);
   if (found !== undefined) return found;
-  const fresh: Engine = { inFlight: null, driving: false };
+  const fresh: Engine = { inFlight: null, driving: false, builder: null };
   engines.set(id, fresh);
   return fresh;
 }
@@ -1625,42 +1628,14 @@ function oneLine(one: TestCase): string {
  * per case, so a missing file is a case nobody wrote anything for.
  */
 async function implement(context: Context, set: Setter, get: Getter): Promise<PhaseResult> {
-  const { brief, plan, solution } = get();
-  const cases = await agreedCases(context.workRoot, get, set);
+  const { brief, plan } = get();
   if (brief === null || plan === null) return { state: "skipped", summary: translate("run.noPlan") };
 
+  // Read before the first turn: the cases on disk are the agreed ones, edits
+  // the reader made at the gate included, and the dossier quotes them.
+  await agreedCases(context.workRoot, get, set);
   const remembered = await projectMemory(context, get().radius?.changing ?? []);
-  const prompt = [
-    IMPLEMENT_PROMPT,
-    SECURITY_RULES,
-    ...(remembered === null ? [] : [remembered]),
-    `Goal: ${brief.goal}`,
-    "Acceptance criteria:",
-    ...brief.criteria.map((one) => `${one.id}: ${one.text}`),
-    "",
-    "The plan:",
-    ...plan.steps.map((step) => `- ${step.what} (${step.files.join(", ")})`),
-    ...(solution === null
-      ? []
-      : [
-          "",
-          `The approach agreed: ${solution.how} — ${solution.why}`,
-          ...(solution.decisions.length > 0 ? ["What it locks in:"] : []),
-          ...solution.decisions.map((decision) => `- ${decision}`),
-        ]),
-    "",
-    "Write these tests as well, one per case, in the files named:",
-    ...plan.tests.map((test) => {
-      const one = cases?.cases.find((candidate) => candidate.id === test.case);
-      return `- ${test.file} :: ${test.name}${
-        one === undefined ? "" : ` — given ${one.given}, when ${one.when}, then ${one.then}`
-      }`;
-    }),
-    ...conventionsOf(get().survey),
-    ...rulesBlock(get().rules),
-    ...whatDependsOnIt(get().radius),
-    ...repositoriesAllowed(context, get),
-  ].join("\n");
+  const prompt = [IMPLEMENT_PROMPT, ...(remembered === null ? [] : [remembered])].join("\n\n");
 
   const tried: string[] = [];
   // The signature of each round's shortfall, so a round that changed nothing
@@ -1671,10 +1646,14 @@ async function implement(context: Context, set: Setter, get: Getter): Promise<Ph
   let owed = "";
   for (let round = 1; round <= MAX_ROUNDS; round += 1) {
     if (round > 1) note(set, "implement", translate("run.tryingAgain", { attempt: round, of: MAX_ROUNDS }));
-    const code = await runAgent(context, owed === "" ? prompt : `${prompt}\n\n${owed}`, set);
-    // A cancel is the one answer not worth repeating.
-    if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
-    if (code !== 0) {
+    // A builder still in its session already has the brief; a fresh one needs it again.
+    const asking = owed === "" ? prompt : builderIsWarm(context.id) ? owed : `${prompt}\n\n${owed}`;
+    const turn = await runAgent(context, asking, set, get);
+    const halt = haltedBy(turn);
+    if (halt !== null) return halt;
+    const { code } = turn;
+    // Never null here: a stopped turn is what `haltedBy` just answered.
+    if (code !== 0 && code !== null) {
       if (round === ATTEMPTS) return { state: "blocked", summary: translate("run.agentFailed", { code }) };
       tried.push(translate("run.agentFailed", { code }));
       continue;
@@ -1816,13 +1795,15 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
         tried.push(translate("run.qualityFixing", { attempt: round, detail: labels }));
         mended.push(labels);
         note(set, "verify", tried[tried.length - 1]);
-        const code = await runAgent(
+        const turn = await runAgent(
           context,
           [FIX_CHECKS_PROMPT, checkEvidence(broke)].join("\n\n"),
           set,
+          get,
           "verify",
         );
-        if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+        const halt = haltedBy(turn);
+        if (halt !== null) return halt;
         continue;
       }
     }
@@ -1880,8 +1861,8 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
           perf.outcome.kind === "broken"
             ? [BENCH_BROKEN_PROMPT, perf.outcome.output].join("\n\n")
             : [FIX_PERF_PROMPT, found].join("\n");
-        const code = await runAgent(context, prompt, set, "verify");
-        if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+        const halt = haltedBy(await runAgent(context, prompt, set, get, "verify"));
+        if (halt !== null) return halt;
         // A faster path is a changed one: every suite answers again.
         focus = null;
         continue;
@@ -1918,8 +1899,8 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
     mended.push(brokenNames(verdict).join(", ") || summarise(verdict));
     focus = failingSuites(verdict);
     note(set, "verify", translate("run.repairing", { attempt: round, of: MAX_ROUNDS }));
-    const code = await runAgent(context, repairPrompt(verdict), set, "verify");
-    if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+    const halt = haltedBy(await runAgent(context, repairPrompt(verdict), set, get, "verify"));
+    if (halt !== null) return halt;
   }
   // Unreachable: every path out of the loop above returns. Here so that a future
   // edit to the loop cannot fall through into a silent pass.
@@ -1984,8 +1965,10 @@ async function buildAndProve(context: Context, set: Setter, get: Getter): Promis
     const evidence = failing
       .map((one) => [`$ ${one.task.command}`, allOutput(one.outcome).slice(-SUITE_OUTPUT_LIMIT)].join("\n"))
       .join("\n\n");
-    const code = await runAgent(context, [FIX_BUILD_PROMPT, evidence].join("\n\n"), set, "verify");
-    if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+    const halt = haltedBy(
+      await runAgent(context, [FIX_BUILD_PROMPT, evidence].join("\n\n"), set, get, "verify"),
+    );
+    if (halt !== null) return halt;
   }
 
   const proof = await provedWhereItRuns(context, set, get);
@@ -2012,13 +1995,15 @@ async function buildAndProve(context: Context, set: Setter, get: Getter): Promis
   let owed = "";
   for (let round = 1; round <= MAX_ROUNDS; round += 1) {
     if (round > 1) note(set, "verify", translate("run.tryingAgain", { attempt: round, of: MAX_ROUNDS }));
-    const code = await runAgent(
+    const turn = await runAgent(
       context,
       [deliverPrompt(cases, get), owed].filter(Boolean).join("\n\n"),
       set,
+      get,
       "verify",
     );
-    if (code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+    const halt = haltedBy(turn);
+    if (halt !== null) return halt;
 
     const evidence = await caseEvidence(context.workRoot, caseIds, since);
     const missing = (cases?.cases ?? []).filter((one) => (evidence.get(one.id) ?? []).length === 0);
@@ -2255,12 +2240,22 @@ async function reviewOnce(
   earlier: string,
 ): Promise<Review | null> {
   await writeChangeDiff(context, diff);
-  const { survey, rules, solution } = get();
+  const { survey, rules, solution, brief, cases } = get();
   const screenshots = await screenshotsIn(context.workRoot);
   const asking = [
     REVIEW_PROMPT,
     SECURITY_RULES,
     REVIEW_READS_THE_DIFF,
+    ...(brief === null
+      ? []
+      : [
+          "",
+          REVIEW_HOLDS_THE_AGREEMENT,
+          ...brief.criteria.map((one) => `- ${one.id}: ${one.text} (ticket: "${one.quote}")`),
+          ...(cases?.cases ?? []).map(
+            (one) => `- ${one.id} (${one.criterion}): given ${one.given}, when ${one.when}, then ${one.then}`,
+          ),
+        ]),
     ...conventionsOf(survey),
     ...rulesBlock(rules),
     ...(solution === null
@@ -2316,7 +2311,7 @@ async function fixFindings(
   let reply = "";
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     note(set, "review", translate("run.polishing", { attempt, of: ATTEMPTS, count: issues.length }));
-    const turn = await runCli(
+    const turn = await runAgent(
       context,
       [
         POLISH_PROMPT,
@@ -2327,10 +2322,14 @@ async function fixFindings(
         ...repeatedFindings(issues, fixedEarlier),
       ].join("\n"),
       set,
+      get,
       "review",
-      "full",
     );
     if (turn.code === null) return { mended: false, attempts: attempt, tried, reply };
+    if (turn.disputed !== null) {
+      tried.push(translate("run.disputed", { reason: turn.disputed }));
+      return { mended: false, attempts: attempt, tried, reply: turn.text };
+    }
     reply = turn.text;
 
     const tasks = await tasksOfRun(context, get);
@@ -3423,6 +3422,11 @@ const PROOF_CHECK_READS_THE_DIFF = `
 The change is the file ${CHANGE_DIFF_FILE}, exactly as git reports it. Read it to its end, and open the
 files it touches wherever the diff alone does not show what a person would meet.`;
 
+const REVIEW_HOLDS_THE_AGREEMENT = `What the change must do - the acceptance criteria, each with the ticket's words it comes from,
+and the agreed test cases. A criterion or case the change does not carry out, or carries out
+differently, is a finding of kind "correctness" that names its id; so is a criterion the change
+satisfies only by weakening a test.`;
+
 const REVIEW_LOOKS_AT_SCREENS = `Screenshots of the change running are below. Open them if you can read images, and
 judge whether the changed screens look like the rest of this app - its components, spacing, type and
 colours - and hold at the widths they were taken at. A screen with a look of its own is a finding.`;
@@ -3471,12 +3475,14 @@ async function runCli(
   set: Setter,
   phase: PhaseId,
   permission: "readOnly" | "full",
-): Promise<{ code: number | null; text: string }> {
+  sessionId: string | null = null,
+): Promise<{ code: number | null; text: string; sessionId: string | null }> {
   const engine = engineFor(context.id);
   const outcome = await agentTurn({
     prompt,
     cwd: context.workRoot,
     permission,
+    sessionId,
     onToolCall: (line) => {
       note(set, phase, line, "output");
     },
@@ -3491,10 +3497,186 @@ async function runCli(
   return outcome;
 }
 
-/** The phases that change the project, each in its own run's tree. */
-async function runAgent(context: Context, prompt: string, set: Setter, phase: PhaseId = "implement") {
-  const { code } = await runCli(context, prompt, set, phase, "full");
-  return code;
+/** What a builder turn came back with. */
+interface BuilderTurn {
+  /** The CLI's exit code, or null when the turn was stopped. */
+  code: number | null;
+  text: string;
+  /** Why the builder says an agreed criterion cannot hold, when it says so. */
+  disputed: string | null;
+}
+
+/**
+ * How long a builder's session is worth carrying on. A resumed session sends
+ * its whole history again: within the provider's prompt-cache lifetime that is
+ * billed at the cache rate, after it at the full rate, which costs more than a
+ * fresh turn handed the dossier. Five minutes is the default lifetime of
+ * Anthropic's prompt cache and the shortest OpenAI keeps (both providers'
+ * prompt-caching documentation).
+ */
+const BUILDER_WARM_MS = 5 * 60 * 1000;
+
+/** Whether the run's builder can carry on in its session right now. */
+function builderIsWarm(runId: string): boolean {
+  const builder = engines.get(runId)?.builder ?? null;
+  return builder !== null && Date.now() - builder.lastTurnAt < BUILDER_WARM_MS;
+}
+
+/**
+ * One turn of the run's builder: the agent that writes the code and mends it,
+ * in every phase that changes the project.
+ *
+ * Every builder turn is one conversation where the CLI keeps one (Claude
+ * Code, Codex): what it read and wrote stays in the session, so a repair round
+ * is told what broke rather than sent back to reread the code it wrote a
+ * minute ago. A builder starting without its session - a CLI that keeps none,
+ * a session gone cold at the plan's gate - is handed the dossier instead, so
+ * every turn knows what was agreed whichever way it started.
+ *
+ * Two things hold on every turn, in the session or not. The agreement is not
+ * the builder's to change: `MENDING_RULES` says so, the cases on disk are put
+ * back if a turn rewrote them, and a builder that finds a criterion cannot hold
+ * has to say so (`DISPUTED:`) rather than work around it.
+ */
+async function runAgent(
+  context: Context,
+  prompt: string,
+  set: Setter,
+  get: Getter,
+  phase: PhaseId = "implement",
+): Promise<BuilderTurn> {
+  const engine = engineFor(context.id);
+  const session = builderIsWarm(context.id) ? (engine.builder?.sessionId ?? null) : null;
+  note(set, phase, translate(session === null ? "run.builderFresh" : "run.builderCarriesOn"));
+  const asking = [session === null ? dossierOf(context, get) : "", prompt, MENDING_RULES]
+    .filter(Boolean)
+    .join("\n\n");
+  const agreed = await casesOnDisk(context.workRoot);
+  const savedBefore = get().yourEdits;
+  const outcome = await runCli(context, asking, set, phase, "full", session);
+  engine.builder =
+    outcome.sessionId === null ? null : { sessionId: outcome.sessionId, lastTurnAt: Date.now() };
+  await keepAgreement(context, agreed, savedBefore, get, set, phase);
+  return { code: outcome.code, text: outcome.text, disputed: disputeIn(outcome.text) };
+}
+
+/** What stops a phase after a builder turn: the reader's Stop, or the builder disputing the agreement. */
+function haltedBy(turn: BuilderTurn): PhaseResult | null {
+  if (turn.code === null) return { state: "blocked", summary: translate("run.agentCancelled") };
+  if (turn.disputed !== null) {
+    return { state: "blocked", summary: translate("run.disputed", { reason: turn.disputed }) };
+  }
+  return null;
+}
+
+/** The marker a builder puts on the line where it says an agreed criterion cannot hold. */
+const DISPUTE_MARKER = "DISPUTED:";
+
+function disputeIn(text: string): string | null {
+  const line = text
+    .split("\n")
+    .map((one) => one.trim())
+    .find((one) => one.startsWith(DISPUTE_MARKER));
+  return line === undefined ? null : line.slice(DISPUTE_MARKER.length).trim();
+}
+
+/**
+ * Everything agreed before a builder turn, for a builder starting without its
+ * session: the criteria with the ticket's words they quote, the approach, the
+ * tests one per case, the project's conventions and rules, what must not break,
+ * and what the run has done so far.
+ */
+function dossierOf(context: Context, get: Getter): string {
+  const { brief, solution, plan, cases, survey, rules, radius, run } = get();
+  const done = PHASES.flatMap(({ id }) => {
+    const result = run.results[id];
+    return result === undefined ? [] : [`- ${translate(PHASE_LABELS[id])}: ${result.summary}`];
+  });
+  return [
+    "# The run so far - what was agreed before this turn",
+    SECURITY_RULES,
+    ...(brief === null
+      ? []
+      : [
+          "",
+          `Goal: ${brief.goal}`,
+          "Acceptance criteria, each with the ticket's words it comes from:",
+          ...brief.criteria.map((one) => `- ${one.id}: ${one.text} (ticket: "${one.quote}")`),
+        ]),
+    ...(solution === null
+      ? []
+      : [
+          "",
+          `The approach agreed: ${solution.how} — ${solution.why}`,
+          ...(solution.decisions.length > 0 ? ["What it locks in:"] : []),
+          ...solution.decisions.map((decision) => `- ${decision}`),
+        ]),
+    ...(plan === null
+      ? []
+      : [
+          "",
+          "The plan:",
+          ...plan.steps.map((step) => `- ${step.what} (${step.files.join(", ")})`),
+          "",
+          "The tests, one per case, in the files named:",
+          ...plan.tests.map((test) => {
+            const one = cases?.cases.find((candidate) => candidate.id === test.case);
+            return `- ${test.file} :: ${test.name}${
+              one === undefined ? "" : ` — given ${one.given}, when ${one.when}, then ${one.then}`
+            }`;
+          }),
+        ]),
+    ...conventionsOf(survey),
+    ...rulesBlock(rules),
+    ...whatDependsOnIt(radius),
+    ...repositoriesAllowed(context, get),
+    ...(done.length > 0 ? ["", "Done so far in this run:", ...done] : []),
+  ].join("\n");
+}
+
+const MENDING_RULES = `Whatever this turn asks, the agreed work stands: every acceptance criterion stays true.
+- Never delete, stub out or weaken the feature, skip or loosen a test, or change what a test asserts,
+  to make a check pass. Fix the cause.
+- Never edit ${TEST_CASES_MD} or ${TEST_CASES_JSON}: they are the agreement, and Aime puts them back.
+- If a criterion itself cannot hold, do not work around it. End your reply with one line that starts
+  ${DISPUTE_MARKER} followed by the reason, and the run stops for a person to decide.`;
+
+/** The agreed cases as they stand on disk, file by file; null where a file does not exist. */
+async function casesOnDisk(root: string): Promise<Map<string, string | null>> {
+  const base = root.replace(/[\\/]+$/, "");
+  const files = new Map<string, string | null>();
+  for (const file of [TEST_CASES_MD, TEST_CASES_JSON]) {
+    try {
+      files.set(file, await invoke<string>("read_file", { path: `${base}/${file}` }));
+    } catch {
+      files.set(file, null);
+    }
+  }
+  return files;
+}
+
+/**
+ * Puts the agreed cases back where a builder turn rewrote them. An edit the
+ * reader saved during the turn is theirs and stays.
+ */
+async function keepAgreement(
+  context: Context,
+  agreed: ReadonlyMap<string, string | null>,
+  savedBefore: readonly string[],
+  get: Getter,
+  set: Setter,
+  phase: PhaseId,
+): Promise<void> {
+  const now = await casesOnDisk(context.workRoot);
+  const savedDuring = get().yourEdits.filter((file) => !savedBefore.includes(file));
+  for (const [file, text] of agreed) {
+    if (text === null || now.get(file) === text || savedDuring.includes(file)) continue;
+    await invoke("write_file", {
+      path: `${context.workRoot.replace(/[\\/]+$/, "")}/${file}`,
+      content: text,
+    });
+    note(set, phase, translate("run.casesRestored", { file }), "problem");
+  }
 }
 
 /**

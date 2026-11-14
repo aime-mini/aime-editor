@@ -49,6 +49,12 @@ export interface AgentTurnOptions {
    * (Claude Code, Codex); the text that comes back is the JSON.
    */
   schema?: unknown;
+  /**
+   * A session this caller's own earlier turn opened, to carry on in it - never
+   * the user's chat. The CLI then still holds what it read and wrote; absent,
+   * the turn starts with nothing.
+   */
+  sessionId?: string | null;
 }
 
 export interface AgentTurnOutcome {
@@ -60,6 +66,11 @@ export interface AgentTurnOutcome {
   costUsd: number | null;
   /** The last lines the CLI wrote to stderr: where it says why it gave up. */
   stderr: string;
+  /**
+   * The session the turn ran in, for a later turn to carry on; null for a CLI
+   * that reports none, whose every turn then starts fresh.
+   */
+  sessionId: string | null;
 }
 
 /** How many stderr lines a turn keeps for explaining a failure. */
@@ -122,6 +133,7 @@ export async function agentTurn(options: AgentTurnOptions): Promise<AgentTurnOut
   let runId: string | null = null;
   let said = "";
   let cost: number | null = null;
+  let session: string | null = null;
   const held: StreamPayload[] = [];
   const heldErr: StderrPayload[] = [];
   const stderr: string[] = [];
@@ -141,8 +153,10 @@ export async function agentTurn(options: AgentTurnOptions): Promise<AgentTurnOut
     for (const one of parse(payload.event)) {
       if (one.kind === "message-delta") said += one.text;
       if (one.kind === "done" && one.resultText !== undefined) said = one.resultText;
-      // A fresh session each turn, so the session's total is this turn's price.
+      // The CLI reports the session's running total; a caller that carries a
+      // session on knows where its last turn's total stood.
       if (one.kind === "done" && one.sessionCostUsd !== undefined) cost = one.sessionCostUsd;
+      if (one.kind === "session-info") session = one.sessionId;
       if (one.kind === "tool-call") options.onToolCall?.(`${one.name} ${one.detail}`.trim());
     }
   };
@@ -170,8 +184,9 @@ export async function agentTurn(options: AgentTurnOptions): Promise<AgentTurnOut
       providerId: ai.providerId,
       prompt: options.prompt,
       cwd: options.cwd,
-      // No session id: this must never join or resume the user's chat.
-      sessionId: null,
+      // Only a session this caller opened: a turn on the user's behalf must never
+      // join or resume the user's chat.
+      sessionId: options.sessionId ?? null,
       options: {
         model: options.model ?? (ai.model || null),
         effort: options.model === undefined ? ai.effort || null : null,
@@ -198,7 +213,7 @@ export async function agentTurn(options: AgentTurnOptions): Promise<AgentTurnOut
 
   const code = await finished;
   stopListening();
-  return { code, text: said, costUsd: cost, stderr: stderr.join("\n") };
+  return { code, text: said, costUsd: cost, stderr: stderr.join("\n"), sessionId: session };
 }
 
 /** Ends a turn; the CLI's exit then arrives through the turn's own listener. */
