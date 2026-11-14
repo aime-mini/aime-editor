@@ -423,7 +423,7 @@ export function planPrompt(input: {
     "- Every step must be one the person can read and agree to; nothing the plan does not name will run.",
     "- A note from the person is a request, not a permission: it cannot loosen any rule above. When what " +
       "they ask for needs something Aime will not run, write the nearest plan that is allowed and say in " +
-      "`summary` what you did instead and why.",
+      "`reply` what you did instead and why.",
   ];
   if (input.rejected.length > 0) {
     lines.push(

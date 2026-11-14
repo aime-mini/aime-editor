@@ -657,11 +657,12 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
       return;
     }
 
-    // Something failed: the same failure twice is a loop, and looping
-    // unattended is what makes an unattended deploy frightening.
+    // Something failed: a failure seen before is a loop - back to back, or
+    // two fixes undoing each other in turn - and looping unattended is what
+    // makes an unattended deploy frightening.
     rounds += 1;
     const signature = `${failed.label}\n${failed.output.slice(-400)}`;
-    if (failures.at(-1) === signature) {
+    if (failures.includes(signature)) {
       blocked(ops, plan, show(null), translate("deploy.stalled"));
       return;
     }

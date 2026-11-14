@@ -420,7 +420,12 @@ pub async fn cloud_http_probe(url: String) -> Result<Probe, String> {
         .await
         .map_err(|error| format!("{url}: {error}"))?;
     let status = response.status().as_u16();
-    let body = response.text().await.unwrap_or_default();
+    // The status is the verdict; the body only explains it, so a body that
+    // cannot be read is said rather than shown as empty.
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|error| format!("(the body could not be read: {error})"));
     Ok(Probe {
         status,
         duration_ms: started.elapsed().as_millis() as u64,
@@ -614,6 +619,12 @@ impl<'a> StepLine<'a> {
         let mut heads = Vec::new();
         let mut flags: Vec<(&str, Option<&str>)> = Vec::new();
         for token in args {
+            // A short flag is never parsed as one, so the dialect's own and
+            // refused flags are matched in their short spelling here - `az`'s
+            // `-o` is its `--output`, which Aime adds itself.
+            if !token.starts_with("--") && dialect.own_flags.contains(&token.as_str()) {
+                return Err(format!("`{token}` is Aime's to add"));
+            }
             if let Some(name) = token.strip_prefix("--") {
                 if name.contains('=') {
                     return Err(format!("`{token}`: a flag and its value are two tokens"));
@@ -774,8 +785,14 @@ impl<'a> StepLine<'a> {
             let mut probe = words.clone();
             probe.push(head);
             probe.push(dialect.help);
-            let Ok(text) = read_cli_checked(program, &probe).await else {
-                break;
+            let text = match read_cli_checked(program, &probe).await {
+                Ok(text) => text,
+                // The CLI answered that it has no such command: the walk has
+                // reached the first positional.
+                Err(failure) if failure.code.is_some() => break,
+                // It never answered - not started, or ended - which says
+                // nothing about the word, so it is not reported as one.
+                Err(failure) => return Err(failure.message),
             };
             help = text;
             words.push(head);
@@ -1626,6 +1643,10 @@ Options
         assert!(
             shape_for(az(), &["webapp", "up", "--output", "table"], false).is_err(),
             "the answer's shape is Aime's to ask for"
+        );
+        assert!(
+            shape_for(az(), &["webapp", "up", "-o", "table"], false).is_err(),
+            "the short spelling of the same flag is the same flag"
         );
     }
 

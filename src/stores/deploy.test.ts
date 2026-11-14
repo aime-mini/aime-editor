@@ -679,6 +679,29 @@ describe("deploying", () => {
     });
   });
 
+  it("stops when two fixes undo each other in turn, not after every round", async () => {
+    await planned();
+    exits = { "Deploy from source": [1, 1], "Deploy with more memory": [1] };
+    const back = JSON.stringify({
+      ...JSON.parse(REVISION),
+      steps: [
+        {
+          label: "Deploy from source",
+          args: ["run", "deploy", "web", "--source", ".", "--region", "asia-southeast1"],
+          changes: "a new revision",
+        },
+      ],
+    });
+    replies = [REVISION, back];
+    await useDeploy.getState().confirm(SLOT);
+
+    expect(stage()).toMatchObject({
+      reason: "The same step failed the same way twice; stopped rather than looping.",
+    });
+    // Two fix turns, then the third failure is one already seen.
+    expect(turns).toHaveLength(4);
+  });
+
   it("reports a setting it promised to keep when the deployment changed it", async () => {
     await planned();
     const changed = JSON.stringify({
