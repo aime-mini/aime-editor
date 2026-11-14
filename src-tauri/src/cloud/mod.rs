@@ -1003,20 +1003,77 @@ pub(crate) async fn read_cli_checked(command: &str, args: &[&str]) -> Result<Str
     output_checked(command, cmd).await
 }
 
-/// Runs a command already built - its environment set by the caller - and
-/// answers its stdout, or its stderr as the failure.
-pub(crate) async fn output_checked(
+/// Runs a command already built, as `output_checked` does, but ends it - and
+/// everything it started - once `limit` passes without an answer. A deploy
+/// waits on its reads, and a CLI that hangs on one would otherwise hold the
+/// deploy forever, out of reach of Stop.
+pub(crate) async fn output_checked_within(
     command: &str,
     mut cmd: tokio::process::Command,
+    limit: std::time::Duration,
 ) -> Result<String, CliFailure> {
-    let output = cmd.output().await.map_err(|e| CliFailure {
-        code: None,
-        message: format!("Could not run `{command}`: {e}"),
-    })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    crate::exec::lead_own_group(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| could_not_run(command, &e))?;
+    let pid = child.id();
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let Ok(waited) = tokio::time::timeout(limit, child.wait()).await else {
+        crate::exec::end_tree(&mut child, pid).await;
         return Err(CliFailure {
-            code: output.status.code(),
+            code: None,
+            message: format!(
+                "`{command}` answered nothing in {} s and was ended",
+                limit.as_secs()
+            ),
+        });
+    };
+    let status = waited.map_err(|e| could_not_run(command, &e))?;
+    answer_of(command, status, &drained(stdout).await, &drained(stderr).await)
+}
+
+/// Reads a child's pipe to its end on a task of its own, so a full pipe never
+/// stalls the child while it is being waited on.
+fn drain<R>(pipe: Option<R>) -> tokio::task::JoinHandle<Vec<u8>>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            // A pipe that breaks mid-read keeps what arrived, which is all a
+            // failure message needs.
+            let _ = tokio::io::AsyncReadExt::read_to_end(&mut pipe, &mut bytes).await;
+        }
+        bytes
+    })
+}
+
+/// What a `drain` task read; a task that panicked read nothing.
+async fn drained(task: tokio::task::JoinHandle<Vec<u8>>) -> Vec<u8> {
+    task.await.unwrap_or_default()
+}
+
+fn could_not_run(command: &str, error: &std::io::Error) -> CliFailure {
+    CliFailure {
+        code: None,
+        message: format!("Could not run `{command}`: {error}"),
+    }
+}
+
+/// A finished command's stdout, or its stderr as the failure.
+fn answer_of(
+    command: &str,
+    status: std::process::ExitStatus,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<String, CliFailure> {
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+        return Err(CliFailure {
+            code: status.code(),
             message: if stderr.is_empty() {
                 format!("`{command}` failed and said nothing")
             } else {
@@ -1024,7 +1081,74 @@ pub(crate) async fn output_checked(
             },
         });
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(String::from_utf8_lossy(stdout).to_string())
+}
+
+/// Runs a command already built - its environment set by the caller - and
+/// answers its stdout, or its stderr as the failure.
+pub(crate) async fn output_checked(
+    command: &str,
+    mut cmd: tokio::process::Command,
+) -> Result<String, CliFailure> {
+    let output = cmd.output().await.map_err(|e| could_not_run(command, &e))?;
+    answer_of(command, output.status, &output.stdout, &output.stderr)
+}
+
+#[cfg(test)]
+mod within_tests {
+    use super::output_checked_within;
+    use std::time::{Duration, Instant};
+
+    /// A command that would run for half a minute, on every platform.
+    fn half_a_minute() -> tokio::process::Command {
+        let mut command = if cfg!(target_os = "windows") {
+            let mut ping = tokio::process::Command::new("ping");
+            ping.args(["-n", "30", "127.0.0.1"]);
+            ping
+        } else {
+            let mut sleep = tokio::process::Command::new("sleep");
+            sleep.arg("30");
+            sleep
+        };
+        command.kill_on_drop(true);
+        command
+    }
+
+    #[tokio::test]
+    async fn a_read_that_never_answers_is_ended_with_a_reason() {
+        let started = Instant::now();
+        let failure = output_checked_within("probe", half_a_minute(), Duration::from_secs(1))
+            .await
+            .expect_err("it had to be ended");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "it waited out the command"
+        );
+        assert!(
+            failure.message.contains("answered nothing in 1 s"),
+            "{}",
+            failure.message
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_that_answers_in_time_is_its_answer() {
+        let mut echo = if cfg!(target_os = "windows") {
+            let mut cmd = tokio::process::Command::new("cmd");
+            cmd.args(["/C", "echo answered"]);
+            cmd
+        } else {
+            let mut sh = tokio::process::Command::new("sh");
+            sh.args(["-c", "echo answered"]);
+            sh
+        };
+        echo.kill_on_drop(true);
+        let answer = output_checked_within("probe", echo, Duration::from_secs(30)).await;
+        assert_eq!(
+            answer.map(|text| text.trim().to_string()).ok().as_deref(),
+            Some("answered")
+        );
+    }
 }
 
 #[cfg(test)]

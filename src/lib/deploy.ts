@@ -868,14 +868,29 @@ function isHostname(value: string): boolean {
  * not check is not a promise kept.
  */
 export function overwritten(keeps: KeepRead[], before: ReadAnswer[], after: ReadAnswer[]): KeepRead[] {
+  const vacuous = new Set(unanswered(keeps, before));
   return keeps.filter((keep) => {
     const was = before.find((one) => one.label === keep.read.label);
     const now = after.find((one) => one.label === keep.read.label);
     if (was === undefined || now === undefined || !was.ok || !now.ok) return true;
+    if (vacuous.has(keep)) return valueAt(parseJson(now.json), keep.path) !== undefined;
     return (
       canonical(valueAt(parseJson(was.json), keep.path)) !==
       canonical(valueAt(parseJson(now.json), keep.path))
     );
+  });
+}
+
+/**
+ * The settings whose path answered nothing before the steps ran - a path the
+ * service does not have, or one the plan got wrong. Such a setting cannot be
+ * said to be kept: there was nothing there to keep, and an equal "nothing"
+ * afterwards proves nothing about the setting the plan meant.
+ */
+export function unanswered(keeps: KeepRead[], before: ReadAnswer[]): KeepRead[] {
+  return keeps.filter((keep) => {
+    const was = before.find((one) => one.label === keep.read.label);
+    return was?.ok === true && valueAt(parseJson(was.json), keep.path) === undefined;
   });
 }
 

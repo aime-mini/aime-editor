@@ -18,6 +18,7 @@ import {
   steerPrompt,
   surveyPrompt,
   targetsExisting,
+  unanswered,
   urlIn,
   valueAt,
   type DeployPlan,
@@ -825,5 +826,29 @@ describe("targetsExisting", () => {
   it("counts everything as existing when the list stopped short", () => {
     const partial = { resources: [web], truncated: true };
     expect(targetsExisting(fresh, [step("run", "deploy", "shop")], partial)).toBe(true);
+  });
+});
+
+describe("a setting whose path answered nothing", () => {
+  const keep: KeepRead = {
+    label: "environment variables",
+    read: { purpose: "overview", label: "describe web", args: ["run", "services", "describe", "web"] },
+    path: "spec.env",
+  };
+  const answer = (value: unknown) => [
+    { label: "describe web", json: JSON.stringify({ spec: value }), ok: true },
+  ];
+
+  it("is unanswered, and so is neither kept nor lost while it stays empty", () => {
+    expect(unanswered([keep], answer({}))).toEqual([keep]);
+    expect(overwritten([keep], answer({}), answer({}))).toEqual([]);
+  });
+
+  it("is lost when the deploy put something where there was nothing", () => {
+    expect(overwritten([keep], answer({}), answer({ env: [{ name: "A" }] }))).toEqual([keep]);
+  });
+
+  it("is answered when the path holds a value", () => {
+    expect(unanswered([keep], answer({ env: [] }))).toEqual([]);
   });
 });

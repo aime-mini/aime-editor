@@ -39,6 +39,8 @@ let exits: Record<string, number[] | undefined> = {};
 let reads: Record<string, string[]> = {};
 /** What each successive Rust check refuses; a check past the end of the queue passes everything. */
 let refusals: { part: "step"; label: string; reason: string }[][] = [];
+/** The step during which the person presses Stop, when they do. */
+let stopDuringStep: string | null = null;
 /** What the person types while a step runs, keyed by the step they type it during. */
 let saysDuringStep: { at: string; say: string }[] = [];
 /** What they type while the deployed service is being asked, when they do. */
@@ -176,6 +178,18 @@ vi.mock("@tauri-apps/api/core", () => ({
         const saying = saysDuringStep.filter((one) => one.at === step.label);
         saysDuringStep = saysDuringStep.filter((one) => one.at !== step.label);
         for (const one of saying) useDeploy.getState().steer(SLOT, one.say);
+        if (step.label === stopDuringStep) {
+          void useDeploy.getState().cancel(SLOT);
+          return Promise.resolve({
+            code: null,
+            stdout: "",
+            stderr: "",
+            durationMs: 5,
+            timedOut: false,
+            cancelled: true,
+            clipped: false,
+          });
+        }
         const code = (exits[step.label] ?? []).shift() ?? 0;
         return Promise.resolve({
           code,
@@ -264,6 +278,7 @@ useDeploy.subscribe((state) => {
 
 beforeEach(() => {
   agreesToRewrites = true;
+  stopDuringStep = null;
   listing = [];
   calls.length = 0;
   turns.length = 0;
@@ -511,6 +526,49 @@ describe("deploying", () => {
     expect(steps).toEqual(["Enable APIs", "Deploy from source", "Deploy with more memory"]);
     // The revision was checked before it ran.
     expect(calls.filter((call) => call.command === "cloud_check_deploy")).toHaveLength(2);
+  });
+
+  it("starts no further step once Stop is pressed between two steps", async () => {
+    await planned();
+    replies = [];
+    // Pressed the moment the first step is shown as passed.
+    const stop = useDeploy.subscribe((state) => {
+      const current = state.slots[SLOT]?.stage;
+      if (current?.kind === "deploying" && current.steps[0]?.state === "passed") {
+        stop();
+        void state.cancel(SLOT);
+      }
+    });
+    await useDeploy.getState().confirm(SLOT);
+
+    const steps = calls
+      .filter((call) => call.command === "cloud_deploy_step")
+      .map((call) => (call.args.request as StepRequest).step.label);
+    expect(steps).toEqual(["Enable APIs"]);
+    expect(stage()).toMatchObject({ kind: "blocked", reason: "Stopped." });
+  });
+
+  it("keeps the steps on the page when a deploy is stopped mid-step, the one in flight marked stopped", async () => {
+    await planned();
+    stopDuringStep = "Deploy from source";
+    await useDeploy.getState().confirm(SLOT);
+
+    expect(stage()).toMatchObject({
+      kind: "blocked",
+      steps: [
+        { step: { label: "Enable APIs" }, state: "passed" },
+        { step: { label: "Deploy from source" }, state: "stopped" },
+      ],
+    });
+  });
+
+  it("does not call a setting kept when its path answered nothing to begin with", async () => {
+    await planned();
+    reads = { "describe web": [JSON.stringify({ status: { url: "https://web-abc.a.run.app" } })] };
+    await useDeploy.getState().confirm(SLOT);
+
+    expect(stage()).toMatchObject({ kind: "done", kept: 0 });
+    expect(log("problem").join("\n")).toContain("Not checked: environment variables");
   });
 
   it("runs no rewritten step the person has not agreed to", async () => {

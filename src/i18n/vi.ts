@@ -597,6 +597,8 @@ export const vi: Record<TranslationKey, string> = {
     "Không đọc được danh sách resource của account nên chưa lập kế hoạch - kế hoạch lập khi thiếu danh sách này sẽ tưởng service đang chạy là service mới. {reason}",
   "deploy.targetPartialList":
     "Danh sách resource của account bị cắt ngắn, nên lần deploy này có thể rơi vào thứ đang chạy: mọi setting một bước có thể thay thế đều bị buộc dùng cờ gộp.",
+  "deploy.keepUnanswered":
+    "Chưa kiểm được: {labels} - đường dẫn của setting không trả về gì trước khi deploy, nên không có gì để so",
   "deploy.cancelled": "Đã dừng.",
   "deploy.confirmTitle": "Chưa có gì chạy. Đây là những gì sẽ chạy.",
   "deploy.confirmHint":

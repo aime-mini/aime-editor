@@ -598,6 +598,8 @@ export const en = {
     "The account's resources could not be read, so nothing was planned - a plan made without them would take a running service for a new one. {reason}",
   "deploy.targetPartialList":
     "The account's resource list stopped short, so this may land on something already running: every setting a step would replace is held to the merging flags.",
+  "deploy.keepUnanswered":
+    "Not checked: {labels} - the setting's path answered nothing before the deploy, so there was nothing to compare",
   "deploy.cancelled": "Stopped.",
   "deploy.confirmTitle": "Nothing has run yet. This is what will.",
   "deploy.confirmHint":

@@ -37,7 +37,7 @@
 
 use super::dialect::{Dialect, Grant, Proof};
 use super::reads::{check_read_allowing, is_command_word, is_safe_value, PlannedRead, ReadPurpose};
-use super::{k8s, output_checked, program_for, quiet, read_cli_checked, CloudAccount};
+use super::{k8s, output_checked_within, program_for, quiet, read_cli_checked, CloudAccount};
 use crate::exec::{run_program, CommandOutcome, ExecState, Limits};
 use crate::program::Program;
 use crate::providers::cli_command;
@@ -181,6 +181,12 @@ const REFUSED_WORD_PREFIXES: [&str; 5] = ["remove-", "delete-", "destroy-", "ter
 /// How long one step may run. A source deploy builds in Cloud Build; twenty
 /// minutes is generous for it and still ends a hang unattended.
 const STEP_TIMEOUT_MS: u64 = 20 * 60 * 1000;
+
+/// How long one deploy read may go without answering. A read describes one
+/// resource and answers in seconds; three minutes of silence is a CLI that
+/// hung - on a prompt, a token refresh, a network that dropped - and the
+/// deploy waiting on it is better ended with a reason than left to wait.
+const READ_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 
 /// How much of a probe's body is kept: enough to see an error page's title.
 const BODY_HEAD: usize = 2_000;
@@ -369,7 +375,7 @@ pub async fn cloud_deploy_read(
         let mut kubectl = cli_command(k8s::PROGRAM, &args);
         quiet(&mut kubectl);
         kubectl.env(k8s::KUBECONFIG, account_kubeconfig(&app, &account)?);
-        return output_checked(k8s::PROGRAM, kubectl)
+        return output_checked_within(k8s::PROGRAM, kubectl, READ_TIMEOUT)
             .await
             .map_err(|failure| failure.message);
     }
@@ -377,8 +383,9 @@ pub async fn cloud_deploy_read(
     refuse_secret_read(&checked)?;
     let mut args = scoped_for_run(&app, &checked.args, &account, dialect, None)?;
     args.extend(dialect.json.map(String::from));
-    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-    read_cli_checked(&own, &borrowed)
+    let mut cli = cli_command(&own, &args);
+    quiet(&mut cli);
+    output_checked_within(&own, cli, READ_TIMEOUT)
         .await
         .map_err(|failure| failure.message)
 }

@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   Check,
   Circle,
+  CircleSlash,
   ExternalLink,
   FileText,
   Loader2,
@@ -697,6 +698,8 @@ function Mark({ state }: { state: StepRun["state"] }) {
       return <X size={13} className="mt-0.5 shrink-0 text-danger" />;
     case "running":
       return <Spinner size={13} className="mt-0.5 shrink-0 text-accent" />;
+    case "stopped":
+      return <CircleSlash size={13} className="mt-0.5 shrink-0 text-warn" />;
     default:
       return <Circle size={13} className="mt-0.5 shrink-0 text-muted opacity-50" />;
   }

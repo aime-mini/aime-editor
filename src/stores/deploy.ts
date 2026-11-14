@@ -18,6 +18,7 @@ import {
   readLine,
   STAGED_DIR,
   targetsExisting,
+  unanswered,
   type Inventory,
   type StagedFile,
   steerPrompt,
@@ -59,7 +60,8 @@ export interface DeployLogLine {
 /** One step as the panel draws it while the deploy runs. */
 export interface StepRun {
   step: DeployStep;
-  state: "passed" | "failed" | "running" | "pending";
+  /** `stopped`: it was running when the deploy ended, so what it did is not known. */
+  state: "passed" | "failed" | "running" | "stopped" | "pending";
 }
 
 export type DeployStage =
@@ -559,6 +561,12 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
     // Run what is queued, stopping at the first failure.
     let failed: { label: string; command: string; output: string } | null = null;
     while (queue.length > 0) {
+      // Stop pressed between two steps has no command in flight to end, so it
+      // is honoured here, before the next one starts.
+      if (ops.cancelled()) {
+        blocked(ops, plan, show(null), translate("deploy.cancelled"));
+        return;
+      }
       const [step, ...rest] = queue;
       show(step);
       const existing = targetsExisting(plan.target, [step], inventoryNow(ops));
@@ -606,7 +614,14 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
           blocked(ops, plan, steps, translate("deploy.overwritten", { labels }));
           return;
         }
-        if (plan.keep.length > 0) ops.note(translate("deploy.kept", { count: plan.keep.length }));
+        const unchecked = unanswered(plan.keep, before);
+        if (unchecked.length > 0) {
+          ops.problem(
+            translate("deploy.keepUnanswered", { labels: unchecked.map((keep) => keep.label).join(", ") }),
+          );
+        }
+        const kept = plan.keep.length - unchecked.length;
+        if (kept > 0) ops.note(translate("deploy.kept", { count: kept }));
         // Said while the service was being asked: there is no step left to
         // steer, and saying so beats leaving the question without an answer.
         if (ops.takeSteer() !== null) ops.answer(translate("deploy.steerTooLate"));
@@ -616,7 +631,7 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
           steps,
           url: verdict.url,
           probe: verdict.probe,
-          kept: plan.keep.length,
+          kept,
         });
         return;
       }
@@ -1024,6 +1039,12 @@ async function runStep(
   });
   ops.engine.inFlight = { kind: "command", id };
   try {
+    // Stop can land while the listener is being set up, with no command yet
+    // in flight to end: the command is then never started.
+    if (ops.cancelled()) {
+      blocked(ops, null, [], translate("deploy.cancelled"));
+      return null;
+    }
     const outcome = await invoke<CommandOutcome>("cloud_deploy_step", {
       id,
       request: { cloudId, account, existing, step, cwd, deploying: true },
@@ -1157,17 +1178,30 @@ async function waitUnlessStopped(ops: Ops, ms: number): Promise<boolean> {
   return !ops.cancelled();
 }
 
+/**
+ * Ends the deploy with a reason. The plan and the steps are kept from the page
+ * it ends on when the caller has none at hand - a turn or a command stopped
+ * deep inside - so the person still sees what ran; a step that was running is
+ * marked stopped, since whether it finished is not known.
+ */
 function blocked(ops: Ops, plan: DeployPlan | null, steps: StepRun[], reason: string): void {
   // Whatever the person said that never reached the AI is answered here, not
   // left hanging under their own question.
   if (ops.takeSteer() !== null) ops.answer(translate("deploy.steerStopped"));
   const current = ops.slot();
   const keptPlan = plan ?? planOf(current.stage);
-  ops.stage({ kind: "blocked", plan: keptPlan, steps, reason });
+  const keptSteps = (steps.length > 0 ? steps : stepsOf(current.stage)).map((run) =>
+    run.state === "running" ? { ...run, state: "stopped" as const } : run,
+  );
+  ops.stage({ kind: "blocked", plan: keptPlan, steps: keptSteps, reason });
 }
 
 function planOf(stage: DeployStage): DeployPlan | null {
   return "plan" in stage ? stage.plan : null;
+}
+
+function stepsOf(stage: DeployStage): StepRun[] {
+  return "steps" in stage ? stage.steps : [];
 }
 
 function projectRoot(): string {
