@@ -572,6 +572,19 @@ export const vi: Record<TranslationKey, string> = {
   "deploy.noProof":
     "Kế hoạch không có lệnh đọc nào trả về URL của service, nên không gì chứng minh được deploy - Aime không chạy thứ nó không kiểm được.",
   "deploy.stillRejected": "Hỏi lại rồi mà kế hoạch vẫn còn phần Aime từ chối.",
+  "deploy.reconfirmTitle": "AI muốn đổi những gì chạy tiếp theo",
+  "deploy.reconfirmFix": "Bước \u201C{label}\u201D bị lỗi, và AI đã viết lại các bước còn lại.",
+  "deploy.reconfirmSteer": "Bạn yêu cầu thay đổi khi đang chạy, và AI đã viết lại các bước còn lại.",
+  "deploy.reconfirmHint":
+    "Chưa bước nào AI viết lại được chạy cho tới khi bạn đồng ý. Hãy đọc các lệnh đánh dấu mới - chúng không có trong kế hoạch bạn đã duyệt.",
+  "deploy.reconfirmNew": "mới",
+  "deploy.reconfirmGo": "Chạy các bước này",
+  "deploy.reconfirmWaiting": "{count} bước viết lại đang chờ bạn đồng ý",
+  "deploy.unreachableRetry": "Không kết nối được dịch vụ AI ({reason}) - thử lại sau {seconds} giây",
+  "deploy.signInNeeded":
+    "AI CLI cần đăng nhập lại: {reason}. Đăng nhập (nút chìa khoá ở panel AI chạy lệnh login), rồi deploy lại.",
+  "deploy.unreachable":
+    "Không kết nối được dịch vụ AI trong một lúc lâu: {reason}. Không có gì chạy thêm; hãy deploy lại khi dịch vụ trả lời.",
   "deploy.cancelled": "Đã dừng.",
   "deploy.confirmTitle": "Chưa có gì chạy. Đây là những gì sẽ chạy.",
   "deploy.confirmHint":

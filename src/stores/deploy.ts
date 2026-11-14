@@ -2,12 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { translate } from "../i18n";
-import { agentTurn, cancelAgentTurn, type TurnPermission } from "../lib/agentTurn";
+import { agentTurn, cancelAgentTurn, haveTurn, type TurnPermission } from "../lib/agentTurn";
 import { billingOff } from "../lib/cloudErrors";
 import {
   commandLine,
   filesPrompt,
   fixPrompt,
+  notAgreed,
   overwritten,
   parsePlan,
   parseRevision,
@@ -68,6 +69,20 @@ export type DeployStage =
    */
   | { kind: "confirm"; survey: Survey; plan: DeployPlan; answers: ReadAnswer[]; tooling: string[] }
   | { kind: "deploying"; plan: DeployPlan; steps: StepRun[] }
+  /**
+   * The AI rewrote the steps still to run - after a failure, or when the person
+   * spoke while it ran - and nothing it rewrote runs until the person agrees:
+   * a confirmed plan is what was confirmed, not whatever came after it.
+   * `changed` marks the steps that are not among the ones already agreed.
+   */
+  | {
+      kind: "reconfirm";
+      plan: DeployPlan;
+      steps: StepRun[];
+      revised: DeployStep[];
+      changed: boolean[];
+      why: string;
+    }
   | { kind: "proving"; plan: DeployPlan; steps: StepRun[]; url: string }
   | { kind: "done"; plan: DeployPlan; steps: StepRun[]; url: string; probe: Probe; kept: number }
   | { kind: "blocked"; plan: DeployPlan | null; steps: StepRun[]; reason: string };
@@ -108,6 +123,8 @@ interface DeployState {
    * the question. Nothing to await here: the run picks this up itself.
    */
   steer: (slot: string, note: string) => void;
+  /** The person agreed to the rewritten steps: they run, and the deploy carries on. */
+  agree: (slot: string) => void;
   /** Stops whatever the slot has in flight. */
   cancel: (slot: string) => Promise<void>;
   /** Puts the account's resources back in front; a running deploy carries on. */
@@ -133,12 +150,14 @@ interface Engine {
   cancelled: boolean;
   /** What the person said while a step was running, until the run takes it. */
   steer: string | null;
+  /** Answers the question at the reconfirm page: true to run the rewritten steps. */
+  agreement: ((agreed: boolean) => void) | null;
 }
 
 const engines = new Map<string, Engine>();
 
 function newEngine(): Engine {
-  return { inFlight: null, cancelled: false, steer: null };
+  return { inFlight: null, cancelled: false, steer: null, agreement: null };
 }
 
 function engineFor(slot: string): Engine {
@@ -230,9 +249,18 @@ export const useDeploy = create<DeployState>((set, get) => ({
     ops.note(translate("deploy.asked", { note: asked }));
   },
 
+  agree: (slot) => {
+    const engine = engineFor(slot);
+    engine.agreement?.(true);
+    engine.agreement = null;
+  },
+
   cancel: async (slot) => {
     const engine = engineFor(slot);
     engine.cancelled = true;
+    // A deploy waiting for the person to agree to rewritten steps is told no.
+    engine.agreement?.(false);
+    engine.agreement = null;
     if (engine.inFlight?.kind === "command") await execCancel(engine.inFlight.id);
     if (engine.inFlight?.kind === "agent") await cancelAgentTurn(engine.inFlight.id);
     // A deploy waiting at the confirm page has nothing in flight to end; it is
@@ -474,6 +502,7 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
         if (asked !== null) {
           const steered = await askSteer(ops, root, plan, asked, ran, queue);
           if (steered === null) return;
+          if (!(await agreedTo(ops, plan, ran, queue, steered, translate("deploy.reconfirmSteer")))) return;
           queue = steered;
           show(null);
         }
@@ -560,9 +589,41 @@ async function deploy(plan: DeployPlan, ops: Ops): Promise<void> {
       return;
     }
     ops.note(translate("deploy.revised", { count: revised.length }));
+    const why = translate("deploy.reconfirmFix", { label: failed.label });
+    if (!(await agreedTo(ops, plan, ran, queue, revised, why))) return;
     queue = revised;
   }
   blocked(ops, plan, show(null), translate("deploy.cancelled"));
+}
+
+/**
+ * Whether the rewritten steps may run. Steps the person already agreed to - the
+ * remainder of the plan, tried again as it was - need no second yes; anything
+ * else the AI wrote waits at the reconfirm page, so the commands that change a
+ * cloud are only ever the ones a person read.
+ */
+async function agreedTo(
+  ops: Ops,
+  plan: DeployPlan,
+  ran: StepRun[],
+  agreed: DeployStep[],
+  revised: DeployStep[],
+  why: string,
+): Promise<boolean> {
+  const changed = notAgreed(agreed, revised);
+  if (!changed.includes(true)) return true;
+  ops.note(translate("deploy.reconfirmWaiting", { count: changed.filter(Boolean).length }));
+  const steps: StepRun[] = [...ran, ...revised.map((step) => ({ step, state: "pending" as const }))];
+  ops.stage({ kind: "reconfirm", plan, steps, revised, changed, why });
+  const agreedNow = await new Promise<boolean>((resolve) => {
+    ops.engine.agreement = resolve;
+  });
+  if (!agreedNow) {
+    blocked(ops, plan, steps, translate("deploy.cancelled"));
+    return false;
+  }
+  ops.stage({ kind: "deploying", plan, steps });
+  return true;
 }
 
 type Verdict =
@@ -881,7 +942,10 @@ function head(reply: string): string {
 
 /**
  * One AI turn with files-only tools, whatever its permission: the AI reads and
- * writes the repository and nothing else. Null when the turn was stopped.
+ * writes the repository and nothing else. Null when the turn was stopped, or
+ * when no answer can be had - a sign-in that ran out, a service still away
+ * after every wait (`haveTurn`) - which stops the deploy with the CLI's own
+ * words rather than reading the failure as the AI's answer.
  */
 async function turn(
   ops: Ops,
@@ -890,23 +954,52 @@ async function turn(
   permission: TurnPermission,
 ): Promise<string | null> {
   if (ops.cancelled()) return null;
-  const outcome = await agentTurn({
-    prompt,
-    cwd: root,
-    permission,
-    tools: "filesOnly",
-    onToolCall: ops.output,
-    onStderr: ops.output,
-    onStarted: (runId) => {
-      ops.engine.inFlight = { kind: "agent", id: runId };
+  const result = await haveTurn(
+    async () => {
+      const outcome = await agentTurn({
+        prompt,
+        cwd: root,
+        permission,
+        tools: "filesOnly",
+        onToolCall: ops.output,
+        onStderr: ops.output,
+        onStarted: (runId) => {
+          ops.engine.inFlight = { kind: "agent", id: runId };
+        },
+      });
+      ops.engine.inFlight = null;
+      return outcome;
     },
-  });
-  ops.engine.inFlight = null;
-  if (outcome.code === null || ops.cancelled()) {
+    {
+      waitOrStop: (ms) => waitUnlessStopped(ops, ms),
+      retrying: (reason, seconds) => {
+        ops.problem(translate("deploy.unreachableRetry", { reason, seconds }));
+      },
+    },
+  );
+  if (result.kind === "unavailable") {
+    const key = result.trouble === "signIn" ? "deploy.signInNeeded" : "deploy.unreachable";
+    blocked(ops, null, [], translate(key, { reason: result.reason }));
+    return null;
+  }
+  if (result.kind === "stopped" || ops.cancelled()) {
     blocked(ops, null, [], translate("deploy.cancelled"));
     return null;
   }
-  return outcome.text;
+  return result.outcome.text;
+}
+
+/** How often a wait looks again at whether the deploy was stopped. */
+const STOP_POLL_MS = 1_000;
+
+/** Waits, unless the deploy is stopped first; true when the whole wait was had. */
+async function waitUnlessStopped(ops: Ops, ms: number): Promise<boolean> {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (ops.cancelled()) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(STOP_POLL_MS, until - Date.now())));
+  }
+  return !ops.cancelled();
 }
 
 function blocked(ops: Ops, plan: DeployPlan | null, steps: StepRun[], reason: string): void {

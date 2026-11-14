@@ -573,6 +573,19 @@ export const en = {
   "deploy.noProof":
     "The plan has no read that answers the service's URL, so nothing could prove the deployment - Aime does not run what it cannot check.",
   "deploy.stillRejected": "The plan still had parts Aime refused after being asked again.",
+  "deploy.reconfirmTitle": "The AI wants to change what runs next",
+  "deploy.reconfirmFix": "The step \u201C{label}\u201D failed, and the AI rewrote the steps still to run.",
+  "deploy.reconfirmSteer": "You asked for a change while it ran, and the AI rewrote the steps still to run.",
+  "deploy.reconfirmHint":
+    "Nothing it rewrote runs until you agree. Read the commands marked new - they are not in the plan you confirmed.",
+  "deploy.reconfirmNew": "new",
+  "deploy.reconfirmGo": "Run these steps",
+  "deploy.reconfirmWaiting": "{count} rewritten step(s) wait for you to agree",
+  "deploy.unreachableRetry": "The AI service could not be reached ({reason}) - trying again in {seconds} s",
+  "deploy.signInNeeded":
+    "The AI CLI needs signing in again: {reason}. Sign in (the key button in the AI panel runs its login), then deploy again.",
+  "deploy.unreachable":
+    "The AI service could not be reached for some time: {reason}. Nothing more ran; deploy again once it answers.",
   "deploy.cancelled": "Stopped.",
   "deploy.confirmTitle": "Nothing has run yet. This is what will.",
   "deploy.confirmHint":

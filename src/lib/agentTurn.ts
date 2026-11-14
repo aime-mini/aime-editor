@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useAi } from "../stores/ai";
 import { createEventParser } from "./aiParsers";
+import { troubleIn, type TurnTrouble } from "./turnTrouble";
 
 /**
  * One turn of the AI CLI run as an agent - with tools, in a folder - outside
@@ -95,6 +96,53 @@ export function failureOf(outcome: AgentTurnOutcome): string {
   const reason = lastLine(outcome.errors) || lastLine(outcome.stderr) || lastLine(outcome.text);
   const code = `the AI CLI exited with ${String(outcome.code)}`;
   return reason === "" ? code : `${code}: ${reason.slice(0, REASON_CHARS)}`;
+}
+
+/**
+ * How long to wait before each new try at an AI service that could not be
+ * reached: about seventeen minutes in all - long enough for a dropped
+ * connection or a busy service to come back, short enough that nobody's work
+ * sits on a dead network all night.
+ */
+export const UNREACHABLE_WAITS_MS = [30_000, 120_000, 300_000, 600_000];
+
+/** How one AI turn ended, as far as what its caller does next. */
+export type TurnResult =
+  /** The CLI answered - or failed for a reason of the work's own, which its caller reads. */
+  | { kind: "answered"; outcome: AgentTurnOutcome }
+  /** Stopped by the person, or while waiting to try again. */
+  | { kind: "stopped"; outcome: AgentTurnOutcome }
+  /** No answer to be had now: a sign-in that ran out, or a service still away after the last wait. */
+  | { kind: "unavailable"; trouble: TurnTrouble; reason: string };
+
+/**
+ * Has one AI turn the way every job Aime runs on the user's behalf needs it:
+ * a failed turn is never read as an answer (`lib/turnTrouble.ts`). A service
+ * that cannot be reached is tried again after each of `UNREACHABLE_WAITS_MS`;
+ * a sign-in that ran out, or a service still away after the last wait, is
+ * handed back for the caller to pause or stop on.
+ */
+export async function haveTurn(
+  take: () => Promise<AgentTurnOutcome>,
+  hooks: {
+    /** Waits, unless the job is stopped first; true when the whole wait was had. */
+    waitOrStop: (ms: number) => Promise<boolean>;
+    /** Says that the service could not be reached and when the next try is. */
+    retrying: (reason: string, seconds: number) => void;
+  },
+): Promise<TurnResult> {
+  for (let attempt = 0; ; attempt += 1) {
+    const outcome = await take();
+    if (outcome.code === null) return { kind: "stopped", outcome };
+    if (outcome.code === 0) return { kind: "answered", outcome };
+    const trouble = troubleIn([outcome.errors, outcome.stderr, outcome.text].join("\n"));
+    if (trouble === null) return { kind: "answered", outcome };
+    const reason = failureOf(outcome);
+    const wait = trouble === "unreachable" ? UNREACHABLE_WAITS_MS.at(attempt) : undefined;
+    if (wait === undefined) return { kind: "unavailable", trouble, reason };
+    hooks.retrying(reason, wait / 1000);
+    if (!(await hooks.waitOrStop(wait))) return { kind: "stopped", outcome: { ...outcome, code: null } };
+  }
 }
 
 interface StreamPayload {

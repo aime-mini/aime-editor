@@ -94,6 +94,17 @@ export interface DeployStep {
   changes: string;
 }
 
+/**
+ * Which rewritten steps the person has not agreed to: a step is agreed when the
+ * very same command - program and arguments, whatever its label says - is
+ * among the steps the confirmed plan still had to run.
+ */
+export function notAgreed(agreed: readonly DeployStep[], revised: readonly DeployStep[]): boolean[] {
+  const key = (step: DeployStep) => JSON.stringify([step.program ?? "", step.args]);
+  const known = new Set(agreed.map(key));
+  return revised.map((step) => !known.has(key(step)));
+}
+
 /** A file the AI wants in the repository before the steps run. */
 export interface PlannedFile {
   path: string;

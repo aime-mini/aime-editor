@@ -29,8 +29,7 @@ import {
   type TestCase,
   type TestCases,
 } from "../lib/aiRun";
-import { agentTurn, cancelAgentTurn, failureOf } from "../lib/agentTurn";
-import { troubleIn } from "../lib/turnTrouble";
+import { agentTurn, cancelAgentTurn, haveTurn } from "../lib/agentTurn";
 import { baselineKey, keepBaseline, keptBaseline } from "../lib/baselineCache";
 import { footprintRules, formatBytes, sweepRun, type SweepReport } from "../lib/runSweep";
 import {
@@ -4013,23 +4012,28 @@ async function runCli(
   sessionId: string | null = null,
 ): Promise<{ code: number | null; text: string; sessionId: string | null }> {
   const engine = engineFor(context.id);
-  for (let attempt = 0; ; attempt += 1) {
-    if (Date.now() - engine.drivingSince > RUN_BRAKE_MS) {
-      throw new TurnPaused(translate("run.brake", { hours: RUN_BRAKE_MS / 3_600_000 }));
-    }
-    const outcome = await oneTurn(context, prompt, set, phase, permission, sessionId);
-    engine.phaseCostUsd += turnCost(engine, outcome);
-    if (outcome.code === null || outcome.code === 0) return outcome;
-    const trouble = troubleIn([outcome.errors, outcome.stderr, outcome.text].join("\n"));
-    if (trouble === null) return outcome;
-    const reason = failureOf(outcome);
-    if (trouble === "signIn") throw new TurnPaused(translate("run.pausedSignIn", { reason }));
-    const wait = UNREACHABLE_WAITS_MS.at(attempt);
-    if (wait === undefined) throw new TurnPaused(translate("run.pausedUnreachable", { reason }));
-    note(set, phase, translate("run.unreachableRetry", { reason, seconds: wait / 1000 }), "problem");
-    // Stopped while waiting: that is a Stop, answered the way a stopped turn is.
-    if (!(await waitWhileDriving(context.id, wait))) return { ...outcome, code: null };
+  const result = await haveTurn(
+    async () => {
+      if (Date.now() - engine.drivingSince > RUN_BRAKE_MS) {
+        throw new TurnPaused(translate("run.brake", { hours: RUN_BRAKE_MS / 3_600_000 }));
+      }
+      const outcome = await oneTurn(context, prompt, set, phase, permission, sessionId);
+      engine.phaseCostUsd += turnCost(engine, outcome);
+      return outcome;
+    },
+    {
+      waitOrStop: (ms) => waitWhileDriving(context.id, ms),
+      retrying: (reason, seconds) => {
+        note(set, phase, translate("run.unreachableRetry", { reason, seconds }), "problem");
+      },
+    },
+  );
+  // Not the work's fault and no verdict: the run pauses where it is (`drive`).
+  if (result.kind === "unavailable") {
+    const key = result.trouble === "signIn" ? "run.pausedSignIn" : "run.pausedUnreachable";
+    throw new TurnPaused(translate(key, { reason: result.reason }));
   }
+  return result.outcome;
 }
 
 /**
@@ -4052,14 +4056,6 @@ function turnCost(engine: Engine, outcome: { costUsd: number | null; sessionId: 
   engine.sessionCosts.set(outcome.sessionId, outcome.costUsd);
   return Math.max(0, outcome.costUsd - before);
 }
-
-/**
- * The AI service could not be reached: how long to wait before each new try,
- * about seventeen minutes in all - long enough for a dropped connection or a
- * busy service to come back, short enough that a run does not sit on a dead
- * network all night. After the last, the run pauses for a person.
- */
-const UNREACHABLE_WAITS_MS = [30_000, 120_000, 300_000, 600_000];
 
 /** How often a wait looks again at whether the run was stopped. */
 const STOP_POLL_MS = 1_000;

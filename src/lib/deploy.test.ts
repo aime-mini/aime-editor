@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CloudAccount, CloudResource } from "../stores/cloud";
 import {
+  notAgreed,
   commandLine,
   fixPrompt,
   overwritten,
@@ -722,5 +723,28 @@ describe("speaking while it runs", () => {
     expect(revision?.reply).toBe("Moved it to the project that has the quota.");
     // A failed step is not restarted by words: an answer with nothing to run is no answer.
     expect(parseRevision('{"steps":[],"files":[],"inspect":[],"giveUp":null,"reply":"I see."}')).toBeNull();
+  });
+});
+
+describe("notAgreed", () => {
+  const step = (label: string, args: string[], program?: string) => ({ label, args, changes: "", program });
+
+  it("marks only the commands the confirmed plan did not still have to run", () => {
+    const agreed = [
+      step("Deploy", ["run", "deploy", "shop"]),
+      step("Open", ["run", "services", "update", "shop"]),
+    ];
+    const revised = [
+      // The same command under another label is the same command.
+      step("Deploy again", ["run", "deploy", "shop"]),
+      step("Deploy to another region", ["run", "deploy", "shop", "--region=asia-southeast1"]),
+      step("Apply", ["apply", "-f", "k8s.yaml"], "kubectl"),
+    ];
+    expect(notAgreed(agreed, revised)).toEqual([false, true, true]);
+  });
+
+  it("asks nothing when the AI only tries the agreed steps again", () => {
+    const agreed = [step("Deploy", ["run", "deploy", "shop"])];
+    expect(notAgreed(agreed, agreed)).toEqual([false]);
   });
 });

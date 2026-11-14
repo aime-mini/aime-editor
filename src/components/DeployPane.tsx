@@ -21,7 +21,7 @@ import { shortKind } from "../lib/cloudIcons";
 import { billingOff } from "../lib/cloudErrors";
 import { BillingOffNote } from "./CloudBilling";
 import { slotOf, useCloud, type CloudAccount } from "../stores/cloud";
-import { useDeploy, type DeployLogLine, type StepRun } from "../stores/deploy";
+import { useDeploy, type DeployLogLine, type DeployStage, type StepRun } from "../stores/deploy";
 import { CopyButton, Note } from "./CloudDetail";
 import { failedTo } from "../stores/notices";
 import { Spinner } from "./Spinner";
@@ -38,10 +38,15 @@ import { Spinner } from "./Spinner";
 export function DeployPane({ slot }: { slot: string }) {
   const t = useT();
   const deploy = useDeploy((s) => s.slots[slot]);
-  const { close, cancel, confirm, dismiss, start, revise, steer } = useDeploy();
+  const { close, cancel, confirm, dismiss, start, revise, steer, agree } = useDeploy();
   if (deploy === undefined) return null;
   const { stage, account, cloudId, log, notes } = deploy;
-  const live = stage.kind !== "confirm" && stage.kind !== "done" && stage.kind !== "blocked";
+  // A page that waits for the person has its own Stop beside its Go.
+  const live =
+    stage.kind !== "confirm" &&
+    stage.kind !== "reconfirm" &&
+    stage.kind !== "done" &&
+    stage.kind !== "blocked";
   // A deploy stopped for want of a billing account is not a failed deploy: it
   // is a wall with one command on the other side (`lib/cloudErrors.ts`).
   const wall = stage.kind === "blocked" ? billingOff(stage.reason) : null;
@@ -98,6 +103,18 @@ export function DeployPane({ slot }: { slot: string }) {
             onGo={() => void confirm(slot)}
             onCancel={() => void cancel(slot)}
             onRevise={(note) => void revise(slot, note)}
+          />
+        )}
+
+        {stage.kind === "reconfirm" && (
+          <Reconfirm
+            cloudId={cloudId}
+            account={account}
+            stage={stage}
+            onGo={() => {
+              agree(slot);
+            }}
+            onCancel={() => void cancel(slot)}
           />
         )}
 
@@ -332,6 +349,66 @@ function Confirm({
           className="rounded border border-line px-3 py-1.5 text-[12.5px] text-muted hover:text-fg"
         >
           {t("deploy.cancel")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The steps the AI rewrote while the deploy ran, waiting for the person. The
+ * ones already run stay above; each rewritten command is shown as it will run,
+ * and the ones that were not in the confirmed plan are marked, because they are
+ * what this page is asking about.
+ */
+function Reconfirm({
+  cloudId,
+  account,
+  stage,
+  onGo,
+  onCancel,
+}: {
+  cloudId: string;
+  account: CloudAccount;
+  stage: Extract<DeployStage, { kind: "reconfirm" }>;
+  onGo: () => void;
+  onCancel: () => void;
+}) {
+  const t = useT();
+  const done = stage.steps.filter((run) => run.state !== "pending");
+  return (
+    <div className="space-y-5">
+      {done.length > 0 && <Steps steps={done} />}
+      <Section title={t("deploy.reconfirmTitle")} hint={`${stage.why} ${t("deploy.reconfirmHint")}`}>
+        <ol className="space-y-2">
+          {stage.revised.map((step, index) => (
+            <li key={`${String(index)}-${step.label}`} data-reconfirm-new={stage.changed[index]}>
+              <p className="text-[12px]">
+                <span className="text-muted">{index + 1}.</span> {step.label}
+                {stage.changed[index] && (
+                  <span className="ml-1.5 rounded bg-warn/15 px-1 py-px text-[10.5px] font-medium text-warn">
+                    {t("deploy.reconfirmNew")}
+                  </span>
+                )}
+                {step.changes !== "" && <span className="text-muted"> - {step.changes}</span>}
+              </p>
+              <Command text={commandLine(cloudId, step, account)} />
+            </li>
+          ))}
+        </ol>
+      </Section>
+      <div className="flex items-center gap-2 border-t border-line pt-4">
+        <button
+          onClick={onGo}
+          className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white hover:opacity-90"
+        >
+          <Rocket size={13} /> {t("deploy.reconfirmGo")}
+        </button>
+        <button
+          onClick={onCancel}
+          className="rounded border border-line px-3 py-1.5 text-[12.5px] text-muted hover:text-fg"
+        >
+          {t("deploy.stop")}
         </button>
       </div>
     </div>
