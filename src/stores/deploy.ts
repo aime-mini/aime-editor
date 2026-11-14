@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { translate } from "../i18n";
 import { agentTurn, cancelAgentTurn, haveTurn, type TurnPermission } from "../lib/agentTurn";
+import { carriedFrom, costOfTurn, warmSession, type CarriedSession } from "../lib/agentSession";
 import { billingOff } from "../lib/cloudErrors";
 import {
   commandLine,
@@ -115,6 +116,8 @@ export interface DeploySlot {
    * what Aime answered. Every plan since carries all of it.
    */
   notes: DeployNote[];
+  /** What this deploy's AI turns have cost so far, as the CLIs reported it. */
+  spentUsd: number;
 }
 
 interface DeployState {
@@ -170,12 +173,27 @@ interface Engine {
   steer: string | null;
   /** Answers the question at the reconfirm page: true to run the rewritten steps. */
   agreement: ((agreed: boolean) => void) | null;
+  /**
+   * The deploy's own AI session, carried from turn to turn while warm: the
+   * plan, the files and a fix then build on what the survey already read
+   * instead of reading the repository again.
+   */
+  session: CarriedSession | null;
+  /** Each session's last reported total, so a carried-on turn is charged its own share. */
+  sessionCosts: Map<string, number>;
 }
 
 const engines = new Map<string, Engine>();
 
 function newEngine(): Engine {
-  return { inFlight: null, cancelled: false, steer: null, agreement: null };
+  return {
+    inFlight: null,
+    cancelled: false,
+    steer: null,
+    agreement: null,
+    session: null,
+    sessionCosts: new Map(),
+  };
 }
 
 function engineFor(slot: string): Engine {
@@ -197,7 +215,7 @@ export const useDeploy = create<DeployState>((set, get) => ({
       open: slot,
       slots: {
         ...state.slots,
-        [slot]: { cloudId, account, stage: { kind: "surveying" }, log: [], notes: [] },
+        [slot]: { cloudId, account, stage: { kind: "surveying" }, log: [], notes: [], spentUsd: 0 },
       },
     }));
     const ops = opsFor(slot, set, get);
@@ -231,7 +249,9 @@ export const useDeploy = create<DeployState>((set, get) => ({
     const asked = note.trim();
     if (current?.stage.kind !== "confirm" || asked === "") return;
     const { survey, answers, tooling } = current.stage;
-    engines.set(slot, newEngine());
+    // A fresh engine for a fresh attempt, still carrying the AI's session on.
+    const before = engineFor(slot);
+    engines.set(slot, { ...newEngine(), session: before.session, sessionCosts: before.sessionCosts });
     const ops = opsFor(slot, set, get);
     // Asked now, answered when the next plan comes back: the page shows the
     // question the moment it is sent, so nobody wonders whether it went
@@ -330,6 +350,8 @@ interface Ops {
   answer: (text: string) => void;
   /** What the person said while a step was running - taken once, then gone. */
   takeSteer: () => string | null;
+  /** Adds what one AI turn cost to the deploy's total. */
+  spend: (usd: number) => void;
   engine: Engine;
   /** Read through a call, because Stop flips it between two awaits and a narrowed field would not see that. */
   cancelled: () => boolean;
@@ -356,6 +378,9 @@ function opsFor(slot: string, set: Set, get: Get): Ops {
       patch(() => ({ stage }));
     },
     note: line("note"),
+    spend: (usd) => {
+      if (usd > 0) patch((current) => ({ spentUsd: current.spentUsd + usd }));
+    },
     output: line("output"),
     problem: line("problem"),
     ask: (text) => {
@@ -1167,6 +1192,7 @@ async function turn(
         cwd: root,
         permission,
         tools: "filesOnly",
+        sessionId: warmSession(ops.engine.session),
         onToolCall: ops.output,
         onStderr: ops.output,
         onStarted: (runId) => {
@@ -1174,6 +1200,9 @@ async function turn(
         },
       });
       ops.engine.inFlight = null;
+      ops.spend(costOfTurn(ops.engine.sessionCosts, outcome));
+      // A failed turn's session is not one to build on.
+      ops.engine.session = outcome.code === 0 ? carriedFrom(outcome) : null;
       return outcome;
     },
     {

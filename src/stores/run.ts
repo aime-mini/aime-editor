@@ -30,6 +30,7 @@ import {
   type TestCases,
 } from "../lib/aiRun";
 import { agentTurn, cancelAgentTurn, haveTurn } from "../lib/agentTurn";
+import { carriedFrom, costOfTurn, warmSession, type CarriedSession } from "../lib/agentSession";
 import { baselineKey, keepBaseline, keptBaseline } from "../lib/baselineCache";
 import { footprintRules, formatBytes, sweepRun, type SweepReport } from "../lib/runSweep";
 import {
@@ -397,7 +398,7 @@ interface Engine {
   /** When the run was last set driving - started, or carried on - for the brake (`RUN_BRAKE_MS`). */
   drivingSince: number;
   /** The builder's session, while carrying it on is worth it (`runAgent`). */
-  builder: { sessionId: string; lastTurnAt: number } | null;
+  builder: CarriedSession | null;
   /** The running cost each session has reported so far, so a resumed turn is charged only its own share. */
   sessionCosts: Map<string, number>;
   /** What the phase in flight has cost so far. */
@@ -4018,7 +4019,7 @@ async function runCli(
         throw new TurnPaused(translate("run.brake", { hours: RUN_BRAKE_MS / 3_600_000 }));
       }
       const outcome = await oneTurn(context, prompt, set, phase, permission, sessionId);
-      engine.phaseCostUsd += turnCost(engine, outcome);
+      engine.phaseCostUsd += costOfTurn(engine.sessionCosts, outcome);
       return outcome;
     },
     {
@@ -4044,18 +4045,6 @@ async function runCli(
  * reaches it pauses with everything kept, and Carry on gives it another spell.
  */
 const RUN_BRAKE_MS = 4 * 60 * 60 * 1000;
-
-/**
- * What a turn cost on its own. A CLI reports its session's running total, so
- * a turn that carried a session on is charged only what the total grew by.
- */
-function turnCost(engine: Engine, outcome: { costUsd: number | null; sessionId: string | null }): number {
-  if (outcome.costUsd === null) return 0;
-  if (outcome.sessionId === null) return outcome.costUsd;
-  const before = engine.sessionCosts.get(outcome.sessionId) ?? 0;
-  engine.sessionCosts.set(outcome.sessionId, outcome.costUsd);
-  return Math.max(0, outcome.costUsd - before);
-}
 
 /** How often a wait looks again at whether the run was stopped. */
 const STOP_POLL_MS = 1_000;
@@ -4118,19 +4107,12 @@ interface BuilderTurn {
 }
 
 /**
- * How long a builder's session is worth carrying on. A resumed session sends
- * its whole history again: within the provider's prompt-cache lifetime that is
- * billed at the cache rate, after it at the full rate, which costs more than a
- * fresh turn handed the dossier. Five minutes is the default lifetime of
- * Anthropic's prompt cache and the shortest OpenAI keeps (both providers'
- * prompt-caching documentation).
+ * Whether the run's builder can carry on in its session right now - past the
+ * prompt cache's lifetime a fresh turn handed the dossier costs less
+ * (`SESSION_WARM_MS`).
  */
-const BUILDER_WARM_MS = 5 * 60 * 1000;
-
-/** Whether the run's builder can carry on in its session right now. */
 function builderIsWarm(runId: string): boolean {
-  const builder = engines.get(runId)?.builder ?? null;
-  return builder !== null && Date.now() - builder.lastTurnAt < BUILDER_WARM_MS;
+  return warmSession(engines.get(runId)?.builder ?? null) !== null;
 }
 
 /**
@@ -4157,7 +4139,7 @@ async function runAgent(
   phase: PhaseId = "implement",
 ): Promise<BuilderTurn> {
   const engine = engineFor(context.id);
-  const session = builderIsWarm(context.id) ? (engine.builder?.sessionId ?? null) : null;
+  const session = warmSession(engine.builder);
   note(set, phase, translate(session === null ? "run.builderFresh" : "run.builderCarriesOn"));
   const asking = [
     session === null ? dossierOf(context, get) : "",
@@ -4170,8 +4152,7 @@ async function runAgent(
   const agreed = await casesOnDisk(context.workRoot);
   const savedBefore = get().yourEdits;
   const outcome = await runCli(context, asking, set, phase, "full", session);
-  engine.builder =
-    outcome.sessionId === null ? null : { sessionId: outcome.sessionId, lastTurnAt: Date.now() };
+  engine.builder = carriedFrom(outcome);
   await keepAgreement(context, agreed, savedBefore, get, set, phase);
   return { code: outcome.code, text: outcome.text, disputed: disputeIn(outcome.text) };
 }

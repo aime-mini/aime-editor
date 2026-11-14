@@ -602,6 +602,8 @@ export const vi: Record<TranslationKey, string> = {
   "deploy.reconfirmFilesTitle": "File AI đã sửa",
   "deploy.reconfirmFilesHint":
     "Được viết riêng ra ngoài, chưa vào dự án - mở từng file để đọc. Chỉ được đặt vào dự án nếu anh đồng ý; Dừng thì bỏ hết.",
+  "deploy.spent": "AI ${usd}",
+  "deploy.spentHint": "Chi phí các lượt AI của lần deploy này tới giờ, theo số AI CLI báo",
   "deploy.cancelled": "Đã dừng.",
   "deploy.confirmTitle": "Chưa có gì chạy. Đây là những gì sẽ chạy.",
   "deploy.confirmHint":

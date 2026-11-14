@@ -29,6 +29,8 @@ const fileTurns: AgentTurnOptions[] = [];
 let listing: CloudResource[] | null = [];
 /** Planned files the AI is scripted to leave unwritten. */
 let unwritten: string[] = [];
+/** Whether the scripted CLI keeps a session and reports what it costs, as Claude Code and Codex do. */
+let keepsSession = false;
 /** Whether the person agrees to rewritten steps the moment they are asked; a test that pins the asking turns it off. */
 let agreesToRewrites = true;
 /** The AI's replies, consumed one per turn. */
@@ -232,8 +234,16 @@ vi.mock("../lib/agentTurn", async (importOriginal) => ({
   // The real `haveTurn`: what the deploy does with an answer is part of what is pinned.
   ...(await importOriginal<typeof import("../lib/agentTurn")>()),
   agentTurn: (options: AgentTurnOptions) => {
+    // A CLI that keeps sessions reports its session's running total each turn.
     const answered = (text: string) =>
-      Promise.resolve({ code: 0, text, costUsd: null, stderr: "", errors: "", sessionId: null });
+      Promise.resolve({
+        code: 0,
+        text,
+        costUsd: keepsSession ? 0.1 * (turns.length + fileTurns.length) : null,
+        stderr: "",
+        errors: "",
+        sessionId: keepsSession ? "deploy-session" : null,
+      });
     if (options.prompt.startsWith("Write these files")) {
       fileTurns.push(options);
       return answered("written");
@@ -278,6 +288,7 @@ useDeploy.subscribe((state) => {
 
 beforeEach(() => {
   agreesToRewrites = true;
+  keepsSession = false;
   stopDuringStep = null;
   listing = [];
   calls.length = 0;
@@ -464,6 +475,16 @@ describe("planning", () => {
     const check = calls.find((call) => call.command === "cloud_check_deploy");
     expect(check?.args.existing).toBe(true);
     expect(stage()).toMatchObject({ plan: { target: { existing: true } } });
+  });
+
+  it("carries the AI's session from the survey on, and counts what the turns cost", async () => {
+    keepsSession = true;
+    await planned();
+    expect(turns[0].sessionId).toBeNull();
+    expect(turns[1].sessionId).toBe("deploy-session");
+    expect(fileTurns[0].sessionId).toBe("deploy-session");
+    // Running totals 0.1, 0.2, 0.3: the deploy is charged 0.3, not 0.6.
+    expect(useDeploy.getState().slots[SLOT]?.spentUsd).toBeCloseTo(0.3);
   });
 
   it("stops before the confirm page when the plan cannot be proved", async () => {

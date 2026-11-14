@@ -49,7 +49,7 @@ export function DeployPane({ slot }: { slot: string }) {
   const deploy = useDeploy((s) => s.slots[slot]);
   const { close, cancel, confirm, dismiss, start, revise, steer, agree } = useDeploy();
   if (deploy === undefined) return null;
-  const { stage, account, cloudId, log, notes } = deploy;
+  const { stage, account, cloudId, log, notes, spentUsd } = deploy;
   // A page that waits for the person has its own Stop beside its Go.
   const live =
     stage.kind !== "confirm" &&
@@ -75,6 +75,9 @@ export function DeployPane({ slot }: { slot: string }) {
                 {" "}
                 {t("deploy.signedInAs")} <span className="font-mono">{account.owner}</span>
               </>
+            )}
+            {spentUsd > 0 && (
+              <span title={t("deploy.spentHint")}> · {t("deploy.spent", { usd: spentUsd.toFixed(2) })}</span>
             )}
           </p>
         </div>

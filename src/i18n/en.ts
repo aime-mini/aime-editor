@@ -603,6 +603,8 @@ export const en = {
   "deploy.reconfirmFilesTitle": "Files it changed",
   "deploy.reconfirmFilesHint":
     "Written aside, not yet in the project - open one to read it. They are put in place only if you agree; Stop throws them away.",
+  "deploy.spent": "AI ${usd}",
+  "deploy.spentHint": "What this deploy's AI turns have cost so far, as the AI CLI reported it",
   "deploy.cancelled": "Stopped.",
   "deploy.confirmTitle": "Nothing has run yet. This is what will.",
   "deploy.confirmHint":
