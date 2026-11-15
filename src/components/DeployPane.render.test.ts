@@ -91,6 +91,7 @@ const survey = {
   existing: [],
   inspect: [],
   missing: [],
+  groups: [],
 };
 
 beforeEach(() => {

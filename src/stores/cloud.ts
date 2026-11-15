@@ -556,10 +556,11 @@ export const useCloud = create<CloudState>((set, get) => ({
     setOps(set, key, { kind: "planning" });
     try {
       const cwd = useWorkspace.getState().rootPath ?? ".";
-      // The CLI's own list of command groups, for the CLI that publishes one;
-      // `null` everywhere else, and the prompt then says nothing about it.
-      const groups = await invoke<string[] | null>("cloud_cli_commands", { cloudId });
-      const reply = await aiOneshot(opsPrompt(cloudId, resource.kind, groups), cwd, true);
+      // The CLI's own top-level command groups - its whole tree for one as
+      // small as Supabase's; `null` for a CLI that publishes no list, and the
+      // prompt then says nothing about it.
+      const vocabulary = await invoke<string[] | null>("cloud_cli_commands", { cloudId, groups: [] });
+      const reply = await aiOneshot(opsPrompt(cloudId, resource.kind, vocabulary), cwd, true);
       const proposed = parseOps(reply);
       if (proposed.length === 0) {
         // Two very different things must not read the same on screen: a kind

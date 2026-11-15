@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { DEPLOYABLE, OPERABLE, dialectOf, recipeOf } from "./deployDialect";
+import {
+  DEPLOYABLE,
+  OPERABLE,
+  VOCABULARY_LIMIT,
+  dialectOf,
+  groupsOf,
+  recipeOf,
+  vocabularyRule,
+} from "./deployDialect";
 
 /**
  * The two claims this table makes are different sizes, and the panel shows a
@@ -122,5 +130,38 @@ describe("each CLI's own scope", () => {
         expect(note.startsWith("- ")).toBe(true);
       }
     }
+  });
+});
+
+describe("the CLI's own commands in a prompt", () => {
+  it("names the groups the cloud's own CLI runs, each once, and not another program's", () => {
+    expect(
+      groupsOf([
+        { args: ["run", "deploy", "web"] },
+        { args: ["run", "services", "describe", "web"], program: "" },
+        { args: ["artifacts", "repositories", "create"] },
+        { args: ["rollout", "restart", "deployment/web"], program: "kubectl" },
+        { args: ["--version"] },
+        { args: [] },
+      ]),
+    ).toEqual(["run", "artifacts"]);
+  });
+
+  /**
+   * The CLI lists its top-level groups first, so a list cut at the limit still
+   * carries every word a command may start with - and says that more exist.
+   */
+  it("cuts a list past the limit and says how much was left out", () => {
+    const tree = [
+      "run",
+      "compute",
+      ...Array.from({ length: VOCABULARY_LIMIT }, (_, i) => `compute x-${String(i)}`),
+    ];
+    const [, rule] = vocabularyRule(tree);
+    expect(rule).toContain("`run`, `compute`, `compute x-0`");
+    expect(rule).toContain("(+2 more)");
+    expect(rule).not.toContain(`compute x-${String(VOCABULARY_LIMIT - 1)}`);
+    expect(vocabularyRule(["run"])[1]).not.toContain("more)");
+    expect(vocabularyRule(null)).toEqual([]);
   });
 });

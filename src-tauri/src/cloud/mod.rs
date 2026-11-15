@@ -28,6 +28,7 @@ mod k8s;
 pub mod reads;
 pub mod sign_in;
 mod supabase;
+pub mod vocabulary;
 
 use crate::program::Program;
 

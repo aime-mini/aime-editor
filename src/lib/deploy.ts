@@ -48,6 +48,8 @@ export interface Survey {
   inspect: PlannedRead[];
   /** What could not be determined from the repository. */
   missing: string[];
+  /** The CLI's top-level command groups the plan will use, so their commands can be put in front of it. */
+  groups: string[];
 }
 
 /** One read the plan promises to leave as it was, and where its value sits. */
@@ -278,6 +280,8 @@ export function surveyPrompt(input: {
   cloudId: string;
   inventory: CloudResource[];
   tooling: string[];
+  /** The CLI's top-level command groups, or null for a CLI that publishes none (`vocabularyRule`). */
+  vocabulary: readonly string[] | null;
 }): string {
   const dialect = dialectOf(input.cloudId);
   const recipe = recipeOf(input.cloudId);
@@ -308,6 +312,9 @@ export function surveyPrompt(input: {
       "resource, its current revision, its settings. Read-only (`describe`, `list`, `get`): each with a `label` " +
       "and `args`. Empty when nothing exists.",
     "4. `missing`: what you could not determine and will have to assume.",
+    `5. \`groups\`: the top-level command groups of \`${dialect.program}\` the deployment will use - ` +
+      "Aime puts every command under them in front of you when you write the plan.",
+    ...vocabularyRule(input.vocabulary),
     "",
     "RULES:",
     recipe.rules,
@@ -316,7 +323,7 @@ export function surveyPrompt(input: {
     '{"app":{"name":"…","kind":"web","stack":"…","port":8080,"healthPath":"/","builds":"…"},' +
       `"existing":[{"resourceId":"${recipe.resourceId}","role":"the service","evidence":"…"}],` +
       `"inspect":[${recipe.inspect}],` +
-      '"missing":["…"]}',
+      '"missing":["…"],"groups":["…"]}',
   ]
     .filter((line) => line !== "")
     .join("\n");
@@ -675,6 +682,7 @@ export function parseSurvey(reply: string): Survey | null {
     }),
     inspect: asArray(raw.inspect).flatMap(asRead),
     missing: asArray(raw.missing).map(asString).filter(Boolean),
+    groups: asArray(raw.groups).map(asString).filter(Boolean),
   };
 }
 

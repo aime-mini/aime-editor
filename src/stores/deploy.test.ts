@@ -25,7 +25,11 @@ const calls: { command: string; args: Record<string, unknown> }[] = [];
 const turns: AgentTurnOptions[] = [];
 /** The turns that wrote the plan's files into the staging folder, answered by the mock itself. */
 const fileTurns: AgentTurnOptions[] = [];
-/** What `cloud_cli_commands` answers: the CLI's own list of its commands, or null for one that publishes none. */
+/**
+ * The CLI's own list of its commands, or null for one that publishes none.
+ * `cloud_cli_commands` answers its top-level groups, and the commands under
+ * the groups it is asked for - the way the Rust side scopes a large tree.
+ */
 let vocabulary: string[] | null = null;
 /** What `cloud_resources` answers when the deploy has to read the list itself; null fails it. */
 let listing: CloudResource[] | null = [];
@@ -221,8 +225,12 @@ vi.mock("@tauri-apps/api/core", () => ({
           bodyHead: status === 200 ? "ok" : "Service Unavailable",
         });
       }
-      case "cloud_cli_commands":
-        return Promise.resolve(vocabulary);
+      case "cloud_cli_commands": {
+        const asked = (args as { groups?: string[] }).groups ?? [];
+        const top = (command: string) => !command.includes(" ");
+        const under = (command: string) => asked.some((group) => command.startsWith(`${group} `));
+        return Promise.resolve(vocabulary?.filter((command) => top(command) || under(command)) ?? null);
+      }
       default:
         return Promise.resolve(undefined);
     }
@@ -329,14 +337,24 @@ describe("planning", () => {
     });
   });
 
-  it("asks the CLI for its own commands once, and plans with them", async () => {
-    vocabulary = ["run deploy", "run services describe"];
+  /**
+   * A large CLI's whole tree does not fit a prompt: the survey sees the
+   * top-level groups and names the ones it will use, and the plan sees every
+   * command under those - and under the groups its reads already used.
+   */
+  it("shows the survey the CLI's groups, and the plan every command under the ones it needs", async () => {
+    vocabulary = ["compute", "run", "run deploy", "run services describe", "compute instances create"];
+    replies = [JSON.stringify({ ...JSON.parse(SURVEY), groups: ["run"] }), PLAN];
     await planned();
 
     expect(calls.filter((call) => call.command === "cloud_cli_commands")).toEqual([
-      { command: "cloud_cli_commands", args: { cloudId: "gcp" } },
+      { command: "cloud_cli_commands", args: { cloudId: "gcp", groups: [] } },
+      { command: "cloud_cli_commands", args: { cloudId: "gcp", groups: ["run"] } },
     ]);
+    expect(turns[0].prompt).toContain("`compute`, `run`. A command that starts otherwise");
+    expect(turns[0].prompt).toContain("`groups`: the top-level command groups of `gcloud`");
     expect(turns[1].prompt).toContain("`run deploy`, `run services describe`");
+    expect(turns[1].prompt).not.toContain("compute instances create");
   });
 
   it("surveys with files-only read-only turns, runs the reads it asked for, checks the plan, and waits", async () => {
@@ -357,6 +375,7 @@ describe("planning", () => {
       "programs_present",
       "cloud_cli_commands",
       "cloud_deploy_read",
+      "cloud_cli_commands",
       "cloud_check_deploy",
       "path_size",
       "delete_path",

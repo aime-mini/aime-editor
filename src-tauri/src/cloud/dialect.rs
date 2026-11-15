@@ -141,6 +141,8 @@ pub(super) struct Dialect {
     pub(super) help: &'static str,
     /// How far this CLI can be held to before a command is run.
     pub(super) proof: Proof,
+    /// Where the CLI keeps the list of its own commands (`vocabulary.rs`).
+    pub(super) vocabulary: Vocabulary,
     /// Flags this CLI needs on every call that cannot be written down here,
     /// because they are decided when the app runs rather than when it is built.
     ///
@@ -206,6 +208,20 @@ const LOCAL_ONLY: &str = "acts on the local development stack on this machine, n
 /// It is the whole project, not something inside it.
 const WHOLE_PROJECT: &str =
     "creates or removes a whole project, which is more than day-to-day work on one resource inside one";
+
+/// Where a CLI keeps the list of its own commands, each read the cheapest way
+/// the CLI offers it (`vocabulary.rs` has the measurements).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Vocabulary {
+    /// The whole tree in one answer, written for a shell: `--completions bash`.
+    Completions,
+    /// The static completion tree the SDK ships as a file.
+    StaticTree,
+    /// A completer binary beside the CLI that answers one level per call.
+    Completer,
+    /// The command table the CLI's own Python interpreter loads.
+    CommandTable,
+}
 
 /// How much of a command a CLI lets Aime prove before running it.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -315,6 +331,7 @@ impl Dialect {
         second_program: Some(super::k8s::PROGRAM),
         help: "--help",
         proof: Proof::Words,
+        vocabulary: Vocabulary::StaticTree,
         runtime_flags: None,
     };
 
@@ -381,6 +398,7 @@ impl Dialect {
         second_program: None,
         help: "--help",
         proof: Proof::Words,
+        vocabulary: Vocabulary::CommandTable,
         runtime_flags: None,
     };
 
@@ -500,6 +518,7 @@ impl Dialect {
         // Measured, and the reason this field exists at all.
         help: "help",
         proof: Proof::WordsAndFlags,
+        vocabulary: Vocabulary::Completer,
         runtime_flags: None,
     };
 
@@ -648,6 +667,7 @@ impl Dialect {
         second_program: None,
         help: "--help",
         proof: Proof::Listed,
+        vocabulary: Vocabulary::Completions,
         runtime_flags: Some(super::supabase::step_flags),
     };
 

@@ -36,7 +36,7 @@ import {
   type Rejected,
   type Survey,
 } from "../lib/deploy";
-import { recipeOf } from "../lib/deployDialect";
+import { groupsOf, recipeOf } from "../lib/deployDialect";
 import type { PlannedRead } from "../lib/cloudReads";
 import { allOutput, execCancel, type CommandOutcome } from "../lib/exec";
 import { formatProviderError } from "../lib/providerErrors";
@@ -180,12 +180,15 @@ interface Engine {
    */
   sessions: SessionBook;
   /**
-   * The CLI's own list of its commands, read once per deploy for a CLI that
-   * publishes one (`cloud_cli_commands`); null for the others. Every prompt
-   * that writes commands carries it, so a step is written from what the CLI
-   * has rather than from what the model remembers of it.
+   * The CLI's own list of its commands (`cloud_cli_commands`): its top-level
+   * groups, and every command under the groups in `groups`; null for a CLI
+   * that publishes none. Every prompt that writes commands carries it, so a
+   * step is written from what the CLI has rather than from what the model
+   * remembers of it.
    */
   vocabulary: string[] | null;
+  /** The groups whose commands `vocabulary` holds: what the survey named, and what a step has used since. */
+  groups: string[];
 }
 
 const engines = new Map<string, Engine>();
@@ -198,6 +201,7 @@ function newEngine(): Engine {
     agreement: null,
     sessions: new SessionBook(),
     vocabulary: null,
+    groups: [],
   };
 }
 
@@ -257,7 +261,12 @@ export const useDeploy = create<DeployState>((set, get) => ({
     // A fresh engine for a fresh attempt, still carrying the AI's session and
     // the CLI's vocabulary on.
     const before = engineFor(slot);
-    engines.set(slot, { ...newEngine(), sessions: before.sessions, vocabulary: before.vocabulary });
+    engines.set(slot, {
+      ...newEngine(),
+      sessions: before.sessions,
+      vocabulary: before.vocabulary,
+      groups: before.groups,
+    });
     const ops = opsFor(slot, set, get);
     // Asked now, answered when the next plan comes back: the page shows the
     // question the moment it is sent, so nobody wonders whether it went
@@ -433,13 +442,13 @@ async function survey(ops: Ops): Promise<void> {
   }
   const inventory = read.resources;
   const tooling = await invoke<string[]>("programs_present", { names: TOOLING_TO_REPORT });
-  ops.engine.vocabulary = await vocabularyOf(cloudId);
+  ops.engine.vocabulary = await vocabularyOf(cloudId, []);
 
   ops.note(translate("deploy.readingRepo"));
   const survey = await askUntilReadable(
     ops,
     root,
-    surveyPrompt({ cloudId, inventory, tooling }),
+    surveyPrompt({ cloudId, inventory, tooling, vocabulary: ops.engine.vocabulary }),
     parseSurvey,
   );
   if (survey === null) return;
@@ -451,6 +460,7 @@ async function survey(ops: Ops): Promise<void> {
   );
 
   const answers = await readAll(ops, survey.inspect);
+  await widenVocabulary(ops, [...survey.groups, ...groupsOf(survey.inspect)]);
   await writePlan(ops, { survey, answers, tooling });
 }
 
@@ -459,13 +469,24 @@ async function survey(ops: Ops): Promise<void> {
  * cannot be read leaves the prompts as they were without it - the checker still
  * refuses a command the CLI does not have - so it is worth a warning, not a stop.
  */
-async function vocabularyOf(cloudId: string): Promise<string[] | null> {
+async function vocabularyOf(cloudId: string, groups: readonly string[]): Promise<string[] | null> {
   try {
-    return await invoke<string[] | null>("cloud_cli_commands", { cloudId });
+    return await invoke<string[] | null>("cloud_cli_commands", { cloudId, groups });
   } catch (error: unknown) {
     console.warn(`the ${cloudId} CLI's command list could not be read; planning without it:`, error);
     return null;
   }
+}
+
+/**
+ * Puts every command under these groups in front of the next prompt, asking
+ * the CLI again only when a group is new to this deploy.
+ */
+async function widenVocabulary(ops: Ops, groups: readonly string[]): Promise<void> {
+  const added = [...new Set(groups)].filter((group) => !ops.engine.groups.includes(group));
+  if (added.length === 0) return;
+  ops.engine.groups = [...ops.engine.groups, ...added];
+  ops.engine.vocabulary = await vocabularyOf(ops.slot().cloudId, ops.engine.groups);
 }
 
 /**
@@ -974,6 +995,7 @@ async function askFix(
   };
   let answers: ReadAnswer[] = [];
   let rejected: Rejected[] = [];
+  await widenVocabulary(ops, groupsOf(remaining));
   for (let round = 1; round <= MAX_REJECTIONS + 1; round += 1) {
     await clearStaging(root);
     const reply = await turn(
@@ -1045,6 +1067,7 @@ async function askSteer(
   ops.note(translate("deploy.steering"));
   const unchanged: Rewrite = { steps: remaining, files: [] };
   await clearStaging(root);
+  await widenVocabulary(ops, groupsOf(remaining));
   const reply = await turn(
     ops,
     root,

@@ -1495,7 +1495,7 @@ fn check_supabase_shape(words: &[&str]) -> Result<(), String> {
 /// the space back. A name is therefore what comes before the first capital
 /// letter, split on the comma - which reads both spellings and needs no
 /// version check.
-fn subcommands_in(help: &str) -> Vec<String> {
+pub(super) fn subcommands_in(help: &str) -> Vec<String> {
     help.lines()
         .skip_while(|line| line.trim() != "SUBCOMMANDS")
         .skip(1)
@@ -1547,73 +1547,6 @@ pub struct AwsOperation {
 /// memory: the operation names and flags come out of the CLI's own model, which
 /// ships beside its binary. `None` for a service the CLI does not know, or on a
 /// machine where the models are not where the AWS CLI installs them.
-/// The commands a CLI publishes about itself, for the AI to choose from.
-///
-/// The counterpart of `cloud_read_catalog`: AWS ships a model of every
-/// operation beside its binary, and a model asked with neither writes down
-/// what it remembers. Measured in the app, asked what can be done
-/// to a Supabase database: `supabase postgres logs`, `postgres restart` and
-/// `postgres connection-string` - three operations, three refusals, a pane
-/// with nothing on it, and no `postgres` group in that CLI at all. Told the
-/// 34 top-level groups, the next answer moved one level down and guessed
-/// there instead: `backups create` and `postgres-config set`, neither of
-/// which exists. So the whole tree goes, which the CLI writes in one answer
-/// for a shell to complete against (`completions.rs`).
-///
-/// What Aime already refuses is left out rather than offered and then thrown
-/// away - the same rules the prompt states in words, applied to the list it
-/// hands over.
-///
-/// Only for a CLI proven by its own listing (`Proof::Listed`). `gcloud`, `az`
-/// and `aws` answer `--help` per command and need no vocabulary in front of
-/// the question; their trees also run to thousands of commands.
-#[tauri::command]
-pub async fn cloud_cli_commands(app: AppHandle, cloud_id: String) -> Option<Vec<String>> {
-    let dialect = super::dialect::Dialect::of(&cloud_id).filter(|_| publishes_its_tree(&cloud_id))?;
-    let program = super::program_for(&app, &cloud_id);
-    let root = format!("_{}", dialect.program);
-    let commands = match read_cli_checked(&program, &["--completions", "bash"]).await {
-        Ok(script) => super::completions::commands_in(&script, &root),
-        Err(_) => Vec::new(),
-    };
-    // A CLI that stops offering completions still has its top level, which is
-    // what this answered before the tree did.
-    let commands = if commands.is_empty() {
-        subcommands_in(&read_cli_checked(&program, &["--help"]).await.ok()?)
-    } else {
-        commands
-    };
-    let offered: Vec<String> = commands
-        .into_iter()
-        .filter(|command| !refused_by(dialect, command))
-        .collect();
-    (!offered.is_empty()).then_some(offered)
-}
-
-/// Whether Aime's own rules would throw this command away on sight.
-fn refused_by(dialect: &super::dialect::Dialect, command: &str) -> bool {
-    let mut words = command.split(' ');
-    let Some(group) = words.next() else {
-        return true;
-    };
-    if dialect.refused_groups.contains(&group) {
-        return true;
-    }
-    let rest = words.next().unwrap_or_default();
-    dialect
-        .refused_commands
-        .iter()
-        .any(|refused| refused.group == group && refused.command == rest)
-}
-
-/// Whether a cloud's CLI describes its own command tree well enough to hand
-/// that tree to the AI - which is the same property that lets Aime prove a
-/// command by walking it (`Proof::Listed`).
-fn publishes_its_tree(cloud_id: &str) -> bool {
-    super::dialect::Dialect::of(cloud_id)
-        .is_some_and(|dialect| matches!(dialect.proof, super::dialect::Proof::Listed))
-}
-
 #[tauri::command]
 pub fn cloud_read_catalog(resource_id: String) -> Option<AwsCatalog> {
     let service = resource_id.split(':').nth(2).filter(|part| !part.is_empty())?;
@@ -1973,17 +1906,6 @@ mod tests {
             subcommands_in("DESCRIPTION\n  List all Functions\n\nUSAGE\n  supabase functions list\n")
                 .is_empty()
         );
-    }
-
-    /// Only the CLI that prints its own tree is asked for one: the other three
-    /// answer `--help` per command, and their top-level help is hundreds of
-    /// lines of prose that would crowd out the question.
-    #[test]
-    fn the_command_tree_is_offered_to_the_ai_for_the_cli_that_publishes_one() {
-        assert!(publishes_its_tree("supabase"));
-        for cloud in ["aws", "azure", "gcp", "nothing-of-the-sort"] {
-            assert!(!publishes_its_tree(cloud), "{cloud}");
-        }
     }
 
     /// Against the installed Supabase CLI, when this machine has one.

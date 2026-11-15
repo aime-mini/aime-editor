@@ -561,10 +561,34 @@ function entryOf(cloudId: string): CloudDialect | undefined {
  */
 export function vocabularyRule(commands: readonly string[] | null): string[] {
   if (commands === null || commands.length === 0) return [];
+  // The CLI answers its top-level groups first, so a list cut short still
+  // carries every word a command may start with.
+  const shown = commands.slice(0, VOCABULARY_LIMIT);
+  const more = commands.length - shown.length;
   return [
     "",
-    `Every command of this CLI starts with one of these, as it lists them about itself: ${commands
+    `Every command of this CLI starts with one of these, as it lists them about itself: ${shown
       .map((command) => `\`${command}\``)
-      .join(", ")}. A command that starts otherwise does not exist and is refused.`,
+      .join(", ")}${more > 0 ? ` (+${String(more)} more)` : ""}. A command that starts otherwise does ` +
+      "not exist and is refused.",
   ];
+}
+
+/**
+ * How many commands a prompt carries at most. The groups a deploy uses run to
+ * a few hundred (`gcloud run` 63, `artifacts` 82, `builds` 54 on Cloud SDK
+ * 583.0.0); the largest a deploy plausibly names, `compute`, is 895.
+ */
+export const VOCABULARY_LIMIT = 1_500;
+
+/**
+ * The command groups some commands use - the first word of each one the
+ * cloud's own CLI runs - for asking that CLI what is under them.
+ */
+export function groupsOf(commands: readonly { args: readonly string[]; program?: string }[]): string[] {
+  const groups = commands
+    .filter((command) => command.program === undefined || command.program === "")
+    .map((command) => command.args[0] ?? "")
+    .filter((group) => group !== "" && !group.startsWith("-"));
+  return [...new Set(groups)];
 }
