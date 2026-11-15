@@ -37,6 +37,7 @@ import {
   type Survey,
 } from "../lib/deploy";
 import { groupsOf, recipeOf } from "../lib/deployDialect";
+import { keepRecord, lastRecord, recordOf, type DeployRecord } from "../lib/deployRecord";
 import type { PlannedRead } from "../lib/cloudReads";
 import { allOutput, execCancel, type CommandOutcome } from "../lib/exec";
 import { formatProviderError } from "../lib/providerErrors";
@@ -189,6 +190,10 @@ interface Engine {
   vocabulary: string[] | null;
   /** The groups whose commands `vocabulary` holds: what the survey named, and what a step has used since. */
   groups: string[];
+  /** When this deploy began - the name of its record on disk (`deployRecord.ts`). */
+  startedAt: number;
+  /** The last deploy of this project to this account, read when this one began. */
+  last: DeployRecord | null;
 }
 
 const engines = new Map<string, Engine>();
@@ -202,6 +207,8 @@ function newEngine(): Engine {
     sessions: new SessionBook(),
     vocabulary: null,
     groups: [],
+    startedAt: Date.now(),
+    last: null,
   };
 }
 
@@ -266,6 +273,8 @@ export const useDeploy = create<DeployState>((set, get) => ({
       sessions: before.sessions,
       vocabulary: before.vocabulary,
       groups: before.groups,
+      startedAt: before.startedAt,
+      last: before.last,
     });
     const ops = opsFor(slot, set, get);
     // Asked now, answered when the next plan comes back: the page shows the
@@ -391,6 +400,7 @@ function opsFor(slot: string, set: Set, get: Get): Ops {
     },
     stage: (stage) => {
       patch(() => ({ stage }));
+      if (stage.kind === "done" || stage.kind === "blocked") rememberDeploy(slot, get);
     },
     note: line("note"),
     spend: (usd) => {
@@ -443,12 +453,13 @@ async function survey(ops: Ops): Promise<void> {
   const inventory = read.resources;
   const tooling = await invoke<string[]>("programs_present", { names: TOOLING_TO_REPORT });
   ops.engine.vocabulary = await vocabularyOf(cloudId, []);
+  ops.engine.last = await lastRecord(root, cloudId, account.id);
 
   ops.note(translate("deploy.readingRepo"));
   const survey = await askUntilReadable(
     ops,
     root,
-    surveyPrompt({ cloudId, inventory, tooling, vocabulary: ops.engine.vocabulary }),
+    surveyPrompt({ cloudId, inventory, tooling, vocabulary: ops.engine.vocabulary, last: ops.engine.last }),
     parseSurvey,
   );
   if (survey === null) return;
@@ -476,6 +487,15 @@ async function vocabularyOf(cloudId: string, groups: readonly string[]): Promise
     console.warn(`the ${cloudId} CLI's command list could not be read; planning without it:`, error);
     return null;
   }
+}
+
+/** Writes the record of a deploy that has come to rest (`deployRecord.ts`). */
+function rememberDeploy(slot: string, get: Get): void {
+  const current = get().slots[slot];
+  const root = useWorkspace.getState().rootPath;
+  if (current === undefined || root === null) return;
+  const record = recordOf(current, engineFor(slot).startedAt, Date.now());
+  if (record !== null) void keepRecord(root, record);
 }
 
 /**

@@ -19,6 +19,8 @@ interface StepRequest {
  * run with which tools, what is checked, what runs, and when it stops.
  */
 
+/** What `write_file` wrote, by path - the deploy records, read back by `list_dir` and `read_file`. */
+const disk = new Map<string, string>();
 /** Every Tauri command called, in order, with its arguments. */
 const calls: { command: string; args: Record<string, unknown> }[] = [];
 /** What each AI turn asked for, in order - every turn except the ones that write the plan's files. */
@@ -155,9 +157,22 @@ vi.mock("@tauri-apps/api/core", () => ({
         return listing === null
           ? Promise.reject(new Error("ERROR: (gcloud.asset.search-all-resources) Reauthentication required."))
           : Promise.resolve({ resources: listing, truncated: false });
+      case "write_file":
+        disk.set(String(args.path), String(args.content));
+        return Promise.resolve();
+      case "list_dir": {
+        const folder = `${String(args.path)}/`;
+        return Promise.resolve(
+          [...disk.keys()]
+            .filter((path) => path.startsWith(folder))
+            .map((path) => ({ name: path.slice(folder.length), is_dir: false })),
+        );
+      }
       case "read_file":
       case "path_size": {
         const path = String(args.path);
+        const written = disk.get(path);
+        if (written !== undefined && command === "read_file") return Promise.resolve(written);
         if (unwritten.some((file) => path.endsWith(`/${file}`)))
           return Promise.reject(new Error("not found"));
         return Promise.resolve(command === "path_size" ? 12 : `staged ${path}`);
@@ -293,6 +308,13 @@ async function planned(): Promise<void> {
   expect(stage().kind).toBe("confirm");
 }
 
+/** The calls made, less the deploy record written once the deploy comes to rest. */
+function beyondRecords(): typeof calls {
+  return calls.filter(
+    (call) => !(call.command === "write_file" && String(call.args.path).includes("/.aime/deploy/history/")),
+  );
+}
+
 /** Stands in for the person at the page that asks about rewritten steps. */
 useDeploy.subscribe((state) => {
   if (agreesToRewrites && state.slots[SLOT]?.stage.kind === "reconfirm") state.agree(SLOT);
@@ -305,6 +327,7 @@ beforeEach(() => {
   stopDuringStep = null;
   listing = [];
   calls.length = 0;
+  disk.clear();
   turns.length = 0;
   fileTurns.length = 0;
   unwritten = [];
@@ -374,6 +397,7 @@ describe("planning", () => {
     expect(commands).toEqual([
       "programs_present",
       "cloud_cli_commands",
+      "list_dir",
       "cloud_deploy_read",
       "cloud_cli_commands",
       "cloud_check_deploy",
@@ -563,6 +587,28 @@ describe("deploying", () => {
     expect(log("output")).toContain("GET https://web-abc.a.run.app/healthz → 200 in 42 ms");
   });
 
+  /**
+   * A deploy that comes to rest is written down, and the next deploy to the same
+   * account is told how the last one went instead of starting from nothing.
+   */
+  it("keeps each deploy on disk and tells the next one what the last one did", async () => {
+    await planned();
+    replies = [];
+    await useDeploy.getState().confirm(SLOT);
+    expect(stage()).toMatchObject({ kind: "done" });
+
+    const [[file, content]] = [...disk].filter(([path]) => path.includes("/.aime/deploy/history/"));
+    expect(file).toMatch(/^C:\\proj\\shop\/\.aime\/deploy\/history\/\d+-gcp-my-project\.json$/);
+    expect(JSON.parse(content)).toMatchObject({ outcome: "done", url: "https://web-abc.a.run.app" });
+
+    turns.length = 0;
+    replies = [SURVEY, PLAN];
+    await planned();
+    expect(turns[0].prompt).toContain("The last deploy of this repository to this account");
+    expect(turns[0].prompt).toContain("- passed: Deploy from source - gcloud");
+    expect(turns[0].prompt).toContain("It finished, proved at https://web-abc.a.run.app.");
+  });
+
   it("hands a failed step to the AI with its output and runs the rewritten remainder", async () => {
     await planned();
     exits = { "Deploy from source": [1] };
@@ -693,7 +739,7 @@ describe("deploying", () => {
     await deploying;
 
     expect(calls.filter((call) => call.command === "move_into_place")).toHaveLength(placedBefore);
-    expect(calls.at(-1)).toEqual({
+    expect(beyondRecords().at(-1)).toEqual({
       command: "delete_path",
       args: { path: "C:\\proj\\shop/.aime/deploy/staged" },
     });
@@ -844,7 +890,7 @@ describe("deploying", () => {
     expect(calls.filter((call) => call.command === "cloud_deploy_step")).toHaveLength(0);
     // The files waiting for a yes are thrown away, and none was put in place.
     expect(calls.filter((call) => call.command === "move_into_place")).toHaveLength(0);
-    expect(calls.at(-1)).toEqual({
+    expect(beyondRecords().at(-1)).toEqual({
       command: "delete_path",
       args: { path: "C:\\proj\\shop/.aime/deploy/staged" },
     });

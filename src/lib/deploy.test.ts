@@ -70,7 +70,13 @@ const survey: Survey = {
 
 describe("the survey prompt", () => {
   it("carries the inventory as the panel shows it, the tooling, and the CLI's grammar", () => {
-    const prompt = surveyPrompt({ vocabulary: null, cloudId: "gcp", inventory: [service], tooling: [] });
+    const prompt = surveyPrompt({
+      vocabulary: null,
+      last: null,
+      cloudId: "gcp",
+      inventory: [service],
+      tooling: [],
+    });
     expect(prompt).toContain("run/Service  web  asia-southeast1  app=shop");
     expect(prompt).toContain(service.id);
     expect(prompt).toContain("docker is NOT installed");
@@ -80,9 +86,9 @@ describe("the survey prompt", () => {
   });
 
   it("says so when the project holds nothing", () => {
-    expect(surveyPrompt({ vocabulary: null, cloudId: "gcp", inventory: [], tooling: ["docker"] })).toContain(
-      "the project holds no resources yet",
-    );
+    expect(
+      surveyPrompt({ vocabulary: null, last: null, cloudId: "gcp", inventory: [], tooling: ["docker"] }),
+    ).toContain("the project holds no resources yet");
   });
 
   /**
@@ -93,7 +99,7 @@ describe("the survey prompt", () => {
    */
   it("names the two programs a step may run, and nothing else, in both prompts", () => {
     for (const prompt of [
-      surveyPrompt({ vocabulary: null, cloudId: "gcp", inventory: [], tooling: [] }),
+      surveyPrompt({ vocabulary: null, last: null, cloudId: "gcp", inventory: [], tooling: [] }),
       planPrompt({
         vocabulary: null,
         cloudId: "gcp",
@@ -144,15 +150,21 @@ describe("the Azure prompts", () => {
   });
 
   it("does not offer kubectl, which Aime will not run for this cloud", () => {
-    const prompt = surveyPrompt({ vocabulary: null, cloudId: "azure", inventory: [], tooling: [] });
+    const prompt = surveyPrompt({
+      vocabulary: null,
+      last: null,
+      cloudId: "azure",
+      inventory: [],
+      tooling: [],
+    });
     expect(prompt).toContain("Never `kubectl`");
     expect(prompt).toContain("the subscription holds no resources yet");
   });
 
   it("is refused for a cloud with no measured dialect", () => {
-    expect(() => surveyPrompt({ vocabulary: null, cloudId: "fly", inventory: [], tooling: [] })).toThrow(
-      "fly",
-    );
+    expect(() =>
+      surveyPrompt({ vocabulary: null, last: null, cloudId: "fly", inventory: [], tooling: [] }),
+    ).toThrow("fly");
   });
 });
 

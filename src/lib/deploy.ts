@@ -2,6 +2,7 @@ import type { CloudAccount, CloudResource } from "../stores/cloud";
 import { shortKind } from "./cloudIcons";
 import type { PlannedRead } from "./cloudReads";
 import { dialectOf, recipeOf, vocabularyRule } from "./deployDialect";
+import { lastDeployLines, type DeployRecord } from "./deployRecord";
 import { asArray, asRecord, asString, objectIn } from "./replyJson";
 import { withoutSignatures } from "./signedUrls";
 
@@ -282,10 +283,13 @@ export function surveyPrompt(input: {
   tooling: string[];
   /** The CLI's top-level command groups, or null for a CLI that publishes none (`vocabularyRule`). */
   vocabulary: readonly string[] | null;
+  /** The last deploy of this repository to this account, or null for the first one. */
+  last: DeployRecord | null;
 }): string {
   const dialect = dialectOf(input.cloudId);
   const recipe = recipeOf(input.cloudId);
   const rows = input.inventory.slice(0, INVENTORY_LIMIT).map(inventoryLine);
+  const last = lastDeployLines(input.last, dialect.program);
   return [
     `You are preparing to deploy THIS repository to ${dialect.cloud}, to the ${recipe.target} Aime ` +
       "targets. You can read the repository (files only - you have no shell and no cloud CLI; Aime runs " +
@@ -299,6 +303,7 @@ export function surveyPrompt(input: {
       : "",
     "",
     `Tools on this machine: ${input.tooling.length === 0 ? "docker is NOT installed" : input.tooling.join(", ")}.`,
+    ...(last.length === 0 ? [] : ["", ...last]),
     "",
     "Answer:",
     "1. `app`: what this repository is - `name`, `kind` (web | api | worker | static | functions | database), " +
