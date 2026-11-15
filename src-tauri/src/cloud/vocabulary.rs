@@ -20,9 +20,12 @@
 //! - az ships no such file, and its help answers one level per call at about
 //!   2 s each. Its own Python loads the whole command table in one call -
 //!   6,269 commands in 11.5 s on 2.90.0 - so that answer is kept on disk per
-//!   az version. Where the interpreter cannot be found, the top level still
-//!   comes from `commandIndex.json`, which az writes into its config folder on
-//!   every platform.
+//!   az version. The interpreter is read off az's launcher (`az_runtime`):
+//!   named on the line itself by the Windows MSI and the Debian package, chosen
+//!   by the launcher of the macOS tarball the Homebrew cask installs. Where
+//!   the interpreter cannot be found, the top level still comes from
+//!   `commandIndex.json`, which az writes into its config folder on every
+//!   platform.
 //!
 //! How much of it. 17,155 commands do not belong in a prompt, so the caller
 //! names the groups it needs: the answer is every top-level group plus every
@@ -229,11 +232,22 @@ async fn command_table_tree(app: &AppHandle, program: &str, groups: &[String]) -
 
 /// Every command az has, as its own Python loads them.
 async fn load_command_table(program: &str) -> Option<Vec<String>> {
-    let Some(python) = az_interpreter(program) else {
+    let Some(runtime) = installed_at(program).and_then(|launcher| az_runtime(&launcher)) else {
         eprintln!("[cloud] az's Python could not be found beside `{program}`; only its top level is offered");
         return None;
     };
-    let mut cmd = cli_command(&python.to_string_lossy(), ["-IB", "-c", AZ_COMMAND_TABLE]);
+    let python = runtime.python.to_string_lossy();
+    let mut cmd = match &runtime.packages {
+        // Isolated, as the launcher runs it: the packages sit beside the interpreter.
+        None => cli_command(&python, ["-IB", "-c", AZ_COMMAND_TABLE]),
+        // The packages are handed in through PYTHONPATH, as the launcher does,
+        // which isolated mode would ignore.
+        Some(packages) => {
+            let mut cmd = cli_command(&python, ["-sB", "-c", AZ_COMMAND_TABLE]);
+            cmd.env("PYTHONPATH", packages);
+            cmd
+        }
+    };
     super::quiet(&mut cmd);
     match super::output_checked_within("az command table", cmd, COMMAND_TABLE_LIMIT).await {
         Ok(answer) => answer
@@ -250,13 +264,85 @@ async fn load_command_table(program: &str) -> Option<Vec<String>> {
     }
 }
 
-/// The interpreter az's launcher starts `azure.cli` with.
-fn az_interpreter(program: &str) -> Option<PathBuf> {
-    let launcher = installed_at(program)?;
-    let text = std::fs::read_to_string(&launcher).ok()?;
-    let line = text.lines().find(|line| line.contains("m azure.cli"))?;
-    let python = interpreter_in(line, launcher.parent()?)?;
-    python.is_file().then_some(python)
+/// What runs az: its interpreter, and the folder holding az's packages when
+/// they do not sit beside that interpreter.
+#[derive(Debug, PartialEq, Eq)]
+struct AzRuntime {
+    python: PathBuf,
+    packages: Option<PathBuf>,
+}
+
+/// How az is run, read off its launcher (links already followed).
+///
+/// Two shapes ship. The Windows MSI and the Debian package name their own
+/// interpreter on the launcher line (`interpreter_in`). The macOS tarball - the
+/// one the Homebrew cask installs - ships only the packages, under
+/// `libexec/lib/python<version>/site-packages`, and its launcher
+/// (`libexec/bin/az`, 2.92.0) picks the interpreter: `AZ_PYTHON` when set,
+/// else, inside a Homebrew Caskroom, the first of Homebrew's own Python of that
+/// version that exists. This follows the same order.
+fn az_runtime(launcher: &Path) -> Option<AzRuntime> {
+    let text = std::fs::read_to_string(launcher).ok()?;
+    let named = text
+        .lines()
+        .find(|line| line.contains("m azure.cli"))
+        .and_then(|line| interpreter_in(line, launcher.parent()?))
+        .filter(|python| python.is_file());
+    if let Some(python) = named {
+        return Some(AzRuntime {
+            python,
+            packages: None,
+        });
+    }
+    let root = launcher.parent()?.parent()?.parent()?;
+    let (version, packages) = packages_under(&root.join("libexec").join("lib"))?;
+    let python = std::env::var_os("AZ_PYTHON")
+        .map(PathBuf::from)
+        .or_else(|| homebrew_python(root, &version))
+        .filter(|python| python.is_file())?;
+    Some(AzRuntime {
+        python,
+        packages: Some(packages),
+    })
+}
+
+/// The `python<version>/site-packages` folder that holds `azure.cli`, and its version.
+fn packages_under(lib: &Path) -> Option<(String, PathBuf)> {
+    std::fs::read_dir(lib).ok()?.flatten().find_map(|entry| {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let version = name.strip_prefix("python")?.to_string();
+        let packages = entry.path().join("site-packages");
+        packages
+            .join("azure")
+            .join("cli")
+            .is_dir()
+            .then_some((version, packages))
+    })
+}
+
+/// Homebrew's own Python of this version, for an az the cask installed: the
+/// install sits at `<prefix>/Caskroom/azure-cli/<version>`, and the candidates
+/// are the launcher's, in its order.
+fn homebrew_python(root: &Path, version: &str) -> Option<PathBuf> {
+    let cask = root.parent()?;
+    let cask_name = cask.file_name()?.to_string_lossy();
+    if !(cask_name == "azure-cli" || cask_name.starts_with("azure-cli-")) {
+        return None;
+    }
+    let caskroom = cask.parent()?;
+    if caskroom.file_name()? != "Caskroom" {
+        return None;
+    }
+    let prefix = caskroom.parent()?;
+    let formula = prefix.join("opt").join(format!("python@{version}"));
+    [
+        formula.join("libexec").join("bin").join("python"),
+        formula.join("libexec").join("bin").join("python3"),
+        formula.join("bin").join(format!("python{version}")),
+        prefix.join("bin").join(format!("python{version}")),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
 }
 
 /// The interpreter on a launcher line: the word before the `-…m azure.cli`
@@ -476,6 +562,55 @@ mod tests {
             assert_eq!(debian, Some(PathBuf::from("/usr/bin/../../opt/az/bin/python3")));
         }
         assert_eq!(interpreter_in("exec az-real \"$@\"", Path::new("/usr/bin")), None);
+    }
+
+    /// The last line of `libexec/bin/az` in azure-cli-2.92.0-macos-arm64.tar.gz.
+    const MACOS_LAUNCHER_LAST_LINE: &str = r#"exec "$PYTHON" -sm azure.cli "$@""#;
+
+    /// A Homebrew prefix laid out the way the `azure-cli` cask and the
+    /// `python@3.14` formula it depends on install.
+    #[test]
+    fn the_casks_az_runs_on_homebrews_python_with_its_own_packages() {
+        let prefix = std::env::temp_dir().join(format!("aime-az-cask-{}", std::process::id()));
+        let root = prefix.join("Caskroom").join("azure-cli").join("2.92.0");
+        let launcher = root.join("libexec").join("bin").join("az");
+        let packages = root
+            .join("libexec")
+            .join("lib")
+            .join("python3.14")
+            .join("site-packages");
+        let python = prefix
+            .join("opt")
+            .join("python@3.14")
+            .join("libexec")
+            .join("bin")
+            .join("python");
+        for folder in [
+            launcher.parent(),
+            Some(packages.join("azure").join("cli").as_path()),
+            python.parent(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            std::fs::create_dir_all(folder).expect("a folder");
+        }
+        std::fs::write(
+            &launcher,
+            format!("#!/usr/bin/env bash\n{MACOS_LAUNCHER_LAST_LINE}\n"),
+        )
+        .expect("written");
+        std::fs::write(&python, "").expect("written");
+
+        let runtime = az_runtime(&launcher);
+        std::fs::remove_dir_all(&prefix).expect("cleaned up");
+        assert_eq!(
+            runtime,
+            Some(AzRuntime {
+                python,
+                packages: Some(packages)
+            })
+        );
     }
 
     #[test]
