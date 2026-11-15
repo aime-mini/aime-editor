@@ -145,6 +145,23 @@ export async function haveTurn(
   }
 }
 
+/** How often a wait looks again at whether its job was stopped. */
+const STOP_POLL_MS = 1_000;
+
+/**
+ * Waits `ms`, unless `going` turns false first; true when the whole wait was
+ * had. The `waitOrStop` a job hands `haveTurn`, so Stop ends a retry wait
+ * within a second instead of after it.
+ */
+export async function waitWhile(going: () => boolean, ms: number): Promise<boolean> {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (!going()) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(STOP_POLL_MS, until - Date.now())));
+  }
+  return going();
+}
+
 interface StreamPayload {
   run_id: string;
   event: unknown;

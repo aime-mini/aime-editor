@@ -29,8 +29,8 @@ import {
   type TestCase,
   type TestCases,
 } from "../lib/aiRun";
-import { agentTurn, cancelAgentTurn, haveTurn } from "../lib/agentTurn";
-import { carriedFrom, costOfTurn, warmSession, type CarriedSession } from "../lib/agentSession";
+import { agentTurn, cancelAgentTurn, haveTurn, waitWhile } from "../lib/agentTurn";
+import { SessionBook } from "../lib/agentSession";
 import { baselineKey, keepBaseline, keptBaseline } from "../lib/baselineCache";
 import { footprintRules, formatBytes, sweepRun, type SweepReport } from "../lib/runSweep";
 import {
@@ -397,10 +397,12 @@ interface Engine {
   driving: boolean;
   /** When the run was last set driving - started, or carried on - for the brake (`RUN_BRAKE_MS`). */
   drivingSince: number;
-  /** The builder's session, while carrying it on is worth it (`runAgent`). */
-  builder: CarriedSession | null;
-  /** The running cost each session has reported so far, so a resumed turn is charged only its own share. */
-  sessionCosts: Map<string, number>;
+  /**
+   * The builder's session, carried on while that is worth it (`runAgent`), and
+   * what every session of the run has reported, so each turn is charged only
+   * its own share.
+   */
+  sessions: SessionBook;
   /** What the phase in flight has cost so far. */
   phaseCostUsd: number;
 }
@@ -415,8 +417,7 @@ function engineFor(id: string): Engine {
     agentRun: null,
     driving: false,
     drivingSince: Date.now(),
-    builder: null,
-    sessionCosts: new Map(),
+    sessions: new SessionBook(),
     phaseCostUsd: 0,
   };
   engines.set(id, fresh);
@@ -4019,11 +4020,11 @@ async function runCli(
         throw new TurnPaused(translate("run.brake", { hours: RUN_BRAKE_MS / 3_600_000 }));
       }
       const outcome = await oneTurn(context, prompt, set, phase, permission, sessionId);
-      engine.phaseCostUsd += costOfTurn(engine.sessionCosts, outcome);
+      engine.phaseCostUsd += engine.sessions.charge(outcome);
       return outcome;
     },
     {
-      waitOrStop: (ms) => waitWhileDriving(context.id, ms),
+      waitOrStop: (ms) => waitWhile(() => engines.get(context.id)?.driving === true, ms),
       retrying: (reason, seconds) => {
         note(set, phase, translate("run.unreachableRetry", { reason, seconds }), "problem");
       },
@@ -4045,19 +4046,6 @@ async function runCli(
  * reaches it pauses with everything kept, and Carry on gives it another spell.
  */
 const RUN_BRAKE_MS = 4 * 60 * 60 * 1000;
-
-/** How often a wait looks again at whether the run was stopped. */
-const STOP_POLL_MS = 1_000;
-
-/** Waits, unless the run is stopped first; true when the whole wait was had. */
-async function waitWhileDriving(runId: string, ms: number): Promise<boolean> {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    if (engines.get(runId)?.driving !== true) return false;
-    await new Promise((resolve) => setTimeout(resolve, Math.min(STOP_POLL_MS, until - Date.now())));
-  }
-  return engines.get(runId)?.driving === true;
-}
 
 /**
  * A turn that could not be had for a reason no repair can fix - a sign-in
@@ -4112,7 +4100,8 @@ interface BuilderTurn {
  * (`SESSION_WARM_MS`).
  */
 function builderIsWarm(runId: string): boolean {
-  return warmSession(engines.get(runId)?.builder ?? null) !== null;
+  const engine = engines.get(runId);
+  return engine !== undefined && engine.sessions.warm() !== null;
 }
 
 /**
@@ -4139,7 +4128,7 @@ async function runAgent(
   phase: PhaseId = "implement",
 ): Promise<BuilderTurn> {
   const engine = engineFor(context.id);
-  const session = warmSession(engine.builder);
+  const session = engine.sessions.warm();
   note(set, phase, translate(session === null ? "run.builderFresh" : "run.builderCarriesOn"));
   const asking = [
     session === null ? dossierOf(context, get) : "",
@@ -4152,7 +4141,7 @@ async function runAgent(
   const agreed = await casesOnDisk(context.workRoot);
   const savedBefore = get().yourEdits;
   const outcome = await runCli(context, asking, set, phase, "full", session);
-  engine.builder = carriedFrom(outcome);
+  engine.sessions.carryOn(outcome);
   await keepAgreement(context, agreed, savedBefore, get, set, phase);
   return { code: outcome.code, text: outcome.text, disputed: disputeIn(outcome.text) };
 }

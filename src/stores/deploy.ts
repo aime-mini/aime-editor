@@ -2,8 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { translate } from "../i18n";
-import { agentTurn, cancelAgentTurn, haveTurn, type TurnPermission } from "../lib/agentTurn";
-import { carriedFrom, costOfTurn, warmSession, type CarriedSession } from "../lib/agentSession";
+import { agentTurn, cancelAgentTurn, haveTurn, waitWhile, type TurnPermission } from "../lib/agentTurn";
+import { SessionBook } from "../lib/agentSession";
 import { billingOff } from "../lib/cloudErrors";
 import {
   commandLine,
@@ -178,9 +178,7 @@ interface Engine {
    * plan, the files and a fix then build on what the survey already read
    * instead of reading the repository again.
    */
-  session: CarriedSession | null;
-  /** Each session's last reported total, so a carried-on turn is charged its own share. */
-  sessionCosts: Map<string, number>;
+  sessions: SessionBook;
 }
 
 const engines = new Map<string, Engine>();
@@ -191,8 +189,7 @@ function newEngine(): Engine {
     cancelled: false,
     steer: null,
     agreement: null,
-    session: null,
-    sessionCosts: new Map(),
+    sessions: new SessionBook(),
   };
 }
 
@@ -251,7 +248,7 @@ export const useDeploy = create<DeployState>((set, get) => ({
     const { survey, answers, tooling } = current.stage;
     // A fresh engine for a fresh attempt, still carrying the AI's session on.
     const before = engineFor(slot);
-    engines.set(slot, { ...newEngine(), session: before.session, sessionCosts: before.sessionCosts });
+    engines.set(slot, { ...newEngine(), sessions: before.sessions });
     const ops = opsFor(slot, set, get);
     // Asked now, answered when the next plan comes back: the page shows the
     // question the moment it is sent, so nobody wonders whether it went
@@ -1192,7 +1189,7 @@ async function turn(
         cwd: root,
         permission,
         tools: "filesOnly",
-        sessionId: warmSession(ops.engine.session),
+        sessionId: ops.engine.sessions.warm(),
         onToolCall: ops.output,
         onStderr: ops.output,
         onStarted: (runId) => {
@@ -1200,13 +1197,12 @@ async function turn(
         },
       });
       ops.engine.inFlight = null;
-      ops.spend(costOfTurn(ops.engine.sessionCosts, outcome));
-      // A failed turn's session is not one to build on.
-      ops.engine.session = outcome.code === 0 ? carriedFrom(outcome) : null;
+      ops.spend(ops.engine.sessions.charge(outcome));
+      ops.engine.sessions.carryOn(outcome);
       return outcome;
     },
     {
-      waitOrStop: (ms) => waitUnlessStopped(ops, ms),
+      waitOrStop: (ms) => waitWhile(() => !ops.cancelled(), ms),
       retrying: (reason, seconds) => {
         ops.problem(translate("deploy.unreachableRetry", { reason, seconds }));
       },
@@ -1222,19 +1218,6 @@ async function turn(
     return null;
   }
   return result.outcome.text;
-}
-
-/** How often a wait looks again at whether the deploy was stopped. */
-const STOP_POLL_MS = 1_000;
-
-/** Waits, unless the deploy is stopped first; true when the whole wait was had. */
-async function waitUnlessStopped(ops: Ops, ms: number): Promise<boolean> {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    if (ops.cancelled()) return false;
-    await new Promise((resolve) => setTimeout(resolve, Math.min(STOP_POLL_MS, until - Date.now())));
-  }
-  return !ops.cancelled();
 }
 
 /**
