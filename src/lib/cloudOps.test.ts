@@ -153,7 +153,7 @@ describe("opsPrompt", () => {
     const groups = ["branches", "db", "functions", "postgres-config", "secrets"];
     const told = opsPrompt("supabase", "supabase/database", groups);
     expect(told).toContain("`postgres-config`");
-    expect(told).toContain("A first word outside that list does not exist");
+    expect(told).toContain("A command that starts otherwise does not exist");
     expect(told).not.toContain("`postgres`,");
 
     const untold = opsPrompt("gcp", "run.googleapis.com/Service");

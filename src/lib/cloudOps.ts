@@ -19,7 +19,7 @@
  */
 
 /** One operation the AI proposes for a kind of resource. */
-import { dialectOf } from "./deployDialect";
+import { dialectOf, vocabularyRule } from "./deployDialect";
 
 export interface ProposedOp {
   /** What it does, in a developer's words - the button's label. */
@@ -80,14 +80,7 @@ export function opsPrompt(cloudId: string, kind: string, groups: string[] | null
     // group in that CLI at all. Where the CLI publishes its own tree, the
     // question carries it, the same way an AWS read carries the service's
     // catalogue; Aime still says nothing about which command to pick.
-    ...(groups === null
-      ? []
-      : [
-          "",
-          `Every command of this CLI begins with one of the words it lists about itself: ${groups
-            .map((group) => `\`${group}\``)
-            .join(", ")}. A first word outside that list does not exist and is thrown away.`,
-        ]),
+    ...vocabularyRule(groups),
     "",
     "Rules Aime enforces, so a command that breaks one is thrown away:",
     `- Write the arguments after \`${dialect.program}\`, one token per array entry ("--flag" and its`,

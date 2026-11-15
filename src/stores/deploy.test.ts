@@ -25,6 +25,8 @@ const calls: { command: string; args: Record<string, unknown> }[] = [];
 const turns: AgentTurnOptions[] = [];
 /** The turns that wrote the plan's files into the staging folder, answered by the mock itself. */
 const fileTurns: AgentTurnOptions[] = [];
+/** What `cloud_cli_commands` answers: the CLI's own list of its commands, or null for one that publishes none. */
+let vocabulary: string[] | null = null;
 /** What `cloud_resources` answers when the deploy has to read the list itself; null fails it. */
 let listing: CloudResource[] | null = [];
 /** Planned files the AI is scripted to leave unwritten. */
@@ -219,6 +221,8 @@ vi.mock("@tauri-apps/api/core", () => ({
           bodyHead: status === 200 ? "ok" : "Service Unavailable",
         });
       }
+      case "cloud_cli_commands":
+        return Promise.resolve(vocabulary);
       default:
         return Promise.resolve(undefined);
     }
@@ -289,6 +293,7 @@ useDeploy.subscribe((state) => {
 beforeEach(() => {
   agreesToRewrites = true;
   keepsSession = false;
+  vocabulary = null;
   stopDuringStep = null;
   listing = [];
   calls.length = 0;
@@ -324,6 +329,16 @@ describe("planning", () => {
     });
   });
 
+  it("asks the CLI for its own commands once, and plans with them", async () => {
+    vocabulary = ["run deploy", "run services describe"];
+    await planned();
+
+    expect(calls.filter((call) => call.command === "cloud_cli_commands")).toEqual([
+      { command: "cloud_cli_commands", args: { cloudId: "gcp" } },
+    ]);
+    expect(turns[1].prompt).toContain("`run deploy`, `run services describe`");
+  });
+
   it("surveys with files-only read-only turns, runs the reads it asked for, checks the plan, and waits", async () => {
     await planned();
 
@@ -340,13 +355,14 @@ describe("planning", () => {
     // Then the staging folder is emptied, and the one file written read back for the page.
     expect(commands).toEqual([
       "programs_present",
+      "cloud_cli_commands",
       "cloud_deploy_read",
       "cloud_check_deploy",
       "path_size",
       "delete_path",
       "read_file",
     ]);
-    const check = calls[2].args;
+    const check = calls.find((call) => call.command === "cloud_check_deploy")?.args ?? {};
     expect(check.cloudId).toBe("gcp");
     expect(check.existing).toBe(true);
     expect(useDeploy.getState().open).toBe(SLOT);

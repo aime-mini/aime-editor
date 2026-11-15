@@ -1,7 +1,7 @@
 import type { CloudAccount, CloudResource } from "../stores/cloud";
 import { shortKind } from "./cloudIcons";
 import type { PlannedRead } from "./cloudReads";
-import { dialectOf, recipeOf } from "./deployDialect";
+import { dialectOf, recipeOf, vocabularyRule } from "./deployDialect";
 import { asArray, asRecord, asString, objectIn } from "./replyJson";
 import { withoutSignatures } from "./signedUrls";
 
@@ -345,6 +345,8 @@ export function planPrompt(input: {
    * spend a turn writing a command that is refused.
    */
   notes: DeployNote[];
+  /** The CLI's own list of its commands, or null for a CLI that publishes none (`vocabularyRule`). */
+  vocabulary: readonly string[] | null;
 }): string {
   const { survey } = input;
   const dialect = dialectOf(input.cloudId);
@@ -416,6 +418,7 @@ export function planPrompt(input: {
         "it over HTTP. Write `read` (`label`, `args`) as a read that shows the deployed thing is there, " +
         '`urlPath` as `""`, `path` as what follows that address (`/hello` for a function called hello), and ' +
         "`expect` as the HTTP status that means running. `prove` is never null.",
+    ...vocabularyRule(input.vocabulary),
     "",
     "RULES:",
     recipe.rules,
@@ -496,6 +499,8 @@ export function fixPrompt(input: {
   rejected: Rejected[];
   /** What the person said while the run was going on, empty when they said nothing. */
   asked: string;
+  /** The CLI's own list of its commands, or null for a CLI that publishes none (`vocabularyRule`). */
+  vocabulary: readonly string[] | null;
 }): string {
   const dialect = dialectOf(input.cloudId);
   const recipe = recipeOf(input.cloudId);
@@ -538,6 +543,7 @@ export function fixPrompt(input: {
       ? "- `reply`: empty string - nobody asked you anything."
       : "- `reply`: your answer to what the person just said, in one or two sentences and in their own " +
         "terms - what you did about it, or why you could not and what you did instead.",
+    ...vocabularyRule(input.vocabulary),
     "",
     "RULES:",
     recipe.rules,
@@ -581,6 +587,8 @@ export function steerPrompt(input: {
   asked: string;
   ran: string[];
   remaining: DeployStep[];
+  /** The CLI's own list of its commands, or null for a CLI that publishes none (`vocabularyRule`). */
+  vocabulary: readonly string[] | null;
 }): string {
   const dialect = dialectOf(input.cloudId);
   const recipe = recipeOf(input.cloudId);
@@ -611,6 +619,7 @@ export function steerPrompt(input: {
       "answer whenever what they asked for is already true or cannot be done from here.",
     `- \`files\`: the files you changed, each with \`path\` (its place in the repository, not under ${STAGED_DIR}/) ` +
       "and `why`; empty when you changed none.",
+    ...vocabularyRule(input.vocabulary),
     "",
     "RULES:",
     recipe.rules,

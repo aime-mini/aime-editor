@@ -551,3 +551,20 @@ export function recipeOf(cloudId: string): DeployRecipe {
 function entryOf(cloudId: string): CloudDialect | undefined {
   return Object.hasOwn(DIALECTS, cloudId) ? DIALECTS[cloudId as keyof typeof DIALECTS] : undefined;
 }
+
+/**
+ * The prompt lines that hand the AI a CLI's own list of its commands
+ * (`cloud_cli_commands`), for every prompt that writes a command line; none
+ * for a CLI that publishes no such list. Measured in the app on a Supabase
+ * database: asked with no list in front of it, the AI wrote three operations
+ * under a `postgres` group that CLI does not have.
+ */
+export function vocabularyRule(commands: readonly string[] | null): string[] {
+  if (commands === null || commands.length === 0) return [];
+  return [
+    "",
+    `Every command of this CLI starts with one of these, as it lists them about itself: ${commands
+      .map((command) => `\`${command}\``)
+      .join(", ")}. A command that starts otherwise does not exist and is refused.`,
+  ];
+}

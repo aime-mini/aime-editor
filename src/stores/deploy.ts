@@ -179,6 +179,13 @@ interface Engine {
    * instead of reading the repository again.
    */
   sessions: SessionBook;
+  /**
+   * The CLI's own list of its commands, read once per deploy for a CLI that
+   * publishes one (`cloud_cli_commands`); null for the others. Every prompt
+   * that writes commands carries it, so a step is written from what the CLI
+   * has rather than from what the model remembers of it.
+   */
+  vocabulary: string[] | null;
 }
 
 const engines = new Map<string, Engine>();
@@ -190,6 +197,7 @@ function newEngine(): Engine {
     steer: null,
     agreement: null,
     sessions: new SessionBook(),
+    vocabulary: null,
   };
 }
 
@@ -246,9 +254,10 @@ export const useDeploy = create<DeployState>((set, get) => ({
     const asked = note.trim();
     if (current?.stage.kind !== "confirm" || asked === "") return;
     const { survey, answers, tooling } = current.stage;
-    // A fresh engine for a fresh attempt, still carrying the AI's session on.
+    // A fresh engine for a fresh attempt, still carrying the AI's session and
+    // the CLI's vocabulary on.
     const before = engineFor(slot);
-    engines.set(slot, { ...newEngine(), sessions: before.sessions });
+    engines.set(slot, { ...newEngine(), sessions: before.sessions, vocabulary: before.vocabulary });
     const ops = opsFor(slot, set, get);
     // Asked now, answered when the next plan comes back: the page shows the
     // question the moment it is sent, so nobody wonders whether it went
@@ -424,6 +433,7 @@ async function survey(ops: Ops): Promise<void> {
   }
   const inventory = read.resources;
   const tooling = await invoke<string[]>("programs_present", { names: TOOLING_TO_REPORT });
+  ops.engine.vocabulary = await vocabularyOf(cloudId);
 
   ops.note(translate("deploy.readingRepo"));
   const survey = await askUntilReadable(
@@ -442,6 +452,20 @@ async function survey(ops: Ops): Promise<void> {
 
   const answers = await readAll(ops, survey.inspect);
   await writePlan(ops, { survey, answers, tooling });
+}
+
+/**
+ * The CLI's own list of its commands, for a CLI that publishes one. A list that
+ * cannot be read leaves the prompts as they were without it - the checker still
+ * refuses a command the CLI does not have - so it is worth a warning, not a stop.
+ */
+async function vocabularyOf(cloudId: string): Promise<string[] | null> {
+  try {
+    return await invoke<string[] | null>("cloud_cli_commands", { cloudId });
+  } catch (error: unknown) {
+    console.warn(`the ${cloudId} CLI's command list could not be read; planning without it:`, error);
+    return null;
+  }
 }
 
 /**
@@ -508,7 +532,7 @@ async function writePlan(
     const plan = await askUntilReadable(
       ops,
       root,
-      planPrompt({ cloudId, survey, answers, tooling, rejected, notes }),
+      planPrompt({ cloudId, survey, answers, tooling, rejected, notes, vocabulary: ops.engine.vocabulary }),
       // Where Aime builds the address itself, a plan needs no path into a
       // read's answer - see `asProve`.
       (reply) => parsePlan(reply, recipeOf(cloudId).endpoint === undefined),
@@ -955,7 +979,16 @@ async function askFix(
     const reply = await turn(
       ops,
       root,
-      fixPrompt({ cloudId, plan, failed, remaining, answers, rejected, asked }),
+      fixPrompt({
+        cloudId,
+        plan,
+        failed,
+        remaining,
+        answers,
+        rejected,
+        asked,
+        vocabulary: ops.engine.vocabulary,
+      }),
       "edits",
     );
     if (reply === null) return null;
@@ -1015,7 +1048,14 @@ async function askSteer(
   const reply = await turn(
     ops,
     root,
-    steerPrompt({ cloudId, plan, asked, ran: ran.map((one) => one.step.label), remaining }),
+    steerPrompt({
+      cloudId,
+      plan,
+      asked,
+      ran: ran.map((one) => one.step.label),
+      remaining,
+      vocabulary: ops.engine.vocabulary,
+    }),
     "edits",
   );
   if (reply === null) return null;

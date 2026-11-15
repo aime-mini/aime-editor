@@ -93,7 +93,15 @@ describe("the survey prompt", () => {
   it("names the two programs a step may run, and nothing else, in both prompts", () => {
     for (const prompt of [
       surveyPrompt({ cloudId: "gcp", inventory: [], tooling: [] }),
-      planPrompt({ cloudId: "gcp", survey, answers: [], tooling: [], rejected: [], notes: [] }),
+      planPrompt({
+        vocabulary: null,
+        cloudId: "gcp",
+        survey,
+        answers: [],
+        tooling: [],
+        rejected: [],
+        notes: [],
+      }),
     ]) {
       expect(prompt).toContain("A step runs as `gcloud` unless it sets `program` to `kubectl`");
       // The ones a model reaches for when it has a shape neither can deploy.
@@ -111,6 +119,7 @@ describe("the survey prompt", () => {
 describe("the Azure prompts", () => {
   it("speak `az`, and name the walls a subscription has that a project does not", () => {
     const prompt = planPrompt({
+      vocabulary: null,
       cloudId: "azure",
       survey,
       answers: [],
@@ -150,7 +159,16 @@ describe("the Azure prompts", () => {
  * stack, and the address Aime proves is that stack's own output.
  */
 describe("the AWS prompts", () => {
-  const aws = () => planPrompt({ cloudId: "aws", survey, answers: [], tooling: [], rejected: [], notes: [] });
+  const aws = () =>
+    planPrompt({
+      vocabulary: null,
+      cloudId: "aws",
+      survey,
+      answers: [],
+      tooling: [],
+      rejected: [],
+      notes: [],
+    });
 
   it("names the stack as the unit and the stack's output as the proof", () => {
     const prompt = aws();
@@ -187,6 +205,7 @@ describe("the AWS prompts", () => {
 describe("the plan prompt", () => {
   it("names the keep rule, the read answers and what was refused last time", () => {
     const prompt = planPrompt({
+      vocabulary: null,
       cloudId: "gcp",
       notes: [],
       survey,
@@ -447,6 +466,7 @@ describe("the settings promised to stay", () => {
 describe("what the person asked for", () => {
   it("carries every note into the plan, oldest first", () => {
     const prompt = planPrompt({
+      vocabulary: null,
       cloudId: "azure",
       survey,
       answers: [],
@@ -467,6 +487,7 @@ describe("what the person asked for", () => {
 
   it("says a note cannot loosen a rule, so a refused command is not the answer to one", () => {
     const prompt = planPrompt({
+      vocabulary: null,
       cloudId: "gcp",
       survey,
       answers: [],
@@ -480,6 +501,7 @@ describe("what the person asked for", () => {
 
   it("says nothing about notes when there are none", () => {
     const prompt = planPrompt({
+      vocabulary: null,
       cloudId: "gcp",
       survey,
       answers: [],
@@ -597,6 +619,7 @@ describe("a plan for a cloud whose reads answer no address", () => {
    */
   it("asks for a proof it can actually write", () => {
     const supabase = planPrompt({
+      vocabulary: null,
       cloudId: "supabase",
       survey,
       answers: [],
@@ -610,6 +633,7 @@ describe("a plan for a cloud whose reads answer no address", () => {
 
     // The clouds whose reads DO answer one keep the instruction they had.
     const gcp = planPrompt({
+      vocabulary: null,
       cloudId: "gcp",
       survey,
       answers: [],
@@ -660,6 +684,7 @@ describe("speaking while it runs", () => {
 
   it("tells the AI what was said, what cannot be undone, and what is still to run", () => {
     const prompt = steerPrompt({
+      vocabulary: null,
       cloudId: "gcp",
       plan,
       asked: "that is the wrong region",
@@ -699,6 +724,7 @@ describe("speaking while it runs", () => {
 
   it("puts what was said in with the failure, and asks the AI to answer the person too", () => {
     const prompt = fixPrompt({
+      vocabulary: null,
       cloudId: "gcp",
       plan,
       failed,
@@ -715,6 +741,7 @@ describe("speaking while it runs", () => {
 
   it("asks for no reply when nobody said anything", () => {
     const prompt = fixPrompt({
+      vocabulary: null,
       cloudId: "gcp",
       plan,
       failed,
@@ -736,6 +763,43 @@ describe("speaking while it runs", () => {
     expect(revision?.reply).toBe("Moved it to the project that has the quota.");
     // A failed step is not restarted by words: an answer with nothing to run is no answer.
     expect(parseRevision('{"steps":[],"files":[],"inspect":[],"giveUp":null,"reply":"I see."}')).toBeNull();
+  });
+
+  /**
+   * A model writes commands from what it remembers of a CLI, and on Supabase
+   * that was a `postgres` group the CLI does not have. Every prompt that writes
+   * a step carries the CLI's own list, and none says anything without one.
+   */
+  it("hands every prompt that writes a step the CLI's own commands, and only when there are some", () => {
+    const vocabulary = ["functions deploy", "functions list", "secrets set"];
+    const prompts = (list: string[] | null) => [
+      planPrompt({
+        vocabulary: list,
+        cloudId: "supabase",
+        survey,
+        answers: [],
+        tooling: [],
+        rejected: [],
+        notes: [],
+      }),
+      fixPrompt({
+        vocabulary: list,
+        cloudId: "supabase",
+        plan,
+        failed,
+        remaining,
+        answers: [],
+        rejected: [],
+        asked: "",
+      }),
+      steerPrompt({ vocabulary: list, cloudId: "supabase", plan, asked: "use eu", ran: [], remaining }),
+    ];
+
+    for (const prompt of prompts(vocabulary)) {
+      expect(prompt).toContain("`functions deploy`, `functions list`, `secrets set`");
+      expect(prompt).toContain("A command that starts otherwise does not exist and is refused.");
+    }
+    for (const prompt of prompts(null)) expect(prompt).not.toContain("as it lists them about itself");
   });
 });
 
