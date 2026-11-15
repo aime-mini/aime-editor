@@ -162,6 +162,24 @@ export async function waitWhile(going: () => boolean, ms: number): Promise<boole
   return going();
 }
 
+/**
+ * The current provider's small, fast tier (`provider_light_model`), or
+ * undefined to keep the user's model - for a provider that names none, or
+ * when the catalog cannot be read. For the reading Aime does on its own whose
+ * answer is narrow and checked, never for the work itself.
+ */
+export async function lightModel(): Promise<string | undefined> {
+  try {
+    return (
+      (await invoke<string | null>("provider_light_model", { providerId: useAi.getState().providerId })) ??
+      undefined
+    );
+  } catch (error: unknown) {
+    console.warn("the provider's light model could not be read; the chosen model is used:", error);
+    return undefined;
+  }
+}
+
 interface StreamPayload {
   run_id: string;
   event: unknown;

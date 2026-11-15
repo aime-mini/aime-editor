@@ -29,7 +29,7 @@ import {
   type TestCase,
   type TestCases,
 } from "../lib/aiRun";
-import { agentTurn, cancelAgentTurn, haveTurn, waitWhile } from "../lib/agentTurn";
+import { agentTurn, cancelAgentTurn, haveTurn, lightModel, waitWhile } from "../lib/agentTurn";
 import { SessionBook } from "../lib/agentSession";
 import { baselineKey, keepBaseline, keptBaseline } from "../lib/baselineCache";
 import { footprintRules, formatBytes, sweepRun, type SweepReport } from "../lib/runSweep";
@@ -2622,8 +2622,11 @@ async function provedWhereItRuns(context: Context, set: Setter, get: Getter): Pr
   if (diff.trim() === "") return { needed: false, line: "" };
   await writeChangeDiff(context, diff);
   const asking = [PROOF_CHECK_PROMPT, PROOF_CHECK_READS_THE_DIFF].join("\n");
+  // A yes-or-no on a diff, leaning yes when in doubt: the light model's kind of
+  // question, and a wrong "yes" costs one deployment rather than a wrong answer.
+  const model = await lightModel();
   const check = await tryUntil(ATTEMPTS, async () =>
-    parseProofCheck(await readRepository(context, asking, set, "verify")),
+    parseProofCheck(await readRepository(context, asking, set, "verify", model)),
   );
   if (check?.needsRunning === false) {
     return { needed: false, line: translate("run.suitesEnough", { why: check.why }) };
@@ -3441,7 +3444,11 @@ async function settleEnvironment(
   const asking = environmentPrompt(
     failing.map(({ run }) => ({ command: run.command, output: allOutput(run.outcome) })),
   );
-  const environment = parseEnvironment(await readRepository(context, asking, set, "understand"));
+  // Narrow, and checked by the suites themselves just below: an environment
+  // that changes nothing is dropped, so the light model's answer is enough.
+  const environment = parseEnvironment(
+    await readRepository(context, asking, set, "understand", await lightModel()),
+  );
   if (environment === null) {
     note(set, "understand", translate("run.environmentUnreadable"));
     return first;
@@ -4117,6 +4124,7 @@ async function runCli(
   phase: PhaseId,
   permission: "readOnly" | "full",
   sessionId: string | null = null,
+  model?: string,
 ): Promise<{ code: number | null; text: string; sessionId: string | null }> {
   const engine = engineFor(context.id);
   const result = await haveTurn(
@@ -4124,7 +4132,7 @@ async function runCli(
       if (Date.now() - engine.drivingSince > RUN_BRAKE_MS) {
         throw new TurnPaused(translate("run.brake", { hours: RUN_BRAKE_MS / 3_600_000 }));
       }
-      const outcome = await oneTurn(context, prompt, set, phase, permission, sessionId);
+      const outcome = await oneTurn(context, prompt, set, phase, { permission, sessionId, model });
       engine.phaseCostUsd += engine.sessions.charge(outcome);
       return outcome;
     },
@@ -4166,15 +4174,13 @@ async function oneTurn(
   prompt: string,
   set: Setter,
   phase: PhaseId,
-  permission: "readOnly" | "full",
-  sessionId: string | null,
+  turn: { permission: "readOnly" | "full"; sessionId: string | null; model: string | undefined },
 ) {
   const engine = engineFor(context.id);
   const outcome = await agentTurn({
     prompt,
     cwd: context.workRoot,
-    permission,
-    sessionId,
+    ...turn,
     onToolCall: (line) => {
       note(set, phase, line, "output");
     },
@@ -4378,14 +4384,18 @@ async function keepAgreement(
  * the shape of the ticket rather than from the code - plausible names, and no
  * way to tell them from real ones. Read-only tools are the difference between
  * analysing a codebase and imagining one.
+ *
+ * `model` is for a reading whose answer is narrow and checked afterwards
+ * (`lightModel`); absent, the turn runs on the person's own model.
  */
 async function readRepository(
   context: Context,
   prompt: string,
   set: Setter,
   phase: PhaseId,
+  model?: string,
 ): Promise<string> {
-  const { text } = await runCli(context, prompt, set, phase, "readOnly");
+  const { text } = await runCli(context, prompt, set, phase, "readOnly", null, model);
   return text;
 }
 

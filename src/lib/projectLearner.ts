@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useAi } from "../stores/ai";
-import { agentTurn } from "./agentTurn";
+import { agentTurn, lightModel } from "./agentTurn";
 import { ROOT_SCOPE } from "./knowledge";
 import { forgetAll, memoriesWithEvidence, syncMirror, today, writeAll } from "./knowledgeStore";
 import {
@@ -80,11 +80,11 @@ async function learn(root: string): Promise<void> {
   const { memories, evidence } = await memoriesWithEvidence(root);
   const queue = studiesDue({ files, memories, evidence, state });
   if (queue.length === 0) return;
-  const lightModel = await lightModelOfProvider();
+  const partsModel = await lightModel();
 
   for (let scope = queue.shift(); scope !== undefined; scope = queue.shift()) {
     // The whole decides what the parts are, so it gets the user's model; a part is mostly reading.
-    const learned = await study(root, scope, files, scope === ROOT_SCOPE ? undefined : lightModel);
+    const learned = await study(root, scope, files, scope === ROOT_SCOPE ? undefined : partsModel);
     if (learned === null) return;
     if (scope === ROOT_SCOPE) {
       const studied = studiedParts(memories);
@@ -146,26 +146,6 @@ async function readableAnswer(ask: {
   }
   console.warn(`learning ${scope}: twice an answer that could not be used`);
   return null;
-}
-
-/**
- * The current provider's small, fast tier (`provider_light_model`), or
- * undefined to keep the user's model - for a provider that names none, or
- * when the catalog cannot be read.
- */
-async function lightModelOfProvider(): Promise<string | undefined> {
-  try {
-    return (
-      (await invoke<string | null>("provider_light_model", { providerId: useAi.getState().providerId })) ??
-      undefined
-    );
-  } catch (error: unknown) {
-    console.warn(
-      "the provider's light model could not be read; parts are studied on the chosen model:",
-      error,
-    );
-    return undefined;
-  }
 }
 
 async function readState(root: string): Promise<LearningState> {
