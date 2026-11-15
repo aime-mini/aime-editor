@@ -108,6 +108,8 @@ export interface SymbolProbe {
    * outline, or a server that stopped answering.
    */
   dependentsOf: (file: string) => Promise<SymbolReferences[] | null>;
+  /** Gives back whatever the probe put in front of a server; called once, when the radius is known. */
+  finish?: () => void;
 }
 
 /**
@@ -119,11 +121,17 @@ export interface SymbolProbe {
  */
 export async function radiusFrom(files: string[], probe: SymbolProbe): Promise<Radius> {
   const impacts: Impact[] = [];
-  for (const file of files) {
-    const references = await probe.dependentsOf(file);
-    impacts.push(
-      references === null ? { file, dependents: [], symbols: [], unknown: true } : impactOf(file, references),
-    );
+  try {
+    for (const file of files) {
+      const references = await probe.dependentsOf(file);
+      impacts.push(
+        references === null
+          ? { file, dependents: [], symbols: [], unknown: true }
+          : impactOf(file, references),
+      );
+    }
+  } finally {
+    probe.finish?.();
   }
   return radiusOf(provenReach(impacts));
 }

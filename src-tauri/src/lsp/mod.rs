@@ -51,11 +51,40 @@ pub struct ServerSpec {
     /// Set when the server has no package to install and Aime fetches it itself
     /// (`archive.rs`), the same contract the debug adapters use.
     pub archive: Option<ServerArchive>,
+    /// What the server is handed in `initialize` beyond the capabilities every
+    /// server gets (`lsp_initialization_options`).
+    pub initialization: Initialization,
     /// A notification the server needs after `initialized` before it will
     /// analyse anything. Roslyn is the case: without it the workspace is empty
     /// and every completion request answers nothing (measured).
     pub project_open: Option<ProjectOpen>,
 }
+
+/// What a server needs in `initialize` beyond the capabilities every server gets.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Initialization {
+    /// Nothing of its own.
+    Plain,
+    /// typescript-language-server: a `tsserver` to run, where the project has none.
+    TsServer,
+}
+
+/// The TypeScript whose `tsserver` a JavaScript or TypeScript server runs when
+/// the project has no TypeScript of its own.
+///
+/// typescript-language-server runs the `typescript` in the project and, without
+/// one, a stub that answers every request with nothing: measured on 5.3.0
+/// against a project with no `node_modules`, `documentSymbol` and `references`
+/// both `[]` - no outline, no F12, no blast radius. A global `typescript` does
+/// not help even where it is the right kind: 7.0.2, what `npm install -g
+/// typescript` brings today, is the native port and ships no `tsserver` at all
+/// (its `lib/` holds `tsc.js` and `getExePath.js`). 6.0.3 is the last release
+/// that ships `lib/tsserver.js`; handed it as `tsserver.path`, the same server
+/// answered both requests. The npm tarball is plain JavaScript, so one download
+/// serves every platform.
+const TYPESCRIPT_TARBALL: &str = "https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz";
+/// Where that TypeScript is unpacked, under the servers directory.
+const TYPESCRIPT_FOLDER: &str = "typescript-6.0.3";
 
 /// `ProjectOpen`, as the frontend receives it.
 #[derive(Serialize)]
@@ -246,18 +275,20 @@ const SERVERS: &[ServerSpec] = &[
         language_id: "typescript",
         command: "typescript-language-server",
         args: &["--stdio"],
-        install_hint: "npm install -g typescript-language-server typescript",
+        install_hint: "npm install -g typescript-language-server",
         probe: Probe::OnPath,
         archive: None,
+        initialization: Initialization::TsServer,
         project_open: None,
     },
     ServerSpec {
         language_id: "javascript",
         command: "typescript-language-server",
         args: &["--stdio"],
-        install_hint: "npm install -g typescript-language-server typescript",
+        install_hint: "npm install -g typescript-language-server",
         probe: Probe::OnPath,
         archive: None,
+        initialization: Initialization::TsServer,
         project_open: None,
     },
     ServerSpec {
@@ -267,6 +298,7 @@ const SERVERS: &[ServerSpec] = &[
         install_hint: "npm install -g pyright",
         probe: Probe::OnPath,
         archive: None,
+        initialization: Initialization::Plain,
         project_open: None,
     },
     ServerSpec {
@@ -276,6 +308,7 @@ const SERVERS: &[ServerSpec] = &[
         install_hint: "go install golang.org/x/tools/gopls@latest",
         probe: Probe::OnPath,
         archive: None,
+        initialization: Initialization::Plain,
         project_open: None,
     },
     ServerSpec {
@@ -285,6 +318,7 @@ const SERVERS: &[ServerSpec] = &[
         install_hint: "rustup component add rust-analyzer",
         probe: Probe::VersionFlag,
         archive: None,
+        initialization: Initialization::Plain,
         project_open: None,
     },
     ServerSpec {
@@ -309,6 +343,7 @@ const SERVERS: &[ServerSpec] = &[
             binary: ServerBinary::Executable(ROSLYN_BINARY),
             size_hint: "65 MB",
         }),
+        initialization: Initialization::Plain,
         project_open: Some(ProjectOpen {
             solution_method: "solution/open",
             project_method: "project/open",
@@ -321,6 +356,7 @@ const SERVERS: &[ServerSpec] = &[
         install_hint: "npm install -g intelephense",
         probe: Probe::OnPath,
         archive: None,
+        initialization: Initialization::Plain,
         project_open: None,
     },
     ServerSpec {
@@ -330,6 +366,7 @@ const SERVERS: &[ServerSpec] = &[
         install_hint: "npm install -g sql-language-server",
         probe: Probe::OnPath,
         archive: None,
+        initialization: Initialization::Plain,
         project_open: None,
     },
     ServerSpec {
@@ -339,6 +376,7 @@ const SERVERS: &[ServerSpec] = &[
         install_hint: "npm install -g bash-language-server",
         probe: Probe::OnPath,
         archive: None,
+        initialization: Initialization::Plain,
         project_open: None,
     },
     ServerSpec {
@@ -348,6 +386,7 @@ const SERVERS: &[ServerSpec] = &[
         install_hint: "npm install -g yaml-language-server",
         probe: Probe::OnPath,
         archive: None,
+        initialization: Initialization::Plain,
         project_open: None,
     },
     ServerSpec {
@@ -357,6 +396,7 @@ const SERVERS: &[ServerSpec] = &[
         install_hint: "npm install -g dockerfile-language-server-nodejs",
         probe: Probe::OnPath,
         archive: None,
+        initialization: Initialization::Plain,
         project_open: None,
     },
     // clangd serves C and C++; it ships inside LLVM rather than as a package.
@@ -367,6 +407,7 @@ const SERVERS: &[ServerSpec] = &[
         install_hint: CLANGD_INSTALL,
         probe: Probe::OnPath,
         archive: None,
+        initialization: Initialization::Plain,
         project_open: None,
     },
     ServerSpec {
@@ -376,6 +417,7 @@ const SERVERS: &[ServerSpec] = &[
         install_hint: CLANGD_INSTALL,
         probe: Probe::OnPath,
         archive: None,
+        initialization: Initialization::Plain,
         project_open: None,
     },
     // Eclipse JDT LS is published as an archive and runs on the JVM, so `java` is
@@ -399,6 +441,7 @@ const SERVERS: &[ServerSpec] = &[
             },
             size_hint: "45 MB",
         }),
+        initialization: Initialization::Plain,
         project_open: None,
     },
 ];
@@ -644,6 +687,48 @@ where
 
 fn path_text(path: PathBuf) -> String {
     path.to_string_lossy().to_string()
+}
+
+/// What the server for this language is handed in `initialize` beyond the
+/// generic capabilities, for the project at `root`; `None` for nothing.
+#[tauri::command]
+pub async fn lsp_initialization_options(
+    app: AppHandle,
+    language_id: String,
+    root: String,
+) -> Result<Option<serde_json::Value>, String> {
+    let Some(spec) = spec_for(&language_id) else {
+        return Ok(None);
+    };
+    match spec.initialization {
+        Initialization::Plain => Ok(None),
+        Initialization::TsServer => tsserver_options(&app, Path::new(&root)).await,
+    }
+}
+
+/// The `tsserver` to run for a project without a TypeScript of its own,
+/// downloaded the first time it is needed (`TYPESCRIPT_TARBALL`).
+async fn tsserver_options(app: &AppHandle, root: &Path) -> Result<Option<serde_json::Value>, String> {
+    // The project's own TypeScript wins: its code is written against that
+    // version, and the server finds it there itself.
+    if has_own_tsserver(root) {
+        return Ok(None);
+    }
+    let dir = servers_dir(app)?.join(TYPESCRIPT_FOLDER);
+    crate::archive::fetch_and_unpack(TYPESCRIPT_TARBALL, &dir, "package", TYPESCRIPT_FOLDER, |_| ()).await?;
+    let tsserver = dir.join("package").join("lib").join("tsserver.js");
+    Ok(Some(
+        serde_json::json!({ "tsserver": { "path": tsserver.to_string_lossy() } }),
+    ))
+}
+
+/// Whether the project carries a TypeScript the server can run.
+fn has_own_tsserver(root: &Path) -> bool {
+    root.join("node_modules")
+        .join("typescript")
+        .join("lib")
+        .join("tsserver.js")
+        .is_file()
 }
 
 /// Downloads a server that has no package to install, reporting every step.
@@ -989,9 +1074,37 @@ pub fn stop_for_workspace(app: &AppHandle, workspace: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        java_major_of, path_digest, spec_for, Probe, ServerBinary, AIME_DOWNLOADS, JDTLS_ARGS, JDTLS_CONFIG,
-        JDTLS_LAUNCHER, JDTLS_LEAST_JAVA, JDTLS_WORKSPACE, SERVERS,
+        has_own_tsserver, java_major_of, path_digest, spec_for, Initialization, Probe, ServerBinary,
+        AIME_DOWNLOADS, JDTLS_ARGS, JDTLS_CONFIG, JDTLS_LAUNCHER, JDTLS_LEAST_JAVA, JDTLS_WORKSPACE, SERVERS,
     };
+
+    /// typescript-language-server answers nothing without a tsserver, so both
+    /// languages it serves are handed one; no other server is.
+    #[test]
+    fn only_the_typescript_server_is_handed_a_tsserver() {
+        for spec in SERVERS {
+            let expected = if matches!(spec.language_id, "typescript" | "javascript") {
+                Initialization::TsServer
+            } else {
+                Initialization::Plain
+            };
+            assert_eq!(spec.initialization, expected, "{}", spec.language_id);
+        }
+    }
+
+    #[test]
+    fn a_project_with_its_own_typescript_keeps_it() {
+        let root = std::env::temp_dir().join(format!("aime-own-ts-{}", std::process::id()));
+        let lib = root.join("node_modules").join("typescript").join("lib");
+        std::fs::create_dir_all(&lib).expect("a folder");
+        assert!(
+            !has_own_tsserver(&root),
+            "a typescript without tsserver.js is not one the server can run"
+        );
+        std::fs::write(lib.join("tsserver.js"), "").expect("written");
+        assert!(has_own_tsserver(&root));
+        std::fs::remove_dir_all(&root).expect("cleaned up");
+    }
 
     #[test]
     fn detection_matches_how_each_server_actually_behaves() {

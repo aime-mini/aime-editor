@@ -47,6 +47,25 @@ const SYMBOLS_PER_FILE = 12;
 const REACH_DEADLINE_MS = 20_000;
 const REACH_POLL_MS = 500;
 
+/**
+ * The languages whose server sees only the files it is handed when the
+ * project has no project file - and the project files that change that.
+ *
+ * Measured with typescript-language-server 5.3.0: without a `tsconfig.json` or
+ * `jsconfig.json` the opened file sits in an inferred project of its own, so
+ * `references` to `checkoutTotal` in `src/checkout.js` answered `[]`; with the
+ * project's other source files opened beside it, the same request answered
+ * `src/cart.js` and `test/checkout.test.js` in 3.6 s. So for such a project
+ * the probe lends the server every source file first, and takes them back
+ * once the radius is known.
+ */
+const INFERRED_PROJECT_LANGUAGES = new Set(["javascript", "typescript"]);
+const PROJECT_FILES = ["tsconfig.json", "jsconfig.json"];
+/** `.js`, `.jsx`, `.mjs`, `.cjs` and their TypeScript counterparts. */
+const SOURCE_FILE = /\.[cm]?[jt]sx?$/;
+/** How many source files are lent at most; past it, the rest of the project stays unseen. */
+const LENT_FILES_MAX = 2_000;
+
 /** A probe backed by the language servers this editor already runs. */
 export function languageServerProbe(root: string): SymbolProbe {
   // Languages whose server has stopped answering. Asking it again buys nothing
@@ -61,8 +80,14 @@ export function languageServerProbe(root: string): SymbolProbe {
   // one wait, not one per file - forty files at the deadline is thirteen
   // minutes of a run spent learning the same thing forty times.
   const settled = new Set<string>();
+  // Languages whose project has been lent to their server, and what gives it back.
+  const lentFor = new Set<string>();
+  const loans: (() => void)[] = [];
 
   return {
+    finish: () => {
+      for (const giveBack of loans) giveBack();
+    },
     dependentsOf: async (file) => {
       const languageId = languageOf(file);
       if (silent.has(languageId)) return null;
@@ -72,6 +97,12 @@ export function languageServerProbe(root: string): SymbolProbe {
       // No outline means no symbols to follow, which is not the same as a file
       // nothing depends on - and the caller is told which of the two it is.
       if (!session?.providesOutline) return null;
+
+      if (INFERRED_PROJECT_LANGUAGES.has(languageId) && !lentFor.has(languageId)) {
+        lentFor.add(languageId);
+        const giveBack = await lendProject(session, root);
+        if (giveBack !== null) loans.push(giveBack);
+      }
 
       const borrowed = await borrowModel(root, file, languageId);
       if (borrowed === null) return null;
@@ -151,6 +182,37 @@ async function referencesIn(
     });
   }
   return references;
+}
+
+/**
+ * Every source file of a project with no project file, lent to its server;
+ * null for a project that has one, whose server finds its files itself.
+ */
+async function lendProject(session: LanguageSession, root: string): Promise<(() => void) | null> {
+  const declared = await Promise.all(PROJECT_FILES.map((name) => fileExists(`${root}/${name}`)));
+  if (declared.some(Boolean)) return null;
+  const sources = (await invoke<string[]>("list_files", { root }))
+    .filter((file) => SOURCE_FILE.test(file) && !file.split("/").some((part) => NOT_OUR_CODE.includes(part)))
+    .slice(0, LENT_FILES_MAX);
+  const read = await Promise.all(
+    sources.map(async (file) => {
+      const path = `${root}/${file}`;
+      const text = await invoke<string>("read_file", { path }).catch((error: unknown) => {
+        console.error("blast radius: could not read", path, error);
+        return null;
+      });
+      return text === null ? [] : [{ path, languageId: languageOf(file), text }];
+    }),
+  );
+  return session.lend(read.flat());
+}
+
+/** Whether a file exists; a read that fails for any reason counts as not. */
+function fileExists(path: string): Promise<boolean> {
+  return invoke<string>("read_file", { path }).then(
+    () => true,
+    () => false,
+  );
 }
 
 /** The model for a file, opening one for the probe when the file is not. */

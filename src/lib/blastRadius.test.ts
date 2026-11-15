@@ -93,6 +93,20 @@ describe("radiusFrom", () => {
     };
   }
 
+  /** What a probe lent a server comes back once, whether the radius was found or the probe failed. */
+  it("lets the probe give back what it lent, even when asking fails", async () => {
+    let finished = 0;
+    const finish = () => {
+      finished += 1;
+    };
+    await radiusFrom(["src/cart.ts"], { ...probe({}), finish });
+    expect(finished).toBe(1);
+
+    const failing = { dependentsOf: () => Promise.reject(new Error("server gone")), finish };
+    await expect(radiusFrom(["src/cart.ts"], failing)).rejects.toThrow("server gone");
+    expect(finished).toBe(2);
+  });
+
   it("asks about every file and folds the answers into one radius", async () => {
     const server = probe({
       "src/cart.ts": [{ symbol: "withTax", files: ["src/cart.ts", "src/checkout.ts"] }],

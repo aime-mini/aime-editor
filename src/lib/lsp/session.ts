@@ -328,6 +328,15 @@ export class LanguageSession {
     /** The two method names this server accepts a project through, if any. */
     projectOpen?: ProjectOpenMethods,
   ): Promise<LanguageSession> {
+    // Before the server starts: preparing them can mean a download
+    // (`lsp_initialization_options`), and a server must not wait on it.
+    const initializationOptions = await invoke<unknown>("lsp_initialization_options", {
+      languageId,
+      root,
+    }).catch((error: unknown) => {
+      console.error(`${languageId}: what its server is handed in initialize could not be prepared:`, error);
+      return null;
+    });
     const client = await LspClient.start(languageId, root, onExit);
     const session = new LanguageSession(languageId, client);
     client.onNotification = (method, params) => {
@@ -346,6 +355,7 @@ export class LanguageSession {
       "initialize",
       {
         processId: null,
+        ...(initializationOptions === null ? {} : { initializationOptions }),
         rootUri: pathToUri(root),
         workspaceFolders: [{ uri: pathToUri(root), name: root.split(/[\\/]/).pop() ?? root }],
         capabilities: {
@@ -467,6 +477,31 @@ export class LanguageSession {
         this.closeDocument(uri);
       }),
     );
+  }
+
+  /**
+   * Puts files in front of the server without editor models, for a question
+   * about the project rather than about one buffer, and answers what takes
+   * them away again. A file already open is left as it is; one the editor
+   * opens while it is lent is handed back to the editor's own sync when the
+   * loan ends.
+   */
+  lend(files: readonly { path: string; languageId: string; text: string }[]): () => void {
+    const lent: { uri: string; path: string }[] = [];
+    for (const { path, languageId, text } of files) {
+      const uri = pathToUri(path);
+      if (this.openDocuments.has(uri)) continue;
+      this.openDocuments.set(uri, { version: 1, disposables: [] });
+      this.client.notify("textDocument/didOpen", { textDocument: { uri, languageId, version: 1, text } });
+      lent.push({ uri, path });
+    }
+    return () => {
+      for (const { uri, path } of lent) {
+        this.closeDocument(uri);
+        const model = monaco.editor.getModel(monaco.Uri.parse(path));
+        if (model !== null) this.openModel(model);
+      }
+    };
   }
 
   private closeDocument(uri: string): void {

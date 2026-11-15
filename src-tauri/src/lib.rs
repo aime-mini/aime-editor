@@ -292,6 +292,7 @@ pub fn run() {
             lsp::lsp_download,
             lsp::lsp_project_files,
             lsp::lsp_restore,
+            lsp::lsp_initialization_options,
             lsp::lsp_start,
             lsp::lsp_send,
             lsp::lsp_stop,

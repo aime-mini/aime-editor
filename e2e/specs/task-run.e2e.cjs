@@ -538,38 +538,6 @@ export function withTax(amount, rate) {
 }
 `;
 
-/**
- * What a JavaScript project needs before a language server can say anything
- * about it, both measured against typescript-language-server 5.3:
- *
- * 1. **A jsconfig (or tsconfig).** Without one the server puts the opened file
- *    in an inferred project of its own, so `references` sees that file and
- *    nothing else - `checkout.js` importing `cart.js` is invisible. With one,
- *    the server announces "Initializing JS/TS language features…" and the same
- *    question answers `src/checkout.js`.
- * 2. **A real TypeScript.** The server runs the `typescript` it finds in the
- *    project; without one it falls back to a bundled stub that reports version
- *    1.0.0 and does not even declare `documentSymbolProvider`. Note that a
- *    global install is not enough - measured, it is not looked at.
- *
- * Both are ordinary in a real project, and a sample that lacks them would test
- * a language server that was never given a chance to answer.
- */
-function giveItALanguageService(dir) {
-  fs.writeFileSync(
-    path.join(dir, "jsconfig.json"),
-    JSON.stringify({ compilerOptions: { checkJs: false }, include: ["src/**/*"] }, null, 2),
-  );
-  fs.mkdirSync(path.join(dir, "node_modules"), { recursive: true });
-  fs.symlinkSync(
-    path.join(process.cwd(), "node_modules", "typescript"),
-    path.join(dir, "node_modules", "typescript"),
-    // A junction, because a symlink to a directory needs administrator rights
-    // on Windows and a junction does not.
-    "junction",
-  );
-}
-
 function sampleProject({
   declaresTest = true,
   needsServer = false,
@@ -601,7 +569,8 @@ function sampleProject({
   fs.writeFileSync(path.join(dir, "check.cjs"), SAMPLE_CHECK);
   fs.writeFileSync(path.join(dir, "src", "cart.js"), SAMPLE_CART);
   fs.writeFileSync(path.join(dir, "src", "checkout.js"), SAMPLE_CHECKOUT);
-  giveItALanguageService(dir);
+  // Deliberately no jsconfig and no TypeScript of its own, like most plain
+  // JavaScript projects: Aime has to make the language server answer anyway.
 
   const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe" });
   git("init", "-b", "main");
