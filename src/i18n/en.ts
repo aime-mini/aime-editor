@@ -1945,6 +1945,7 @@ export const en = {
   "help.searchPlaceholder": "Search features, shortcuts…",
   "help.noResults": "Nothing found - try another word.",
   "help.footer": "F1 opens this help anywhere · Esc closes it",
+  "help.author": "Linh Pham · Solution Architect · duylinh191@gmail.com",
 } as const;
 
 export type TranslationKey = keyof typeof en;

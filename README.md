@@ -119,6 +119,10 @@ npm run test:e2e -- --spec <spec>     # end-to-end, see e2e/README.md
 A pre-commit hook (`.githooks/`, enabled with `git config core.hooksPath .githooks`) runs Prettier,
 ESLint and `cargo fmt --check` on every commit.
 
+## Author
+
+Linh Pham - Solution Architect - [duylinh191@gmail.com](mailto:duylinh191@gmail.com)
+
 ## License
 
 [GPL-3.0](LICENSE)

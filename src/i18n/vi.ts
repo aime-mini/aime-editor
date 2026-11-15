@@ -1933,4 +1933,5 @@ export const vi: Record<TranslationKey, string> = {
   "help.searchPlaceholder": "Tìm tính năng, phím tắt…",
   "help.noResults": "Không thấy gì - thử từ khóa khác.",
   "help.footer": "F1 mở trợ giúp ở mọi nơi · Esc để đóng",
+  "help.author": "Linh Pham · Solution Architect · duylinh191@gmail.com",
 };

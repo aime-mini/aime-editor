@@ -67,7 +67,10 @@ export function HelpModal({ onClose }: { onClose: () => void }) {
           ))}
         </div>
 
-        <div className="border-t border-line px-4 py-2 text-[11px] text-muted">{t("help.footer")}</div>
+        <div className="flex justify-between gap-4 border-t border-line px-4 py-2 text-[11px] text-muted">
+          <span>{t("help.footer")}</span>
+          <span>{t("help.author")}</span>
+        </div>
       </div>
     </div>
   );

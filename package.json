@@ -1,6 +1,7 @@
 {
   "name": "ai-mini-editor",
   "private": true,
+  "author": "Linh Pham <duylinh191@gmail.com>",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
