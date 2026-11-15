@@ -85,3 +85,67 @@ case's test - a file filter and a test-name filter in this project's own runner:
 Aime runs each command on its own and reads the runner's verdict; a case whose command runs no test, or
 fails, is not proved.`;
 }
+
+/**
+ * The command that re-runs only the tests a repair round is mending.
+ *
+ * A round that mends two broken tests would otherwise pay for their whole
+ * suites to learn whether the fix worked - minutes for a browser suite, every
+ * round. So the builder names those tests in the project's own runner, the way
+ * it names each case's test, and Aime runs that first. Only a run that holds
+ * sends the work on to the suites, and then straight to the full pass that
+ * catches a fix which broke something elsewhere.
+ */
+export interface Rerun {
+  command: string;
+  /** Where it runs, relative to the run's root. */
+  dir: string;
+}
+
+/** Where the builder declares it; emptied before each repair turn so an old one is never taken. */
+export function rerunFileOf(root: string, runId: string): string {
+  return `${runFolder(root, runId)}/rerun.json`;
+}
+
+/** The declared command; null when there is none or it cannot be read. */
+export function parseRerun(text: string): Rerun | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const row = (parsed ?? {}) as { command?: unknown; dir?: unknown };
+  if (typeof row.command !== "string" || row.command.trim() === "") return null;
+  return { command: row.command, dir: typeof row.dir === "string" && row.dir !== "" ? row.dir : "." };
+}
+
+/** What re-running the mended tests on their own showed. */
+export type RerunVerdict =
+  /** They ran and passed: the suites are next. */
+  | { kind: "held" }
+  /** The runner named tests that still fail: the evidence for the next repair, no suite needed. */
+  | { kind: "failing"; failed: string[] }
+  /** It selected nothing, or failed without naming a test: only the suites can say. */
+  | { kind: "unread" };
+
+/**
+ * Reads a re-run the way a case's own run is read (`caseRunOf`). A failure
+ * counts only when the runner named the failing tests: a command that broke
+ * for its own reasons - a wrong filter, a missing runner - says nothing about
+ * the fix, and must not end a run that the suites would have passed.
+ */
+export function rerunVerdictOf(report: TestReport): RerunVerdict {
+  if (caseRunOf(report).held) return { kind: "held" };
+  if (!report.passed && report.failed.length > 0) return { kind: "failing", failed: report.failed };
+  return { kind: "unread" };
+}
+
+/** The prompt line that asks the builder to declare the re-run. */
+export function declareRerunRule(root: string, runId: string): string {
+  return `When the fix is in, write ${rerunFileOf(root, runId)} with the one command that runs ONLY the
+tests named above - a file filter and a test-name filter in this project's own runner - and the
+folder it runs in:
+{"command": "npx vitest run src/cart.test.ts -t \\"rounds to two places\\"", "dir": "."}
+Aime runs it before the suites, which run only once it passes.`;
+}

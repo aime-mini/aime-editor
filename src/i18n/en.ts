@@ -1472,6 +1472,8 @@ export const en = {
   "run.nowFixed": "now fixed",
   "run.repairing": "Fixing what broke - attempt {attempt} of {of}",
   "run.repairAttempt": "Attempt {attempt}: {detail}",
+  "run.rerunFailing": "Attempt {attempt}: run on their own, these still fail - {detail}",
+  "run.rerunHeld": "The mended tests pass on their own - running every suite once",
   "run.repaired": "Fixed in {attempts} attempt(s), and measured again: {detail}",
   "run.repairGaveUp": "Still broken after {attempts} attempts: {detail}",
   "run.tryingAgain": "That did not work - trying again ({attempt} of {of})",

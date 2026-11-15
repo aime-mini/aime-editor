@@ -181,6 +181,14 @@ const mode = fs.existsSync(${JSON.stringify(MODE_FILE)})
   ? fs.readFileSync(${JSON.stringify(MODE_FILE)}, "utf8").trim()
   : "sound";
 
+// Where a repair turn is asked to name the command that re-runs only the tests
+// it mended, it names the sample's own test file.
+function declareRerun() {
+  const asked = prompt.match(/write (\S+rerun\.json)/);
+  if (asked === null) return;
+  fs.writeFileSync(asked[1], JSON.stringify({ command: "node test.cjs", dir: inProduct ? "shop" : "." }));
+}
+
 // The ticket's one requirement, as the criteria must quote it.
 const TICKET_SENTENCE = "withTax must round to two decimal places";
 const SECOND_TICKET_SENTENCE = "Totals must carry their currency code";
@@ -364,11 +372,17 @@ if (prompt.includes("Check another reader's understanding of a ticket")) {
   // know which half of its change to keep.
   const toldTheCriterion = prompt.includes("THE SYSTEM SHALL round to two decimal places");
   if (mode === "repairs" && toldTheCriterion) fs.writeFileSync(shop("src", "cart.js"), SOUND);
+  declareRerun();
   if (mode === "disputes") {
     process.stdout.write("Rounding inside withTax changes subtotal too.\nDISPUTED: AC1 cannot hold without changing subtotal\n");
   } else {
     process.stdout.write("tried\n");
   }
+} else if (prompt.includes("were run on their own, with the command you declared")) {
+  // The mended tests still fail on their own; "breaks" mode still does not
+  // mend them, and names the same command again.
+  declareRerun();
+  process.stdout.write("tried again\n");
 // Matched on a phrase that sits on ONE line of the prompt: the prompts are
 // wrapped template literals, and a phrase spanning a wrap point never matches.
 } else if (prompt.includes("and prove it works where it runs") && mode === "cannotRunLocally") {
@@ -1177,6 +1191,11 @@ describe("Task run", () => {
     );
     assert.match(repair, /Fixed in \d+ attempt/, `the repair did not say what it cost: ${repair}`);
     assert.match(repair, /measured again/, `nothing was measured after the fix: ${repair}`);
+    // The mended test ran on its own first, and only then every suite.
+    await waitForText(
+      "The mended tests pass on their own",
+      "the repair round paid for the suites before the mended test said the fix worked",
+    );
     await waitForText("finished, and every gate agreed", "the run gave up instead of repairing", 240_000);
     // And it really is fixed on disk, by the project's own suite's standard.
     const suite = spawnSuite(repo);
@@ -1545,6 +1564,8 @@ ${suite.output}`,
     // somewhere and stops the moment a round leaves exactly what the last one
     // left. An agent that does nothing is caught by that, not by a tally.
     assert.match(gave, /Still broken after \d+ attempts/, `the attempts were not reported: ${gave}`);
+    // A later round learned the fix had not worked from the mended test alone.
+    await waitForText("run on their own, these still fail", "the re-run of the mended test never ran");
     await waitForText("stopped here", "a change that broke a passing test was not stopped", 240_000);
     assert.equal(
       (await $("body").getText()).toLowerCase().includes("finished, and every gate agreed"),

@@ -37,10 +37,16 @@ import {
   caseRunOf,
   caseTestsFileOf,
   declareCaseTestsRule,
+  declareRerunRule,
   parseCaseTests,
+  parseRerun,
+  rerunFileOf,
+  rerunVerdictOf,
   undeclaredCases,
   type CaseRun,
   type CaseTest,
+  type Rerun,
+  type RerunVerdict,
 } from "../lib/caseTests";
 import type { CaseKind } from "../lib/aiRun";
 import { readTestOutput } from "../lib/testReport";
@@ -2187,6 +2193,9 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
   // so a stall cannot be told from their signatures, and every one costs a
   // checkout of the old code.
   let perfRounds = 0;
+  // The builder's command for only the tests the last repair mended, run
+  // before any suite (`Rerun`); null when there is none to run.
+  let rerun: Rerun | null = null;
   for (let round = 1; round <= MAX_ROUNDS; round += 1) {
     // The checks first: they are the cheap ones, and a tree that does not
     // typecheck has nothing to tell a suite that takes nine minutes.
@@ -2232,6 +2241,36 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
         summary: translate("run.checksOnly", { count: stale.length }),
         detail: [...tried, ...stale.map((check) => `- ${check.label}`)].join("\n"),
       };
+    }
+
+    if (rerun !== null) {
+      const narrow = await runRerun(context, set, rerun);
+      rerun = null;
+      if (narrow.verdict.kind === "failing") {
+        const detail = narrow.verdict.failed.join(", ");
+        const failures = `rerun:${narrow.verdict.failed.join("|")}`;
+        if (stalled(rounds, failures) || round === MAX_ROUNDS) {
+          return {
+            state: "blocked",
+            summary: translate("run.repairGaveUp", { attempts: round, detail }),
+            detail: [...tried, narrow.evidence].join("\n"),
+          };
+        }
+        rounds.push(failures);
+        tried.push(translate("run.rerunFailing", { attempt: round, detail }));
+        note(set, "verify", tried[tried.length - 1]);
+        const prompt = [RERUN_FAILING_PROMPT, ...narrow.verdict.failed.map((name) => `- ${name}`)].join("\n");
+        const mend = await repairTurn(context, set, get, [prompt, narrow.evidence].join("\n\n"), true);
+        if (mend.halt !== null) return mend.halt;
+        rerun = mend.rerun;
+        continue;
+      }
+      if (narrow.verdict.kind === "held") {
+        // The mended tests pass on their own: the failing suites have nothing
+        // left to say that the full pass will not, so it runs next.
+        note(set, "verify", translate("run.rerunHeld"));
+        focus = null;
+      }
     }
 
     const after = await suitesNow(context, set, get, "verify", before, focusSkip(before, focus));
@@ -2317,12 +2356,73 @@ async function measureAndMend(context: Context, set: Setter, get: Getter): Promi
     mended.push(brokenNames(verdict).join(", ") || summarise(verdict));
     focus = failingSuites(verdict);
     note(set, "verify", translate("run.repairing", { attempt: round, of: MAX_ROUNDS }));
-    const halt = haltedBy(await runAgent(context, repairPrompt(verdict), set, get, "verify"));
-    if (halt !== null) return halt;
+    const asksRerun = brokenNames(verdict).length > 0 && runsWithoutServices(get);
+    const mend = await repairTurn(context, set, get, repairPrompt(verdict), asksRerun);
+    if (mend.halt !== null) return mend.halt;
+    rerun = mend.rerun;
   }
   // Unreachable: every path out of the loop above returns. Here so that a future
   // edit to the loop cannot fall through into a silent pass.
   return { state: "blocked", summary: translate("run.repairGaveUp", { attempts: MAX_ROUNDS, detail: "" }) };
+}
+
+/**
+ * Whether the tests can be re-run on their own, outside a suite pass. Only a
+ * suite pass brings up the services the environment names (`runSuitesIn`), so
+ * a test that needs a database would fail on its own for want of one - which
+ * would read as a fix that did not work.
+ */
+function runsWithoutServices(get: Getter): boolean {
+  return (get().environment?.services.length ?? 0) === 0;
+}
+
+/**
+ * One builder turn that mends broken tests. With `asksRerun`, the builder also
+ * declares the command that runs only those tests (`Rerun`), and what it
+ * declared comes back for the next round to run first.
+ */
+async function repairTurn(
+  context: Context,
+  set: Setter,
+  get: Getter,
+  prompt: string,
+  asksRerun: boolean,
+): Promise<{ halt: PhaseResult | null; rerun: Rerun | null }> {
+  const file = rerunFileOf(context.workRoot, context.id);
+  // Emptied first, so a command declared for an earlier round is never taken for this one.
+  if (asksRerun) await invoke("write_file", { path: file, content: "" });
+  const asking = asksRerun ? [prompt, declareRerunRule(context.workRoot, context.id)].join("\n\n") : prompt;
+  const halt = haltedBy(await runAgent(context, asking, set, get, "verify"));
+  if (halt !== null || !asksRerun) return { halt, rerun: null };
+  return { halt: null, rerun: await declaredRerun(file) };
+}
+
+/** The re-run the builder declared; none when it declared nothing readable. */
+async function declaredRerun(file: string): Promise<Rerun | null> {
+  try {
+    return parseRerun(await invoke<string>("read_file", { path: file }));
+  } catch {
+    return null;
+  }
+}
+
+/** Runs the mended tests on their own, and reads what the runner said. */
+async function runRerun(
+  context: Context,
+  set: Setter,
+  rerun: Rerun,
+): Promise<{ verdict: RerunVerdict; evidence: string }> {
+  const outcome = await runCommand(set, "verify")(
+    commandIdFor(context.id)(),
+    rerun.command,
+    folderUnder(context.workRoot, rerun.dir),
+    SUITE_TIMEOUT_MS,
+  );
+  const output = allOutput(outcome);
+  return {
+    verdict: rerunVerdictOf(readTestOutput(output, outcome.code)),
+    evidence: [`$ ${rerun.command}`, output.slice(-SUITE_OUTPUT_LIMIT)].join("\n"),
+  };
 }
 
 /**
@@ -3745,6 +3845,11 @@ test to make it pass - the test is the evidence, not the obstacle.
 
 Run the failing tests when you are done. Do not commit anything.
 `;
+
+/** Sent back when the tests a repair mended still fail when run on their own. */
+const RERUN_FAILING_PROMPT = `The tests you were mending were run on their own, with the command you declared, and these
+still fail. Fix them, and keep the behaviour you were asked to add. Do not weaken, skip or delete a
+failing test to make it pass. Do not commit anything.`;
 
 /** Sent back with the test files the plan promised and the tree does not have. */
 const CASE_TESTS_UNDECLARED = `No command in your case-tests file runs these cases' tests on their own. Declare one

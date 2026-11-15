@@ -1463,6 +1463,8 @@ export const vi: Record<TranslationKey, string> = {
   "run.nowFixed": "giờ đã xanh",
   "run.repairing": "Đang sửa chỗ vỡ - lần {attempt}/{of}",
   "run.repairAttempt": "Lần {attempt}: {detail}",
+  "run.rerunFailing": "Lần {attempt}: chạy riêng, các test này vẫn đỏ - {detail}",
+  "run.rerunHeld": "Các test vừa sửa đã xanh khi chạy riêng - chạy toàn bộ suite một lượt",
   "run.repaired": "Sửa xong trong {attempts} lần thử, và đã đo lại: {detail}",
   "run.repairGaveUp": "Vẫn vỡ sau {attempts} lần: {detail}",
   "run.tryingAgain": "Chưa được - thử lại ({attempt}/{of})",
