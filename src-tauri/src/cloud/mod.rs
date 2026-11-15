@@ -159,7 +159,10 @@ const CLOUDS: [Cloud; 4] = [
         command: "az",
         sign_in_hint: "az login",
         windows: "winget install -e --id Microsoft.AzureCLI",
-        unix: "brew install azure-cli",
+        // A cask since homebrew-core dropped the `azure-cli` formula
+        // (`/api/formula/azure-cli.json` answers 404, `/api/cask/azure-cli.json`
+        // 2.92.0), so like Google Cloud it is macOS-only and Linux gets the page.
+        unix: "brew install --cask azure-cli",
         docs: "https://learn.microsoft.com/cli/azure/install-azure-cli",
     },
     Cloud {
@@ -1314,14 +1317,31 @@ mod tests {
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     #[test]
     fn linux_gets_brew_where_a_formula_exists_and_a_page_where_only_a_cask_does() {
-        // Homebrew runs on Linux and carries the Azure and AWS formulae, so
-        // those rows are one click there too. Casks are macOS-only, which is
-        // why the Google Cloud row is a page rather than a command that fails.
+        // Homebrew runs on Linux and carries the AWS formula, so that row is
+        // one click there too. Casks are macOS-only, which is why the Azure and
+        // Google Cloud rows are pages rather than commands that fail.
+        assert_eq!(install_hint_for("aws").as_deref(), Some("brew install awscli"));
+        for cask_only in ["azure", "gcp"] {
+            assert!(
+                install_hint_for(cask_only).is_some_and(|hint| hint.starts_with("https://")),
+                "{cask_only}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_installs_the_casks_and_formulae_homebrew_carries() {
+        // Checked against formulae.brew.sh, not remembered.
         assert_eq!(
             install_hint_for("azure").as_deref(),
-            Some("brew install azure-cli")
+            Some("brew install --cask azure-cli")
         );
-        assert!(install_hint_for("gcp").is_some_and(|hint| hint.starts_with("https://")));
+        assert_eq!(install_hint_for("aws").as_deref(), Some("brew install awscli"));
+        assert_eq!(
+            install_hint_for("gcp").as_deref(),
+            Some("brew install --cask gcloud-cli")
+        );
     }
 
     #[test]
