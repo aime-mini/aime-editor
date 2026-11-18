@@ -7,7 +7,10 @@ rem Rust installs per-user; Explorer may not have refreshed PATH yet after insta
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 
 rem A busy port 1420 usually means Aime is already open - don't start a second one.
-netstat -ano | findstr ":1420" | findstr "LISTENING" >nul 2>&1
+rem Asked of the TCP table directly: netstat walks every connection and owning
+rem process first, and on some machines (VPN or endpoint-security drivers) it
+rem never returns, hanging this launcher before it prints anything.
+powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort 1420 -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
 if not errorlevel 1 goto :port_busy
 
 echo Starting Aime... the app window appears in 15-30 seconds. Keep this window open.
