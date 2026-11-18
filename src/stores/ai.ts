@@ -536,7 +536,7 @@ function stopSignInWatch(): void {
 
 export const useAi = create<AiState>((set, get) => {
   /** Writes the project's session file as `history` now has it. */
-  const writeHistory = async () => {
+  const writeHistoryOnce = async () => {
     const { projectRoot, history } = get();
     if (!projectRoot) return;
     const file: SessionFile = { version: 1, sessions: history };
@@ -544,6 +544,36 @@ export const useAi = create<AiState>((set, get) => {
       await invoke("save_ai_sessions", { rootPath: projectRoot, sessions: file });
     } catch (err: unknown) {
       console.error("failed to save AI sessions:", err);
+    }
+  };
+
+  /**
+   * One write at a time. A turn saves several times, and a long history takes
+   * a while to write: calls made while a write is on its way fold into one
+   * write after it, of the history as it is by then - so writes never race,
+   * and the file always ends as the newest history.
+   */
+  let writing: Promise<void> | null = null;
+  let writeAgain = false;
+  const takeWriteAgain = () => {
+    const was = writeAgain;
+    writeAgain = false;
+    return was;
+  };
+  const writeHistory = async () => {
+    if (writing !== null) {
+      writeAgain = true;
+      return writing;
+    }
+    writing = (async () => {
+      do {
+        await writeHistoryOnce();
+      } while (takeWriteAgain());
+    })();
+    try {
+      await writing;
+    } finally {
+      writing = null;
     }
   };
 

@@ -8,6 +8,7 @@ pub mod closing;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
 /// What a project's file holds, and so which folder it lives in.
@@ -74,9 +75,15 @@ fn load(file: &Path) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|e| e.to_string())
 }
 
+/// Held for every write: saves run on the blocking pool, and two of the same
+/// file at once would share its temp file.
+static WRITING: Mutex<()> = Mutex::new(());
+
 /// Writes via write-to-temp + rename, so a crash mid-write can never corrupt
 /// the store: a reader sees the old file or the new one, never half of either.
 fn save(file: &Path, value: &Value) -> Result<(), String> {
+    // Nothing a failed write left behind can be wrong for the next one.
+    let _writing = WRITING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -99,9 +106,12 @@ pub async fn load_ai_sessions(app: AppHandle, root_path: String) -> Result<Value
     .await?
 }
 
+/// Off the main thread: a long history is megabytes, and writing it there
+/// froze every window for as long as it took (250 ms for 1.2 MB in a debug build).
 #[tauri::command]
-pub fn save_ai_sessions(app: AppHandle, root_path: String, sessions: Value) -> Result<(), String> {
-    save(&store_file(&app, Store::AiSessions, &root_path)?, &sessions)
+pub async fn save_ai_sessions(app: AppHandle, root_path: String, sessions: Value) -> Result<(), String> {
+    let file = store_file(&app, Store::AiSessions, &root_path)?;
+    crate::background::off_main_thread(move || save(&file, &sessions)).await?
 }
 
 /// Returns the editor state a workspace was left with, or `null` for one never opened.
@@ -115,9 +125,11 @@ pub async fn load_workspace_state(app: AppHandle, root_path: String) -> Result<V
     .await?
 }
 
+/// Off the main thread, like the sessions: unsaved text can be a large file.
 #[tauri::command]
-pub fn save_workspace_state(app: AppHandle, root_path: String, state: Value) -> Result<(), String> {
-    save(&store_file(&app, Store::Workspace, &root_path)?, &state)
+pub async fn save_workspace_state(app: AppHandle, root_path: String, state: Value) -> Result<(), String> {
+    let file = store_file(&app, Store::Workspace, &root_path)?;
+    crate::background::off_main_thread(move || save(&file, &state)).await?
 }
 
 #[cfg(test)]
