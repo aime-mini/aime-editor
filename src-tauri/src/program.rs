@@ -99,34 +99,77 @@ fn search_path(name: &str) -> Option<PathBuf> {
 /// A process keeps the environment it was started with, so `winget install`
 /// puts the Google Cloud CLI on the user's PATH and every shell opened
 /// afterwards finds it - while the Aime that offered the install keeps saying
-/// "not on this machine" until it is restarted. The stored
-/// value is read through .NET rather than `reg query`, which a domain policy
-/// on the same machine refused with "Registry editing has been disabled".
-/// Asked only after the process PATH came up empty, so a tool that is there
-/// costs nothing extra; off Windows, package managers install into directories
-/// that are already on PATH, and there is nothing to ask.
+/// "not on this machine" until it is restarted.
+///
+/// Read through the registry API, in-process: `reg query` is refused on a
+/// domain-managed machine with "Registry editing has been disabled" (that
+/// policy covers the editing tools, not the API), and a PowerShell started
+/// for the same two values cost 230-300 ms per missing tool, holding whichever
+/// thread asked. Asked only after the process PATH came up empty, so a tool
+/// that is there costs nothing extra; off Windows, package managers install
+/// into directories that are already on PATH, and there is nothing to ask.
+#[cfg(target_os = "windows")]
 fn registered_path() -> Option<std::ffi::OsString> {
-    if !cfg!(target_os = "windows") {
-        return None;
+    use windows::core::w;
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+
+    let machine = stored_string(
+        HKEY_LOCAL_MACHINE,
+        w!("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"),
+        w!("Path"),
+    );
+    let user = stored_string(HKEY_CURRENT_USER, w!("Environment"), w!("Path"));
+    let halves: Vec<std::ffi::OsString> = [machine, user].into_iter().flatten().collect();
+    (!halves.is_empty()).then(|| halves.join(std::ffi::OsStr::new(";")))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn registered_path() -> Option<std::ffi::OsString> {
+    None
+}
+
+/// A string value from the registry, with `%VARIABLE%` references expanded
+/// the way the shell expands them; `None` when the value is not there.
+#[cfg(target_os = "windows")]
+fn stored_string(
+    root: windows::Win32::System::Registry::HKEY,
+    key: windows::core::PCWSTR,
+    value: windows::core::PCWSTR,
+) -> Option<std::ffi::OsString> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS};
+    use windows::Win32::System::Registry::{RegGetValueW, RRF_RT_REG_SZ};
+
+    const BYTES_PER_UNIT: usize = std::mem::size_of::<u16>();
+    let mut buffer: Vec<u16> = Vec::new();
+    loop {
+        let mut bytes = u32::try_from(buffer.len() * BYTES_PER_UNIT).ok()?;
+        let data = (!buffer.is_empty()).then(|| buffer.as_mut_ptr().cast());
+        // SAFETY: `key` and `value` are NUL-terminated wide literals, and
+        // `data`, when given, points at `bytes` writable bytes of `buffer`.
+        // RRF_RT_REG_SZ also accepts REG_EXPAND_SZ and expands it.
+        let status = unsafe { RegGetValueW(root, key, value, RRF_RT_REG_SZ, None, data, Some(&mut bytes)) };
+        let needed = bytes as usize / BYTES_PER_UNIT;
+        match status {
+            ERROR_SUCCESS if data.is_some() => {
+                let text = &buffer[..needed.min(buffer.len())];
+                let text = text.strip_suffix(&[0]).unwrap_or(text);
+                return Some(std::ffi::OsString::from_wide(text));
+            }
+            // A size query, or a value that grew - or expanded - past the buffer.
+            ERROR_SUCCESS | ERROR_MORE_DATA if needed > 0 => {
+                buffer.resize(needed.max(buffer.len() * 2), 0);
+            }
+            ERROR_FILE_NOT_FOUND => return None,
+            other => {
+                eprintln!(
+                    "[program] could not read the stored PATH: {}",
+                    other.to_hresult().message()
+                );
+                return None;
+            }
+        }
     }
-    let mut powershell = std::process::Command::new("powershell");
-    powershell.args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        "[Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')",
-    ]);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        powershell.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    let output = powershell.output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!text.is_empty()).then(|| text.into())
 }
 
 /// The runnable file for this name in one directory, PATHEXT first.
@@ -192,6 +235,10 @@ mod tests {
             assert!(
                 text.to_lowercase().contains("windows"),
                 "the system half names the Windows folder: {text}"
+            );
+            assert!(
+                !text.to_lowercase().contains("%systemroot%"),
+                "references are expanded, as a shell sees them: {text}"
             );
         } else {
             assert!(stored.is_none());

@@ -48,8 +48,6 @@ use super::CloudAccount;
 use crate::providers::cli_command;
 use serde::Serialize;
 use std::collections::HashMap;
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 use std::process::Stdio;
 use std::sync::{Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, State};
@@ -194,10 +192,11 @@ pub async fn cloud_sign_in(
         .take()
         .ok_or_else(|| format!("`{}` started without a stderr to read", flow.program))?;
     let stdin = child.stdin.take();
-    if let Some(previous) = state.running().insert(cloud_id.clone(), Running { child, stdin }) {
+    let previous = state.running().insert(cloud_id.clone(), Running { child, stdin });
+    if let Some(previous) = previous {
         // The user clicked again: the earlier attempt's code is dead the
         // moment a new one is issued, so it is not left waiting for nobody.
-        stop(previous);
+        stop(previous).await;
     }
 
     let mut lines = BufReader::new(stderr).lines();
@@ -274,12 +273,15 @@ pub async fn cloud_sign_in_code(
 }
 
 /// Stops a sign-in the user gave up on, so the CLI is not left polling for a
-/// code nobody will type.
+/// code nobody will type. Async because stopping starts `taskkill`, which a
+/// synchronous command would run on the main thread.
 #[tauri::command]
-pub fn cloud_sign_in_cancel(state: State<'_, SignInState>, cloud_id: String) {
-    if let Some(running) = state.running().remove(&cloud_id) {
-        stop(running);
+pub async fn cloud_sign_in_cancel(state: State<'_, SignInState>, cloud_id: String) -> Result<(), String> {
+    let running = state.running().remove(&cloud_id);
+    if let Some(running) = running {
+        stop(running).await;
     }
+    Ok(())
 }
 
 /// Ends a sign-in and everything it started.
@@ -290,17 +292,19 @@ pub fn cloud_sign_in_cancel(state: State<'_, SignInState>, cloud_id: String) {
 /// has to go, and `taskkill /T` is what Windows offers for a tree. Elsewhere
 /// the CLI is the process itself, and a plain kill is the whole
 /// job.
-fn stop(mut running: Running) {
+async fn stop(mut running: Running) {
     #[cfg(target_os = "windows")]
     if let Some(pid) = running.child.id() {
-        let mut taskkill = std::process::Command::new("taskkill");
+        let mut taskkill = tokio::process::Command::new("taskkill");
         taskkill.args(["/PID", &pid.to_string(), "/T", "/F"]);
         taskkill.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        if taskkill.status().is_ok_and(|status| status.success()) {
+        if taskkill.status().await.is_ok_and(|status| status.success()) {
             return;
         }
     }
-    let _ = running.child.start_kill();
+    if let Err(err) = running.child.start_kill() {
+        eprintln!("[sign_in] could not stop the sign-in process: {err}");
+    }
 }
 
 /// The page and the code, out of the one line the Azure CLI prints them on.

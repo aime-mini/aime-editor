@@ -463,8 +463,18 @@ pub async fn ai_send_prompt(
             if let Err(err) = crate::aime_dir::ensure_self_ignored(std::path::Path::new(&cwd)) {
                 eprintln!("[aime_dir] could not write the .aime guard in '{cwd}': {err}");
             }
-            // The turn may have written memories; the mirror is what survives a re-clone.
-            crate::memory_mirror::after_turn(&app, std::path::Path::new(&cwd));
+            // The turn may have written memories; the mirror is what survives a
+            // re-clone. It asks git and copies files, so it waits on the blocking
+            // pool instead of holding a runtime thread every other command needs.
+            let mirror_app = app.clone();
+            let turn_dir = std::path::PathBuf::from(&cwd);
+            if let Err(err) = crate::background::off_main_thread(move || {
+                crate::memory_mirror::after_turn(&mirror_app, &turn_dir);
+            })
+            .await
+            {
+                eprintln!("[memory_mirror] the mirror after the turn in '{cwd}' did not run: {err}");
+            }
             let _ = app.emit(
                 "ai:exit",
                 ExitPayload {
