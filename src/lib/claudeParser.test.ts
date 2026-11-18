@@ -370,6 +370,42 @@ describe("createClaudeParser", () => {
       ).toEqual([{ kind: "withdrawal", id: "e6576fcc", withdrawn: false }]);
     });
 
+    it("reads a switch of the running process as what it now runs on, never as a withdrawal", () => {
+      const parse = createClaudeParser();
+      // Captured from 2.1.327.
+      expect(
+        parse({
+          type: "control_response",
+          response: {
+            subtype: "success",
+            request_id: "aime-switch-model",
+            response: { model: "claude-haiku-5-5" },
+          },
+        }),
+      ).toEqual([{ kind: "ran-on", model: "claude-haiku-5-5" }]);
+      expect(
+        parse({
+          type: "control_response",
+          response: { subtype: "success", request_id: "aime-switch-effort" },
+        }),
+      ).toEqual([]);
+      expect(
+        parse({
+          type: "control_response",
+          response: {
+            subtype: "error",
+            request_id: "aime-switch-model",
+            error: "Model 'claude-nonexistent-9' not found",
+            error_code: "not_found",
+            model: "claude-haiku-5-5",
+          },
+        }),
+      ).toEqual([
+        { kind: "error", message: "Model 'claude-nonexistent-9' not found" },
+        { kind: "ran-on", model: "claude-haiku-5-5" },
+      ]);
+    });
+
     it("says when a call is back, and whether it failed", () => {
       const parse = createClaudeParser();
       expect(

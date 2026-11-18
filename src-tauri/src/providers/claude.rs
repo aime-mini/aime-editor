@@ -147,12 +147,39 @@ fn identified_user_message_line(text: &str, id: &str) -> String {
 /// sees it; `{"cancelled":false}` once it has been read). The request is
 /// named after the message, so the answer says which one it was about.
 fn withdrawal_line(id: &str) -> String {
-    let request = json!({
-        "type": "control_request",
-        "request_id": id,
-        "request": { "subtype": "cancel_async_message", "message_uuid": id },
-    });
-    format!("{request}\n")
+    control_request_line(
+        id,
+        json!({ "subtype": "cancel_async_message", "message_uuid": id }),
+    )
+}
+
+/// Control requests that switch a running process are named with this prefix,
+/// which is how `lib/claudeParser.ts` tells their answers from a withdrawal's.
+const SWITCH_REQUEST_PREFIX: &str = "aime-switch-";
+
+/// One control request on the CLI's stdin, as one line.
+fn control_request_line(request_id: &str, request: Value) -> String {
+    let line = json!({ "type": "control_request", "request_id": request_id, "request": request });
+    format!("{line}\n")
+}
+
+/// Moves a running process to `model` and `effort`, effective from its next
+/// request (measured on 2.1.327: `set_model` answers with the resolved model
+/// and the next answer runs on it; `apply_flag_settings` with `effortLevel` is
+/// what `get_settings` then reports as applied). `null` restores the CLI's
+/// default - for the effort that is the model's built-in one, not the
+/// `effortLevel` of the user's settings, so the caller names Auto's effort.
+fn switch_request_lines(model: Option<&str>, effort: Option<&str>) -> Vec<String> {
+    vec![
+        control_request_line(
+            &format!("{SWITCH_REQUEST_PREFIX}model"),
+            json!({ "subtype": "set_model", "model": model }),
+        ),
+        control_request_line(
+            &format!("{SWITCH_REQUEST_PREFIX}effort"),
+            json!({ "subtype": "apply_flag_settings", "settings": { "effortLevel": effort } }),
+        ),
+    ]
 }
 
 /// `claude mcp list` prints `<name>: <target> - <status>` per server, after a
@@ -197,6 +224,10 @@ impl Adapter for ClaudeAdapter {
 
     fn withdraw_line(&self, id: &str) -> Option<String> {
         Some(withdrawal_line(id))
+    }
+
+    fn switch_lines(&self, model: Option<&str>, effort: Option<&str>) -> Vec<String> {
+        switch_request_lines(explicit(model), explicit(effort))
     }
 
     /// Each answer ends in a `result` line; a message already on stdin by
@@ -347,7 +378,7 @@ impl Adapter for ClaudeAdapter {
 mod tests {
     use super::{
         build_args, Adapter, ApiKeyRoute, ClaudeAdapter, McpServerSpec, Permission, ToolSet, TurnRequest,
-        Value,
+        Value, SWITCH_REQUEST_PREFIX,
     };
 
     #[test]
@@ -482,6 +513,35 @@ mod tests {
         assert_eq!(parsed["request_id"], "4b1c");
         assert_eq!(parsed["request"]["subtype"], "cancel_async_message");
         assert_eq!(parsed["request"]["message_uuid"], "4b1c");
+    }
+
+    #[test]
+    fn a_running_process_is_switched_by_model_then_effort_and_auto_is_null() {
+        let parse = |line: &String| -> Value {
+            assert!(line.ends_with('\n'), "one line of stream-json");
+            serde_json::from_str(line).expect("a JSON line")
+        };
+        let lines = ClaudeAdapter.switch_lines(Some("claude-fable-5-2"), Some("low"));
+        let [model, effort] = lines.as_slice() else {
+            panic!("one line for the model, one for the effort: {lines:?}");
+        };
+        let (model, effort) = (parse(model), parse(effort));
+        assert_eq!(model["type"], "control_request");
+        assert_eq!(model["request"]["subtype"], "set_model");
+        assert_eq!(model["request"]["model"], "claude-fable-5-2");
+        assert_eq!(effort["request"]["subtype"], "apply_flag_settings");
+        assert_eq!(effort["request"]["settings"]["effortLevel"], "low");
+        for request in [&model, &effort] {
+            let id = request["request_id"].as_str().expect("a request id");
+            assert!(
+                id.starts_with(SWITCH_REQUEST_PREFIX),
+                "{id} is told apart from a withdrawal"
+            );
+        }
+
+        let auto = ClaudeAdapter.switch_lines(Some(""), None);
+        assert_eq!(parse(&auto[0])["request"]["model"], Value::Null);
+        assert_eq!(parse(&auto[1])["request"]["settings"]["effortLevel"], Value::Null);
     }
 
     #[test]

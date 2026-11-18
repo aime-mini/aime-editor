@@ -162,6 +162,14 @@ pub trait Adapter: Send + Sync {
         None
     }
 
+    /// The stdin lines that put a process already running on another model
+    /// and reasoning effort (`None`: the CLI's own default), for a CLI that
+    /// takes message after message in one process; empty for one whose next
+    /// message starts a new process, which takes the choice as it starts.
+    fn switch_lines(&self, _model: Option<&str>, _effort: Option<&str>) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Whether this stdout line is the CLI's last word on an answer, after
     /// which its input can be closed - unless work it started is still running
     /// in the background (`background_tasks`). Only asked of a conversing CLI.

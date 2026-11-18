@@ -841,6 +841,40 @@ export const useAi = create<AiState>((set, get) => {
     }
   };
 
+  /** The effort the CLI would give `model` in a new turn, or null when it cannot say. */
+  const autoEffortOf = async (model: string): Promise<string | null> => {
+    await get().expectNextRun();
+    const { providerId, projectRoot, expectedRuns } = get();
+    if (projectRoot === null) return null;
+    const key = expectationKey(providerId, projectRoot, model);
+    return key in expectedRuns ? (expectedRuns[key].effort ?? null) : null;
+  };
+
+  /**
+   * Puts the running CLI on the model and effort now picked. A CLI that takes
+   * message after message in one process keeps that process for as long as
+   * the AI has work in the background - often an hour - so a choice made
+   * meanwhile goes to it at once instead of waiting for the next process.
+   * Auto's effort is sent as the effort the CLI names for a new turn: cleared
+   * in a live process, Claude Code 2.1.327 falls back to the model's built-in
+   * effort and skips the one in the user's settings.
+   */
+  const switchRunningChoice = async () => {
+    const { runId, providerId, providers, model, effort } = get();
+    if (runId === null || !providers.some((p) => p.id === providerId && p.steers)) return;
+    if (model === choiceThisTurn.model && effort === choiceThisTurn.effort) return;
+    choiceThisTurn = { model, effort };
+    const effortToRun = effort === "" ? await autoEffortOf(model) : effort;
+    const superseded = choiceThisTurn.model !== model || choiceThisTurn.effort !== effort;
+    if (superseded || get().runId !== runId) return;
+    try {
+      await invoke("ai_switch_model", { runId, model: model || null, effort: effortToRun });
+    } catch (error: unknown) {
+      // A turn that ended meanwhile is no loss: the next one starts on the choice.
+      if (!String(error).includes("INPUT_CLOSED")) console.error("could not switch the running turn:", error);
+    }
+  };
+
   /**
    * Takes back a message already handed over, from a CLI that gives one back.
    * It leaves the queue only when the CLI says the AI never read it
@@ -1341,10 +1375,12 @@ export const useAi = create<AiState>((set, get) => {
       const supported = effortsOf(get().providerId, model);
       const effort = supported.some((o) => o.value === get().effort) ? get().effort : "";
       set({ model, effort });
+      void switchRunningChoice();
     },
 
     setEffort: (effort) => {
       set({ effort });
+      void switchRunningChoice();
     },
 
     cyclePermission: () => {

@@ -136,7 +136,7 @@ const EN: HelpTopic[] = [
     id: "ai-model",
     section: "AI",
     title: "Model & effort",
-    body: "The chips above the chat choose the model and reasoning effort. The model list comes from the installed CLI, so new models appear automatically. Auto uses the CLI's default and shows what that is.",
+    body: "The chips above the chat choose the model and reasoning effort. The model list comes from the installed CLI, so new models appear automatically. Auto uses the CLI's default and shows what that is. Changed while the AI works, Claude Code switches mid-task; other CLIs from your next message.",
     keywords: "opus sonnet haiku fable gpt codex gemini version xhigh ultra effort picker catalog list",
   },
   {
@@ -537,7 +537,7 @@ const VI: HelpTopic[] = [
     id: "ai-model",
     section: "AI",
     title: "Model & effort",
-    body: "Các chip phía trên khung chat chọn model và mức effort. Danh sách model lấy từ CLI đã cài, nên model mới tự có. Auto dùng mặc định của CLI và ghi rõ đó là gì.",
+    body: "Các chip phía trên khung chat chọn model và mức effort. Danh sách model lấy từ CLI đã cài, nên model mới tự có. Auto dùng mặc định của CLI và ghi rõ đó là gì. Đổi khi AI đang làm thì Claude Code chuyển ngay giữa chừng, CLI khác từ tin nhắn kế tiếp.",
     keywords: "opus sonnet haiku fable gpt codex gemini phiên bản effort ultra danh mục liệt kê",
   },
   {

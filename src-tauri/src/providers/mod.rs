@@ -513,6 +513,26 @@ pub fn ai_withdraw(state: State<'_, ProviderState>, run_id: String, id: String) 
     input.lines.send(line).map_err(|_| INPUT_CLOSED.to_string())
 }
 
+/// Puts a turn still running on another model and effort (`Adapter::switch_lines`),
+/// so a choice made while the AI works applies to what it does next rather
+/// than waiting for a process that may run for hours. Does nothing for a CLI
+/// whose next message starts a new process; `INPUT_CLOSED` when the turn takes
+/// no more. Not counted in `written`: the CLI echoes no message for it.
+#[tauri::command]
+pub fn ai_switch_model(
+    state: State<'_, ProviderState>,
+    run_id: String,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Result<(), String> {
+    let inputs = state.inputs();
+    let input = inputs.get(&run_id).ok_or(INPUT_CLOSED)?;
+    for line in input.adapter.switch_lines(model.as_deref(), effort.as_deref()) {
+        input.lines.send(line).map_err(|_| INPUT_CLOSED.to_string())?;
+    }
+    Ok(())
+}
+
 /// Writes a schema under the app's cache, named by its content, for a CLI
 /// that reads schemas from a file.
 fn schema_file_for(app: &AppHandle, json: &str) -> Result<PathBuf, String> {

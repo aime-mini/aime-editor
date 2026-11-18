@@ -93,9 +93,15 @@ interface ClaudeControlResponseLine {
   response?: {
     subtype?: string;
     request_id?: string;
-    response?: { cancelled?: unknown };
+    /** A failed request: what went wrong, and for `set_model` the model kept. */
+    error?: unknown;
+    model?: unknown;
+    response?: { cancelled?: unknown; model?: unknown };
   };
 }
+
+/** Names the requests that switch a running process (`providers/claude.rs`). */
+const SWITCH_REQUEST_PREFIX = "aime-switch-";
 
 type ClaudeLine =
   | ClaudeSystemLine
@@ -269,15 +275,32 @@ export function createClaudeParser(): (raw: unknown) => UiAiEvent[] {
 }
 
 /**
- * The one control request a chat turn sends is taking a message back
- * (`cancel_async_message`), named after the message - so every answer is read
- * as that. Measured on 2.1.310: `{"cancelled":true}` while the message waits,
+ * A chat turn sends two kinds of control request: switching the model or
+ * effort, named with `SWITCH_REQUEST_PREFIX`, and taking a message back
+ * (`cancel_async_message`), named after the message. Measured on 2.1.310: a
+ * withdrawal answers `{"cancelled":true}` while the message waits,
  * `{"cancelled":false}` once the AI has read it; an error took nothing back.
  */
 function parseControlResponse(raw: ClaudeControlResponseLine): UiAiEvent[] {
   const answer = raw.response;
   if (typeof answer?.request_id !== "string") return [];
+  if (answer.request_id.startsWith(SWITCH_REQUEST_PREFIX)) return parseSwitchAnswer(answer);
   return [{ kind: "withdrawal", id: answer.request_id, withdrawn: answer.response?.cancelled === true }];
+}
+
+/**
+ * Measured on 2.1.327: `set_model` answers with the model it resolved the
+ * choice to, or fails naming why and the model it stays on; `apply_flag_settings`
+ * answers a bare success.
+ */
+function parseSwitchAnswer(answer: NonNullable<ClaudeControlResponseLine["response"]>): UiAiEvent[] {
+  const events: UiAiEvent[] = [];
+  if (answer.subtype === "error" && typeof answer.error === "string") {
+    events.push({ kind: "error", message: answer.error });
+  }
+  const model = answer.response?.model ?? answer.model;
+  if (typeof model === "string" && model !== "") events.push({ kind: "ran-on", model });
+  return events;
 }
 
 function parseLine(raw: ClaudeAssistantLine | ClaudeUserLine | ClaudeResultLine): UiAiEvent[] {

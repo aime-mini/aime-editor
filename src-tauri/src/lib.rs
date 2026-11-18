@@ -179,6 +179,7 @@ pub fn run() {
             providers::ai_end_left_running,
             providers::ai_steer,
             providers::ai_withdraw,
+            providers::ai_switch_model,
             providers::ai_oneshot,
             providers::provider_health,
             providers::provider_set_api_key,
